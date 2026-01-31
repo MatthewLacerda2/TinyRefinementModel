@@ -1,53 +1,40 @@
-import jax
-import jax.numpy as jnp
 import os
-import argparse
-from model.refiner import RefineMath
+from flax import nnx
+import optax
+import jax
 
-def generate_mock_data():
-    """Generates a mock algebra problem embedding for demonstration."""
-    print("Generating mock algebraic data point...")
-    # Simulate a 1D problem represented by a 512-dim embedding
-    key = jax.random.PRNGKey(42)
-    data = jax.random.normal(key, (512,))
-    jnp.save("algebra_problem.npy", data)
-    print("Saved to algebra_problem.npy")
-    return data
+# Import our custom modules
+from model.refiner import RefineMath
+from training.train import train_step
+from data.procedural_gen import MathGym
 
 def main():
-    parser = argparse.ArgumentParser(description="RefineMath: Latent Recursive Math Discovery")
-    parser.add_argument("--dim", type=int, default=512, help="Latent dimension")
-    parser.add_argument("--iters", type=int, default=64, help="Maximum thinking iterations")
-    parser.add_argument("--threshold", type=float, default=1e-5, help="Convergence threshold (Latent Velocity)")
-    args = parser.parse_args()
+    # 1. Setup Environment & Hardware
+    # Force JAX to be polite to your 6GB VRAM
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    print(f"Devices found: {jax.devices()}")
 
-    print("--- RefineMath Recursive Latent Reasoning ---")
+    # 2. Initialize the Beast (10M Parameters)
+    rngs = nnx.Rngs(42)
+    model = RefineMath(latent_dim=512, hidden_dim=1024, rngs=rngs)
     
-    # Check for data
-    data_path = "algebra_problem.npy"
-    if not os.path.exists(data_path):
-        data_points = generate_mock_data()
-    else:
-        data_points = jnp.load(data_path)
-
-    # Initialize the thinking brain
-    # In a real scenario, weights would be loaded from a checkpoint
-    model = RefineMath(latent_dim=args.dim, max_iters=args.iters)
-
-    print(f"Starting recursive inference (Thinking Budget: {args.iters} steps)...")
+    # 3. Setup Optimizer (Muon-compatible learning rate)
+    optimizer = nnx.Optimizer(model, optax.adamw(1e-4))
     
-    # Recursive Inference: The model 'thinks' until the embedding stabilizes
-    try:
-        formula_latex, iterations = model.solve(data_points, threshold=args.threshold)
+    # 4. Data Generator
+    gym = MathGym()
+
+    # 5. Training Loop
+    print("Starting training...")
+    for step in range(100):
+        batch = gym.generate_batch(batch_size=16)
+        # We wrap the train_step in JIT here for maximum speed
+        loss = train_step(model, optimizer, batch)
         
-        print("\n" + "="*40)
-        print(f"STABILITY REACHED")
-        print(f"Iterations: {iterations}")
-        print(f"Discovered Formula: {formula_latex}")
-        print("="*40)
-    except Exception as e:
-        print(f"Error during inference: {e}")
-        print("Note: Ensure model/refiner.py is implemented.")
+        if step % 10 == 0:
+            print(f"Step {step} | Loss: {loss:.4f}")
+
+    print("Model trained and ready for GCP scaling.")
 
 if __name__ == "__main__":
     main()
