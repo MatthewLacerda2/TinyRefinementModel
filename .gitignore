@@ -209,3 +209,6 @@ __marimo__/
 # Terraform
 .tfstate
 .tfvars
+
+#Project specifics
+auxpy.py
