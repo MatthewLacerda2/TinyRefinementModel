@@ -11,11 +11,10 @@ class RecursiveRefiner(nnx.Module):
         # Using a simple GRU-like update for the 'thought' state
         self.refine_layer = nnx.Linear(latent_dim, latent_dim, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
-
+    
     def __call__(self, z):
-        # One 'step' of thinking
         delta = jax.nn.gelu(self.refine_layer(z))
-        return self.norm(z + delta)
+        return self.norm(z + 0.1 * delta)
 
 # --- 2. MUON OPTIMIZER (Simplified for 2060) ---
 def muon_update(params, updates, lr=0.02):
@@ -76,5 +75,5 @@ for step in range(100):
     
     loss = train_step(model, optimizer, metrics, batch)
     
-    if step % 10 == 0:
+    if step % 5 == 0:
         print(f"Step {step} | Loss: {loss:.4f} | Time: {time.time()-start:.3f}s")
