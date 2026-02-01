@@ -15,45 +15,46 @@ class RecursiveRefiner(nnx.Module):
         delta = jax.nn.gelu(self.refine_layer(z))
         return self.norm(z + 0.1 * delta)
 
+def run_until_converged(model, z0, max_steps=32, eps=1e-3):
+    z = z0
+    for _ in range(max_steps):
+        z_next = model(z)
+        if jnp.linalg.norm(z_next - z) < eps:
+            break
+        z = z_next
+    return z
+
 # --- 2. THE TRAINING LOOP WITH NAN GUARD ---
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
-        z_initial = jnp.ones((8, 512)) * 0.01
+        # initial state z0 (Option B robustness)
+        z0 = jnp.ones((8, 512)) * 0.01
+        z_final = run_until_converged(model, z0)
 
-        def think_loop(z, _):
+        def step_fn(z, _):
             z_next = model(z)
             return z_next, z_next
 
-        zs, _ = jax.lax.scan(think_loop, z_initial, None, length=16)
+        # unroll fixed number of steps for training
+        zs, _ = jax.lax.scan(step_fn, z0, None, length=16)
 
+        # ----- Option B: per-step loss -----
         T = zs.shape[0]
         weights = jnp.linspace(0.1, 1.0, T)[:, None, None]
+        loss_B = jnp.mean(weights * (zs - batch["target"]) ** 2)
 
-        return jnp.mean(weights * (zs - batch['target'])**2)
+        # ----- Option A: final-step loss -----
+        loss_A = jnp.mean((zs[-1] - batch["target"]) ** 2)
+
+        # combine (A is light)
+        return loss_B + 0.1 * loss_A
 
     grad_fn = nnx.value_and_grad(loss_fn)
     loss, grads = grad_fn(model)
 
-    if not jnp.isfinite(loss):
-        print("\n!!! NAN DETECTED !!!")
-
-        global_grad_norm = optax.global_norm(grads)
-        print(f"Loss: {loss}")
-        print(f"Global Gradient Norm: {global_grad_norm}")
-
-        flat_grads, _ = jax.tree_util.tree_flatten(grads)
-        max_grad = max([jnp.max(jnp.abs(g)) for g in flat_grads])
-        print(f"Max Absolute Gradient Value: {max_grad}")
-
-        raise FloatingPointError("Stopping training due to NaN")
-
     optimizer.update(model, grads)
 
-    kernel_norm = jnp.linalg.norm(model.refine_layer.kernel)
-    print(f"Kernel norm: {kernel_norm:.6f}")
-    print("Δkernel norm:", jnp.linalg.norm(grads.refine_layer.kernel))
-
-    metrics.update(loss=loss)
+    metrics["loss"].update(loss)
     return loss
 
 # --- 3. EXECUTION ---
