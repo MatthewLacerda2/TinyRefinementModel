@@ -55,7 +55,9 @@ model = RecursiveRefiner(512, rngs)
 # NEW: Added 'wrt=nnx.Param' to tell the optimizer to target the weights
 optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param)
 
-metrics = nnx.MultiMetric(loss=nnx.Average())
+metrics = nnx.metrics.MultiMetric(
+    loss=nnx.metrics.Average()
+)
 
 print("Starting Local Proof-of-Concept...")
 for step in range(100):
