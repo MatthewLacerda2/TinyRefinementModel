@@ -8,11 +8,10 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-# --- 1. MODEL (Mixed Precision Enabled) ---
+# --- 1. MODEL ---
 class RecursiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        # Set dtype to float16 for memory savings
         self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, dtype=jnp.float16)
         self.fc2 = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=jnp.float16)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=jnp.float16)
@@ -23,68 +22,65 @@ class RecursiveRefiner(nnx.Module):
         delta = self.fc2(h) 
         return self.norm(z + 0.1 * delta)
 
-# --- 2. TRAINING STEP (With Accumulation) ---
+# --- 2. TRUE ACCUMULATION STEP ---
 @nnx.jit
-def train_step(model, optimizer, metrics, batch):
+def compute_grads(model, batch):
     def loss_fn(model):
-        # Ensure initial state matches precision
         z = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
         def step_fn(current_z, _):
             next_z = model(current_z, batch["target"])
             return next_z, next_z
         zs, _ = jax.lax.scan(step_fn, z, None, length=16)
         return jnp.mean((zs[-1] - batch["target"]) ** 2)
+    
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    return loss, grads
 
-    grad_fn = nnx.value_and_grad(loss_fn)
-    loss, grads = grad_fn(model)
-    optimizer.update(model, grads)
-    metrics.loss.update(loss=loss)
-    return loss
-
-# --- 3. CHECKPOINT SYSTEM ---
-def save_ckpt(model, optimizer, step, path="model_ckpt.pkl"):
-    state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
-    with open(path, 'wb') as f:
-        pickle.dump(state, f)
-
-# --- 4. EXECUTION ---
-micro_batch = 128 
-accum_steps = 4 # 128 * 4 = 512 effective batch
+# --- 3. EXECUTION ---
+micro_batch = 128
+accum_steps = 4 
 latent_dim = 768
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(latent_dim, rngs)
-
-# Prevent dead zones
-model.fc1.kernel[...] *= 0.01 
-model.fc2.kernel[...] *= 0.01
-
 optimizer = nnx.Optimizer(model, optax.adam(5e-4), wrt=nnx.Param)
-metrics = nnx.metrics.MultiMetric(loss=nnx.metrics.Average('loss'))
 
 ckpt_path = "model_ckpt.pkl"
 start_step = 0
+
+# Check & Resume
 if os.path.exists(ckpt_path):
     with open(ckpt_path, 'rb') as f:
         cp = pickle.load(f)
         nnx.update(model, cp['model'])
         nnx.update(optimizer, cp['optimizer'])
         start_step = cp['step'] + 1
-    print(f"Resumed at {start_step}")
+    print(f"Resumed at step {start_step}")
 
 try:
     key = jax.random.key(start_step)
     for step in range(start_step, 5001):
-        # Accumulation loop to simulate 512 batch
+        total_loss = 0
+        # Initialize zero gradients for accumulation
+        accum_grads = jax.tree.map(jnp.zeros_like, nnx.state(model, nnx.Param))
+        
         for _ in range(accum_steps):
             key, subkey = jax.random.split(key)
             x = jax.random.normal(subkey, (micro_batch, latent_dim), dtype=jnp.float16)
             batch = {'input': x, 'target': x * 2.0}
-            loss = train_step(model, optimizer, metrics, batch)
+            
+            loss, grads = compute_grads(model, batch)
+            # Accumulate
+            accum_grads = jax.tree.map(lambda a, g: a + g / accum_steps, accum_grads, grads)
+            total_loss += loss / accum_steps
+
+        optimizer.update(model, accum_grads)
 
         if step % 20 == 0:
-            print(f"Step {step} | Loss: {loss:.6f}")
-            save_ckpt(model, optimizer, step, ckpt_path)
-            metrics = nnx.metrics.MultiMetric(loss=nnx.metrics.Average('loss'))
+            print(f"Step {step} | Loss: {total_loss:.6f}")
+            # Save Checkpoint
+            state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
+            with open(ckpt_path, 'wb') as f:
+                pickle.dump(state, f)
             
 except Exception as e:
     print(f"Halted: {e}")
