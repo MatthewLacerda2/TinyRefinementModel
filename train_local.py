@@ -48,32 +48,21 @@ def train_step(model, optimizer, metrics, batch):
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION (Self-Regulated + Cold Start) ---
+# --- 4. EXECUTION (The Simple & Stable Baseline) ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
-# 'Cold Start': Initialize weights to near-zero
+# Use the recommended variable[...] syntax to safely scale weights
 model.refine_layer.kernel[...] *= 0.001 
 
-def adaptive_clip(updates, params):
-    def clip_fn(g, w):
-        g_norm = jnp.linalg.norm(g)
-        w_norm = jnp.linalg.norm(w)
-        # Gradient is capped at 5% of weight magnitude for extreme safety
-        max_grad = 0.05 * jnp.maximum(w_norm, 1e-3) 
-        factor = jnp.minimum(1.0, max_grad / (g_norm + 1e-6))
-        return g * factor
-    return jax.tree_map(clip_fn, updates, params)
-
-# Wrap the function so Optax recognizes it as a formal transformation
-adaptive_tx = optax.stateless(adaptive_clip)
-
-# Build the optimizer chain
+# Standard Optax chain: Clip gradients to 1.0, then apply Adam
+# We use a standard learning rate of 1e-4
 tx = optax.chain(
-    optax.masked(adaptive_tx, nnx.Param), # Use the wrapped version here
+    optax.clip(1.0), # Hard cap on every single gradient value
     optax.adam(1e-4) 
 )
 
+# Initialize the optimizer for all nnx.Param values
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 metrics = nnx.metrics.MultiMetric(
