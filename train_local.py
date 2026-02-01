@@ -15,29 +15,7 @@ class RecursiveRefiner(nnx.Module):
         delta = jax.nn.gelu(self.refine_layer(z))
         return self.norm(z + 0.01 * delta)
 
-# --- 2. MUON TRANSFORM (The "2060" Optimizer) ---
-def muon_transform(lr=0.02):
-    """
-    Wraps your Newton-Schulz logic into an Optax-compatible transformation.
-    """
-    def init_fn(params):
-        return optax.EmptyState()
-
-    def update_fn(updates, state, params=None):
-        def newton_schulz(G):
-            for _ in range(5):
-                G = 1.5 * G - 0.5 * G @ G.T @ G
-            return G
-        
-        new_updates = jax.tree_map(
-            lambda u: newton_schulz(u) * lr if u.ndim == 2 else u * lr, 
-            updates
-        )
-        return new_updates, state
-
-    return optax.GradientTransformation(init_fn, update_fn)
-
-# --- 3. TRAINING LOOP WITH NAN GUARD ---
+# --- 2. THE TRAINING LOOP WITH NAN GUARD ---
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         z_initial = jnp.zeros((8, 512)) 
@@ -50,36 +28,46 @@ def train_step(model, optimizer, metrics, batch):
     loss, grads = grad_fn(model)
 
     if not jnp.isfinite(loss):
-        print(f"\n!!! NAN DETECTED !!! | Grad Norm: {optax.global_norm(grads)}")
-        raise FloatingPointError("Stopping training.")
+        print("\n!!! NAN DETECTED !!!")
+
+        global_grad_norm = optax.global_norm(grads)
+        print(f"Loss: {loss}")
+        print(f"Global Gradient Norm: {global_grad_norm}")
+        
+        flat_grads, _ = jax.tree_util.tree_flatten(grads)
+        max_grad = max([jnp.max(jnp.abs(g)) for g in flat_grads])
+        print(f"Max Absolute Gradient Value: {max_grad}")
+        
+        raise FloatingPointError("Stopping training due to NaN")
 
     optimizer.update(model, grads) 
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION ---
+# --- 3. EXECUTION ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
 model.refine_layer.kernel[...] *= 0.001 
-model.norm.scale[...] = 0.0 
+model.norm.scale[...] = 0.0
 
 tx = optax.chain(
     optax.clip_by_global_norm(1.0), 
-    muon_transform(lr=0.0001)
+    optax.adam(1e-4) 
 )
 
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 metrics = nnx.metrics.MultiMetric(loss=nnx.metrics.Average('loss'))
 
-print("Starting Local Proof-of-Concept with Muon...")
+print("Starting Local Proof-of-Concept...")
 try:
-    for step in range(101):
+    for step in range(100):
         start = time.time()
         batch = {'target': jax.random.normal(jax.random.key(step), (8, 512))}
+        
         loss = train_step(model, optimizer, metrics, batch)
         
         if step % 5 == 0:
             print(f"Step {step} | Loss: {loss:.4f} | Time: {time.time()-start:.3f}s")
-except FloatingPointError:
-    pass
+except FloatingPointError as e:
+    print(f"Training halted: {e}")
