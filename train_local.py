@@ -60,20 +60,20 @@ def train_step(model, optimizer, metrics, batch):
 
     optimizer.update(model, grads)
 
-    metrics.loss.update(value=loss)
+    metrics.loss.update(loss=loss)
     return loss
 
 # --- 3. EXECUTION ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(768, rngs)
 
-model.fc1.kernel[...] *= 0.001
-model.fc2.kernel[...] *= 0.001
+model.fc1.kernel[...] *= 0.01 
+model.fc2.kernel[...] *= 0.01
 model.norm.scale[...] = 0.1
 
 tx = optax.chain(
     optax.clip_by_global_norm(1.0),
-    optax.adam(1e-4)
+    optax.adam(5e-4)
 )
 
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
@@ -81,15 +81,14 @@ metrics = nnx.metrics.MultiMetric(loss=nnx.metrics.Average('loss'))
 
 print("Starting Local Proof-of-Concept...")
 try:
-    # Move this OUTSIDE the for-loop to make the target constant
+    # FIX: Define a SINGLE target that doesn't change
     key = jax.random.key(0)
-    static_target = jax.random.normal(key, (8, 768))
-    for step in range(5000):
+    target_data = jax.random.normal(key, (8, 768)) 
+    batch = {'target': target_data}
+
+    for step in range(2000):
         start = time.time()
         
-        key, subkey = jax.random.split(key)
-        batch = {'target': jax.random.normal(subkey, (8, 768))}
-
         loss = train_step(model, optimizer, metrics, batch)
 
         if step % 100 == 0:
