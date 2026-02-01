@@ -9,18 +9,27 @@ from flax import nnx
 import optax
 
 # --- 1. MODEL ---
-class RecursiveRefiner(nnx.Module):
+class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
         self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, dtype=jnp.float16)
-        self.fc2 = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=jnp.float16)
+        self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=jnp.float16)
+        # The "Halting" head: outputs a single value between 0 and 1
+        self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs, dtype=jnp.float16)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=jnp.float16)
 
     def __call__(self, z, target):
         combined = jnp.concatenate([z, target], axis=-1)
+        # Use a more complex hidden state for the decision
         h = jax.nn.gelu(self.fc1(combined))
-        delta = self.fc2(h) 
-        return self.norm(z + 0.1 * delta)
+        
+        delta = self.refine_fc(h)
+        next_z = self.norm(z + 0.1 * delta)
+        
+        # Calculate probability of stopping now
+        p = jax.nn.sigmoid(self.halt_fc(next_z))
+        
+        return next_z, p
 
 # --- 2. TRUE ACCUMULATION STEP ---
 @nnx.jit
@@ -28,10 +37,16 @@ def compute_grads(model, batch):
     def loss_fn(model):
         z = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
         def step_fn(current_z, _):
-            next_z = model(current_z, batch["target"])
-            return next_z, next_z
-        zs, _ = jax.lax.scan(step_fn, z, None, length=16)
-        return jnp.mean((zs[-1] - batch["target"]) ** 2)
+            next_z, p = model(current_z, batch["target"])
+            return next_z, (next_z, p)
+        (last_z, _), (zs, ps) = jax.lax.scan(step_fn, z, None, length=16)
+        
+        # Base loss: final reconstruction
+        recon_loss = jnp.mean((last_z - batch["target"]) ** 2)
+        
+        # Adaptive loss: we want to halt eventually (simple penalty for now)
+        # Or just return recon_loss to match previous behavior
+        return recon_loss
     
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     return loss, grads
@@ -41,7 +56,7 @@ micro_batch = 128
 accum_steps = 4 
 latent_dim = 768
 rngs = nnx.Rngs(42)
-model = RecursiveRefiner(latent_dim, rngs)
+model = AdaptiveRefiner(latent_dim, rngs)
 optimizer = nnx.Optimizer(model, optax.adam(5e-4), wrt=nnx.Param)
 
 ckpt_path = "model_ckpt.pkl"
