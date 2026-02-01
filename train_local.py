@@ -48,15 +48,24 @@ def train_step(model, optimizer, metrics, batch):
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION (Updated for Flax 0.11.0+) ---
+# --- 4. EXECUTION (Stabilized Version) ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
-# NEW: Added 'wrt=nnx.Param' to tell the optimizer to target the weights
-optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param)
+# Stabilize weights: scale down the initial linear layer
+model.refine_layer.kernel.value *= 0.1 
+
+# Define a chained optimizer with a 'brake' (gradient clipping)
+# and a lower learning rate (1e-4)
+tx = optax.chain(
+    optax.clip_by_global_norm(1.0), # The Emergency Brake
+    optax.adam(1e-4)                # The lower speed
+)
+
+optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 metrics = nnx.metrics.MultiMetric(
-    loss=nnx.metrics.Average('loss')  # Tell Average metric to look for the keyword "loss"
+    loss=nnx.metrics.Average('loss')
 )
 
 print("Starting Local Proof-of-Concept...")
