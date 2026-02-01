@@ -8,11 +8,18 @@ import time
 class RecursiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        self.refine_layer = nnx.Linear(latent_dim, latent_dim, rngs=rngs)
+        # Expansion: Map 768 -> 1536 (higher capacity)
+        self.fc1 = nnx.Linear(latent_dim, latent_dim * 2, rngs=rngs)
+        # Compression: Map 1536 -> 768
+        self.fc2 = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
 
     def __call__(self, z):
-        delta = jax.nn.gelu(self.refine_layer(z))
+        # The "Internal Brain" step
+        h = jax.nn.gelu(self.fc1(z))
+        delta = self.fc2(h) 
+        
+        # Residual connection + Norm
         return self.norm(z + 0.1 * delta)
 
 def run_until_converged(model, z0, max_steps=32, eps=1e-3):
@@ -76,9 +83,11 @@ try:
     # Move this OUTSIDE the for-loop to make the target constant
     key = jax.random.key(0)
     static_target = jax.random.normal(key, (8, 768))
-    for step in range(50000):
+    for step in range(5000):
         start = time.time()
-        batch = {'target': static_target} # Now it's a fixed goal
+        
+        key, subkey = jax.random.split(key)
+        batch = {'target': jax.random.normal(subkey, (8, 512))}
 
         loss = train_step(model, optimizer, metrics, batch)
 
