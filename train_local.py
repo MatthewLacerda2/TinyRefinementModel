@@ -56,7 +56,7 @@ model = RecursiveRefiner(512, rngs)
 optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param)
 
 metrics = nnx.metrics.MultiMetric(
-    loss=nnx.metrics.Average()
+    loss=nnx.metrics.Average('loss')  # Tell Average metric to look for the keyword "loss"
 )
 
 print("Starting Local Proof-of-Concept...")
