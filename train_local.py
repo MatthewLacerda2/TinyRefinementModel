@@ -4,17 +4,18 @@ from flax import nnx
 import optax
 import time
 
-# --- 1. THE RECURSIVE BRAIN ---
+# --- 1. THE RECURSIVE BRAIN (Stabilized) ---
 class RecursiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        # Using a simple GRU-like update for the 'thought' state
         self.refine_layer = nnx.Linear(latent_dim, latent_dim, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
     
     def __call__(self, z):
+        # GELU can sometimes be 'hot'; we use a skip connection for stability
         delta = jax.nn.gelu(self.refine_layer(z))
-        return self.norm(z + 0.1 * delta)
+        # 0.01 dampening forces the model to start with very small changes
+        return self.norm(z + 0.01 * delta)
 
 # --- 2. MUON OPTIMIZER (Simplified for 2060) ---
 def muon_update(params, updates, lr=0.02):
@@ -47,18 +48,27 @@ def train_step(model, optimizer, metrics, batch):
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION (Bulletproof Version) ---
+# --- 4. EXECUTION (Self-Regulated + Cold Start) ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
-# NEW SYNTAX: Use variable[...] to scale weights 
-# We are dropping them to 0.01 to ensure the first few steps are 'quiet'
-model.refine_layer.kernel[...] *= 0.01 
+# 'Cold Start': Initialize weights to near-zero
+model.refine_layer.kernel[...] *= 0.001 
 
-# Even tighter 'Brake' for recursive stability
+def adaptive_clip(updates, params):
+    def clip_fn(g, w):
+        g_norm = jnp.linalg.norm(g)
+        w_norm = jnp.linalg.norm(w)
+        # Gradient is capped at 5% of weight magnitude for extreme safety
+        max_grad = 0.05 * jnp.maximum(w_norm, 1e-3) 
+        factor = jnp.minimum(1.0, max_grad / (g_norm + 1e-6))
+        return g * factor
+    return jax.tree_map(clip_fn, updates, params)
+
+# Chained Optimizer with Auto-Regulation
 tx = optax.chain(
-    optax.clip_by_global_norm(0.5), # Tighter clip
-    optax.adam(5e-5)                # Even slower learning rate
+    optax.masked(adaptive_clip, nnx.Param), 
+    optax.adam(1e-4) 
 )
 
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
