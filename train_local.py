@@ -67,7 +67,8 @@ def train_step(model, optimizer, metrics, batch):
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(768, rngs)
 
-model.refine_layer.kernel[...] *= 0.001
+model.fc1.kernel[...] *= 0.001
+model.fc2.kernel[...] *= 0.001
 model.norm.scale[...] = 0.1
 
 tx = optax.chain(
@@ -87,7 +88,7 @@ try:
         start = time.time()
         
         key, subkey = jax.random.split(key)
-        batch = {'target': jax.random.normal(subkey, (8, 512))}
+        batch = {'target': jax.random.normal(subkey, (8, 768))}
 
         loss = train_step(model, optimizer, metrics, batch)
 
