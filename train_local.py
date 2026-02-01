@@ -13,16 +13,17 @@ class RecursiveRefiner(nnx.Module):
     
     def __call__(self, z):
         delta = jax.nn.gelu(self.refine_layer(z))
-        return self.norm(z + 0.01 * delta)
+        return self.norm(z + 0.1 * delta)
 
 # --- 2. THE TRAINING LOOP WITH NAN GUARD ---
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         z_initial = jnp.zeros((8, 512)) 
         def think_loop(z, _):
-            return model(z), None
-        z_final, _ = jax.lax.scan(think_loop, z_initial, None, length=16)
-        return jnp.mean((z_final - batch['target'])**2)
+            z_next = model(z)
+            return z_next, z_next
+        zs, _ = jax.lax.scan(think_loop, z_initial, None, length=16)
+        return jnp.mean((zs - batch['target'])**2)
 
     grad_fn = nnx.value_and_grad(loss_fn)
     loss, grads = grad_fn(model)
@@ -49,7 +50,7 @@ rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
 model.refine_layer.kernel[...] *= 0.001 
-model.norm.scale[...] = 0.0
+model.norm.scale[...] = 0.1
 
 tx = optax.chain(
     optax.clip_by_global_norm(1.0), 
@@ -61,9 +62,12 @@ metrics = nnx.metrics.MultiMetric(loss=nnx.metrics.Average('loss'))
 
 print("Starting Local Proof-of-Concept...")
 try:
+    # Move this OUTSIDE the for-loop to make the target constant
+    key = jax.random.key(0)
+    static_target = jax.random.normal(key, (8, 512))
     for step in range(100):
         start = time.time()
-        batch = {'target': jax.random.normal(jax.random.key(step), (8, 512))}
+        batch = {'target': static_target} # Now it's a fixed goal
         
         loss = train_step(model, optimizer, metrics, batch)
         
