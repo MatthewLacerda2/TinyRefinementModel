@@ -23,23 +23,6 @@ Only then: Muon / orthogonalization
 
 - - - -
 
-from jax import checkpoint
-
-def train_step(model, optimizer, metrics, batch):
-    def loss_fn(model):
-        z0 = jnp.ones((8, 512)) * 0.01
-
-        # The 'Magic' for Novelty: Rematerialization
-        # This keeps VRAM flat even if you do 1000 steps
-        @checkpoint
-        def recursive_step(z, _):
-            return model(z), None
-
-        # Increase length to 64 or 128—now you're 'Thinking' deeper than TRM
-        zs, _ = jax.lax.scan(recursive_step, z0, None, length=64)
-
-        # Standard loss logic follows...
-        loss_A = jnp.mean((zs[-1] - batch["target"]) ** 2)
-        return loss_A
-
-    # ... rest of your train_step
+tell it the target
+add latent velocity and denoising
+make it read real math
