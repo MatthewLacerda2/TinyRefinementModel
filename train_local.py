@@ -53,7 +53,7 @@ def train_step(model, optimizer, metrics, batch):
 
     optimizer.update(model, grads)
 
-    metrics.loss.update(loss)
+    metrics.loss.update(value=loss)
     return loss
 
 # --- 3. EXECUTION ---
