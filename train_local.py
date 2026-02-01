@@ -65,9 +65,12 @@ def adaptive_clip(updates, params):
         return g * factor
     return jax.tree_map(clip_fn, updates, params)
 
-# Chained Optimizer with Auto-Regulation
+# Wrap the function so Optax recognizes it as a formal transformation
+adaptive_tx = optax.stateless(adaptive_clip)
+
+# Build the optimizer chain
 tx = optax.chain(
-    optax.masked(adaptive_clip, nnx.Param), 
+    optax.masked(adaptive_tx, nnx.Param), # Use the wrapped version here
     optax.adam(1e-4) 
 )
 
