@@ -27,33 +27,34 @@ def muon_update(params, updates, lr=0.02):
     
     return jax.tree_map(lambda p, u: u * lr, params, updates)
 
-# --- 3. THE TRAINING LOOP ---
+# --- 3. THE TRAINING LOOP (Updated for Flax 0.11.0+) ---
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         # 8 parallel 'thoughts' for GRPO
         z_initial = jnp.zeros((8, 512)) 
-        
+
         # Recursive loop (Thinking for 16 steps)
         def think_loop(z, _):
             return model(z), None
-        
         z_final, _ = jax.lax.scan(think_loop, z_initial, None, length=16)
-        
-        # Reward: How close did the 'thought' get to the target?
-        loss = jnp.mean((z_final - batch['target'])**2)
-        return loss
+        return jnp.mean((z_final - batch['target'])**2)
 
     grad_fn = nnx.value_and_grad(loss_fn)
     loss, grads = grad_fn(model)
-    optimizer.update(grads)
+    
+    # NEW: Must pass 'model' here too
+    optimizer.update(model, grads) 
+    
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION ---
-# Initialize
+# --- 4. EXECUTION (Updated for Flax 0.11.0+) ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
-optimizer = nnx.Optimizer(model, optax.adam(1e-3))
+
+# NEW: Added 'wrt=nnx.Param' to tell the optimizer to target the weights
+optimizer = nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param)
+
 metrics = nnx.MultiMetric(loss=nnx.Average())
 
 print("Starting Local Proof-of-Concept...")
