@@ -48,18 +48,18 @@ def train_step(model, optimizer, metrics, batch):
     metrics.update(loss=loss)
     return loss
 
-# --- 4. EXECUTION (Stabilized Version) ---
+# --- 4. EXECUTION (Bulletproof Version) ---
 rngs = nnx.Rngs(42)
 model = RecursiveRefiner(512, rngs)
 
-# Stabilize weights: scale down the initial linear layer
-model.refine_layer.kernel.value *= 0.1 
+# NEW SYNTAX: Use variable[...] to scale weights 
+# We are dropping them to 0.01 to ensure the first few steps are 'quiet'
+model.refine_layer.kernel[...] *= 0.01 
 
-# Define a chained optimizer with a 'brake' (gradient clipping)
-# and a lower learning rate (1e-4)
+# Even tighter 'Brake' for recursive stability
 tx = optax.chain(
-    optax.clip_by_global_norm(1.0), # The Emergency Brake
-    optax.adam(1e-4)                # The lower speed
+    optax.clip_by_global_norm(0.5), # Tighter clip
+    optax.adam(5e-5)                # Even slower learning rate
 )
 
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
