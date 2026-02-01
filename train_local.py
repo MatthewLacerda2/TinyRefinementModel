@@ -28,7 +28,7 @@ def run_until_converged(model, z0, max_steps=32, eps=1e-3):
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         # initial state z0 (Option B robustness)
-        z0 = jnp.ones((8, 512)) * 0.01
+        z0 = jnp.ones((8, 768)) * 0.01
 
         def step_fn(z, _):
             z_next = model(z)
@@ -58,7 +58,7 @@ def train_step(model, optimizer, metrics, batch):
 
 # --- 3. EXECUTION ---
 rngs = nnx.Rngs(42)
-model = RecursiveRefiner(512, rngs)
+model = RecursiveRefiner(768, rngs)
 
 model.refine_layer.kernel[...] *= 0.001
 model.norm.scale[...] = 0.1
@@ -75,14 +75,14 @@ print("Starting Local Proof-of-Concept...")
 try:
     # Move this OUTSIDE the for-loop to make the target constant
     key = jax.random.key(0)
-    static_target = jax.random.normal(key, (8, 512))
-    for step in range(100):
+    static_target = jax.random.normal(key, (8, 768))
+    for step in range(50000):
         start = time.time()
         batch = {'target': static_target} # Now it's a fixed goal
 
         loss = train_step(model, optimizer, metrics, batch)
 
-        if step % 5 == 0:
+        if step % 100 == 0:
             print(f"Step {step} | Loss: {loss:.4f} | Time: {time.time()-start:.3f}s")
 except FloatingPointError as e:
     print(f"Training halted: {e}")
