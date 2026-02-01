@@ -19,11 +19,17 @@ class RecursiveRefiner(nnx.Module):
 def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         z_initial = jnp.ones((8, 512)) * 0.01
+
         def think_loop(z, _):
             z_next = model(z)
             return z_next, z_next
+
         zs, _ = jax.lax.scan(think_loop, z_initial, None, length=16)
-        return jnp.mean((zs - batch['target'])**2)
+
+        T = zs.shape[0]
+        weights = jnp.linspace(0.1, 1.0, T)[:, None, None]
+
+        return jnp.mean(weights * (zs - batch['target'])**2)
 
     grad_fn = nnx.value_and_grad(loss_fn)
     loss, grads = grad_fn(model)
