@@ -29,7 +29,6 @@ def train_step(model, optimizer, metrics, batch):
     def loss_fn(model):
         # initial state z0 (Option B robustness)
         z0 = jnp.ones((8, 512)) * 0.01
-        z_final = run_until_converged(model, z0)
 
         def step_fn(z, _):
             z_next = model(z)
