@@ -1,7 +1,7 @@
 import os
 import pickle
 import json
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.70' 
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.60' 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
@@ -14,7 +14,6 @@ import optax
 class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        # Weights are float32 by default in NNX
         self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs)
         self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
@@ -22,19 +21,17 @@ class AdaptiveRefiner(nnx.Module):
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
 
     def __call__(self, z, target):
-        # Manually cast inputs to fp16 for the 'compute' phase
         z = z.astype(jnp.float16)
         target = target.astype(jnp.float16)
         
         combined = jnp.concatenate([z, target], axis=-1)
         
-        # NNX layers will automatically cast weights to match the input 
-        # (or you can wrap the call in a jax.jit with a dtype)
-        logits = self.recog_fc(combined)
-        h = jax.nn.gelu(self.fc1(combined))
-        delta = self.refine_fc(h)
-        next_z = self.norm(z + 0.1 * delta)
-        p = jax.nn.sigmoid(self.halt_fc(next_z))
+        logits = self.recog_fc(combined).astype(jnp.float16)
+        h = jax.nn.gelu(self.fc1(combined)).astype(jnp.float16)
+        delta = self.refine_fc(h).astype(jnp.float16)
+        
+        next_z = self.norm(z + 0.1 * delta).astype(jnp.float16)
+        p = jax.nn.sigmoid(self.halt_fc(next_z)).astype(jnp.float16)
         
         return next_z, p, logits
 
@@ -54,10 +51,13 @@ def compute_grads(model, batch):
             z, active_mask, step_counts = carry
             next_z_raw, p_halt, logits = model(z, batch["target"])
             
+            # Ensure the comparison doesn't change carry types
             new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
             still_active = active_mask & (~new_halt_decision)
-            z_updated = jnp.where(active_mask[:, None], next_z_raw, z)
-            new_step_counts = step_counts + active_mask.astype(jnp.float16)
+            
+            # This where clause is where the error usually triggers
+            z_updated = jnp.where(active_mask[:, None], next_z_raw, z).astype(jnp.float16)
+            new_step_counts = (step_counts + active_mask.astype(jnp.float16)).astype(jnp.float16)
             
             return (z_updated, still_active, new_step_counts), logits
 
@@ -68,7 +68,6 @@ def compute_grads(model, batch):
         # Reconstruction Loss
         recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
         
-        # Recognition Loss: Grade the first step's identification
         labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
         recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits[0], labels))
         
