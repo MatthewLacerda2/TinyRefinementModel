@@ -1,7 +1,7 @@
 import os
 import pickle
 import json
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.80' 
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.70' 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
@@ -11,16 +11,26 @@ from flax import nnx
 import optax
 
 # --- 1. MODEL WITH RECOGNITION CIRCUIT ---
+# Define a Mixed Precision policy
+# Calculations in float16, but variables/params stored in float32
+mp_policy = nnx.MultiPrecisionPolicy(
+    params=jnp.float32,
+    compute=jnp.float16,
+    output=jnp.float16
+)
+
 class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, dtype=jnp.float16)
-        self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=jnp.float16)
-        self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs, dtype=jnp.float16)
+        # Replace dtype=jnp.float16 with the policy
+        self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, decode_lead_axis=True)
+        self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
+        self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
+        self.recog_fc = nnx.Linear(latent_dim * 2, 3, rngs=rngs)
+        self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
         
-        # Recognition Head: Classify complexity (Level 0, 1, 2)
-        self.recog_fc = nnx.Linear(latent_dim * 2, 3, rngs=rngs, dtype=jnp.float16)
-        self.norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=jnp.float16)
+        # Apply the policy to the module
+        nnx.set_partition_spec(self, nnx.Param, mp_policy)
 
     def __call__(self, z, target):
         combined = jnp.concatenate([z, target], axis=-1)
@@ -35,6 +45,9 @@ class AdaptiveRefiner(nnx.Module):
 # --- 2. UPDATED DIFFERENTIABLE SCAN ---
 @nnx.jit
 def compute_grads(model, batch):
+    # Scale factor (e.g., 2^15) to prevent gradients from becoming zero
+    loss_scale = 32768.0 
+    
     def loss_fn(model):
         z_init = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
         batch_size = batch['input'].shape[0]
@@ -53,7 +66,7 @@ def compute_grads(model, batch):
             return (z_updated, still_active, new_step_counts), logits
 
         (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
-            scan_fn, (z_init, active_mask_init, step_counts_init), None, length=32
+            scan_fn, (z_init, active_mask_init, step_counts_init), None, length=16
         )
         
         # Reconstruction Loss
@@ -65,10 +78,12 @@ def compute_grads(model, batch):
         
         step_penalty = jnp.mean(per_sample_steps) * 0.001
         
-        return recon_loss + recog_loss + step_penalty
+        return (recon_loss + recog_loss + step_penalty) * loss_scale
     
     loss, grads = nnx.value_and_grad(loss_fn)(model)
-    return loss, grads
+    # Unscale the gradients before the optimizer update
+    grads = jax.tree.map(lambda g: g / loss_scale, grads)
+    return loss / loss_scale, grads
 
 # --- 3. UPDATED INFRASTRUCTURE ---
 def generate_complex_math(key, batch_size, latent_dim, step):
@@ -87,8 +102,8 @@ def generate_complex_math(key, batch_size, latent_dim, step):
         ], vals[i])
     return x, target, level
 
-micro_batch = 128
-accum_steps = 16 
+micro_batch = 64
+accum_steps = 32 
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), optax.adam(3e-4)), wrt=nnx.Param)
