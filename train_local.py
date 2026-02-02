@@ -11,35 +11,31 @@ from flax import nnx
 import optax
 
 # --- 1. MODEL WITH RECOGNITION CIRCUIT ---
-# Define a Mixed Precision policy
-# Calculations in float16, but variables/params stored in float32
-mp_policy = nnx.MultiPrecisionPolicy(
-    params=jnp.float32,
-    compute=jnp.float16,
-    output=jnp.float16
-)
-
 class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        # Replace dtype=jnp.float16 with the policy
-        self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, decode_lead_axis=True)
+        # Weights are float32 by default in NNX
+        self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs)
         self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
         self.recog_fc = nnx.Linear(latent_dim * 2, 3, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
-        
-        # Apply the policy to the module
-        nnx.set_partition_spec(self, nnx.Param, mp_policy)
 
     def __call__(self, z, target):
-        combined = jnp.concatenate([z, target], axis=-1)
-        logits = self.recog_fc(combined)
+        # Manually cast inputs to fp16 for the 'compute' phase
+        z = z.astype(jnp.float16)
+        target = target.astype(jnp.float16)
         
+        combined = jnp.concatenate([z, target], axis=-1)
+        
+        # NNX layers will automatically cast weights to match the input 
+        # (or you can wrap the call in a jax.jit with a dtype)
+        logits = self.recog_fc(combined)
         h = jax.nn.gelu(self.fc1(combined))
         delta = self.refine_fc(h)
         next_z = self.norm(z + 0.1 * delta)
         p = jax.nn.sigmoid(self.halt_fc(next_z))
+        
         return next_z, p, logits
 
 # --- 2. UPDATED DIFFERENTIABLE SCAN ---
