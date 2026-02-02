@@ -34,13 +34,16 @@ def run_test():
     print(f"Initial Error: {jnp.mean((z - target)**2):.6f}")
     
     for i in range(32):
-        z_next, p_halt = model(z, target)
+        z_next, p_halt, logits = model(z, target)
         
         # Calculate how much the "thought" changed
         velocity = jnp.linalg.norm(z_next - z)
         error = jnp.mean((z_next - target)**2)
         
-        print(f"Step {i+1:02d} | Halt Prob: {p_halt[0,0]:.4f} | Error: {error:.6f} | Velocity: {velocity:.4f}")
+        # Get predicted level from logits
+        pred_level = jnp.argmax(logits, axis=-1)[0]
+        
+        print(f"Step {i+1:02d} | Level: {pred_level} | Halt Prob: {p_halt[0,0]:.4f} | Error: {error:.6f} | Velocity: {velocity:.4f}")
         
         z = z_next
         if p_halt > 0.5:

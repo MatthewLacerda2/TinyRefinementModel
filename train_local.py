@@ -3,38 +3,36 @@ import pickle
 import json
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.80' 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
-# Keeps the memory pool clean
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
-
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
 
-# --- 1. MODEL ---
+# --- 1. MODEL WITH RECOGNITION CIRCUIT ---
 class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        # Expansion for reasoning capacity
         self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs, dtype=jnp.float16)
         self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=jnp.float16)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs, dtype=jnp.float16)
-        # Structural stabilizer for recursive loops
+        
+        # Recognition Head: Classify complexity (Level 0, 1, 2)
+        self.recog_fc = nnx.Linear(latent_dim * 2, 3, rngs=rngs, dtype=jnp.float16)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=jnp.float16)
 
     def __call__(self, z, target):
         combined = jnp.concatenate([z, target], axis=-1)
+        logits = self.recog_fc(combined)
+        
         h = jax.nn.gelu(self.fc1(combined))
-        
         delta = self.refine_fc(h)
-        # z + 0.1 * delta logic from README
         next_z = self.norm(z + 0.1 * delta)
-        
         p = jax.nn.sigmoid(self.halt_fc(next_z))
-        return next_z, p
+        return next_z, p, logits
 
-# --- 2. DIFFERENTIABLE SCAN STEP ---
+# --- 2. UPDATED DIFFERENTIABLE SCAN ---
 @nnx.jit
 def compute_grads(model, batch):
     def loss_fn(model):
@@ -45,71 +43,57 @@ def compute_grads(model, batch):
         
         def scan_fn(carry, _):
             z, active_mask, step_counts = carry
-            next_z_raw, p_halt = model(z, batch["target"])
+            next_z_raw, p_halt, logits = model(z, batch["target"])
             
-            # Per-sample independent halting
             new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
             still_active = active_mask & (~new_halt_decision)
-            
-            # Masked update: freeze Z once halted
             z_updated = jnp.where(active_mask[:, None], next_z_raw, z)
             new_step_counts = step_counts + active_mask.astype(jnp.float16)
             
-            return (z_updated, still_active, new_step_counts), None
+            return (z_updated, still_active, new_step_counts), logits
 
-        # Scan is differentiable, unlike while_loop
-        (final_z, _, per_sample_steps), _ = jax.lax.scan(
+        (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
             scan_fn, (z_init, active_mask_init, step_counts_init), None, length=32
         )
         
+        # Reconstruction Loss
         recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
-        # Efficiency penalty forces the model to learn to halt
+        
+        # Recognition Loss: Grade the first step's identification
+        labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
+        recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits[0], labels))
+        
         step_penalty = jnp.mean(per_sample_steps) * 0.001
         
-        return recon_loss + step_penalty
+        return recon_loss + recog_loss + step_penalty
     
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     return loss, grads
 
-# --- 3. COMPLEX PROCEDURAL GYM ---
+# --- 3. UPDATED INFRASTRUCTURE ---
 def generate_complex_math(key, batch_size, latent_dim, step):
     level = min(step // 1000, 2)
-    num_ops = 2 + (level * 3) # 2 -> 5 -> 8
-    op_limit = [2, 3, 4][level] # Only use first N operators
-
+    num_ops = 2 + (level * 3)
+    op_limit = [2, 3, 4][level]
     x = jax.random.normal(key, (batch_size, latent_dim), dtype=jnp.float16)
     target = x
-    
     key_ops, key_vals = jax.random.split(key)
     ops = jax.random.randint(key_ops, (num_ops,), 0, op_limit)
     vals = jax.random.uniform(key_vals, (num_ops,), minval=0.5, maxval=1.5)
-    
     for i in range(num_ops):
         target = jax.lax.switch(ops[i], [
-            lambda v: target + v, # Op 0
-            lambda v: target - v, # Op 1
-            lambda v: target * v, # Op 2 (Unlocked at Lvl 1)
-            lambda v: target / (v + 1e-3) # Op 3 (Unlocked at Lvl 2, stability epsilon 1e-3)
+            lambda v: target + v, lambda v: target - v,
+            lambda v: target * v, lambda v: target / (v + 1e-3)
         ], vals[i])
-        
-    return x, target
+    return x, target, level
 
-# --- 4. OPTIMIZED EXECUTION ---
-# For 6GB VRAM: micro_batch=512 is the aggressive "sweet spot"
 micro_batch = 128
-accum_steps = 8
+accum_steps = 16 
 latent_dim = 768
-rngs = nnx.Rngs(42)
-model = AdaptiveRefiner(latent_dim, rngs)
-optimizer = nnx.Optimizer(
-    model, 
-    optax.chain(
-        optax.clip_by_global_norm(1.0), # The "Safety Valve"
-        optax.adam(3e-4)
-    ), 
-    wrt=nnx.Param
-)
+model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
+optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), optax.adam(3e-4)), wrt=nnx.Param)
 
+# --- 4. TRAINING LOOP ---
 history_path = "training_history.json"
 ckpt_path = "model_ckpt.pkl"
 start_step = 0
@@ -131,22 +115,16 @@ try:
     for step in range(start_step, 10001):
         total_loss = 0
         accum_grads = jax.tree.map(jnp.zeros_like, nnx.state(model, nnx.Param))
-        
         for _ in range(accum_steps):
             key, subkey = jax.random.split(key)
-            x, target = generate_complex_math(subkey, micro_batch, latent_dim, step=step)
-            batch = {'input': x, 'target': target}
-            
+            x, target, level = generate_complex_math(subkey, micro_batch, latent_dim, step)
+            batch = {'input': x, 'target': target, 'level': level}
             loss, grads = compute_grads(model, batch)
             accum_grads = jax.tree.map(lambda a, g: a + g / accum_steps, accum_grads, grads)
             total_loss += loss / accum_steps
-
         optimizer.update(model, accum_grads)
-
         if step % 100 == 0:
-            level = min(step // 1000, 2)
-            num_ops = 2 + (level * 3)
-            print(f"Step {step} | Level: {level} | Ops: {num_ops} | Loss: {total_loss:.6f}")
+            print(f"Step {step} | Level: {level} | Loss: {total_loss:.4f}")
             
             # Save History
             history.append({"step": int(step), "loss": float(total_loss)})
@@ -157,6 +135,5 @@ try:
             state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
             with open(ckpt_path, 'wb') as f:
                 pickle.dump(state, f)
-            
 except Exception as e:
     print(f"Halted: {e}")
