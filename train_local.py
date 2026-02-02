@@ -1,8 +1,8 @@
 import os
 import pickle
 import json
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.60' 
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.80'
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 import jax
@@ -81,6 +81,7 @@ def compute_grads(model, batch):
     return loss / loss_scale, grads
 
 # --- 3. UPDATED INFRASTRUCTURE ---
+@jax.jit
 def generate_complex_math(key, batch_size, latent_dim, step):
     level = min(step // 1000, 2)
     num_ops = 2 + (level * 3)
@@ -124,14 +125,22 @@ try:
     key = jax.random.key(start_step)
     for step in range(start_step, 10001):
         total_loss = 0
+        # Initialize grads on GPU
         accum_grads = jax.tree.map(jnp.zeros_like, nnx.state(model, nnx.Param))
-        for _ in range(accum_steps):
-            key, subkey = jax.random.split(key)
-            x, target, level = generate_complex_math(subkey, micro_batch, latent_dim, step)
+        
+        # Pre-split all keys for the accumulation steps at once
+        key, subkey = jax.random.split(key)
+        subkeys = jax.random.split(subkey, accum_steps)
+
+        for i in range(accum_steps):
+            # Uses the JIT-ed generator on GPU
+            x, target, level = generate_complex_math(subkeys[i], micro_batch, latent_dim, step)
             batch = {'input': x, 'target': target, 'level': level}
+            
             loss, grads = compute_grads(model, batch)
             accum_grads = jax.tree.map(lambda a, g: a + g / accum_steps, accum_grads, grads)
             total_loss += loss / accum_steps
+            
         optimizer.update(model, accum_grads)
         if step % 100 == 0:
             print(f"Step {step} | Level: {level} | Loss: {total_loss:.4f}")
