@@ -81,7 +81,7 @@ def compute_grads(model, batch):
     return loss / loss_scale, grads
 
 # --- 3. UPDATED INFRASTRUCTURE ---
-@jax.jit
+@jax.jit(static_argnums=(3,)) # Mark the 4th argument (step) as static
 def generate_complex_math(key, batch_size, latent_dim, step):
     level = min(step // 1000, 2)
     num_ops = 2 + (level * 3)
