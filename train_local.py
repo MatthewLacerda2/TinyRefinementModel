@@ -81,10 +81,10 @@ def compute_grads(model, batch):
     return loss / loss_scale, grads
 
 # --- 3. UPDATED INFRASTRUCTURE ---
-@jax.jit(static_argnums=(1,2,3)) # Mark the 4th argument (num_ops) as static
-def generate_complex_math(key, batch_size, latent_dim, num_ops):
+@jax.jit(static_argnums=(1, 2, 4)) 
+def generate_complex_math(key, batch_size, latent_dim, step, num_ops):
     op_limit = min(2 + (num_ops - 2) // 3, 4)
-    level_label = min((num_ops - 2) // 3, 2)
+    level_label = jnp.minimum(step // 1000, 2).astype(jnp.int32)
     x = jax.random.normal(key, (batch_size, latent_dim), dtype=jnp.float16)
     target = x
     key_ops, key_vals = jax.random.split(key)
@@ -136,7 +136,7 @@ try:
 
         for i in range(accum_steps):
             # Uses the JIT-ed generator on GPU
-            x, target, level_label = generate_complex_math(subkeys[i], micro_batch, latent_dim, current_num_ops)
+            x, target, level_label = generate_complex_math(subkeys[i], micro_batch, latent_dim, step, current_num_ops)
             batch = {'input': x, 'target': target, 'level': level_label}
             
             loss, grads = compute_grads(model, batch)
