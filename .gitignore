@@ -215,3 +215,4 @@ auxpy.py
 auxmd.md
 model_ckpt.pkl
 training_history.json
+training_plot.png

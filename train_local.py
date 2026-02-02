@@ -81,11 +81,10 @@ def compute_grads(model, batch):
     return loss / loss_scale, grads
 
 # --- 3. UPDATED INFRASTRUCTURE ---
-@jax.jit(static_argnums=(3,)) # Mark the 4th argument (step) as static
-def generate_complex_math(key, batch_size, latent_dim, step):
-    level = min(step // 1000, 2)
-    num_ops = 2 + (level * 3)
-    op_limit = [2, 3, 4][level]
+@jax.jit(static_argnums=(1,2,3)) # Mark the 4th argument (num_ops) as static
+def generate_complex_math(key, batch_size, latent_dim, num_ops):
+    op_limit = min(2 + (num_ops - 2) // 3, 4)
+    level_label = min((num_ops - 2) // 3, 2)
     x = jax.random.normal(key, (batch_size, latent_dim), dtype=jnp.float16)
     target = x
     key_ops, key_vals = jax.random.split(key)
@@ -96,7 +95,7 @@ def generate_complex_math(key, batch_size, latent_dim, step):
             lambda v: target + v, lambda v: target - v,
             lambda v: target * v, lambda v: target / (v + 1e-3)
         ], vals[i])
-    return x, target, level
+    return x, target, level_label
 
 micro_batch = 64
 accum_steps = 32 
@@ -108,6 +107,8 @@ optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), opt
 history_path = "training_history.json"
 ckpt_path = "model_ckpt.pkl"
 start_step = 0
+current_num_ops = 2
+loss_buffer = []
 history = []
 
 if os.path.exists(ckpt_path):
@@ -116,7 +117,8 @@ if os.path.exists(ckpt_path):
         nnx.update(model, cp['model'])
         nnx.update(optimizer, cp['optimizer'])
         start_step = cp['step'] + 1
-    print(f"Resumed at step {start_step}")
+        current_num_ops = cp.get('num_ops', cp.get('level', 0) * 3 + 2)
+    print(f"Resumed at step {start_step} | Ops: {current_num_ops}")
     if os.path.exists(history_path):
         with open(history_path, 'r') as f:
             history = json.load(f)
@@ -134,16 +136,28 @@ try:
 
         for i in range(accum_steps):
             # Uses the JIT-ed generator on GPU
-            x, target, level = generate_complex_math(subkeys[i], micro_batch, latent_dim, step)
-            batch = {'input': x, 'target': target, 'level': level}
+            x, target, level_label = generate_complex_math(subkeys[i], micro_batch, latent_dim, current_num_ops)
+            batch = {'input': x, 'target': target, 'level': level_label}
             
             loss, grads = compute_grads(model, batch)
             accum_grads = jax.tree.map(lambda a, g: a + g / accum_steps, accum_grads, grads)
             total_loss += loss / accum_steps
             
         optimizer.update(model, accum_grads)
-        if step % 100 == 0:
-            print(f"Step {step} | Level: {level} | Loss: {total_loss:.4f}")
+
+        # Add current loss to buffer
+        loss_buffer.append(float(total_loss))
+        if len(loss_buffer) > 100: loss_buffer.pop(0)
+
+        # CHECK FOR PLATEAU: If we've trained at least 100 steps at this level
+        # and the average loss is low enough (e.g., < 2.5)
+        if len(loss_buffer) == 100 and sum(loss_buffer)/100 < 2.5:
+            current_num_ops += 1
+            loss_buffer = [] # Reset buffer for the new level
+            print(f"--- LEVEL UP! Mastery reached. Now using {current_num_ops} ops ---")
+
+        if step % 25 == 0 or (step > 9975 and step % 5 == 0):
+            print(f"Step {step} | Ops: {current_num_ops} | Loss: {total_loss:.4f}")
             
             # Save History
             history.append({"step": int(step), "loss": float(total_loss)})
@@ -151,7 +165,7 @@ try:
                 json.dump(history, f, indent=4)
 
             # Save Checkpoint
-            state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
+            state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step, 'num_ops': current_num_ops}
             with open(ckpt_path, 'wb') as f:
                 pickle.dump(state, f)
 except Exception as e:
