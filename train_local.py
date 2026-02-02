@@ -68,20 +68,24 @@ def compute_grads(model, batch):
     return loss, grads
 
 # --- 3. COMPLEX PROCEDURAL GYM ---
-def generate_complex_math(key, batch_size, latent_dim, num_ops=8):
+def generate_complex_math(key, batch_size, latent_dim, step):
+    level = min(step // 1000, 2)
+    num_ops = 2 + (level * 3) # 2 -> 5 -> 8
+    op_limit = [2, 3, 4][level] # Only use first N operators
+
     x = jax.random.normal(key, (batch_size, latent_dim), dtype=jnp.float16)
     target = x
     
     key_ops, key_vals = jax.random.split(key)
-    ops = jax.random.randint(key_ops, (num_ops,), 0, 4) # +, -, *, /
-    vals = jax.random.uniform(key_vals, (num_ops,), minval=0.8, maxval=1.2)
+    ops = jax.random.randint(key_ops, (num_ops,), 0, op_limit)
+    vals = jax.random.uniform(key_vals, (num_ops,), minval=0.5, maxval=1.5)
     
     for i in range(num_ops):
         target = jax.lax.switch(ops[i], [
-            lambda v: target + v,
-            lambda v: target - v,
-            lambda v: target * v,
-            lambda v: target / (v + 1e-4) # Div stability
+            lambda v: target + v, # Op 0
+            lambda v: target - v, # Op 1
+            lambda v: target * v, # Op 2 (Unlocked at Lvl 1)
+            lambda v: target / (v + 1e-3) # Op 3 (Unlocked at Lvl 2, stability epsilon 1e-3)
         ], vals[i])
         
     return x, target
@@ -93,7 +97,14 @@ accum_steps = 2
 latent_dim = 768
 rngs = nnx.Rngs(42)
 model = AdaptiveRefiner(latent_dim, rngs)
-optimizer = nnx.Optimizer(model, optax.adam(5e-4), wrt=nnx.Param)
+optimizer = nnx.Optimizer(
+    model, 
+    optax.chain(
+        optax.clip_by_global_norm(1.0), # The "Safety Valve"
+        optax.adam(5e-4)
+    ), 
+    wrt=nnx.Param
+)
 
 ckpt_path = "model_ckpt.pkl"
 start_step = 0
@@ -114,7 +125,7 @@ try:
         
         for _ in range(accum_steps):
             key, subkey = jax.random.split(key)
-            x, target = generate_complex_math(subkey, micro_batch, latent_dim)
+            x, target = generate_complex_math(subkey, micro_batch, latent_dim, step=step)
             batch = {'input': x, 'target': target}
             
             loss, grads = compute_grads(model, batch)
@@ -124,7 +135,10 @@ try:
         optimizer.update(model, accum_grads)
 
         if step % 100 == 0:
-            print(f"Step {step} | Loss: {total_loss:.6f} | VRAM Saturation High")
+            level = min(step // 1000, 2)
+            num_ops = 2 + (level * 3)
+            print(f"Step {step} | Level: {level} | Ops: {num_ops} | Loss: {total_loss:.6f}")
+            # Save Checkpoint
             state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
             with open(ckpt_path, 'wb') as f:
                 pickle.dump(state, f)
