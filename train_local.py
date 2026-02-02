@@ -1,9 +1,9 @@
 import os
 import pickle
 import json
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.80'
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 import jax
 import jax.numpy as jnp
@@ -69,7 +69,8 @@ def compute_grads(model, batch):
         recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
         
         labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
-        recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits[0], labels))
+        # Better supervision for the recognition circuit
+        recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits, labels[None, :]))
         
         step_penalty = jnp.mean(per_sample_steps) * 0.001
         
@@ -103,6 +104,26 @@ latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), optax.adam(3e-4)), wrt=nnx.Param)
 
+# Create a JIT-compiled function to handle the entire accumulation block
+@nnx.jit(static_argnums=(3, 4, 6))
+def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops):
+    def accum_loss_fn(model):
+        def scan_body(carry, key):
+            x, target, level_label = generate_complex_math(key, micro_batch, latent_dim, step, current_num_ops)
+            batch = {'input': x, 'target': target, 'level': level_label}
+            loss, grads = compute_grads(model, batch)
+            return carry, (loss, grads)
+
+        # Use jax.lax.scan to keep the accumulation loop on-device
+        _, (losses, grads) = jax.lax.scan(scan_body, None, subkeys)
+        avg_loss = jnp.mean(losses)
+        avg_grads = jax.tree.map(lambda x: jnp.mean(x, axis=0), grads)
+        return avg_loss, avg_grads
+
+    loss, grads = accum_loss_fn(model)
+    optimizer.update(model, grads)
+    return loss
+
 # --- 4. TRAINING LOOP ---
 history_path = "training_history.json"
 ckpt_path = "model_ckpt.pkl"
@@ -126,24 +147,12 @@ if os.path.exists(ckpt_path):
 try:
     key = jax.random.key(start_step)
     for step in range(start_step, 10001):
-        total_loss = 0
-        # Initialize grads on GPU
-        accum_grads = jax.tree.map(jnp.zeros_like, nnx.state(model, nnx.Param))
-        
         # Pre-split all keys for the accumulation steps at once
         key, subkey = jax.random.split(key)
         subkeys = jax.random.split(subkey, accum_steps)
 
-        for i in range(accum_steps):
-            # Uses the JIT-ed generator on GPU
-            x, target, level_label = generate_complex_math(subkeys[i], micro_batch, latent_dim, step, current_num_ops)
-            batch = {'input': x, 'target': target, 'level': level_label}
-            
-            loss, grads = compute_grads(model, batch)
-            accum_grads = jax.tree.map(lambda a, g: a + g / accum_steps, accum_grads, grads)
-            total_loss += loss / accum_steps
-            
-        optimizer.update(model, accum_grads)
+        # Optimized JIT-compiled training step
+        total_loss = train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops)
 
         # Add current loss to buffer
         loss_buffer.append(float(total_loss))
