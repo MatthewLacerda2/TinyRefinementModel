@@ -1,7 +1,11 @@
 import os
 import pickle
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+import json
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '.80' 
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
+# Keeps the memory pool clean
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
+
 
 import jax
 import jax.numpy as jnp
@@ -92,8 +96,8 @@ def generate_complex_math(key, batch_size, latent_dim, step):
 
 # --- 4. OPTIMIZED EXECUTION ---
 # For 6GB VRAM: micro_batch=512 is the aggressive "sweet spot"
-micro_batch = 256
-accum_steps = 2 
+micro_batch = 128
+accum_steps = 8
 latent_dim = 768
 rngs = nnx.Rngs(42)
 model = AdaptiveRefiner(latent_dim, rngs)
@@ -101,13 +105,15 @@ optimizer = nnx.Optimizer(
     model, 
     optax.chain(
         optax.clip_by_global_norm(1.0), # The "Safety Valve"
-        optax.adam(5e-4)
+        optax.adam(3e-4)
     ), 
     wrt=nnx.Param
 )
 
+history_path = "training_history.json"
 ckpt_path = "model_ckpt.pkl"
 start_step = 0
+history = []
 
 if os.path.exists(ckpt_path):
     with open(ckpt_path, 'rb') as f:
@@ -116,6 +122,9 @@ if os.path.exists(ckpt_path):
         nnx.update(optimizer, cp['optimizer'])
         start_step = cp['step'] + 1
     print(f"Resumed at step {start_step}")
+    if os.path.exists(history_path):
+        with open(history_path, 'r') as f:
+            history = json.load(f)
 
 try:
     key = jax.random.key(start_step)
@@ -138,6 +147,12 @@ try:
             level = min(step // 1000, 2)
             num_ops = 2 + (level * 3)
             print(f"Step {step} | Level: {level} | Ops: {num_ops} | Loss: {total_loss:.6f}")
+            
+            # Save History
+            history.append({"step": int(step), "loss": float(total_loss)})
+            with open(history_path, 'w') as f:
+                json.dump(history, f, indent=4)
+
             # Save Checkpoint
             state = {'model': nnx.state(model), 'optimizer': nnx.state(optimizer), 'step': step}
             with open(ckpt_path, 'wb') as f:
