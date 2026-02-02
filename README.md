@@ -1,14 +1,39 @@
-TinyRefinementModelRecursive Latent Reasoning Specialized Model, inspired by Samsung's TinyRecursiveModels.RefineMath: Latent Algebraic DiscoveryRecursive Latent Reasoning stabilized by Muon-logic and GRPO in JAX.RefineMath is a next-generation implementation of the Tiny Recursive Model (TRM) paradigm. Unlike standard LLMs that reason through discrete token generation (Chain-of-Thought), RefineMath operates entirely within a continuous latent space. It treats mathematical discovery as a denoising problem: starting from a "noisy" conceptual embedding and vibrating it into a stable, converged algebraic truth.🚀 The "Next Level" InnovationMuon for Both Training & Inference: We utilize the Newton-Schulz iteration (the core of the Muon optimizer) not just to accelerate training, but as a "Latent Reality Check" during inference. This forces the model’s internal "thoughts" to remain orthogonal and structurally sound.GRPO (Group Relative Policy Optimization): Our primary refinement for V1. We utilize GRPO to grade multiple "thinking branches" simultaneously. By comparing a group of parallel reasoning trajectories, the model learns to favor paths that lead to the correct mathematical truth without requiring a separate, memory-intensive Critic model.Adaptive Convergence: The model doesn't just loop for a fixed N steps; it monitors the Latent Velocity ($\|Z_t - Z_{t-1}\|$) and halts once the "thought" has crystallized.🛠️ Training & InfrastructureProcedural Token Generation: To ensure "Infinite Gym" training, we generate mathematical tokens and equation sets procedurally. This allows for an endless stream of pure symbolic logic, avoiding the "garbage-in, garbage-out" trap of scraped textbook data.GCP Spot Instances: Optimized for cost-efficiency. Using JAX on TPU v5e or L40S Spot Instances, we can achieve SOTA reasoning performance for under $15 per full training run. The model includes fault-tolerant checkpointing to handle instance preemption seamlessly.🧠 Architecture & RoadmapFeatureStatusRoleRecursive Latent LoopV1 CoreFixed-weight reasoning for deep depth with 10M params.Muon OptimizationV1 CoreOrthogonal weight updates for 2x faster convergence.GRPO ReinforcementV1 CoreGroup-based relative advantage for self-correcting logic.MLA (Multi-head Latent Attention)FutureLow-rank KV compression to scale to complex multi-step problems.Tool-Calling IntegrationFutureEscalation to external math tools for unsolvable OOD problems.📊 Performance ComparisonFeatureGPT-4o / Grok-3 (o1)Samsung TRM (2025)RefineMath (Ours)MediumDiscrete TokensLatent EmbeddingsStabilized LatentLogic"Write until it's right"Fixed-Step LoopConvergent LoopOptimizationAdamWAdamWMuon + GRPOTrainingMonths / Millions $~18 Hours~8 Hours (JAX/Spot)📜 Quick Start (JAX)Pythonimport jax
-from model import RefineMath
+# TinyRefinementModel: RefineMath
+## Recursive Latent Reasoning Specialized Model
+*Inspired by Samsung's TinyRecursiveModels*
 
-# Initialize the thinking brain with GRPO-trained weights
-model = RefineMath(latent_dim=512, max_iters=64)
+RefineMath is a next-generation implementation of the Tiny Recursive Model (TRM) paradigm. Unlike standard LLMs that reason through discrete token generation (Chain-of-Thought), RefineMath operates entirely within a continuous latent space. It treats mathematical discovery as a denoising problem: starting from a "noisy" conceptual embedding and vibrating it into a stable, converged algebraic truth.
 
-# Input: Procedurally generated or real-world math data
-data_points = jax.numpy.load("algebra_problem.npy")
+---
 
-# Recursive Inference: The model 'thinks' until the embedding stabilizes
-# threshold defines the 'Thinking Budget' for inference-time compute
-formula_latex, iterations = model.solve(data_points, threshold=1e-5)
+### 🚀 The "Next Level" Innovation
 
-print(f"Discovered in {iterations} steps: {formula_latex}")
+*   **Muon for Both Training & Inference**: 
+    We utilize the Newton-Schulz iteration (the core of the Muon optimizer) not just to accelerate training, but as a "Latent Reality Check" during inference. This forces the model’s internal "thoughts" to remain orthogonal and structurally sound.
+
+*   **GRPO (Group Relative Policy Optimization)**: 
+    Our primary refinement for V1. We use GRPO to grade multiple "thinking branches" simultaneously. By comparing parallel reasoning trajectories, the model learns to favor paths leading to the correct mathematical truth without requiring a separate, memory-intensive Critic model.
+
+*   **Adaptive Convergence**: 
+    The model doesn't just loop for a fixed $N$ steps; it monitors the Latent Velocity ($\|Z_t - Z_{t-1}\|$) and halts once the "thought" has crystallized.
+
+---
+
+### 🛠️ Training & Infrastructure
+
+*   **Procedural Token Generation**: 
+    To ensure "Infinite Gym" training, we generate mathematical tokens and equation sets procedurally. This allows for an endless stream of pure symbolic logic, avoiding the "garbage-in, garbage-out" trap of scraped data.
+
+*   **GCP Spot Instances**: 
+    Optimized for cost-efficiency. Using JAX on TPU v5e or L40S Spot Instances, we achieve SOTA reasoning performance for under $15 per full training run. Includes fault-tolerant checkpointing to handle preemption.
+
+---
+
+### 🧠 Architecture & Roadmap
+
+| Feature | Status | Role |
+| :--- | :--- | :--- |
+| **Recursive Latent Loop** | `V1 Core` | Fixed-weight reasoning for deep depth with 10M params. |
+| **Muon Optimization** | `V1 Core` | Orthogonal weight updates for 2x faster convergence. |
+| **GRPO Reinforcement** | `V1 Core` | Group-based relative advantage for self-correcting logic. |
+| **MLA (Multi-head Latent Attention)** | `Future` | Low-rank KV compression to scale to complex problems. |
