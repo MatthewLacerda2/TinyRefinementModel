@@ -35,51 +35,44 @@ class AdaptiveRefiner(nnx.Module):
         
         return next_z, p, logits
 
-# --- 2. UPDATED DIFFERENTIABLE SCAN ---
+# --- 2. MODEL LOSS FUNCTION ---
 @nnx.jit
-def compute_grads(model, batch):
-    # Scale factor (e.g., 2^15) to prevent gradients from becoming zero
+def run_model_loss(model, batch):
+    # Scale factor (e.g., 2^15) to prevent gradients from becoming zero in float16
     loss_scale = 32768.0 
     
-    def loss_fn(model):
-        z_init = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
-        batch_size = batch['input'].shape[0]
-        active_mask_init = jnp.ones((batch_size,), dtype=bool)
-        step_counts_init = jnp.zeros((batch_size,), dtype=jnp.float16)
-        
-        def scan_fn(carry, _):
-            z, active_mask, step_counts = carry
-            next_z_raw, p_halt, logits = model(z, batch["target"])
-            
-            # Ensure the comparison doesn't change carry types
-            new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
-            still_active = active_mask & (~new_halt_decision)
-            
-            # This where clause is where the error usually triggers
-            z_updated = jnp.where(active_mask[:, None], next_z_raw, z).astype(jnp.float16)
-            new_step_counts = (step_counts + active_mask.astype(jnp.float16)).astype(jnp.float16)
-            
-            return (z_updated, still_active, new_step_counts), logits
-
-        (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
-            scan_fn, (z_init, active_mask_init, step_counts_init), None, length=16
-        )
-        
-        # Reconstruction Loss
-        recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
-        
-        labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
-        # Better supervision for the recognition circuit
-        recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits, labels[None, :]))
-        
-        step_penalty = jnp.mean(per_sample_steps) * 0.001
-        
-        return (recon_loss + recog_loss + step_penalty) * loss_scale
+    z_init = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
+    batch_size = batch['input'].shape[0]
+    active_mask_init = jnp.ones((batch_size,), dtype=bool)
+    step_counts_init = jnp.zeros((batch_size,), dtype=jnp.float16)
     
-    loss, grads = nnx.value_and_grad(loss_fn)(model)
-    # Unscale the gradients before the optimizer update
-    grads = jax.tree.map(lambda g: g / loss_scale, grads)
-    return loss / loss_scale, grads
+    def scan_fn(carry, _):
+        z, active_mask, step_counts = carry
+        next_z_raw, p_halt, logits = model(z, batch["target"])
+        
+        # Ensure the comparison doesn't change carry types
+        new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
+        still_active = active_mask & (~new_halt_decision)
+        
+        z_updated = jnp.where(active_mask[:, None], next_z_raw, z).astype(jnp.float16)
+        new_step_counts = (step_counts + active_mask.astype(jnp.float16)).astype(jnp.float16)
+        
+        return (z_updated, still_active, new_step_counts), logits
+
+    (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
+        scan_fn, (z_init, active_mask_init, step_counts_init), None, length=16
+    )
+    
+    # Reconstruction Loss
+    recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
+    
+    labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
+    # Supervision for the recognition circuit across all steps
+    recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits, labels[None, :]))
+    
+    step_penalty = jnp.mean(per_sample_steps) * 0.001
+    
+    return (recon_loss + recog_loss + step_penalty) * loss_scale
 
 # --- 3. UPDATED INFRASTRUCTURE ---
 @jax.jit(static_argnums=(1, 2, 4)) 
@@ -98,8 +91,8 @@ def generate_complex_math(key, batch_size, latent_dim, step, num_ops):
         ], vals[i])
     return x, target, level_label
 
-micro_batch = 64
-accum_steps = 32 
+micro_batch = 128
+accum_steps = 16 
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), optax.adam(3e-4)), wrt=nnx.Param)
@@ -107,22 +100,26 @@ optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), opt
 # Create a JIT-compiled function to handle the entire accumulation block
 @nnx.jit(static_argnums=(3, 4, 6))
 def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops):
-    def accum_loss_fn(model):
+    loss_scale = 32768.0
+    
+    def loss_fn(model):
         def scan_body(carry, key):
             x, target, level_label = generate_complex_math(key, micro_batch, latent_dim, step, current_num_ops)
             batch = {'input': x, 'target': target, 'level': level_label}
-            loss, grads = compute_grads(model, batch)
-            return carry, (loss, grads)
+            # Calculate scaled loss
+            loss = run_model_loss(model, batch) 
+            return None, loss
 
-        # Use jax.lax.scan to keep the accumulation loop on-device
-        _, (losses, grads) = jax.lax.scan(scan_body, None, subkeys)
-        avg_loss = jnp.mean(losses)
-        avg_grads = jax.tree.map(lambda x: jnp.mean(x, axis=0), grads)
-        return avg_loss, avg_grads
+        _, losses = jax.lax.scan(scan_body, None, subkeys)
+        return jnp.mean(losses)
 
-    loss, grads = accum_loss_fn(model)
+    # Differentiate the entire accumulation in one go
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    
+    # Unscale the gradients and loss before optimizer update
+    grads = jax.tree.map(lambda g: g / loss_scale, grads)
     optimizer.update(model, grads)
-    return loss
+    return loss / loss_scale
 
 # --- 4. TRAINING LOOP ---
 history_path = "training_history.json"
