@@ -43,12 +43,16 @@ def run_model_loss(model, batch):
     
     z_init = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
     batch_size = batch['input'].shape[0]
-    active_mask_init = jnp.ones((batch_size,), dtype=bool)
-    step_counts_init = jnp.zeros((batch_size,), dtype=jnp.float16)
     
+    # 1. Split the model state from the graph definition
+    graphdef, state = nnx.split(model)
+
     def scan_fn(carry, _):
         z, active_mask, step_counts = carry
-        next_z_raw, p_halt, logits = model(z, batch["target"])
+        
+        # 2. Merge it back inside the scan to make it 'local' to this trace level
+        m = nnx.merge(graphdef, state)
+        next_z_raw, p_halt, logits = m(z, batch["target"])
         
         # Ensure the comparison doesn't change carry types
         new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
@@ -60,7 +64,7 @@ def run_model_loss(model, batch):
         return (z_updated, still_active, new_step_counts), logits
 
     (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
-        scan_fn, (z_init, active_mask_init, step_counts_init), None, length=16
+        scan_fn, (z_init, jnp.ones((batch_size,), dtype=bool), jnp.zeros((batch_size,), dtype=jnp.float16)), None, length=16
     )
     
     # Reconstruction Loss
