@@ -37,3 +37,4 @@ RefineMath is a next-generation implementation of the Tiny Recursive Model (TRM)
 | **Muon Optimization** | `V1 Core` | Orthogonal weight updates for 2x faster convergence. |
 | **GRPO Reinforcement** | `V1 Core` | Group-based relative advantage for self-correcting logic. |
 | **MLA (Multi-head Latent Attention)** | `Future` | Low-rank KV compression to scale to complex problems. |
+| **Recognition Circuit** | `V1 Core` | Decorate basic information and remember the information as it thinks. |
