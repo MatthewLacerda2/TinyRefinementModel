@@ -136,9 +136,14 @@ latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 
 # --- 1. Define Schedules with Type Casting ---
-# Explicitly cast step to int to satisfy Chex assertion
-muon_lr_sched = lambda step: optax.cosine_decay_schedule(init_value=0.02, decay_steps=20000)(step.astype(jnp.int32))
-adam_lr_sched = lambda step: optax.cosine_decay_schedule(init_value=3e-4, decay_steps=20000)(step.astype(jnp.int32))
+def muon_lr_sched(step):
+    # Ensure step is a JAX integer to satisfy Chex assertions
+    schedule_fn = optax.cosine_decay_schedule(init_value=0.02, decay_steps=20000)
+    return schedule_fn(step.astype(jnp.int32))
+
+def adam_lr_sched(step):
+    schedule_fn = optax.cosine_decay_schedule(init_value=3e-4, decay_steps=20000)
+    return schedule_fn(step.astype(jnp.int32))
 
 muon_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.contrib.muon(learning_rate=muon_lr_sched))
 adam_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate=adam_lr_sched))
