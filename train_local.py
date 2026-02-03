@@ -160,9 +160,11 @@ def param_labels(params):
     return jax.tree_util.tree_map_with_path(label_fn, params)
 
 # Create a JIT-compiled function to handle the entire accumulation block
-@nnx.jit(static_argnums=(3, 4, 6))
+@nnx.jit(static_argnums=(3, 4, 5, 6))
 def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops):
     loss_scale = 32768.0
+    
+    step = step.astype(jnp.int32)
     
     # We pass the model directly; nnx.value_and_grad handles the state tracing
     def loss_fn(model):
