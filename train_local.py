@@ -1,6 +1,7 @@
 import os
 import pickle
 import json
+import time
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
@@ -217,6 +218,7 @@ if os.path.exists(ckpt_path):
 
 try:
     key = jax.random.key(start_step)
+    last_print_time = time.time()
     for step in range(start_step, 20001):
         # Pre-split all keys for the accumulation steps at once
         key, subkey = jax.random.split(key)
@@ -237,7 +239,10 @@ try:
             print(f"--- LEVEL UP! Mastery reached. Now using {current_num_ops} ops ---")
 
         if step % 100 == 0:
-            print(f"Step {step} | Ops: {current_num_ops} | Loss: {total_loss:.4f}")
+            current_time = time.time()
+            elapsed = current_time - last_print_time
+            print(f"Step {step} | Ops: {current_num_ops} | Loss: {total_loss:.4f} | Time: {elapsed:.2f}s")
+            last_print_time = current_time
             
             # Save History
             history.append({"step": int(step), "loss": float(total_loss)})
