@@ -36,46 +36,55 @@ class AdaptiveRefiner(nnx.Module):
         return next_z, p, logits
 
 # --- 2. MODEL LOSS FUNCTION ---
-def run_model_loss(model, batch):
-    # Scale factor (e.g., 2^15) to prevent gradients from becoming zero in float16
+def run_model_loss(model, batch, key):
     loss_scale = 32768.0 
-    
-    z_init = jnp.ones_like(batch['input'], dtype=jnp.float16) * 0.01
     batch_size = batch['input'].shape[0]
+    z_init = (jax.random.normal(key, batch['input'].shape) * 0.02 + 0.01).astype(jnp.float16)
     
-    # Split state so it can be safely closed over by the scan
     graphdef, state = nnx.split(model)
 
-    def scan_fn(carry, _):
-        z, active_mask, step_counts = carry
+    # carry: (z, active_mask, step_counts, accumulated_logits, current_step)
+    # We use a large fixed size for logits buffer or handle it via mean
+    initial_carry = (
+        z_init, 
+        jnp.ones((batch_size,), dtype=bool), 
+        jnp.zeros((batch_size,), dtype=jnp.float16),
+        0.0, # Running logit loss
+        0    # Loop counter
+    )
+
+    def cond_fn(carry):
+        _, active_mask, _, _, step = carry
+        # Continue if any sample is still active AND we haven't hit a safety ceiling
+        return jnp.any(active_mask) & (step < 512) 
+
+    def body_fn(carry):
+        z, active_mask, step_counts, total_logit_loss, step = carry
         
-        # Re-merge inside the scan to stay within the current trace level
         m = nnx.merge(graphdef, state)
         next_z_raw, p_halt, logits = m(z, batch["target"])
         
-        # Ensure the comparison doesn't change carry types
+        # BINNING LOGIC: Only update samples that haven't halted yet
         new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
+        # A sample stops if it was already stopped OR it just decided to stop
         still_active = active_mask & (~new_halt_decision)
         
         z_updated = jnp.where(active_mask[:, None], next_z_raw, z).astype(jnp.float16)
-        new_step_counts = (step_counts + active_mask.astype(jnp.float16)).astype(jnp.float16)
-        
-        return (z_updated, still_active, new_step_counts), logits
+        new_step_counts = step_counts + active_mask.astype(jnp.float16)
 
-    (final_z, _, per_sample_steps), all_logits = jax.lax.scan(
-        scan_fn, 
-        (z_init, jnp.ones((batch_size,), dtype=bool), jnp.zeros((batch_size,), dtype=jnp.float16)), 
-        None, 
-        length=16
+        # Calculate logit loss for this step and add to accumulator
+        labels = jax.random.normal(key, (batch_size, z.shape[1])) * 0.05 + 0.01
+        step_logit_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, labels))
+        
+        return (z_updated, still_active, new_step_counts, total_logit_loss + step_logit_loss, step + 1)
+
+    final_z, _, per_sample_steps, total_recog_loss, total_steps = jax.lax.while_loop(
+        cond_fn, body_fn, initial_carry
     )
     
-    # Reconstruction Loss
     recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
-    
-    labels = jnp.full((batch_size,), batch['level'], dtype=jnp.int32)
-    # Supervision for the recognition circuit across all steps
-    recog_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(all_logits, labels[None, :]))
-    
+    # Average the recognition loss over the actual steps taken
+    recog_loss = total_recog_loss / (total_steps + 1e-6)
     step_penalty = jnp.mean(per_sample_steps) * 0.001
     
     return (recon_loss + recog_loss + step_penalty) * loss_scale
@@ -101,7 +110,37 @@ micro_batch = 128
 accum_steps = 16 
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
-optimizer = nnx.Optimizer(model, optax.chain(optax.clip_by_global_norm(1.0), optax.adam(3e-4)), wrt=nnx.Param)
+
+# Define the Muon optimizer for matrices (kernels)
+# Note: Muon typically needs a MUCH higher learning rate than Adam (0.02 vs 3e-4)
+muon_tx = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.contrib.muon(learning_rate=0.02, momentum=0.95)
+)
+
+# Define Adam for everything else (biases, layer norms)
+adam_tx = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.adam(3e-4)
+)
+
+# Create a partition function to separate 2D weights from 1D params
+def partition_fn(path, _):
+    # Check if the parameter is a weight matrix (2D)
+    # NNX stores Linear weights as 'kernel'
+    if any(isinstance(p, str) and p == 'kernel' for p in path):
+        return 'muon'
+    return 'adam'
+
+# Initialize the combined optimizer
+optimizer = nnx.Optimizer(
+    model, 
+    optax.multi_transform(
+        {'muon': muon_tx, 'adam': adam_tx}, 
+        partition_fn
+    ),
+    wrt=nnx.Param
+)
 
 # Create a JIT-compiled function to handle the entire accumulation block
 @nnx.jit(static_argnums=(3, 4, 6))
@@ -119,7 +158,7 @@ def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current
             x, target, level_label = generate_complex_math(key, micro_batch, latent_dim, step, current_num_ops)
             batch = {'input': x, 'target': target, 'level': level_label}
             # run_model_loss now handles its own internal split/merge
-            loss = run_model_loss(m, batch) 
+            loss = run_model_loss(m, batch, key) 
             return None, loss
 
         _, losses = jax.lax.scan(scan_body, None, subkeys)
@@ -174,7 +213,7 @@ try:
             loss_buffer = [] # Reset buffer for the new level
             print(f"--- LEVEL UP! Mastery reached. Now using {current_num_ops} ops ---")
 
-        if step % 25 == 0 or (step > 9975 and step % 5 == 0):
+        if step % 100 == 0:
             print(f"Step {step} | Ops: {current_num_ops} | Loss: {total_loss:.4f}")
             
             # Save History

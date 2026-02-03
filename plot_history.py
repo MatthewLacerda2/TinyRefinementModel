@@ -17,27 +17,29 @@ def plot_training_history(history_path="training_history.json"):
         print("No data to plot.")
         return
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+    # --- Plot 1: Linear Scale ---
+    plt.figure(figsize=(10, 5))
+    plt.plot(steps, losses, label='Loss', color='blue', alpha=0.7)
+    plt.title('Training Loss (Linear Scale)')
+    plt.xlabel('Step')
+    plt.ylabel('Loss')
+    plt.grid(True, which="both", ls="-", alpha=0.5)
+    plt.legend()
+    plt.savefig('loss_linear.png')
+    print("Linear plot saved to loss_linear.png")
 
-    # Linear Scale
-    ax1.plot(steps, losses, label='Loss', color='blue', alpha=0.7)
-    ax1.set_title('Training Loss (Linear Scale)')
-    ax1.set_xlabel('Step')
-    ax1.set_ylabel('Loss')
-    ax1.grid(True, which="both", ls="-", alpha=0.5)
-    ax1.legend()
+    # --- Plot 2: Log Scale ---
+    plt.figure(figsize=(10, 5))
+    plt.semilogy(steps, losses, label='Loss (Log)', color='red', alpha=0.7)
+    plt.title('Training Loss (Log Scale)')
+    plt.xlabel('Step')
+    plt.ylabel('Loss (log)')
+    plt.grid(True, which="both", ls="-", alpha=0.5)
+    plt.legend()
+    plt.savefig('loss_log.png')
+    print("Log plot saved to loss_log.png")
 
-    # Log Scale
-    ax2.semilogy(steps, losses, label='Loss (Log)', color='red', alpha=0.7)
-    ax2.set_title('Training Loss (Log Scale)')
-    ax2.set_xlabel('Step')
-    ax2.set_ylabel('Loss (log)')
-    ax2.grid(True, which="both", ls="-", alpha=0.5)
-    ax2.legend()
-
-    plt.tight_layout()
-    plt.savefig('training_plot.png')
-    print("Plot saved to training_plot.png")
+    # Display both windows
     plt.show()
 
 if __name__ == "__main__":
