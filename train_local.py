@@ -135,12 +135,14 @@ accum_steps = 16
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 
-# Simple, no-assertion schedules
+# --- 1. Define Schedules with Internal Type Casting ---
+# Using optax.cosine_decay (the raw function) is faster and less strict
 def muon_lr_sched(step):
-    return optax.cosine_decay(init_value=0.02, decay_steps=20000)(step)
+    # This cast happens inside the schedule, satisfying Chex immediately
+    return optax.cosine_decay(init_value=0.02, decay_steps=20000)(step.astype(jnp.int32))
 
 def adam_lr_sched(step):
-    return optax.cosine_decay(init_value=3e-4, decay_steps=20000)(step)
+    return optax.cosine_decay(init_value=3e-4, decay_steps=20000)(step.astype(jnp.int32))
 
 muon_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.contrib.muon(learning_rate=muon_lr_sched))
 adam_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate=adam_lr_sched))
@@ -156,11 +158,13 @@ def label_fn(path, params):
 def param_labels(params):
     return jax.tree_util.tree_map_with_path(label_fn, params)
 
-# Create a JIT-compiled function to handle the entire accumulation block
+# --- 3. Optimized train_step ---
+# Keep step dynamic (remove 5 from static_argnums) to avoid constant re-compilation
 @nnx.jit(static_argnums=(3, 4, 6))
 def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops):
     loss_scale = 32768.0
-
+    
+    # Cast here for use in generate_complex_math
     step_int = step.astype(jnp.int32)
     
     # We pass the model directly; nnx.value_and_grad handles the state tracing
