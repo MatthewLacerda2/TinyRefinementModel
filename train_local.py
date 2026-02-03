@@ -149,10 +149,10 @@ adam_tx = optax.chain(
 )
 
 # Create a partition function to separate 2D weights from 1D params
-def partition_fn(path, _):
-    # Check if the parameter is a weight matrix (2D)
-    # NNX stores Linear weights as 'kernel'
-    if any(isinstance(p, str) and p == 'kernel' for p in path):
+def partition_fn(path, params):
+    path_names = [str(p.key if hasattr(p, 'key') else p) for p in path]
+    
+    if 'kernel' in path_names and params.ndim == 2:
         return 'muon'
     return 'adam'
 
