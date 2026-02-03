@@ -139,7 +139,7 @@ model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 # Note: Muon typically needs a MUCH higher learning rate than Adam (0.02 vs 3e-4)
 muon_tx = optax.chain(
     optax.clip_by_global_norm(1.0),
-    optax.contrib.muon(learning_rate=0.02, momentum=0.95)
+    optax.contrib.muon(learning_rate=0.02)
 )
 
 # Define Adam for everything else (biases, layer norms)
