@@ -135,15 +135,12 @@ accum_steps = 16
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 
-# --- 1. Define Schedules with Type Casting ---
+# Simple, no-assertion schedules
 def muon_lr_sched(step):
-    # Ensure step is a JAX integer to satisfy Chex assertions
-    schedule_fn = optax.cosine_decay_schedule(init_value=0.02, decay_steps=20000)
-    return schedule_fn(step.astype(jnp.int32))
+    return optax.cosine_decay(init_value=0.02, decay_steps=20000)(step)
 
 def adam_lr_sched(step):
-    schedule_fn = optax.cosine_decay_schedule(init_value=3e-4, decay_steps=20000)
-    return schedule_fn(step.astype(jnp.int32))
+    return optax.cosine_decay(init_value=3e-4, decay_steps=20000)(step)
 
 muon_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.contrib.muon(learning_rate=muon_lr_sched))
 adam_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate=adam_lr_sched))
@@ -160,11 +157,11 @@ def param_labels(params):
     return jax.tree_util.tree_map_with_path(label_fn, params)
 
 # Create a JIT-compiled function to handle the entire accumulation block
-@nnx.jit(static_argnums=(3, 4, 5, 6))
+@nnx.jit(static_argnums=(3, 4, 6))
 def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current_num_ops):
     loss_scale = 32768.0
-    
-    step = step.astype(jnp.int32)
+
+    step_int = step.astype(jnp.int32)
     
     # We pass the model directly; nnx.value_and_grad handles the state tracing
     def loss_fn(model):
@@ -174,7 +171,7 @@ def train_step(model, optimizer, subkeys, micro_batch, latent_dim, step, current
         def scan_body(carry, key):
             # 2. Re-merge inside the scan to stay within the current trace level
             m = nnx.merge(graphdef, state)
-            x, target, level_label = generate_complex_math(key, micro_batch, latent_dim, step, current_num_ops)
+            x, target, level_label = generate_complex_math(key, micro_batch, latent_dim, step_int, current_num_ops)
             batch = {'input': x, 'target': target, 'level': level_label}
             # run_model_loss now handles its own internal split/merge
             loss = run_model_loss(m, batch, key) 
