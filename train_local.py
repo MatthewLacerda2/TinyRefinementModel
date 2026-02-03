@@ -135,18 +135,12 @@ accum_steps = 16
 latent_dim = 768
 model = AdaptiveRefiner(latent_dim, nnx.Rngs(42))
 
-# Define the Muon optimizer for matrices (kernels)
-# Note: Muon typically needs a MUCH higher learning rate than Adam (0.02 vs 3e-4)
-muon_tx = optax.chain(
-    optax.clip_by_global_norm(1.0),
-    optax.contrib.muon(learning_rate=0.02)
-)
+# --- 1. Define Schedules (Crucial for Muon/Adam stability) ---
+muon_lr_sched = optax.cosine_decay_schedule(init_value=0.02, decay_steps=20000)
+adam_lr_sched = optax.cosine_decay_schedule(init_value=3e-4, decay_steps=20000)
 
-# Define Adam for everything else (biases, layer norms)
-adam_tx = optax.chain(
-    optax.clip_by_global_norm(1.0),
-    optax.adam(3e-4)
-)
+muon_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.contrib.muon(learning_rate=muon_lr_sched))
+adam_tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adam(learning_rate=adam_lr_sched))
 
 # Create a partition function to separate 2D weights from 1D params
 def label_fn(path, params):
@@ -158,16 +152,6 @@ def label_fn(path, params):
 
 def param_labels(params):
     return jax.tree_util.tree_map_with_path(label_fn, params)
-
-# Initialize the combined optimizer
-optimizer = nnx.Optimizer(
-    model, 
-    optax.multi_transform(
-        {'muon': muon_tx, 'adam': adam_tx}, 
-        param_labels
-    ),
-    wrt=nnx.Param
-)
 
 # Create a JIT-compiled function to handle the entire accumulation block
 @nnx.jit(static_argnums=(3, 4, 6))
@@ -207,25 +191,48 @@ current_num_ops = 2
 loss_buffer = []
 history = []
 
+# --- 2. Robust Loading with Auto-Reset ---
 if os.path.exists(ckpt_path):
-    with open(ckpt_path, 'rb') as f:
-        cp = pickle.load(f)
+    try:
+        with open(ckpt_path, 'rb') as f:
+            cp = pickle.load(f)
         
-        # 1. Update the model state as usual
+        # Update weights
         nnx.update(model, cp['model'])
         
-        # 2. Update the optimizer state via split/update/merge 
-        # (This avoids the immutability error by recreating the state container)
-        opt_graphdef, opt_state = nnx.split(optimizer)
-        opt_state.update(cp['optimizer'])
-        nnx.update(optimizer, opt_state)
+        # Inject state directly into a new optimizer instance
+        optimizer = nnx.Optimizer(
+            model, 
+            optax.multi_transform({'muon': muon_tx, 'adam': adam_tx}, param_labels),
+            wrt=nnx.Param,
+            state=cp['optimizer']
+        )
         
         start_step = cp['step'] + 1
-        current_num_ops = cp.get('num_ops', cp.get('level', 0) * 3 + 2)
-    print(f"Resumed at step {start_step} | Ops: {current_num_ops}")
-    if os.path.exists(history_path):
-        with open(history_path, 'r') as f:
-            history = json.load(f)
+        current_num_ops = cp.get('num_ops', 2)
+        print(f"✅ Successfully resumed at step {start_step}")
+        
+        if os.path.exists(history_path):
+            with open(history_path, 'r') as f:
+                history = json.load(f)
+        
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"⚠️ Checkpoint incompatible or corrupt: {e}")
+        print(f"🗑️ Deleting old checkpoint and starting fresh...")
+        os.remove(ckpt_path)
+        # Initialize fresh optimizer if load fails
+        optimizer = nnx.Optimizer(
+            model, 
+            optax.multi_transform({'muon': muon_tx, 'adam': adam_tx}, param_labels),
+            wrt=nnx.Param
+        )
+else:
+    # Standard fresh start
+    optimizer = nnx.Optimizer(
+        model, 
+        optax.multi_transform({'muon': muon_tx, 'adam': adam_tx}, param_labels),
+        wrt=nnx.Param
+    )
 
 try:
     key = jax.random.key(start_step)
