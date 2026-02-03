@@ -210,8 +210,16 @@ history = []
 if os.path.exists(ckpt_path):
     with open(ckpt_path, 'rb') as f:
         cp = pickle.load(f)
+        
+        # 1. Update the model state as usual
         nnx.update(model, cp['model'])
-        nnx.update(optimizer, cp['optimizer'])
+        
+        # 2. Update the optimizer state via split/update/merge 
+        # (This avoids the immutability error by recreating the state container)
+        opt_graphdef, opt_state = nnx.split(optimizer)
+        opt_state.update(cp['optimizer'])
+        nnx.update(optimizer, opt_state)
+        
         start_step = cp['step'] + 1
         current_num_ops = cp.get('num_ops', cp.get('level', 0) * 3 + 2)
     print(f"Resumed at step {start_step} | Ops: {current_num_ops}")
