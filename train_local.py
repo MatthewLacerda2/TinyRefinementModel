@@ -149,19 +149,22 @@ adam_tx = optax.chain(
 )
 
 # Create a partition function to separate 2D weights from 1D params
-def partition_fn(path, params):
-    path_names = [str(p.key if hasattr(p, 'key') else p) for p in path]
+def label_fn(path, params):
+    path_names = [str(p.key if hasattr(p, "key") else p) for p in path]
 
-    if 'kernel' in path_names and getattr(params, 'ndim', 0) == 2:
-        return 'muon'
-    return 'adam'
+    if "kernel" in path_names and getattr(params, "ndim", 0) == 2:
+        return "muon"
+    return "adam"
+
+def param_labels(params):
+    return jax.tree_util.tree_map_with_path(label_fn, params)
 
 # Initialize the combined optimizer
 optimizer = nnx.Optimizer(
     model, 
     optax.multi_transform(
         {'muon': muon_tx, 'adam': adam_tx}, 
-        partition_fn
+        param_labels
     ),
     wrt=nnx.Param
 )
