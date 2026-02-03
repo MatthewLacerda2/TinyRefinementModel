@@ -14,19 +14,40 @@ import optax
 class AdaptiveRefiner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        self.fc1 = nnx.Linear(latent_dim * 2, latent_dim * 2, rngs=rngs)
+        # --- The New Predictor Sub-Model ---
+        # Guesses total steps needed (scalar) based on the initial problem state
+        self.predictor_fc = nnx.Sequential(
+            nnx.Linear(latent_dim * 2, latent_dim // 2, rngs=rngs),
+            nnx.gelu,
+            nnx.Linear(latent_dim // 2, 1, rngs=rngs)
+        )
+        
+        # --- Main Refinement Circuit ---
+        # Added +1 to input dim to accommodate the 'current_step' counter
+        self.fc1 = nnx.Linear(latent_dim * 2 + 1, latent_dim * 2, rngs=rngs)
         self.refine_fc = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
         self.recog_fc = nnx.Linear(latent_dim * 2, 3, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
 
-    def __call__(self, z, target):
+    def predict_complexity(self, z, target):
+        """Initial guess of how many steps this problem requires."""
+        combined = jnp.concatenate([z, target], axis=-1)
+        return jax.nn.softplus(self.predictor_fc(combined)) # Ensure positive steps
+
+    def __call__(self, z, target, step_count):
         z = z.astype(jnp.float16)
         target = target.astype(jnp.float16)
         
-        combined = jnp.concatenate([z, target], axis=-1)
+        # Inject the step counter as a feature
+        # This tells the model: "You are currently on step X"
+        step_feat = jnp.array([step_count], dtype=jnp.float16).reshape(-1, 1)
+        # If batching, broadcast step_feat to (batch_size, 1)
+        step_feat = jnp.broadcast_to(step_feat, (z.shape[0], 1))
         
-        logits = self.recog_fc(combined).astype(jnp.float16)
+        combined = jnp.concatenate([z, target, step_feat], axis=-1)
+        
+        logits = self.recog_fc(combined[:, :-1]).astype(jnp.float16)
         h = jax.nn.gelu(self.fc1(combined)).astype(jnp.float16)
         delta = self.refine_fc(h).astype(jnp.float16)
         
@@ -37,57 +58,59 @@ class AdaptiveRefiner(nnx.Module):
 
 # --- 2. MODEL LOSS FUNCTION ---
 def run_model_loss(model, batch, key):
-    loss_scale = 32768.0 
+    loss_scale = 32768.0
     batch_size = batch['input'].shape[0]
     z_init = (jax.random.normal(key, batch['input'].shape) * 0.02 + 0.01).astype(jnp.float16)
     
+    # 1. PLAN: Predict complexity before starting
+    # This acts as the 'prior' or 'guess'
+    predicted_steps = model.predict_complexity(z_init, batch["target"])
+    
     graphdef, state = nnx.split(model)
 
-    # carry: (z, active_mask, step_counts, accumulated_logits, current_step)
-    # We use a large fixed size for logits buffer or handle it via mean
     initial_carry = (
         z_init, 
         jnp.ones((batch_size,), dtype=bool), 
         jnp.zeros((batch_size,), dtype=jnp.float16),
-        0.0, # Running logit loss
-        0    # Loop counter
+        0.0, # total_logit_loss
+        0    # loop counter
     )
-
-    def cond_fn(carry):
-        _, active_mask, _, _, step = carry
-        # Continue if any sample is still active AND we haven't hit a safety ceiling
-        return jnp.any(active_mask) & (step < 512) 
 
     def body_fn(carry):
         z, active_mask, step_counts, total_logit_loss, step = carry
-        
         m = nnx.merge(graphdef, state)
-        next_z_raw, p_halt, logits = m(z, batch["target"])
         
-        # BINNING LOGIC: Only update samples that haven't halted yet
+        # Pass the current loop 'step' into the model
+        next_z_raw, p_halt, logits = m(z, batch["target"], step)
+        
+        # If the model is an expert, p_halt will trigger early.
+        # If the model is struggling, it knows it's at 'step' N and can adjust.
         new_halt_decision = (p_halt.squeeze(axis=-1) > 0.5)
-        # A sample stops if it was already stopped OR it just decided to stop
         still_active = active_mask & (~new_halt_decision)
         
         z_updated = jnp.where(active_mask[:, None], next_z_raw, z).astype(jnp.float16)
         new_step_counts = step_counts + active_mask.astype(jnp.float16)
 
-        # Calculate logit loss for this step and add to accumulator
         labels = jax.random.normal(key, (batch_size, z.shape[1])) * 0.05 + 0.01
         step_logit_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, labels))
         
         return (z_updated, still_active, new_step_counts, total_logit_loss + step_logit_loss, step + 1)
 
     final_z, _, per_sample_steps, total_recog_loss, total_steps = jax.lax.while_loop(
-        cond_fn, body_fn, initial_carry
+        lambda c: jnp.any(c[1]) & (c[4] < 512), body_fn, initial_carry
     )
     
+    # --- New Loss Components ---
     recon_loss = jnp.mean((final_z - batch["target"]) ** 2)
-    # Average the recognition loss over the actual steps taken
-    recog_loss = total_recog_loss / (total_steps + 1e-6)
+    
+    # Penalty 1: Standard step penalty
     step_penalty = jnp.mean(per_sample_steps) * 0.001
     
-    return (recon_loss + recog_loss + step_penalty) * loss_scale
+    # Penalty 2: Prediction Accuracy
+    # Trains the predictor to actually match the real steps taken
+    prediction_loss = jnp.mean((predicted_steps - per_sample_steps)**2) * 0.001
+    
+    return (recon_loss + step_penalty + prediction_loss) * loss_scale
 
 # --- 3. UPDATED INFRASTRUCTURE ---
 @jax.jit(static_argnums=(1, 2, 4)) 
@@ -194,7 +217,7 @@ if os.path.exists(ckpt_path):
 
 try:
     key = jax.random.key(start_step)
-    for step in range(start_step, 10001):
+    for step in range(start_step, 20001):
         # Pre-split all keys for the accumulation steps at once
         key, subkey = jax.random.split(key)
         subkeys = jax.random.split(subkey, accum_steps)
