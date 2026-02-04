@@ -185,7 +185,7 @@ def param_labels(params):
     return jax.tree_util.tree_map(label, params)
 
 tx = optax.adam(3e-4)
-optimizer = nnx.Optimizer(model, tx)
+optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 print("🚀 Starting Physics Refinement (With Recognition Circuit)...")
 key = jax.random.key(0)
