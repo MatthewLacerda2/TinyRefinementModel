@@ -24,7 +24,6 @@ class PhysicsWorld:
         return 6
 
     @staticmethod
-    @jax.jit
     def generate_batch(key, batch_size, level):
         """
         Returns: 
@@ -183,6 +182,13 @@ def param_labels(params):
             return "fast"
         return "slow"
     return jax.tree_util.tree_map(label, params)
+
+#For the future
+# optimizer = nnx.Optimizer(
+#     model,
+#     optax.multi_transform(...),
+#     wrt=nnx.Param,
+# )
 
 tx = optax.adam(3e-4)
 optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
