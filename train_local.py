@@ -133,7 +133,6 @@ class RefineMathPhysics(nnx.Module):
 
 
 # --- 3. TRAINING INFRASTRUCTURE ---
-@nnx.jit
 def train_step(model, optimizer, subkeys, micro_batch, level_int):
     loss_scale = 1000.0
     
