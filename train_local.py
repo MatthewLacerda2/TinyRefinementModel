@@ -189,7 +189,7 @@ tx = optax.multi_transform(
     param_labels
 )
 
-optimizer = nnx.Optimizer(model, tx)
+optimizer = nnx.Optimizer(model, tx, wrt=model)
 
 print("🚀 Starting Physics Refinement (With Recognition Circuit)...")
 key = jax.random.key(0)
