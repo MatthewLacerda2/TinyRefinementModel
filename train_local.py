@@ -103,9 +103,11 @@ class PhysicsWorld:
             return (p_new, v_new), None
 
         (final_p, _), _ = jax.lax.scan(sim_step, (pos, vel), None, length=steps)
+
+        mask_broadcasted = jnp.broadcast_to(mask, (batch_size, MAX_N, 1))
         
         # Flatten for Model
-        inputs = jnp.concatenate([pos, vel, mass, mask], axis=-1).reshape(batch_size, -1)
+        inputs = jnp.concatenate([pos, vel, mass, mask_broadcasted], axis=-1).reshape(batch_size, -1)
         targets = final_p.reshape(batch_size, -1)
         
         return inputs, targets
