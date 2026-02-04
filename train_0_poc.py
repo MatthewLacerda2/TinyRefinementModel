@@ -99,12 +99,25 @@ class RefinePhysics(nnx.Module):
             
             return next_z, step + 1, recog_out
 
-        # We scan to run the loop efficiently on GPU/TPU
-        # We collect 'recog_outs' to penalize forgetting LATER
-        final_z, _, all_recogs = jax.lax.scan(
-            lambda c, _: (step_fn(c)[0], step_fn(c)[1]), 
-            (z, 0), 
-            None, 
+        # Wrapper to format the output for scan: (new_carry, output_to_stack)
+        def scan_loop_body(carry, _):
+            # 1. Run the logic (get next state + recognition output)
+            next_z, next_step, recog_out = step_fn(carry)
+            
+            # 2. Group them correctly
+            # New Carry: Must match structure of init (z, step)
+            new_carry = (next_z, next_step)
+            
+            # Output: What we want to accumulate (all_recogs)
+            return new_carry, recog_out
+
+        # Run scan
+        # Returns: (final_carry, stacked_outputs)
+        # Note: final_carry matches structure (final_z, final_step)
+        (final_z, _), all_recogs = jax.lax.scan(
+            scan_loop_body, 
+            (z, 0),      # Initial carry: (z, step)
+            None,        # No inputs to scan over
             length=max_steps
         )
         
