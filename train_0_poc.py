@@ -22,7 +22,6 @@ class PhysicsLevel0:
         return 1 # Final Position (x_f)
 
     @staticmethod
-    @jax.jit
     def generate_batch(key, batch_size):
         # x_f = x_i + v * t
         k1, k2, k3 = jax.random.split(key, 3)
