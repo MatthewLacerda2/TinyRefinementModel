@@ -184,14 +184,7 @@ def param_labels(params):
         return "slow"
     return jax.tree_util.tree_map(label, params)
 
-tx = optax.multi_transform(
-    {
-        "slow": optax.adam(1e-5),
-        "fast": optax.adam(3e-4),
-    },
-    param_labels
-)
-
+tx = optax.adam(3e-4)
 optimizer = nnx.Optimizer(model, tx, wrt=model)
 
 print("🚀 Starting Physics Refinement (With Recognition Circuit)...")
