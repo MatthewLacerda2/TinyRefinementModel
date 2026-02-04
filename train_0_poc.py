@@ -118,7 +118,7 @@ class RefinePhysics(nnx.Module):
         return prediction, final_z, final_recog
 
 # --- 3. TRAINING STEP ---
-@nnx.jit
+@nnx.jit(static_argnums=(3,)) 
 def train_step(model, optimizer, subkeys, micro_batch):
     loss_scale = 1000.0
     
