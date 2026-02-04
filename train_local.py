@@ -189,7 +189,21 @@ tx = optax.multi_transform(
     param_labels
 )
 
-optimizer = nnx.Optimizer(model, tx, wrt=model)
+def wrt(m):
+    return {
+        "slow": (m.encoder,),
+        "fast": (m.decoder, m.fc1, m.fc2),
+    }
+
+tx = optax.multi_transform(
+    {
+        "slow": optax.adam(1e-5),
+        "fast": optax.adam(3e-4),
+    },
+    wrt
+)
+
+optimizer = nnx.Optimizer(model, tx, wrt=wrt)
 
 print("🚀 Starting Physics Refinement (With Recognition Circuit)...")
 key = jax.random.key(0)
