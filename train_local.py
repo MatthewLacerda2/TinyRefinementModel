@@ -122,7 +122,12 @@ class RefineMathPhysics(nnx.Module):
             next_z = self.norm(current_z + 0.1 * delta)
             return next_z, step + 1
 
-        final_z, _ = jax.lax.scan(lambda c, _: (refine_step(c)[0], None), (z, 0), None, length=max_steps)
+        (final_z, _), _ = jax.lax.scan(
+            lambda c, _: (refine_step(c), None),
+            (z, 0),
+            None,
+            length=max_steps
+        )
         
         # 3. Decode Answer
         prediction = self.decoder(final_z)
