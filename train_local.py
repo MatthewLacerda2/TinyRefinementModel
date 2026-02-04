@@ -177,33 +177,22 @@ micro_batch = 64
 
 model = RefineMathPhysics(latent_dim, nnx.Rngs(42))
 
-# Muon + Adam Optimizer
-# Note: We define the schedule objects once, rather than re-creating them every step.
-muon_schedule = optax.cosine_decay_schedule(0.01, 10000)
-adam_schedule = optax.cosine_decay_schedule(3e-4, 10000)
-def param_labels(params): return jax.tree_util.tree_map(lambda p: 'muon' if p.ndim == 2 else 'adam', params)
-
-tx = optax.multi_transform(
-    {'muon': optax.contrib.muon(learning_rate=muon_schedule),
-     'adam': optax.adam(learning_rate=adam_schedule)},
-    param_labels
-)
-
-def wrt(m):
-    return {
-        "slow": (m.encoder,),
-        "fast": (m.decoder, m.fc1, m.fc2),
-    }
+def param_labels(params):
+    def label(p):
+        if p.ndim == 2:
+            return "fast"
+        return "slow"
+    return jax.tree_util.tree_map(label, params)
 
 tx = optax.multi_transform(
     {
         "slow": optax.adam(1e-5),
         "fast": optax.adam(3e-4),
     },
-    wrt
+    param_labels
 )
 
-optimizer = nnx.Optimizer(model, tx, wrt=wrt)
+optimizer = nnx.Optimizer(model, tx, wrt=model)
 
 print("🚀 Starting Physics Refinement (With Recognition Circuit)...")
 key = jax.random.key(0)
