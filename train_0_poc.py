@@ -61,6 +61,9 @@ class RefinePhysics(nnx.Module):
         # This circuit reviews the latent thought and tries to recover the initial facts (v, t).
         # If this fails, the model has "forgotten" the physics parameters.
         self.recog_fc = nnx.Linear(latent_dim, 2, rngs=rngs) # Predicting v, t
+
+        # Predicts a single scalar: Estimated Steps required
+        self.complexity_head = nnx.Linear(latent_dim, 1, rngs=rngs)
         
         # --- THE REFINEMENT LOOP ---
         self.fc1 = nnx.Linear(latent_dim + 1, latent_dim * 2, rngs=rngs)
@@ -74,6 +77,10 @@ class RefinePhysics(nnx.Module):
         # 1. Encode
         z = self.encoder(raw_input)
         z = nnx.gelu(z)
+
+        # TODO: Add complexity head
+        #Penalize the model for not having self-awareness
+        predicted_steps = self.complexity_head(z)
         
         # 2. Latent Refinement Loop
         def step_fn(carry):
@@ -165,7 +172,7 @@ tx = optax.multi_transform(
     param_labels
 )
 
-optimizer = nnx.Optimizer(model, tx)
+optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
 print("🚀 Training Level 0: 1D Continuous Motion...")
 key = jax.random.key(0)
