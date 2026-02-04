@@ -12,34 +12,34 @@ def plot_training_history(history_path="training_history.json"):
 
     steps = [item['step'] for item in history]
     losses = [item['loss'] for item in history]
+    speeds = [item.get('speed', 0) for item in history]
 
     if not steps:
         print("No data to plot.")
         return
 
-    # --- Plot 1: Linear Scale ---
+    # --- Plot 1: Loss (Linear) ---
     plt.figure(figsize=(10, 5))
     plt.plot(steps, losses, label='Loss', color='blue', alpha=0.7)
     plt.title('Training Loss (Linear Scale)')
     plt.xlabel('Step')
     plt.ylabel('Loss')
-    plt.grid(True, which="both", ls="-", alpha=0.5)
+    plt.grid(True, alpha=0.3)
     plt.legend()
     plt.savefig('loss_linear.png')
-    print("Linear plot saved to loss_linear.png")
+    print("Loss plot saved to loss_linear.png")
 
-    # --- Plot 2: Log Scale ---
+    # --- Plot 2: Speed (Linear) ---
     plt.figure(figsize=(10, 5))
-    plt.semilogy(steps, losses, label='Loss (Log)', color='red', alpha=0.7)
-    plt.title('Training Loss (Log Scale)')
+    plt.plot(steps, speeds, label='Steps/s', color='green', alpha=0.7)
+    plt.title('Training Speed (steps/s)')
     plt.xlabel('Step')
-    plt.ylabel('Loss (log)')
-    plt.grid(True, which="both", ls="-", alpha=0.5)
+    plt.ylabel('Speed (steps/s)')
+    plt.grid(True, alpha=0.3)
     plt.legend()
-    plt.savefig('loss_log.png')
-    print("Log plot saved to loss_log.png")
+    plt.savefig('speed_linear.png')
+    print("Speed plot saved to speed_linear.png")
 
-    # Display both windows
     plt.show()
 
 if __name__ == "__main__":

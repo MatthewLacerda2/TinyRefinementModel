@@ -22,25 +22,36 @@ class PhysicsWorld:
         return 6
 
     @staticmethod
-    def generate_batch(key, batch_size, level):
-        # ... (Same as your original code) ...
-        def level_0_linear(k):
+    def generate_batch(key, batch_size, difficulty):
+        # Helper to clamp difficulty for sub-levels
+        d_val = jnp.clip(difficulty, 0.0, 3.0)
+        
+        def level_0_linear(k, intensity):
+            # Intensity 0.0 -> 1.0 scales range and time
+            scale = 1.0 + intensity * 9.0 # 1x to 10x range
+            t_max = 1.0 + intensity * 4.0 # 1s to 5s
+            
             k1, k2, k3 = jax.random.split(k, 3)
-            x = jax.random.uniform(k1, (batch_size, 1), minval=-10, maxval=10)
-            v = jax.random.uniform(k2, (batch_size, 1), minval=-5, maxval=5)
-            t = jax.random.uniform(k3, (batch_size, 1), minval=1, maxval=5)
+            x = jax.random.uniform(k1, (batch_size, 1), minval=-10*scale, maxval=10*scale)
+            v = jax.random.uniform(k2, (batch_size, 1), minval=-5*scale, maxval=5*scale)
+            t = jnp.zeros((batch_size, 1)) + jax.random.uniform(k3, (batch_size, 1), minval=1.0, maxval=t_max)
+            
             target_x = x + v * t
             inputs = jnp.concatenate([x, v, t, jnp.zeros((batch_size, 12))], axis=-1)
             targets = jnp.concatenate([target_x, jnp.zeros((batch_size, 5))], axis=-1)
             return inputs, targets
 
-        def level_1_projectile(k):
+        def level_1_projectile(k, intensity):
+            # Intensity 0.0 -> 1.0 scales Gravity and Velocity complexity
+            g_min = 1.0 + intensity * 4.0  # Start with weak gravity (moon-like)
+            g_max = 5.0 + intensity * 15.0 # End with heavy gravity
+            
             k1, k2, k3, k4, k5, k6 = jax.random.split(k, 6)
             x = jax.random.uniform(k1, (batch_size, 1), minval=-50, maxval=50)
             y = jax.random.uniform(k2, (batch_size, 1), minval=0, maxval=100)
             vx = jax.random.uniform(k3, (batch_size, 1), minval=-20, maxval=20)
             vy = jax.random.uniform(k4, (batch_size, 1), minval=-20, maxval=20)
-            g = jax.random.uniform(k5, (batch_size, 1), minval=5, maxval=15)
+            g = jax.random.uniform(k5, (batch_size, 1), minval=g_min, maxval=g_max)
             t = jax.random.uniform(k6, (batch_size, 1), minval=1, maxval=5)
             
             tf_x = x + vx * t
@@ -52,10 +63,15 @@ class PhysicsWorld:
             targets = jnp.concatenate([t_feats, jnp.zeros((batch_size, 4))], axis=-1)
             return inputs, targets
 
-        def level_2_nbody(k):
+        def level_2_nbody(k, intensity):
+            # Intensity 0.0 -> 1.0 scales PREDICTION HORIZON
+            # Start: Predict 1 step ahead (Easy vector math)
+            # End: Predict 40 steps ahead (Chaotic simulation)
+            steps_float = 1.0 + intensity * 39.0 
+            steps = steps_float.astype(jnp.int32)
+            
             N = 3
             dt = 0.05
-            steps = 40
             
             ks = jax.random.split(k, 4)
             pos = jax.random.uniform(ks[0], (batch_size, N, 2), minval=-2, maxval=2)
@@ -79,7 +95,16 @@ class PhysicsWorld:
             targets = final_p.reshape(batch_size, -1)
             return inputs, targets
 
-        return jax.lax.switch(level, [level_0_linear, level_1_projectile, level_2_nbody], key)
+        # Logic to route float difficulty to specific generator
+        # We use lax.cond or switch logic manually since we need to pass the 'remainder' intensity
+        
+        branch_0 = lambda k: level_0_linear(k, d_val)
+        branch_1 = lambda k: level_1_projectile(k, d_val - 1.0)
+        branch_2 = lambda k: level_2_nbody(k, d_val - 2.0)
+
+        level_idx = d_val.astype(jnp.int32)
+        
+        return jax.lax.switch(level_idx, [branch_0, branch_1, branch_2], key)
 
 
 # --- 2. THE REASONING MODEL ---
@@ -94,38 +119,77 @@ class RefineMathPhysics(nnx.Module):
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
 
-    def __call__(self, raw_input, max_steps=40):
+    def __call__(self, raw_input, max_steps=64): # Increased ceiling to 64
         z = self.encoder(raw_input) 
         z = nnx.gelu(z)
         
-        def refine_step(carry):
-            current_z, step = carry
-            step_feat = jnp.full((current_z.shape[0], 1), step, dtype=current_z.dtype)
+        # We need to track the answer at EVERY step to allow early exit
+        def refine_step(carry, _):
+            current_z, step_idx, running_halt_prob, weighted_out, weighted_z = carry
+            
+            # 1. Create Time Feature
+            step_feat = jnp.full((current_z.shape[0], 1), step_idx, dtype=current_z.dtype)
             combined = jnp.concatenate([current_z, step_feat], axis=-1)
             
+            # 2. Thinking Step
             h = nnx.gelu(self.fc1(combined))
             delta = self.fc2(h)
             next_z = self.norm(current_z + 0.1 * delta)
-            return next_z, step + 1
+            
+            # 3. Halt Decision (Should I stop?)
+            # Output is probability (0 to 1)
+            halt_val = nnx.sigmoid(self.halt_fc(next_z)) 
+            
+            # 4. Compute candidate answer NOW (in case we stop here)
+            curr_pred = self.decoder(next_z)
 
-        (final_z, _), _ = jax.lax.scan(
-            lambda c, _: (refine_step(c), None),
-            (z, 0),
+            # --- PonderNet Logic ---
+            # If we haven't halted yet, this step contributes to the final answer.
+            # "p" is the probability we stop at THIS specific step.
+            p = halt_val * (1.0 - running_halt_prob)
+            
+            # Accumulate the weighted answer
+            new_weighted_out = weighted_out + (p * curr_pred)
+            new_weighted_z = weighted_z + (p * next_z)
+            new_running_prob = running_halt_prob + p
+            
+            return (next_z, step_idx + 1, new_running_prob, new_weighted_out, new_weighted_z), (p, halt_val)
+
+        # Initialize Accumulators
+        B = z.shape[0]
+        out_dim = PhysicsWorld.get_output_dim()
+        
+        init_carry = (
+            z,                                   # current_z
+            0,                                   # step_idx
+            jnp.zeros((B, 1)),                   # running_halt_prob
+            jnp.zeros((B, out_dim)),             # weighted_out (FINAL ANSWER)
+            jnp.zeros((B, self.latent_dim))      # weighted_z (For recog loss)
+        )
+
+        (final_z_state, _, final_prob, final_pred, final_z_weighted), (step_probs, halt_vals) = jax.lax.scan(
+            refine_step,
+            init_carry,
             None,
             length=max_steps
         )
         
-        prediction = self.decoder(final_z)
-        recognition = self.recog_fc(final_z)
-        return prediction, final_z, recognition
+        # Safety: If probability didn't sum to 1 (it ran out of steps),
+        # force the remainder onto the very last step's answer.
+        remainder = 1.0 - final_prob
+        final_pred = final_pred + (remainder * self.decoder(final_z_state))
+        final_z_weighted = final_z_weighted + (remainder * final_z_state)
+
+        # We return 'step_probs' to penalize the model for thinking too long (optional)
+        return final_pred, final_z_weighted, self.recog_fc(final_z_weighted), step_probs
 
 
 # --- 3. OPTIMIZED TRAINING INFRASTRUCTURE ---
 
 # NOTE: We set static_argnums=(3,) because 'micro_batch' (3rd arg) determines tensor shapes.
-# 'level_int' is NOT static, allowing lax.switch to handle level changes without recompiling.
+# 'difficulty' is NOT static, allowing lax.switch to handle level changes without recompiling.
 @nnx.jit(static_argnums=(3,))
-def train_step(model, optimizer, subkeys, micro_batch, level_int):
+def train_step(model, optimizer, subkeys, micro_batch, difficulty):
     loss_scale = 1000.0
     
     def loss_fn(model):
@@ -134,15 +198,21 @@ def train_step(model, optimizer, subkeys, micro_batch, level_int):
         def scan_body(carry, key):
             # Temporarily merge state to run forward pass
             m = nnx.merge(graphdef, state)
-            inputs, targets = PhysicsWorld.generate_batch(key, micro_batch, level_int)
-            preds, final_z, recognition = m(inputs)
+            inputs, targets = PhysicsWorld.generate_batch(key, micro_batch, difficulty)
+            preds, final_z, recognition, step_probs = m(inputs)
             
             main_loss = jnp.mean((preds - targets) ** 2)
             recog_loss = jnp.mean((recognition - inputs) ** 2)
             stability = jnp.mean(final_z ** 2) * 1e-4
+
+            # --- Ponder Loss (Geometric distribution regularization) ---
+            # Encourage halting early (small penalty per step)
+            _max_steps = step_probs.shape[0]
+            avg_steps = jnp.sum(step_probs * jnp.arange(_max_steps)[:, None, None]) / micro_batch
+            ponder_penalty = avg_steps * 0.01 
             
             # Combine loss
-            loss = main_loss + (0.5 * recog_loss) + stability
+            loss = main_loss + (0.5 * recog_loss) + stability + ponder_penalty
             
             # SCALING: Multiply loss by scale here so gradients are large enough
             return None, loss * loss_scale
@@ -210,6 +280,29 @@ for step in range(100000):
         print(f"Step {step} | Level {current_level} | Loss: {loss_val:.4f} | Avg: {avg_loss:.4f} | Speed: {sps:.2f} steps/s")
         start_time = time.time()
         
+        # Save telemetry for plotting
+        telemetry = {
+            'step': step,
+            'level': current_level,
+            'loss': loss_val,
+            'avg_loss': avg_loss,
+            'speed': sps
+        }
+        
+        history_file = "training_history.json"
+        if os.path.exists(history_file):
+            with open(history_file, "r") as f:
+                try:
+                    full_history = json.load(f)
+                except:
+                    full_history = []
+        else:
+            full_history = []
+            
+        full_history.append(telemetry)
+        with open(history_file, "w") as f:
+            json.dump(full_history, f)
+            
         if step % 1000 == 0 and step > 0:
             with open("physics_ckpt.pkl", "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'level': current_level}, f)
