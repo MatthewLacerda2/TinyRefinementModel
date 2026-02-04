@@ -81,7 +81,7 @@ class PhysicsWorld:
             force_vec = force_vec * valid
             
             acc = jnp.sum(force_vec, axis=2) / (m + 1e-6)
-            return acc * active_mask.squeeze(-1)
+            return acc * active_mask
 
         # Simulation Loop
         dt = 0.05
@@ -98,8 +98,8 @@ class PhysicsWorld:
             p_new = jnp.clip(p_new, -10, 10)
             
             # Re-mask
-            p_new = p_new * mask.squeeze(-1)[:, :, None]
-            v_new = v_new * mask.squeeze(-1)[:, :, None]
+            p_new = p_new * mask
+            v_new = v_new * mask
             return (p_new, v_new), None
 
         (final_p, _), _ = jax.lax.scan(sim_step, (pos, vel), None, length=steps)
