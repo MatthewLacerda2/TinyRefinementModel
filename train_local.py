@@ -125,33 +125,78 @@ class RefineMathPhysics(nnx.Module):
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
 
-    def __call__(self, raw_input, max_steps=40):
+    def __call__(self, raw_input, max_steps=40, training=False, key=None):
         z = nnx.gelu(self.encoder(raw_input))
-        
-        def refine_step(carry, _):
-            curr_z, step_idx, run_prob, w_out, w_z = carry
+        batch_size = z.shape[0]
+
+        # Prepare keys for noise injection (one key per step)
+        if training and key is not None:
+            step_keys = jax.random.split(key, max_steps)
+        else:
+            # If not training, just pass dummy keys (zeros)
+            step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
+
+        def refine_step(carry, step_key_input):
+            # Unpack the "State Vector"
+            # curr_z: Current thought position
+            # curr_v: Current "Latent Velocity" (Momentum)
+            curr_z, curr_v, step_idx, run_prob, w_out, w_z = carry
             
-            # Add Time Feature
+            # 1. Feature Engineering (Add Time)
             step_feat = jnp.full((curr_z.shape[0], 1), step_idx, dtype=curr_z.dtype)
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
-            h = nnx.gelu(self.fc1(combined))
-            next_z = self.norm(curr_z + 0.1 * self.fc2(h))
             
-            # Halt Decision
+            # 2. Calculate "Force" (The update vector)
+            h = nnx.gelu(self.fc1(combined))
+            force = self.fc2(h) # This is 'Acceleration'
+            
+            # 3. Apply Second-Order Dynamics (Momentum)
+            # v_{t+1} = friction * v_t + force
+            # friction=0.6 gives it "weight" but stops it from spiraling out of control
+            next_v = (0.6 * curr_v) + (0.1 * force)
+            
+            # 4. Update Position
+            next_z_raw = curr_z + next_v
+            
+            # Only applies if 'training' was True (handled by key splitting)
+            if training:
+                noise = jax.random.normal(step_key_input, next_z_raw.shape) * 0.02
+                next_z_raw = next_z_raw + noise
+            
+            next_z = self.norm(next_z_raw)
+            
+            # 6. Halt Logic (PonderNet)
             halt = nnx.sigmoid(self.halt_fc(next_z))
             p = halt * (1.0 - run_prob)
             
-            # Accumulate Answer
+            # 7. Accumulate Output
             new_out = w_out + (p * self.decoder(next_z))
             new_z = w_z + (p * next_z)
-            return (next_z, step_idx + 1, run_prob + p, new_out, new_z), p
+            
+            return (next_z, next_v, step_idx + 1, run_prob + p, new_out, new_z), p
 
-        B = z.shape[0]
-        init = (z, 0, jnp.zeros((B, 1)), jnp.zeros((B, PhysicsWorld.get_output_dim())), jnp.zeros((B, self.latent_dim)))
+        # Initialize State
+        # Velocity starts at zero
+        init_v = jnp.zeros_like(z)
         
-        (final_z, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(refine_step, init, None, length=max_steps)
+        init_carry = (
+            z,                                   # curr_z
+            init_v,                              # curr_v (NEW!)
+            0,                                   # step_idx
+            jnp.zeros((batch_size, 1)),          # run_prob
+            jnp.zeros((batch_size, PhysicsWorld.get_output_dim())), # w_out
+            jnp.zeros((batch_size, self.latent_dim))                # w_z
+        )
         
-        # Handle remainder (force stop at max_steps)
+        # Scan over step_keys to inject unique noise per step
+        (final_z, _, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(
+            refine_step, 
+            init_carry, 
+            step_keys, # Iterate over these keys
+            length=max_steps
+        )
+        
+        # Handle Remainder
         rem = 1.0 - final_prob
         w_out = w_out + (rem * self.decoder(final_z))
         w_z = w_z + (rem * final_z)
@@ -167,15 +212,19 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty):
         graphdef, state = nnx.split(model)
         
         def scan_body(carry, key):
+            # Split key: one for Physics gen, one for Latent Noise
+            phys_key, noise_key = jax.random.split(key)
+            
             m = nnx.merge(graphdef, state)
-            inputs, targets = PhysicsWorld.generate_batch(key, micro_batch, difficulty)
-            preds, _, recognition, step_probs = m(inputs)
+            inputs, targets = PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
+            
+            # Pass training=True and the noise_key
+            preds, _, recognition, step_probs = m(inputs, training=True, key=noise_key)
             
             # Loss Components
             main_loss = jnp.mean((preds - targets) ** 2)
             recog_loss = jnp.mean((recognition - inputs) ** 2)
             
-            # Ponder Penalty (Don't think too long)
             steps = jnp.arange(step_probs.shape[0])[:, None, None]
             avg_steps = jnp.sum(step_probs * steps) / micro_batch
             
