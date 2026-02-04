@@ -178,8 +178,9 @@ micro_batch = 64
 model = RefineMathPhysics(latent_dim, nnx.Rngs(42))
 
 # Muon + Adam Optimizer
-def muon_schedule(step): return optax.cosine_decay(0.01, 10000)(step)
-def adam_schedule(step): return optax.cosine_decay(3e-4, 10000)(step)
+# Note: We define the schedule objects once, rather than re-creating them every step.
+muon_schedule = optax.cosine_decay_schedule(0.01, 10000)
+adam_schedule = optax.cosine_decay_schedule(3e-4, 10000)
 def param_labels(params): return jax.tree_util.tree_map(lambda p: 'muon' if p.ndim == 2 else 'adam', params)
 
 tx = optax.multi_transform(

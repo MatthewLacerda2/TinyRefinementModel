@@ -172,8 +172,9 @@ micro_batch = 64
 model = RefinePhysics(latent_dim, nnx.Rngs(42))
 
 # SOTA Optimizer: Muon for weights, Adam for biases
-def muon_schedule(step): return optax.cosine_decay(0.01, 5000)(step)
-def adam_schedule(step): return optax.cosine_decay(3e-4, 5000)(step)
+# Note: We define the schedule objects once, rather than re-creating them every step.
+muon_schedule = optax.cosine_decay_schedule(0.01, 5000)
+adam_schedule = optax.cosine_decay_schedule(3e-4, 5000)
 
 def param_labels(params):
     return jax.tree_util.tree_map(lambda p: 'muon' if p.ndim == 2 else 'adam', params)
