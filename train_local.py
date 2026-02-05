@@ -275,7 +275,7 @@ optimizer = nnx.Optimizer(model, optax.adam(3e-4), wrt=nnx.Param)
 key = jax.random.key(0)
 loss_history = []
 difficulty = 0.0
-target_loss = 0.05
+target_loss = 0.08
 start_time = time.time()
 
 print("🔥 Compiling Kernels (This may take 30s)...")
@@ -298,7 +298,7 @@ for step in range(1000000):
         # Mastery Check: High accuracy, low steps, AND good planning
         if avg_main_loss < target_loss and planner_err < 1.0:
             # Everything is "too easy"
-            difficulty += 0.003
+            difficulty += 0.005
         
         # Hubris Check: Getting it wrong, especially if it thought it was easy
         elif avg_main_loss > target_loss * 3 or planner_err > 5.0:
@@ -308,7 +308,7 @@ for step in range(1000000):
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
         active = min(1.0 + (difficulty * 3.0), MAX_N)
-        print(f"Step {step} | Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
+        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
         # Save telemetry for plotting
