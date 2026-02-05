@@ -316,7 +316,7 @@ for step in range(1000000):
             'step': step,
             'difficulty': float(difficulty),
             'loss': loss_val,
-            'avg_loss': float(avg_loss),
+            'avg_loss': float(avg_main_loss),
             'speed': float(sps)
         }
         
