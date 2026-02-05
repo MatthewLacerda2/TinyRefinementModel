@@ -25,13 +25,14 @@ class PhysicsWorld:
         return MAX_N * 2
 
     @staticmethod
-    def generate_batch(key, batch_size, difficulty):
+    def generate_batch(key, batch_size, difficulty, steps):
         # 0.0 - 1.0: Linear (1 particle)
         # 1.0 - 2.0: Projectile/Orbit (2-3 particles)
         # 2.0 - 10.0: Chaos/Fluids (up to MAX_N particles)
         
-        # Scale active particles based on difficulty
-        target_n = 1.0 + (difficulty * 3.0)
+        # Scale active particles based on difficulty - "Not Wider"
+        # We slow down the growth of particle count to focus on simulation depth
+        target_n = 1.0 + (difficulty * 0.5) 
         active_count = jnp.clip(target_n, 1.0, MAX_N).astype(jnp.int32)
         
         G = jnp.clip(difficulty, 1.0, 10.0)             # Gravity Strength
@@ -75,7 +76,7 @@ class PhysicsWorld:
 
         # Simulation Loop
         dt = 0.05
-        steps = 40 
+        # Use the passed-in prediction horizon
 
         def sim_step(carry, _):
             p, v = carry
@@ -201,8 +202,8 @@ class RefineMathPhysics(nnx.Module):
         return w_out.astype(jnp.float32), w_z.astype(jnp.float32), self.recog_fc(w_z).astype(jnp.float32), step_probs, predicted_steps
 
 # --- 3. TRAINING LOOP ---
-@nnx.jit(static_argnums=(3,))
-def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_error):
+@nnx.jit(static_argnums=(3, 4))
+def train_step(model, optimizer, subkeys, micro_batch, prediction_horizon, difficulty, baseline_error):
     loss_scale = 1000.0
     
     def loss_fn(model):
@@ -214,7 +215,7 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             
             m = nnx.merge(graphdef, state)
             inputs, targets = jax.lax.stop_gradient(
-                PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
+                PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty, prediction_horizon)
             )
             
             # --- START ADVERSARIAL ATTACK ---
@@ -235,7 +236,7 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             batch_keys = jax.random.split(noise_key, expanded_inputs.shape[0])
             
             # Run model on super-batch
-            preds, _, recognition, step_probs, pred_steps = m(expanded_inputs, 40, True, batch_keys)
+            preds, _, recognition, step_probs, pred_steps = m(expanded_inputs, prediction_horizon, True, batch_keys)
             
             # Calculate Errors per clone
             sq_err = jnp.mean((preds - expanded_targets) ** 2, axis=-1)
@@ -345,7 +346,10 @@ for step in range(50000):
     key, subkey = jax.random.split(key)
     subkeys = jax.random.split(subkey, ACCUM_STEPS)
     
-    loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty, baseline_error)
+    # Curriculum modification: Deeper, not wider
+    prediction_horizon = int(5 + (difficulty * 35))
+    
+    loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, prediction_horizon, difficulty, baseline_error)
     
     # --- AUTO-PACER (PID Controller) ---
     loss_history.append(float(step_metrics['best_loss']))
@@ -379,8 +383,8 @@ for step in range(50000):
 
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
-        active = min(1.0 + (difficulty * 3.0), MAX_N)
-        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
+        active = min(1.0 + (difficulty * 0.5), MAX_N)
+        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}, Steps: {prediction_horizon}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
         # Save telemetry for plotting (Fast & Infinite)

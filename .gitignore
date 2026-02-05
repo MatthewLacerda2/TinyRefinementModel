@@ -213,6 +213,7 @@ __marimo__/
 #Project specifics
 auxpy.py
 auxmd.md
-model_ckpt.pkl
+*.pkl
 training_history.json
+training_log.csv
 *.png
