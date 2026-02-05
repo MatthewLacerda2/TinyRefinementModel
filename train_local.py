@@ -10,10 +10,10 @@ import optax
 # --- CONFIGURATION FOR RTX 2060 (6GB) ---
 # If it crashes on startup, lower MAX_N.
 # If it runs fine, try increasing MAX_N to 128 or 150.
-MAX_N = 96         # Maximum particles (The World Size)
+MAX_N = 128         # Maximum particles (The World Size)
 LATENT_DIM = 512   # Brain Size (Keep smaller to save VRAM for particles)
-BATCH_SIZE = 64    # Micro-batch size
-ACCUM_STEPS = 4    # Gradient accumulation (Total Batch = 256)
+BATCH_SIZE = 128    # Micro-batch size
+ACCUM_STEPS = 2    # Gradient accumulation (Total Batch = 256)
 
 # Prevent JAX from pre-allocating 100% of memory (leaves room for OS)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
@@ -42,7 +42,7 @@ class PhysicsWorld:
         
         # Difficulty Modifiers
         G = jnp.clip(difficulty, 1.0, 10.0)             # Gravity Strength
-        repulsion = jnp.clip(difficulty - 2.0, 0.0, 5.0) # Fluid Pressure
+        repulsion = jnp.clip(difficulty - 0.5, 0.0, 5.0) * 0.5 # Fluid Pressure
         
         k1, k2, k3 = jax.random.split(key, 3)
         
@@ -168,7 +168,7 @@ class RefineMathPhysics(nnx.Module):
                 noise = jax.random.normal(step_key_input, next_z_raw.shape) * 0.02
                 next_z_raw = next_z_raw + noise
             
-            next_z = self.norm(next_z_raw)
+            next_z = next_z_raw
             
             # 6. Halt Logic (PonderNet)
             halt = nnx.sigmoid(self.halt_fc(next_z))
@@ -235,7 +235,7 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             # --- END ADVERSARIAL ATTACK ---
             
             # --- GRPO/RFT SETUP ---
-            G = 4
+            G = 8
             expanded_inputs = jnp.repeat(adversarial_inputs, G, axis=0)
             expanded_targets = jnp.repeat(targets, G, axis=0)
             batch_keys = jax.random.split(noise_key, expanded_inputs.shape[0])
@@ -284,9 +284,14 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             avg_steps = jnp.mean(actual_steps)
             
             loss = main_loss + (0.5 * recog_loss) + (planner_loss * 0.1) + (avg_steps * 0.005)
-            
+
+            # Calculate the loss of only the "winners" (or best case) for the telemetry
+            # We reuse effective_mask to get the same logic the gradients used
+            telemetry_loss = jnp.sum(sq_err * effective_mask) / (jnp.sum(effective_mask) + 1e-6)
+
             metrics = {
-                'main_loss': jnp.mean(sq_err),
+                'main_loss': jnp.mean(sq_err),      # Keep this for general debug
+                'best_loss': telemetry_loss,
                 'planner_err': jnp.mean(jnp.abs(diff)),
                 'avg_steps': avg_steps,
                 'baseline': current_baseline
@@ -320,7 +325,7 @@ start_time = time.time()
 # PID State for Auto-Pacer
 integral_error = 0.0
 prev_error = 0.0
-kp, ki, kd = 0.02, 0.001, 0.05  # Tuning knobs
+kp, ki, kd = 0.005, 0.0001, 0.01  # Tuning knobs
 
 # --- ADAPTIVE RFT STATE ---
 baseline_error = 0.1
@@ -351,7 +356,7 @@ for step in range(1000000):
     loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty, baseline_error)
     
     # --- AUTO-PACER (PID Controller) ---
-    loss_history.append(float(step_metrics['main_loss']))
+    loss_history.append(float(step_metrics['best_loss']))
     if len(loss_history) > 50: loss_history.pop(0)
     avg_main_loss = sum(loss_history) / len(loss_history)
     
