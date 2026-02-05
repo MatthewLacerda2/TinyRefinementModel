@@ -271,8 +271,9 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             recog_loss = jnp.mean((recognition - expanded_inputs) ** 2)
             
             # Calculate actual steps taken per sample
-            steps_range = jnp.arange(step_probs.shape[0], dtype=jnp.float32)[:, None, None]
-            actual_steps = jnp.sum(step_probs * steps_range, axis=0)
+            # step_probs shape: (Batch*G, MaxSteps, 1)
+            steps_range = jnp.arange(step_probs.shape[1], dtype=jnp.float32)[None, :, None]
+            actual_steps = jnp.sum(step_probs * steps_range, axis=1)
             
             # Planner Loss
             diff = pred_steps - actual_steps
