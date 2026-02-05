@@ -191,6 +191,9 @@ class RefineMathPhysics(nnx.Module):
             refine_step, init_carry, step_keys, length=max_steps
         )
         
+        #Flip from (Steps, Batch) to (Batch, Steps)
+        step_probs = jnp.swapaxes(step_probs, 0, 1)
+        
         rem = 1.0 - final_prob
         w_out = w_out + (rem * self.decoder(final_z))
         w_z = w_z + (rem * final_z)
