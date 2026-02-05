@@ -120,24 +120,25 @@ class RefineMathPhysics(nnx.Module):
 
     def __call__(self, raw_input, max_steps=40, training=False, key=None):
         z = nnx.gelu(self.encoder(raw_input.astype(jnp.bfloat16)))
+        
+        # Calculate batch size from input (e.g., 1024)
         batch_size = z.shape[0] if z.ndim > 1 else 1
         
         predicted_steps = nnx.sigmoid(self.complexity_head(z)) * max_steps
         
         if training and key is not None:
-            if key.ndim > 1: 
-                # Case: Batch of keys (Batch, 2)
-                # We need to split each key in the batch: (Batch, Steps, 2)
-                # Then transpose to (Steps, Batch, 2) so scan can iterate over Steps
+            # This handles both shape (Batch,) [New JAX] and (Batch, 2) [Old JAX]
+            is_key_batched = (key.ndim > 0) and (key.shape[0] == batch_size)
+            
+            if is_key_batched:
                 step_keys = jax.vmap(lambda k: jax.random.split(k, max_steps))(key)
                 step_keys = jnp.swapaxes(step_keys, 0, 1)
             else:
-                # Case: Single key (2,)
+                # Case: Single key
                 step_keys = jax.random.split(key, max_steps)
         else:
             # Dummy keys must match batch shape for scan
             if z.ndim > 1:
-                batch_size = z.shape[0]
                 step_keys = jnp.zeros((max_steps, batch_size, 2), dtype=jnp.uint32)
             else:
                 step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
@@ -170,7 +171,7 @@ class RefineMathPhysics(nnx.Module):
             
             return (next_z, step_idx + 1, run_prob + p, new_out, new_z), p
 
-        # Init Carry (Smaller state!)
+        # Init Carry
         init_carry = (
             z,
             0,
