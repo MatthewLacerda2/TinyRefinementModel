@@ -120,14 +120,27 @@ class RefineMathPhysics(nnx.Module):
 
     def __call__(self, raw_input, max_steps=40, training=False, key=None):
         z = nnx.gelu(self.encoder(raw_input.astype(jnp.bfloat16)))
-        batch_size = z.shape[0]
-
+        batch_size = z.shape[0] if z.ndim > 1 else 1
+        
         predicted_steps = nnx.sigmoid(self.complexity_head(z)) * max_steps
         
         if training and key is not None:
-            step_keys = jax.random.split(key, max_steps)
+            if key.ndim > 1: 
+                # Case: Batch of keys (Batch, 2)
+                # We need to split each key in the batch: (Batch, Steps, 2)
+                # Then transpose to (Steps, Batch, 2) so scan can iterate over Steps
+                step_keys = jax.vmap(lambda k: jax.random.split(k, max_steps))(key)
+                step_keys = jnp.swapaxes(step_keys, 0, 1)
+            else:
+                # Case: Single key (2,)
+                step_keys = jax.random.split(key, max_steps)
         else:
-            step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
+            # Dummy keys must match batch shape for scan
+            if z.ndim > 1:
+                batch_size = z.shape[0]
+                step_keys = jnp.zeros((max_steps, batch_size, 2), dtype=jnp.uint32)
+            else:
+                step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
 
         def refine_step(carry, step_key_input):
             curr_z, step_idx, run_prob, w_out, w_z = carry
@@ -212,8 +225,7 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             batch_keys = jax.random.split(noise_key, expanded_inputs.shape[0])
             
             # Run model on super-batch
-            v_model = nnx.vmap(m, in_axes=(0, None, None, 0))
-            preds, _, recognition, step_probs, pred_steps = v_model(expanded_inputs, 40, True, batch_keys)
+            preds, _, recognition, step_probs, pred_steps = m(expanded_inputs, 40, True, batch_keys)
             
             # Calculate Errors per clone
             sq_err = jnp.mean((preds - expanded_targets) ** 2, axis=-1)
