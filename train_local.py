@@ -223,8 +223,28 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty):
             m = nnx.merge(graphdef, state)
             inputs, targets = PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
             
-            # Pass training=True and the noise_key
-            preds, _, recognition, step_probs, pred_steps = m(inputs, training=True, key=noise_key)
+            # --- START ADVERSARIAL ATTACK ---
+            # We want to find a perturbation 'delta' that INCREASES loss
+            def attack_loss_fn(input_perturbation):
+                # Add perturbation to input (only to positions/velocities, not flags)
+                corrupted_inputs = inputs + input_perturbation
+                
+                # Run model (no training, just inference for gradient)
+                preds, _, _, _, _ = m(corrupted_inputs, training=False, key=noise_key)
+                
+                # We want to MAXIMIZE this error, so we return it directly
+                return jnp.mean((preds - targets) ** 2)
+
+            # Calculate gradient of loss w.r.t inputs
+            attack_grad = jax.grad(attack_loss_fn)(jnp.zeros_like(inputs))
+
+            # Create the attack: Move input in the direction that hurts the model most
+            epsilon = 0.05 # How much to shake the particles
+            adversarial_inputs = inputs + (epsilon * jnp.sign(attack_grad))
+            # --- END ADVERSARIAL ATTACK ---
+            
+            # 2. Train on the ADVERSARIAL inputs, not the clean ones
+            preds, _, recognition, step_probs, pred_steps = m(adversarial_inputs, training=True, key=noise_key)
             
             # Loss Components
             main_loss = jnp.mean((preds - targets) ** 2)
@@ -275,8 +295,28 @@ optimizer = nnx.Optimizer(model, optax.adam(3e-4), wrt=nnx.Param)
 key = jax.random.key(0)
 loss_history = []
 difficulty = 0.0
-target_loss = 0.08
 start_time = time.time()
+
+# PID State for Auto-Pacer
+integral_error = 0.0
+prev_error = 0.0
+kp, ki, kd = 0.02, 0.001, 0.05  # Tuning knobs
+
+# --- LOAD CHECKPOINT ---
+ckpt_path = "physics_ckpt.pkl"
+if os.path.exists(ckpt_path):
+    print(f"📂 Loading checkpoint from {ckpt_path}...")
+    with open(ckpt_path, "rb") as f:
+        ckpt = pickle.load(f)
+        nnx.update(model, ckpt['state'])
+        difficulty = ckpt.get('difficulty', 0.0)
+    print(f"✅ Resuming at difficulty {difficulty:.3f}")
+
+# --- RESET HISTORY ---
+history_file = "training_history.json"
+with open(history_file, "w") as f:
+    json.dump([], f)
+full_history = []
 
 print("🔥 Compiling Kernels (This may take 30s)...")
 
@@ -286,7 +326,7 @@ for step in range(1000000):
     
     loss_val, step_metrics = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty)
     
-    # --- SELF-AWARE AUTO-PACER ---
+    # --- AUTO-PACER (PID Controller) ---
     loss_history.append(float(step_metrics['main_loss']))
     if len(loss_history) > 50: loss_history.pop(0)
     avg_main_loss = sum(loss_history) / len(loss_history)
@@ -294,16 +334,27 @@ for step in range(1000000):
     planner_err = float(step_metrics['planner_err'])
     avg_steps = float(step_metrics['avg_steps'])
 
-    if len(loss_history) == 50:
-        # Mastery Check: High accuracy, low steps, AND good planning
-        if avg_main_loss < target_loss and planner_err < 1.0:
-            # Everything is "too easy"
-            difficulty += 0.005
-        
-        # Hubris Check: Getting it wrong, especially if it thought it was easy
-        elif avg_main_loss > target_loss * 3 or planner_err > 5.0:
-            # Back off - we are moving too fast
-            difficulty = max(0.0, difficulty - 0.01)
+    # PID Calculation
+    current_loss = avg_main_loss
+    # Dynamic Target: We accept higher loss for higher difficulty
+    dynamic_target = 0.05 + (0.02 * difficulty) 
+    error = dynamic_target - current_loss
+
+    P = kp * error
+    I = ki * integral_error
+    D = kd * (error - prev_error)
+    adjustment = P + I + D
+
+    # Update Difficulty (Smoothly)
+    difficulty += adjustment
+    difficulty = max(0.0, difficulty) # Clamp at 0
+
+    # Update state
+    integral_error += error
+    prev_error = error
+
+    # Reset integral if we swing too hard (Anti-windup)
+    if abs(error) > 0.1: integral_error = 0.0
 
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
@@ -320,16 +371,6 @@ for step in range(1000000):
             'speed': float(sps)
         }
         
-        history_file = "training_history.json"
-        if os.path.exists(history_file):
-            with open(history_file, "r") as f:
-                try:
-                    full_history = json.load(f)
-                except:
-                    full_history = []
-        else:
-            full_history = []
-            
         full_history.append(telemetry)
         with open(history_file, "w") as f:
             json.dump(full_history, f)
