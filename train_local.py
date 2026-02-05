@@ -210,13 +210,13 @@ class RefineMathPhysics(nnx.Module):
 
 # --- 3. TRAINING LOOP ---
 @nnx.jit(static_argnums=(3,))
-def train_step(model, optimizer, subkeys, micro_batch, difficulty):
+def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_error):
     loss_scale = 1000.0
     
     def loss_fn(model):
         graphdef, state = nnx.split(model)
         
-        def scan_body(carry, key):
+        def scan_body(current_baseline, key):
             # Split key: one for Physics gen, one for Latent Noise
             phys_key, noise_key = jax.random.split(key)
             
@@ -224,67 +224,86 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty):
             inputs, targets = PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
             
             # --- START ADVERSARIAL ATTACK ---
-            # We want to find a perturbation 'delta' that INCREASES loss
             def attack_loss_fn(input_perturbation):
-                # Add perturbation to input (only to positions/velocities, not flags)
                 corrupted_inputs = inputs + input_perturbation
-                
-                # Run model (no training, just inference for gradient)
                 preds, _, _, _, _ = m(corrupted_inputs, training=False, key=noise_key)
-                
-                # We want to MAXIMIZE this error, so we return it directly
                 return jnp.mean((preds - targets) ** 2)
 
-            # Calculate gradient of loss w.r.t inputs
             attack_grad = jax.grad(attack_loss_fn)(jnp.zeros_like(inputs))
-
-            # Create the attack: Move input in the direction that hurts the model most
-            epsilon = 0.05 # How much to shake the particles
+            epsilon = 0.05 
             adversarial_inputs = inputs + (epsilon * jnp.sign(attack_grad))
             # --- END ADVERSARIAL ATTACK ---
             
-            # 2. Train on the ADVERSARIAL inputs, not the clean ones
-            preds, _, recognition, step_probs, pred_steps = m(adversarial_inputs, training=True, key=noise_key)
+            # --- GRPO/RFT SETUP ---
+            G = 4
+            expanded_inputs = jnp.repeat(adversarial_inputs, G, axis=0)
+            expanded_targets = jnp.repeat(targets, G, axis=0)
+            batch_keys = jax.random.split(noise_key, expanded_inputs.shape[0])
             
-            # Loss Components
-            main_loss = jnp.mean((preds - targets) ** 2)
-            recog_loss = jnp.mean((recognition - inputs) ** 2)
+            # Run model on super-batch
+            v_model = nnx.vmap(m, in_axes=(0, None, None, 0))
+            preds, _, recognition, step_probs, pred_steps = v_model(expanded_inputs, 40, True, batch_keys)
+            
+            # Calculate Errors per clone
+            sq_err = jnp.mean((preds - expanded_targets) ** 2, axis=-1)
+            
+            # --- ADAPTIVE REJECTION SAMPLING (RFT) ---
+            # Define Success: Beat the historical baseline (with pressure to improve)
+            dynamic_threshold = current_baseline * 0.95
+            
+            # Create Mask (1.0 if beat history, 0.0 if failed)
+            winners_mask = (sq_err < dynamic_threshold).astype(jnp.float32)
+            
+            # Fallback Logic: If no one beats the threshold, fall back to standard MSE
+            # so we don't stop learning when things get hard.
+            num_winners = jnp.sum(winners_mask)
+            effective_mask = jnp.where(num_winners > 0, winners_mask, jnp.ones_like(winners_mask))
+            
+            safe_denom = jnp.sum(effective_mask) + 1e-6
+            main_loss = jnp.sum(sq_err * effective_mask) / safe_denom
+            
+            # Update the local baseline for the next accumulation step (EMA)
+            current_batch_avg = jnp.mean(sq_err)
+            next_baseline = (0.99 * current_baseline) + (0.01 * current_batch_avg)
+            # --- END RFT LOGIC ---
+            
+            # Loss Components (using expanded batch)
+            recog_loss = jnp.mean((recognition - expanded_inputs) ** 2)
             
             # Calculate actual steps taken per sample
             steps_range = jnp.arange(step_probs.shape[0], dtype=jnp.float32)[:, None, None]
             actual_steps = jnp.sum(step_probs * steps_range, axis=0)
             
-            # 1. Planner Loss: Asymmetric (Punish Hubris)
-            # hubris = predicting easy when it's hard (underestimation)
+            # Planner Loss
             diff = pred_steps - actual_steps
-            # If diff < 0 (underestimated), multiply penalty by 3.0
             planner_err_sq = jnp.where(diff < 0, 3.0 * (diff**2), diff**2)
             planner_loss = jnp.mean(planner_err_sq)
             
-            # 2. Ponder Loss: Penalize thinking too long (efficiency)
+            # Ponder Loss
             avg_steps = jnp.mean(actual_steps)
             
             loss = main_loss + (0.5 * recog_loss) + (planner_loss * 0.1) + (avg_steps * 0.005)
             
             metrics = {
-                'main_loss': main_loss,
+                'main_loss': jnp.mean(sq_err),
                 'planner_err': jnp.mean(jnp.abs(diff)),
-                'avg_steps': avg_steps
+                'avg_steps': avg_steps,
+                'baseline': current_baseline
             }
-            return None, (loss * loss_scale, metrics)
+            return next_baseline, (loss * loss_scale, metrics)
 
-        _, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, None, subkeys)
+        updated_baseline, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, baseline_error, subkeys)
         
         # Mean across accumulation steps
         avg_metrics = jax.tree.map(jnp.mean, all_metrics)
-        return jnp.mean(losses_with_scale), avg_metrics
+        return jnp.mean(losses_with_scale), (avg_metrics, updated_baseline)
 
-    loss_s, grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (loss_s, (metrics, new_baseline)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     grads = jax.tree.map(lambda g: g / loss_scale, grads)
     optimizer.update(model, grads)
     
-    total_loss, metrics = loss_s
-    return total_loss / loss_scale, metrics
+    total_loss = loss_s
+    return total_loss / loss_scale, metrics, new_baseline
 
 # --- 4. EXECUTION ---
 print(f"🚀 Initializing Infinite Physics (Max N={MAX_N})...")
@@ -301,6 +320,9 @@ start_time = time.time()
 integral_error = 0.0
 prev_error = 0.0
 kp, ki, kd = 0.02, 0.001, 0.05  # Tuning knobs
+
+# --- ADAPTIVE RFT STATE ---
+baseline_error = 0.1
 
 # --- LOAD CHECKPOINT ---
 ckpt_path = "physics_ckpt.pkl"
@@ -324,7 +346,7 @@ for step in range(1000000):
     key, subkey = jax.random.split(key)
     subkeys = jax.random.split(subkey, ACCUM_STEPS)
     
-    loss_val, step_metrics = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty)
+    loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty, baseline_error)
     
     # --- AUTO-PACER (PID Controller) ---
     loss_history.append(float(step_metrics['main_loss']))
@@ -359,7 +381,7 @@ for step in range(1000000):
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
         active = min(1.0 + (difficulty * 3.0), MAX_N)
-        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
+        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
         # Save telemetry for plotting
