@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-MAX_N = 128         # Maximum particles (The World Size)
+MAX_N = 64         # Maximum particles (The World Size)
 LATENT_DIM = 512   # Brain Size (Keep smaller to save VRAM for particles)
 BATCH_SIZE = 128    # Micro-batch size
 ACCUM_STEPS = 2    # Gradient accumulation (Total Batch = 256)
@@ -133,7 +133,7 @@ class RefineMathPhysics(nnx.Module):
             curr_z, step_idx, run_prob, w_out, w_z = carry
             
             # 1. Feature Engineering
-            step_feat = jnp.full((batch_size, 1), step_idx, dtype=curr_z.dtype)
+            step_feat = jnp.array([step_idx], dtype=curr_z.dtype)            
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
             
             # 2. Calculate Update (ResNet block)
