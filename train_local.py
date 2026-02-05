@@ -128,7 +128,7 @@ class RefineMathPhysics(nnx.Module):
 
     def __call__(self, raw_input, max_steps=40, training=False, key=None):
         z = nnx.gelu(self.encoder(raw_input))
-        batch_size = z.shape[0]
+        batch_shape = z.shape[:-1]
 
         # Planner: Guess how hard this is before starting
         # We scale sigmoid output to [0, max_steps]
@@ -148,7 +148,7 @@ class RefineMathPhysics(nnx.Module):
             curr_z, curr_v, step_idx, run_prob, w_out, w_z = carry
             
             # 1. Feature Engineering (Add Time)
-            step_feat = jnp.full((curr_z.shape[0], 1), step_idx, dtype=curr_z.dtype)
+            step_feat = jnp.full(curr_z.shape[:-1] + (1,), step_idx, dtype=curr_z.dtype)
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
             
             # 2. Calculate "Force" (The update vector)
@@ -188,9 +188,9 @@ class RefineMathPhysics(nnx.Module):
             z,                                   # curr_z
             init_v,                              # curr_v (NEW!)
             0,                                   # step_idx
-            jnp.zeros((batch_size, 1)),          # run_prob
-            jnp.zeros((batch_size, PhysicsWorld.get_output_dim())), # w_out
-            jnp.zeros((batch_size, self.latent_dim))                # w_z
+            jnp.zeros(batch_shape + (1,)),          # run_prob
+            jnp.zeros(batch_shape + (PhysicsWorld.get_output_dim(),)), # w_out
+            jnp.zeros(batch_shape + (self.latent_dim,))                # w_z
         )
         
         # Scan over step_keys to inject unique noise per step
