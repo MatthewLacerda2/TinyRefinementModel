@@ -127,10 +127,12 @@ class RefineMathPhysics(nnx.Module):
         predicted_steps = nnx.sigmoid(self.complexity_head(z)) * max_steps
         
         if training and key is not None:
-            # This handles both shape (Batch,) [New JAX] and (Batch, 2) [Old JAX]
+            # Check if key is batched by comparing dimension to input batch size
             is_key_batched = (key.ndim > 0) and (key.shape[0] == batch_size)
             
             if is_key_batched:
+                # Case: Batch of keys 
+                # Split: (Batch, Steps) -> Swap: (Steps, Batch)
                 step_keys = jax.vmap(lambda k: jax.random.split(k, max_steps))(key)
                 step_keys = jnp.swapaxes(step_keys, 0, 1)
             else:
@@ -154,10 +156,15 @@ class RefineMathPhysics(nnx.Module):
             update = nnx.gelu(self.update_layer(combined))
             next_z_raw = curr_z + update
             
-            # 3. Noise
+            # 3. Noise (FIXED BLOCK)
             if training:
-                noise = jax.random.normal(step_key_input, next_z_raw.shape, dtype=curr_z.dtype) * 0.02
-                next_z_raw = next_z_raw + noise
+                # If we have a batch of keys, we must vmap the noise generation
+                if step_key_input.ndim > 0:
+                    noise = jax.vmap(lambda k: jax.random.normal(k, (next_z_raw.shape[-1],), dtype=curr_z.dtype))(step_key_input)
+                else:
+                    noise = jax.random.normal(step_key_input, next_z_raw.shape, dtype=curr_z.dtype)
+                
+                next_z_raw = next_z_raw + (noise * 0.02)
             
             next_z = self.norm(next_z_raw)
             
@@ -188,7 +195,6 @@ class RefineMathPhysics(nnx.Module):
         w_out = w_out + (rem * self.decoder(final_z))
         w_z = w_z + (rem * final_z)
         
-        # Cast output back to float32 for loss calculation stability
         return w_out.astype(jnp.float32), w_z.astype(jnp.float32), self.recog_fc(w_z).astype(jnp.float32), step_probs, predicted_steps
 
 # --- 3. TRAINING LOOP ---
