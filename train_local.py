@@ -8,7 +8,7 @@ from flax import nnx
 import optax
 
 MAX_N = 64         # Maximum particles (The World Size)
-LATENT_DIM = 512   # Brain Size (Keep smaller to save VRAM for particles)
+LATENT_DIM = 768   # Brain Size (Keep smaller to save VRAM for particles)
 BATCH_SIZE = 128    # Micro-batch size
 ACCUM_STEPS = 2    # Gradient accumulation (Total Batch = 256)
 
@@ -113,7 +113,9 @@ class RefineMathPhysics(nnx.Module):
         self.decoder = nnx.Linear(latent_dim, PhysicsWorld.get_output_dim(), dtype=dtype, rngs=rngs)
         self.recog_fc = nnx.Linear(latent_dim, PhysicsWorld.get_input_dim(), dtype=dtype, rngs=rngs)
         
-        self.update_layer = nnx.Linear(latent_dim + 1, latent_dim, dtype=dtype, rngs=rngs)
+        # A 2-Layer MLP "Brain"
+        self.update_fc1 = nnx.Linear(latent_dim + 1, latent_dim * 2, dtype=dtype, rngs=rngs)
+        self.update_fc2 = nnx.Linear(latent_dim * 2, latent_dim, dtype=dtype, rngs=rngs)
         
         self.norm = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
@@ -153,8 +155,9 @@ class RefineMathPhysics(nnx.Module):
             step_feat = jnp.full((curr_z.shape[0], 1), step_idx, dtype=curr_z.dtype)
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
             
-            # 2. Calculate Update (ResNet block)
-            update = nnx.gelu(self.update_layer(combined))
+            # 2. Calculate Update (MLP Block)
+            hidden = nnx.gelu(self.update_fc1(combined))
+            update = self.update_fc2(hidden) # No activation on final output of residual branch
             next_z_raw = curr_z + update
             
             # 3. Noise (FIXED BLOCK)
