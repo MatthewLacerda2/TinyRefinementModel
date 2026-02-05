@@ -331,8 +331,9 @@ if os.path.exists(ckpt_path):
     with open(ckpt_path, "rb") as f:
         ckpt = pickle.load(f)
         nnx.update(model, ckpt['state'])
-        difficulty = ckpt.get('difficulty', 0.0)
-    print(f"✅ Resuming at difficulty {difficulty:.3f}")
+        # We only use the weights; reset difficulty to 0.0 for the 're-training'
+        difficulty = 0.0
+    print(f"✅ Loaded checkpoint weights | Resetting to Difficulty 0.000")
 
 # --- RESET HISTORY ---
 history_file = "training_history.json"
