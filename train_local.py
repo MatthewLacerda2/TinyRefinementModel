@@ -133,7 +133,7 @@ class RefineMathPhysics(nnx.Module):
             curr_z, step_idx, run_prob, w_out, w_z = carry
             
             # 1. Feature Engineering
-            step_feat = jnp.array([step_idx], dtype=curr_z.dtype)            
+            step_feat = jnp.full((curr_z.shape[0], 1), step_idx, dtype=curr_z.dtype)
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
             
             # 2. Calculate Update (ResNet block)
