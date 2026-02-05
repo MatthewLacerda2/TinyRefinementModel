@@ -7,27 +7,21 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-# --- CONFIGURATION FOR RTX 2060 (6GB) ---
-# If it crashes on startup, lower MAX_N.
-# If it runs fine, try increasing MAX_N to 128 or 150.
 MAX_N = 128         # Maximum particles (The World Size)
 LATENT_DIM = 512   # Brain Size (Keep smaller to save VRAM for particles)
 BATCH_SIZE = 128    # Micro-batch size
 ACCUM_STEPS = 2    # Gradient accumulation (Total Batch = 256)
 
-# Prevent JAX from pre-allocating 100% of memory (leaves room for OS)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 # --- 1. THE UNIFIED PHYSICS ENGINE ---
 class PhysicsWorld:
     @staticmethod
     def get_input_dim():
-        # [x, y, vx, vy, mass, is_active] per particle
         return MAX_N * 6
 
     @staticmethod
     def get_output_dim():
-        # Predict [x, y] for every particle
         return MAX_N * 2
 
     @staticmethod
@@ -40,22 +34,18 @@ class PhysicsWorld:
         target_n = 1.0 + (difficulty * 3.0)
         active_count = jnp.clip(target_n, 1.0, MAX_N).astype(jnp.int32)
         
-        # Difficulty Modifiers
         G = jnp.clip(difficulty, 1.0, 10.0)             # Gravity Strength
         repulsion = jnp.clip(difficulty - 0.5, 0.0, 5.0) * 0.5 # Fluid Pressure
         
         k1, k2, k3 = jax.random.split(key, 3)
         
-        # Init all MAX_N particles
         pos = jax.random.uniform(k1, (batch_size, MAX_N, 2), minval=-5, maxval=5)
         vel = jax.random.normal(k2, (batch_size, MAX_N, 2)) * 0.5
         mass = jax.random.uniform(k3, (batch_size, MAX_N, 1), minval=0.5, maxval=2.0)
         
-        # Create Mask (1 for active, 0 for ghost)
         indices = jnp.arange(MAX_N)[None, :, None]
         mask = (indices < active_count).astype(jnp.float32)
         
-        # Zero out ghosts
         pos = pos * mask
         vel = vel * mask
         mass = mass * mask
@@ -116,97 +106,76 @@ class PhysicsWorld:
 class RefineMathPhysics(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        self.encoder = nnx.Linear(PhysicsWorld.get_input_dim(), latent_dim, rngs=rngs)
-        self.decoder = nnx.Linear(latent_dim, PhysicsWorld.get_output_dim(), rngs=rngs)
-        self.recog_fc = nnx.Linear(latent_dim, PhysicsWorld.get_input_dim(), rngs=rngs)
+        dtype = jnp.bfloat16
         
-        self.fc1 = nnx.Linear(latent_dim + 1, latent_dim * 2, rngs=rngs)
-        self.fc2 = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
-        self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
-        self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
-        self.complexity_head = nnx.Linear(latent_dim, 1, rngs=rngs)
+        self.encoder = nnx.Linear(PhysicsWorld.get_input_dim(), latent_dim, dtype=dtype, rngs=rngs)
+        self.decoder = nnx.Linear(latent_dim, PhysicsWorld.get_output_dim(), dtype=dtype, rngs=rngs)
+        self.recog_fc = nnx.Linear(latent_dim, PhysicsWorld.get_input_dim(), dtype=dtype, rngs=rngs)
+        
+        self.update_layer = nnx.Linear(latent_dim + 1, latent_dim, dtype=dtype, rngs=rngs)
+        
+        self.norm = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
+        self.halt_fc = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
+        self.complexity_head = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
 
     def __call__(self, raw_input, max_steps=40, training=False, key=None):
-        z = nnx.gelu(self.encoder(raw_input))
-        batch_shape = z.shape[:-1]
+        z = nnx.gelu(self.encoder(raw_input.astype(jnp.bfloat16)))
+        batch_size = z.shape[0]
 
-        # Planner: Guess how hard this is before starting
-        # We scale sigmoid output to [0, max_steps]
         predicted_steps = nnx.sigmoid(self.complexity_head(z)) * max_steps
-
-        # Prepare keys for noise injection (one key per step)
+        
         if training and key is not None:
             step_keys = jax.random.split(key, max_steps)
         else:
-            # If not training, just pass dummy keys (zeros)
             step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
 
         def refine_step(carry, step_key_input):
-            # Unpack the "State Vector"
-            # curr_z: Current thought position
-            # curr_v: Current "Latent Velocity" (Momentum)
-            curr_z, curr_v, step_idx, run_prob, w_out, w_z = carry
+            curr_z, step_idx, run_prob, w_out, w_z = carry
             
-            # 1. Feature Engineering (Add Time)
-            step_feat = jnp.full(curr_z.shape[:-1] + (1,), step_idx, dtype=curr_z.dtype)
+            # 1. Feature Engineering
+            step_feat = jnp.full((batch_size, 1), step_idx, dtype=curr_z.dtype)
             combined = jnp.concatenate([curr_z, step_feat], axis=-1)
             
-            # 2. Calculate "Force" (The update vector)
-            h = nnx.gelu(self.fc1(combined))
-            force = self.fc2(h) # This is 'Acceleration'
+            # 2. Calculate Update (ResNet block)
+            update = nnx.gelu(self.update_layer(combined))
+            next_z_raw = curr_z + update
             
-            # 3. Apply Second-Order Dynamics (Momentum)
-            # v_{t+1} = friction * v_t + force
-            # friction=0.6 gives it "weight" but stops it from spiraling out of control
-            next_v = (0.6 * curr_v) + (0.1 * force)
-            
-            # 4. Update Position
-            next_z_raw = curr_z + next_v
-            
-            # Only applies if 'training' was True (handled by key splitting)
+            # 3. Noise
             if training:
-                noise = jax.random.normal(step_key_input, next_z_raw.shape) * 0.02
+                noise = jax.random.normal(step_key_input, next_z_raw.shape, dtype=curr_z.dtype) * 0.02
                 next_z_raw = next_z_raw + noise
             
-            next_z = next_z_raw
+            next_z = self.norm(next_z_raw)
             
-            # 6. Halt Logic (PonderNet)
+            # 4. Halt Logic
             halt = nnx.sigmoid(self.halt_fc(next_z))
             p = halt * (1.0 - run_prob)
             
-            # 7. Accumulate Output
+            # 5. Accumulate
             new_out = w_out + (p * self.decoder(next_z))
             new_z = w_z + (p * next_z)
             
-            return (next_z, next_v, step_idx + 1, run_prob + p, new_out, new_z), p
+            return (next_z, step_idx + 1, run_prob + p, new_out, new_z), p
 
-        # Initialize State
-        # Velocity starts at zero
-        init_v = jnp.zeros_like(z)
-        
+        # Init Carry (Smaller state!)
         init_carry = (
-            z,                                   # curr_z
-            init_v,                              # curr_v (NEW!)
-            0,                                   # step_idx
-            jnp.zeros(batch_shape + (1,)),          # run_prob
-            jnp.zeros(batch_shape + (PhysicsWorld.get_output_dim(),)), # w_out
-            jnp.zeros(batch_shape + (self.latent_dim,))                # w_z
+            z,
+            0,
+            jnp.zeros((batch_size, 1), dtype=jnp.bfloat16),
+            jnp.zeros((batch_size, PhysicsWorld.get_output_dim()), dtype=jnp.bfloat16),
+            jnp.zeros((batch_size, self.latent_dim), dtype=jnp.bfloat16)
         )
         
-        # Scan over step_keys to inject unique noise per step
-        (final_z, _, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(
-            refine_step, 
-            init_carry, 
-            step_keys, # Iterate over these keys
-            length=max_steps
+        (final_z, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(
+            refine_step, init_carry, step_keys, length=max_steps
         )
         
-        # Handle Remainder
         rem = 1.0 - final_prob
         w_out = w_out + (rem * self.decoder(final_z))
         w_z = w_z + (rem * final_z)
         
-        return w_out, w_z, self.recog_fc(w_z), step_probs, predicted_steps
+        # Cast output back to float32 for loss calculation stability
+        return w_out.astype(jnp.float32), w_z.astype(jnp.float32), self.recog_fc(w_z).astype(jnp.float32), step_probs, predicted_steps
 
 # --- 3. TRAINING LOOP ---
 @nnx.jit(static_argnums=(3,))
@@ -221,7 +190,9 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty, baseline_erro
             phys_key, noise_key = jax.random.split(key)
             
             m = nnx.merge(graphdef, state)
-            inputs, targets = PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
+            inputs, targets = jax.lax.stop_gradient(
+                PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
+            )
             
             # --- START ADVERSARIAL ATTACK ---
             def attack_loss_fn(input_perturbation):
@@ -341,15 +312,14 @@ if os.path.exists(ckpt_path):
         difficulty = 0.0
     print(f"✅ Loaded checkpoint weights | Resetting to Difficulty 0.000")
 
-# --- RESET HISTORY ---
-history_file = "training_history.json"
-with open(history_file, "w") as f:
-    json.dump([], f)
-full_history = []
+# --- RESET LOGGING ---
+log_file = "training_log.csv"
+if os.path.exists(log_file):
+    os.remove(log_file) # Start fresh
 
 print("🔥 Compiling Kernels (This may take 30s)...")
 
-for step in range(1000000):
+for step in range(50000):
     key, subkey = jax.random.split(key)
     subkeys = jax.random.split(subkey, ACCUM_STEPS)
     
@@ -391,18 +361,12 @@ for step in range(1000000):
         print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
-        # Save telemetry for plotting
-        telemetry = {
-            'step': step,
-            'difficulty': float(difficulty),
-            'loss': float(loss_val),
-            'avg_loss': float(avg_main_loss),
-            'speed': float(sps)
-        }
-        
-        full_history.append(telemetry)
-        with open(history_file, "w") as f:
-            json.dump(full_history, f)
+        # Save telemetry for plotting (Fast & Infinite)
+        file_exists = os.path.isfile(log_file)
+        with open(log_file, "a") as f:
+            if not file_exists:
+                f.write("step,difficulty,loss,avg_loss,speed,planner_err,avg_steps\n")
+            f.write(f"{step},{difficulty:.4f},{float(loss_val):.4f},{avg_main_loss:.4f},{sps:.1f},{planner_err:.4f},{avg_steps:.2f}\n")
             
         if step % 1000 == 0 and step > 0:
             with open("physics_ckpt.pkl", "wb") as f:
