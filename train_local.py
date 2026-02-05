@@ -234,22 +234,37 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty):
             steps_range = jnp.arange(step_probs.shape[0], dtype=jnp.float32)[:, None, None]
             actual_steps = jnp.sum(step_probs * steps_range, axis=0)
             
-            # 1. Planner Loss: Penalize if the initial "guess" was wrong
-            planner_loss = jnp.mean((pred_steps - actual_steps) ** 2)
+            # 1. Planner Loss: Asymmetric (Punish Hubris)
+            # hubris = predicting easy when it's hard (underestimation)
+            diff = pred_steps - actual_steps
+            # If diff < 0 (underestimated), multiply penalty by 3.0
+            planner_err_sq = jnp.where(diff < 0, 3.0 * (diff**2), diff**2)
+            planner_loss = jnp.mean(planner_err_sq)
             
             # 2. Ponder Loss: Penalize thinking too long (efficiency)
             avg_steps = jnp.mean(actual_steps)
             
             loss = main_loss + (0.5 * recog_loss) + (planner_loss * 0.1) + (avg_steps * 0.005)
-            return None, loss * loss_scale
+            
+            metrics = {
+                'main_loss': main_loss,
+                'planner_err': jnp.mean(jnp.abs(diff)),
+                'avg_steps': avg_steps
+            }
+            return None, (loss * loss_scale, metrics)
 
-        _, losses = jax.lax.scan(scan_body, None, subkeys)
-        return jnp.mean(losses)
+        _, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, None, subkeys)
+        
+        # Mean across accumulation steps
+        avg_metrics = jax.tree.map(jnp.mean, all_metrics)
+        return jnp.mean(losses_with_scale), avg_metrics
 
-    loss_s, grads = nnx.value_and_grad(loss_fn)(model)
+    loss_s, grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     grads = jax.tree.map(lambda g: g / loss_scale, grads)
     optimizer.update(model, grads)
-    return loss_s / loss_scale
+    
+    total_loss, metrics = loss_s
+    return total_loss / loss_scale, metrics
 
 # --- 4. EXECUTION ---
 print(f"🚀 Initializing Infinite Physics (Max N={MAX_N})...")
@@ -269,25 +284,31 @@ for step in range(1000000):
     key, subkey = jax.random.split(key)
     subkeys = jax.random.split(subkey, ACCUM_STEPS)
     
-    loss_val = float(train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty))
+    loss_val, step_metrics = train_step(model, optimizer, subkeys, BATCH_SIZE, difficulty)
     
-    # --- AUTO-PACER ---
-    loss_history.append(loss_val)
+    # --- SELF-AWARE AUTO-PACER ---
+    loss_history.append(float(step_metrics['main_loss']))
     if len(loss_history) > 50: loss_history.pop(0)
-    avg_loss = sum(loss_history) / len(loss_history)
+    avg_main_loss = sum(loss_history) / len(loss_history)
     
+    planner_err = float(step_metrics['planner_err'])
+    avg_steps = float(step_metrics['avg_steps'])
+
     if len(loss_history) == 50:
-        if avg_loss < target_loss:
-            # Speed up!
-            difficulty += 0.002
-        elif avg_loss > target_loss * 5:
-            # Slow down / Back off
-            difficulty = max(0.0, difficulty - 0.005)
+        # Mastery Check: High accuracy, low steps, AND good planning
+        if avg_main_loss < target_loss and planner_err < 1.0:
+            # Everything is "too easy"
+            difficulty += 0.003
+        
+        # Hubris Check: Getting it wrong, especially if it thought it was easy
+        elif avg_main_loss > target_loss * 3 or planner_err > 5.0:
+            # Back off - we are moving too fast
+            difficulty = max(0.0, difficulty - 0.01)
 
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
         active = min(1.0 + (difficulty * 3.0), MAX_N)
-        print(f"Step {step} | Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_loss:.4f} | {sps:.1f} steps/s")
+        print(f"Step {step} | Diff: {difficulty:.3f} (N~{int(active)}) | Loss: {avg_main_loss:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
         # Save telemetry for plotting
