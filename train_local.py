@@ -124,10 +124,15 @@ class RefineMathPhysics(nnx.Module):
         self.fc2 = nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs)
         self.norm = nnx.LayerNorm(latent_dim, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, rngs=rngs)
+        self.complexity_head = nnx.Linear(latent_dim, 1, rngs=rngs)
 
     def __call__(self, raw_input, max_steps=40, training=False, key=None):
         z = nnx.gelu(self.encoder(raw_input))
         batch_size = z.shape[0]
+
+        # Planner: Guess how hard this is before starting
+        # We scale sigmoid output to [0, max_steps]
+        predicted_steps = nnx.sigmoid(self.complexity_head(z)) * max_steps
 
         # Prepare keys for noise injection (one key per step)
         if training and key is not None:
@@ -201,7 +206,7 @@ class RefineMathPhysics(nnx.Module):
         w_out = w_out + (rem * self.decoder(final_z))
         w_z = w_z + (rem * final_z)
         
-        return w_out, w_z, self.recog_fc(w_z), step_probs
+        return w_out, w_z, self.recog_fc(w_z), step_probs, predicted_steps
 
 # --- 3. TRAINING LOOP ---
 @nnx.jit(static_argnums=(3,))
@@ -219,16 +224,23 @@ def train_step(model, optimizer, subkeys, micro_batch, difficulty):
             inputs, targets = PhysicsWorld.generate_batch(phys_key, micro_batch, difficulty)
             
             # Pass training=True and the noise_key
-            preds, _, recognition, step_probs = m(inputs, training=True, key=noise_key)
+            preds, _, recognition, step_probs, pred_steps = m(inputs, training=True, key=noise_key)
             
             # Loss Components
             main_loss = jnp.mean((preds - targets) ** 2)
             recog_loss = jnp.mean((recognition - inputs) ** 2)
             
-            steps = jnp.arange(step_probs.shape[0])[:, None, None]
-            avg_steps = jnp.sum(step_probs * steps) / micro_batch
+            # Calculate actual steps taken per sample
+            steps_range = jnp.arange(step_probs.shape[0], dtype=jnp.float32)[:, None, None]
+            actual_steps = jnp.sum(step_probs * steps_range, axis=0)
             
-            loss = main_loss + (0.5 * recog_loss) + (avg_steps * 0.005)
+            # 1. Planner Loss: Penalize if the initial "guess" was wrong
+            planner_loss = jnp.mean((pred_steps - actual_steps) ** 2)
+            
+            # 2. Ponder Loss: Penalize thinking too long (efficiency)
+            avg_steps = jnp.mean(actual_steps)
+            
+            loss = main_loss + (0.5 * recog_loss) + (planner_loss * 0.1) + (avg_steps * 0.005)
             return None, loss * loss_scale
 
         _, losses = jax.lax.scan(scan_body, None, subkeys)
