@@ -315,7 +315,7 @@ for step in range(1000000):
         telemetry = {
             'step': step,
             'difficulty': float(difficulty),
-            'loss': loss_val,
+            'loss': float(loss_val),
             'avg_loss': float(avg_main_loss),
             'speed': float(sps)
         }
