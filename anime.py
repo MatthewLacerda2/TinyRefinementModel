@@ -2,7 +2,8 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import pickle
 from flax import nnx
-import jax.numpy as jnp
+from train_local import RefineMathPhysics
+from train_local import LATENT_DIM
 
 # 1. Load the model
 model = RefineMathPhysics(LATENT_DIM, nnx.Rngs(0))
