@@ -119,7 +119,7 @@ class PhysicsWorld:
             
             # 1. Floor Collision (Earth Only)
             floor_y = -5.0
-            hit_floor = (p_new[:, :, 1] < floor_y) & (mode[:, :, 0] > 0.5)
+            hit_floor = (p_new[:, :, 1] < floor_y) & (mode > 0.5)
             
             # Bounce: Reverse Y velocity, lose energy (inelastic collision)
             v_new = v_new.at[:, :, 1].set(
