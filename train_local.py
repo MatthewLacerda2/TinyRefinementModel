@@ -18,7 +18,9 @@ os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 class PhysicsWorld:
     @staticmethod
     def get_input_dim():
-        return MAX_N * 6
+        # Added 1 extra dimension for "Context" (Is this Space or Earth?)
+        # This helps the brain switch its reasoning mode.
+        return (MAX_N * 6) + 1 
 
     @staticmethod
     def get_output_dim():
@@ -26,24 +28,35 @@ class PhysicsWorld:
 
     @staticmethod
     def generate_batch(key, batch_size, difficulty, steps):
-        # 0.0 - 1.0: Linear (1 particle)
-        # 1.0 - 2.0: Projectile/Orbit (2-3 particles)
-        # 2.0 - 10.0: Chaos/Fluids (up to MAX_N particles)
+        # --- 1. SETUP CONSTANTS ---
+        # We mix two modes: 
+        # Mode 0 = Orbital/Space (Central Gravity, No Friction)
+        # Mode 1 = Terrestrial/Earth (Down Gravity, Floor, Friction)
         
-        # Scale active particles based on difficulty - "Not Wider"
-        # We slow down the growth of particle count to focus on simulation depth
-        target_n = 1.0 + (difficulty * 0.5) 
-        active_count = jnp.clip(target_n, 1.0, MAX_N).astype(jnp.int32)
+        mode_key, init_key, sim_key = jax.random.split(key, 3)
         
-        G = jnp.clip(difficulty, 1.0, 10.0)             # Gravity Strength
-        repulsion = jnp.clip(difficulty - 0.5, 0.0, 5.0) * 0.5 # Fluid Pressure
+        # 50/50 chance of Space vs Earth
+        mode = jax.random.bernoulli(mode_key, p=0.5, shape=(batch_size, 1)).astype(jnp.float32)
         
-        k1, k2, k3 = jax.random.split(key, 3)
+        # Difficulty scales the "Chaos"
+        active_count = jnp.clip(2.0 + difficulty, 2.0, MAX_N).astype(jnp.int32)
         
-        pos = jax.random.uniform(k1, (batch_size, MAX_N, 2), minval=-5, maxval=5)
-        vel = jax.random.normal(k2, (batch_size, MAX_N, 2)) * 0.5
-        mass = jax.random.uniform(k3, (batch_size, MAX_N, 1), minval=0.5, maxval=2.0)
+        # --- 2. INITIALIZATION ---
+        # Position: Spread out more for space, start higher up for Earth
+        pos_space = jax.random.uniform(init_key, (batch_size, MAX_N, 2), minval=-5, maxval=5)
+        pos_earth = jax.random.uniform(init_key, (batch_size, MAX_N, 2), minval=-4, maxval=4)
+        # Shift earth particles up so they can fall
+        pos_earth = pos_earth.at[:, :, 1].add(3.0) 
         
+        pos = jnp.where(mode[..., None], pos_earth, pos_space)
+
+        # Velocity: Space has high velocity (orbits), Earth has low velocity (drops/throws)
+        vel = jax.random.normal(init_key, (batch_size, MAX_N, 2))
+        vel = jnp.where(mode[..., None], vel * 0.5, vel * 1.5) # Slower on Earth
+        
+        mass = jax.random.uniform(init_key, (batch_size, MAX_N, 1), minval=0.5, maxval=3.0)
+
+        # Masking inactive particles
         indices = jnp.arange(MAX_N)[None, :, None]
         mask = (indices < active_count).astype(jnp.float32)
         
@@ -51,41 +64,79 @@ class PhysicsWorld:
         vel = vel * mask
         mass = mass * mask
 
-        # --- PHYSICS KERNEL ---
-        def get_acc(p, m, active_mask):
-            # Pairwise Distances
+        # --- 3. PHYSICS KERNEL ---
+        def get_acc(p, v, m, active_mask, current_mode):
+            # A. Particle Interaction (Everything repels to simulate solidity)
             diff = p[:, :, None, :] - p[:, None, :, :]
-            dist_sq = jnp.sum(diff**2, axis=-1, keepdims=True) + 1e-3
+            dist_sq = jnp.sum(diff**2, axis=-1, keepdims=True) + 1e-4
             dist = jnp.sqrt(dist_sq)
             
-            # Gravity (Attraction)
-            force_mag = (G * m[:, None, :, :] * m[:, :, None, :]) / dist_sq
+            # Repulsion (Hooke's/Lennard-Jones style very short range)
+            # This makes things "solid" rather than ghostly
+            repulse = 50.0 * jnp.exp(-dist_sq * 2.0)
             
-            # Repulsion (Pressure - prevents collapse)
-            repulse_force = (repulsion * 10.0) / (dist_sq * dist + 1e-3)
+            # Mutual Gravity (Only matters in Space mode largely, but calculated always)
+            force_g = (2.0 * m[:, None, :, :] * m[:, :, None, :]) / dist_sq
             
-            total_f_mag = force_mag - repulse_force
-            force_vec = (diff / dist) * total_f_mag
+            total_force = (diff / dist) * (force_g - repulse)
             
-            # Mask interactions
+            # Mask self-interaction and inactive
             valid = active_mask[:, :, None, :] * active_mask[:, None, :, :]
-            force_vec = force_vec * valid
+            # Remove diagonal (self-interaction)
+            eye = jnp.eye(MAX_N)[None, :, :, None]
+            valid = valid * (1.0 - eye)
             
-            acc = jnp.sum(force_vec, axis=2) / (m + 1e-6)
-            return acc * active_mask
+            interaction_acc = jnp.sum(total_force * valid, axis=2) / (m + 1e-6)
+            
+            # B. Global Gravity
+            # Space: Gravity is 0 (or central). Let's say 0 for pure momentum.
+            # Earth: Gravity is (0, -9.8)
+            gravity_earth = jnp.array([0.0, -9.8])[None, None, :]
+            gravity_space = -0.5 * p # Slight central pull to keep things in frame
+            
+            env_acc = jnp.where(current_mode[..., None] > 0.5, gravity_earth, gravity_space)
+            
+            # C. Drag / Air Resistance (Crucial for human intuition)
+            # Earth has air (drag), Space is vacuum (no drag)
+            drag_factor = jnp.where(current_mode[..., None] > 0.5, 0.05, 0.0)
+            drag_acc = -v * drag_factor
+            
+            return (interaction_acc + env_acc + drag_acc) * active_mask
 
         # Simulation Loop
-        dt = 0.05
-        # Use the passed-in prediction horizon
+        dt = 0.03 # Slightly finer timestep for collisions
 
         def sim_step(carry, _):
             p, v = carry
-            a = get_acc(p, mass, mask)
+            a = get_acc(p, v, mass, mask, mode)
+            
             v_new = v + a * dt
             p_new = p + v_new * dt
             
-            # Bouncy Box Walls
-            v_new = jnp.where((p_new > 10) | (p_new < -10), -v_new, v_new)
+            # --- BOUNDARIES ---
+            # Space: Bouncy box walls (-10 to 10)
+            # Earth: Floor at -5.0, Walls at -10/10, Open Ceiling
+            
+            # 1. Floor Collision (Earth Only)
+            floor_y = -5.0
+            hit_floor = (p_new[:, :, 1] < floor_y) & (mode[:, :, 0] > 0.5)
+            
+            # Bounce: Reverse Y velocity, lose energy (inelastic collision)
+            v_new = v_new.at[:, :, 1].set(
+                jnp.where(hit_floor, -v_new[:, :, 1] * 0.7, v_new[:, :, 1])
+            )
+            p_new = p_new.at[:, :, 1].set(
+                jnp.where(hit_floor, floor_y + 0.01, p_new[:, :, 1])
+            )
+            
+            # Friction on floor (If touching floor, slow down X)
+            v_new = v_new.at[:, :, 0].set(
+                jnp.where(hit_floor, v_new[:, :, 0] * 0.9, v_new[:, :, 0])
+            )
+
+            # 2. General Box Walls (Left/Right/Top/Bottom for Space)
+            # Simple clamp for stability
+            v_new = jnp.where((p_new > 10) | (p_new < -10), -v_new * 0.8, v_new)
             p_new = jnp.clip(p_new, -10, 10)
             
             # Re-mask
@@ -98,7 +149,10 @@ class PhysicsWorld:
         mask_broadcasted = jnp.broadcast_to(mask, (batch_size, MAX_N, 1))
         
         # Flatten for Model
-        inputs = jnp.concatenate([pos, vel, mass, mask_broadcasted], axis=-1).reshape(batch_size, -1)
+        # We append 'mode' once at the end to match get_input_dim(): (MAX_N * 6) + 1
+        flat_particles = jnp.concatenate([pos, vel, mass, mask_broadcasted], axis=-1).reshape(batch_size, -1)
+        inputs = jnp.concatenate([flat_particles, mode], axis=-1)
+        
         targets = final_p.reshape(batch_size, -1)
         
         return inputs, targets
@@ -318,6 +372,7 @@ key = jax.random.key(0)
 loss_history = []
 difficulty = 0.0
 start_time = time.time()
+step = 0  # Manual step counter for infinite loop
 
 # PID State for Auto-Pacer
 integral_error = 0.0
@@ -334,22 +389,23 @@ if os.path.exists(ckpt_path):
     with open(ckpt_path, "rb") as f:
         ckpt = pickle.load(f)
         nnx.update(model, ckpt['state'])
-        # We only use the weights; reset difficulty to 0.0 for the 're-training'
-        difficulty = 0.0
+        difficulty = 0.0 # Reset curriculum to verify mastery from scratch
     print(f"✅ Loaded checkpoint weights | Resetting to Difficulty 0.000")
 
 # --- RESET LOGGING ---
 log_file = "training_log.csv"
 if os.path.exists(log_file):
-    os.remove(log_file) # Start fresh
+    os.remove(log_file) 
 
 print("🔥 Compiling Kernels (This may take 30s)...")
 
-for step in range(50000):
+# allow it to run until Mastery
+while True:
+    step += 1
     key, subkey = jax.random.split(key)
     subkeys = jax.random.split(subkey, ACCUM_STEPS)
     
-    # Curriculum modification: Deeper, not wider
+    # Curriculum: Deeper, not wider
     prediction_horizon = int(5 + (difficulty * 35))
     
     loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, prediction_horizon, difficulty, baseline_error)
@@ -375,28 +431,43 @@ for step in range(50000):
 
     # Update Difficulty (Smoothly)
     difficulty += adjustment
-    difficulty = max(0.0, difficulty) # Clamp at 0
+    difficulty = max(0.0, difficulty)
 
     # Update state
     integral_error += error
     prev_error = error
-
+    
     # Reset integral if we swing too hard (Anti-windup)
     if abs(error) > 0.1: integral_error = 0.0
 
     if step % 50 == 0:
         sps = 50 / (time.time() - start_time + 1e-6)
-        active = min(1.0 + (difficulty * 0.5), MAX_N)
-        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(active)}, Steps: {prediction_horizon}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
+        
+        # Calculate how many particles are currently active
+        # Based on: active_count = clip(2.0 + difficulty, ...)
+        current_active_particles = 2.0 + difficulty
+        
+        print(f"Step {step} Diff: {difficulty:.3f} (N~{int(current_active_particles)}, Steps: {prediction_horizon}) | Loss: {avg_main_loss:.4f} | Base: {baseline_error:.4f} | PlanErr: {planner_err:.2f} | {sps:.1f} steps/s")
         start_time = time.time()
         
-        # Save telemetry for plotting (Fast & Infinite)
-        file_exists = os.path.isfile(log_file)
+        # Save telemetry
         with open(log_file, "a") as f:
-            if not file_exists:
-                f.write("step,difficulty,loss,avg_loss,speed,planner_err,avg_steps\n")
             f.write(f"{step},{difficulty:.4f},{float(loss_val):.4f},{avg_main_loss:.4f},{sps:.1f},{planner_err:.4f},{avg_steps:.2f}\n")
             
-        if step % 1000 == 0 and step > 0:
+        if step % 1000 == 0:
             with open("physics_ckpt.pkl", "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
+
+        # --- STOPPING CONDITION: MASTERY ---
+        # 1. We have reached the maximum world size (MAX_N)
+        # 2. The loss is consistently low (below target)
+        if current_active_particles >= MAX_N and avg_main_loss < 0.05:
+            print(f"\n🎓 MASTERY ACHIEVED at Step {step}!")
+            print(f"   - Difficulty: {difficulty:.2f} (Max N={MAX_N})")
+            print(f"   - Avg Loss: {avg_main_loss:.4f}")
+            print("   - Stopping Training.")
+            
+            # Save Final Model
+            with open("physics_mastered.pkl", "wb") as f:
+                pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
+            break
