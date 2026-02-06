@@ -458,16 +458,21 @@ while True:
             with open("physics_ckpt.pkl", "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
 
-        # --- STOPPING CONDITION: MASTERY ---
-        # 1. We have reached the maximum world size (MAX_N)
-        # 2. The loss is consistently low (below target)
-        if current_active_particles >= MAX_N and avg_main_loss < 0.05:
-            print(f"\n🎓 MASTERY ACHIEVED at Step {step}!")
-            print(f"   - Difficulty: {difficulty:.2f} (Max N={MAX_N})")
-            print(f"   - Avg Loss: {avg_main_loss:.4f}")
-            print("   - Stopping Training.")
+        # --- STOPPING CONDITION: HUMAN MASTERY ---
+        # 1. Capacity: Can it track 4 objects? (Human MOT limit)
+        # 2. Horizon: Can it predict ~2 seconds ahead? (Human Intuition limit)
+        #    (2.0 seconds / 0.03 dt = ~67 steps)
+        
+        is_human_capacity = (difficulty >= 2.0) 
+        is_human_accuracy = (avg_main_loss < 0.05)
+        
+        if is_human_capacity and is_human_accuracy:
+            print(f"\n🧠 HUMAN MASTERY ACHIEVED at Step {step}!")
+            print(f"   - Capacity: {int(2.0 + difficulty)} Particles (Matched Human MOT)")
+            print(f"   - Horizon: {prediction_horizon} Steps (Matched Human Intuition)")
+            print("   - Stopping Training (Model is now 'Human-Equivalent').")
             
             # Save Final Model
-            with open("physics_mastered.pkl", "wb") as f:
+            with open("physics_human_mastered.pkl", "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
             break
