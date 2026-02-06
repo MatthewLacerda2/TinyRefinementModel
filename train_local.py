@@ -8,7 +8,7 @@ from flax import nnx
 import optax
 
 MAX_N = 64         # Maximum particles (The World Size)
-LATENT_DIM = 768   # Brain Size (Keep smaller to save VRAM for particles)
+LATENT_DIM = 512   # Brain Size (Keep smaller to save VRAM for particles)
 BATCH_SIZE = 128    # Micro-batch size
 ACCUM_STEPS = 2    # Gradient accumulation (Total Batch = 256)
 
@@ -233,7 +233,7 @@ def train_step(model, optimizer, subkeys, micro_batch, prediction_horizon, diffi
             # --- END ADVERSARIAL ATTACK ---
             
             # --- GRPO/RFT SETUP ---
-            G = 8
+            G = 4
             expanded_inputs = jnp.repeat(adversarial_inputs, G, axis=0)
             expanded_targets = jnp.repeat(targets, G, axis=0)
             batch_keys = jax.random.split(noise_key, expanded_inputs.shape[0])
