@@ -9,7 +9,7 @@ import optax
 
 MAX_N = 64
 LATENT_DIM = 512
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 ACCUM_STEPS = 16
 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
@@ -25,24 +25,6 @@ SOS_ID = ENCODING.n_vocab
 EOS_ID = ENCODING.n_vocab + 1
 PAD_ID = ENCODING.n_vocab + 2
 VOCAB_SIZE = ENCODING.n_vocab + 3
-
-# Precompute valid ids for random generation (digits and symbols)
-# We select single-token representations for 0-9 and operators
-_DIGITS = [str(i) for i in range(10)]
-_SYMBOLS = list("+-*()= ")
-_VALID_TOKENS_STR = _DIGITS + _SYMBOLS
-# Ensure they map to single tokens (cl100k usually does for these)
-VALID_TOKEN_IDS_LIST = []
-for t in _VALID_TOKENS_STR:
-    ids = ENCODING.encode(t)
-    if len(ids) == 1:
-        VALID_TOKEN_IDS_LIST.append(ids[0])
-    else:
-        # Fallback or just take first? For digits/ops in cl100k they are single.
-        VALID_TOKEN_IDS_LIST.append(ids[0])
-
-VALID_TOKEN_IDS = jnp.array(VALID_TOKEN_IDS_LIST, dtype=jnp.int32)
-
 
 class UniversalTaskWorld:
     # A tiny "Physics Textbook" for the model to memorize
