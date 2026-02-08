@@ -147,7 +147,7 @@ class UniversalReasoner(nnx.Module):
             step_keys = jnp.zeros((max_steps, batch_size, 2) if z.ndim > 1 else (max_steps, 2), dtype=jnp.uint32)
 
         def refine_step(carry, step_key_input):
-            curr_z, step_idx, run_prob, w_out, w_z = carry
+            curr_z, step_idx, run_prob, w_z = carry
             
             next_z_raw = self.processor(curr_z)
             
@@ -164,26 +164,27 @@ class UniversalReasoner(nnx.Module):
             halt = nnx.sigmoid(jnp.mean(self.halt_fc(next_z), axis=1))
             p = halt * (1.0 - run_prob)
             
-            new_out = w_out + (p[:, :, None] * self.decoder(next_z))
             new_z = w_z + (p[:, :, None] * next_z)
             
-            return (next_z, step_idx + 1, run_prob + p, new_out, new_z), p
+            return (next_z, step_idx + 1, run_prob + p, new_z), p
 
         init_carry = (
             z,
             0,
             jnp.zeros((batch_size, 1), dtype=jnp.float32),
-            jnp.zeros((batch_size, seq_len, VOCAB_SIZE), dtype=jnp.float32),
             jnp.zeros((batch_size, seq_len, self.latent_dim), dtype=jnp.float32)
         )
         
-        (final_z, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(
+        (final_z, _, final_prob, w_z), step_probs = jax.lax.scan(
             refine_step, init_carry, step_keys, length=max_steps
         )
         
         step_probs = jnp.swapaxes(step_probs, 0, 1)
+        
         rem = 1.0 - final_prob
-        w_out = w_out + (rem[:, :, None] * self.decoder(final_z))
+        final_w_z = w_z + (rem[:, :, None] * final_z)
+        
+        w_out = self.decoder(final_w_z)
         
         # Output is (batch, seq_len, vocab_size)
         return w_out.astype(jnp.float32), step_probs, predicted_steps
