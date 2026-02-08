@@ -213,7 +213,7 @@ def train_step(model, optimizer, batch_q, batch_a, noise_keys, difficulty, basel
             token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-6)
             
             # Accuracy only on non-padding tokens
-            correct = (jnp.argmax(preds, axis=-1) == targets)
+            correct = (jnp.argmax(preds, axis=-1) == a_in)
             accuracy = jnp.sum(correct * mask) / (jnp.sum(mask) + 1e-6)
             
             # Latent Reasoning Penalty (encourage efficiency)
