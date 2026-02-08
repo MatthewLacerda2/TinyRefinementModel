@@ -186,7 +186,7 @@ class UniversalReasoner(nnx.Module):
         
         # Positions are now handled by RoPE within the LatentReasoningBlock
         
-        batch_size = z.shape[0]
+        batch_size, seq_len, _ = z.shape
         
         # Predict complexity based on the whole sequence
         predicted_steps = nnx.sigmoid(jnp.mean(self.complexity_head(z), axis=1)) * max_steps
