@@ -117,6 +117,22 @@ class PhysicsWorld:
         
         return inputs, targets
 
+class LatentReasoningBlock(nnx.Module):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
+        self.attn = nnx.MultiHeadAttention(num_heads=num_heads, in_features=latent_dim, dtype=dtype, rngs=rngs)
+        self.norm1 = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
+        self.fc = nnx.Linear(latent_dim, latent_dim, dtype=dtype, rngs=rngs)
+        self.norm2 = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
+
+    def __call__(self, z):
+        z_norm = self.norm1(z)
+        z_attn = self.attn(z_norm, z_norm)
+        z = z + z_attn
+        
+        z_next = self.fc(self.norm2(z))
+        z = z + nnx.gelu(z_next)
+        return z
+
 class RefineMathPhysics(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
@@ -126,8 +142,7 @@ class RefineMathPhysics(nnx.Module):
         self.decoder = nnx.Linear(latent_dim, PhysicsWorld.get_output_dim(), dtype=dtype, rngs=rngs)
         self.recog_fc = nnx.Linear(latent_dim, PhysicsWorld.get_input_dim(), dtype=dtype, rngs=rngs)
         
-        self.update_fc1 = nnx.Linear(latent_dim + 1, latent_dim * 2, dtype=dtype, rngs=rngs)
-        self.update_fc2 = nnx.Linear(latent_dim * 2, latent_dim, dtype=dtype, rngs=rngs)
+        self.processor = LatentReasoningBlock(latent_dim, num_heads=4, rngs=rngs, dtype=dtype)
         
         self.norm = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
         self.halt_fc = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
@@ -157,12 +172,8 @@ class RefineMathPhysics(nnx.Module):
         def refine_step(carry, step_key_input):
             curr_z, step_idx, run_prob, w_out, w_z = carry
             
-            step_feat = jnp.full((curr_z.shape[0], 1), step_idx, dtype=curr_z.dtype)
-            combined = jnp.concatenate([curr_z, step_feat], axis=-1)
-            
-            hidden = nnx.gelu(self.update_fc1(combined))
-            update = self.update_fc2(hidden)
-            next_z_raw = curr_z + update
+            z_seq = curr_z[:, None, :]
+            next_z_raw = self.processor(z_seq).squeeze(1)
             
             if training:
                 if step_key_input.ndim > 0:
