@@ -110,7 +110,7 @@ class UniversalTaskWorld:
 
 
 class LatentReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = nnx.MultiHeadAttention(num_heads=num_heads, in_features=latent_dim, dtype=dtype, rngs=rngs)
         self.norm1 = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
         self.fc = nnx.Linear(latent_dim, latent_dim, dtype=dtype, rngs=rngs)
@@ -128,7 +128,7 @@ class LatentReasoningBlock(nnx.Module):
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        dtype = jnp.bfloat16
+        dtype = jnp.float32
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=dtype, rngs=rngs)
@@ -190,9 +190,9 @@ class UniversalReasoner(nnx.Module):
         init_carry = (
             z,
             0,
-            jnp.zeros((batch_size, 1), dtype=jnp.bfloat16),
-            jnp.zeros((batch_size, seq_len, VOCAB_SIZE), dtype=jnp.bfloat16),
-            jnp.zeros((batch_size, seq_len, self.latent_dim), dtype=jnp.bfloat16)
+            jnp.zeros((batch_size, 1), dtype=jnp.float32),
+            jnp.zeros((batch_size, seq_len, VOCAB_SIZE), dtype=jnp.float32),
+            jnp.zeros((batch_size, seq_len, self.latent_dim), dtype=jnp.float32)
         )
         
         (final_z, _, final_prob, w_out, w_z), step_probs = jax.lax.scan(
