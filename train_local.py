@@ -1,6 +1,7 @@
 import os
 import pickle
 import time
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -26,50 +27,12 @@ PAD_ID = ENCODING.n_vocab + 2
 VOCAB_SIZE = ENCODING.n_vocab + 3
 
 class UniversalTaskWorld:
-    # A tiny "Physics Textbook" for the model to memorize
-    RAW_DATA = [
-        ("F = m * a", "Force equals mass times acceleration"),
-        ("E = m * c^2", "Energy equals mass times light speed squared"),
-        ("v = d / t", "Velocity is distance divided by time"),
-        ("What is gravity?", "Gravity is a force of attraction"),
-        ("Newton's First Law", "Objects in motion stay in motion"),
-    ]
+    """
+    Generates INFINITE procedural arithmetic problems.
+    Forces the model to learn ALGORITHMS, not just memorize answers.
+    """
+    # We remove the static "RAW_DATA" entirely.
     
-    # --- PRE-COMPUTE DATA (The Fix) ---
-    # We tokenize EVERYTHING once at startup using Python
-    # This creates static numpy arrays that JAX can easily handle
-    
-    print("📚 Pre-tokenizing Physics Textbook...")
-    _QUESTIONS = []
-    _ANSWERS = []
-    
-    for q, a in RAW_DATA:
-        # Tokenize Question
-        q_ids = ENCODING.encode(q)
-        q_tokens = [SOS_ID] + q_ids + [EOS_ID]
-        # Pad Question
-        if len(q_tokens) < MAX_SEQ_LEN:
-            q_tokens += [PAD_ID] * (MAX_SEQ_LEN - len(q_tokens))
-        else:
-            q_tokens = q_tokens[:MAX_SEQ_LEN]
-            
-        # Tokenize Answer
-        a_ids = ENCODING.encode(a)
-        a_tokens = [SOS_ID] + a_ids + [EOS_ID]
-        # Pad Answer
-        if len(a_tokens) < MAX_SEQ_LEN:
-            a_tokens += [PAD_ID] * (MAX_SEQ_LEN - len(a_tokens))
-        else:
-            a_tokens = a_tokens[:MAX_SEQ_LEN]
-            
-        _QUESTIONS.append(q_tokens)
-        _ANSWERS.append(a_tokens)
-        
-    # Convert to JAX Arrays
-    QUESTIONS_DB = jnp.array(_QUESTIONS, dtype=jnp.int32)
-    ANSWERS_DB = jnp.array(_ANSWERS, dtype=jnp.int32)
-    print("✅ Textbook Loaded into VRAM.")
-
     @staticmethod
     def get_input_dim():
         return MAX_SEQ_LEN
@@ -79,15 +42,70 @@ class UniversalTaskWorld:
         return MAX_SEQ_LEN
 
     @staticmethod
-    def generate_batch(key, batch_size, difficulty, steps=None):
-        # Handle both integer and tuple shapes
-        shape = batch_size if isinstance(batch_size, tuple) else (batch_size,)
-        indices = jax.random.randint(key, shape, 0, len(UniversalTaskWorld.RAW_DATA))
+    def generate_batch(key, batch_size, difficulty):
+        # Handle tuple batch_size from your loop
+        total_samples = batch_size[0] * batch_size[1] if isinstance(batch_size, tuple) else batch_size
         
-        batch_q = UniversalTaskWorld.QUESTIONS_DB[indices]
-        batch_a = UniversalTaskWorld.ANSWERS_DB[indices]
+        batch_q = []
+        batch_a = []
         
-        return batch_q, batch_a
+        # Scale complexity with difficulty
+        # Diff 0.1 -> 3+5
+        # Diff 0.5 -> 23+89
+        # Diff 0.9 -> 123*4
+        max_val = int(10 + (difficulty * 990)) 
+        
+        # Use a localized random generator to avoid JAX/Numpy conflicts
+        # (We use the JAX key to seed it for reproducibility)
+        seed = int(jax.random.randint(key, (), 0, 1000000))
+        rng = np.random.default_rng(seed)
+        
+        ops = ['+', '-', '*']
+        
+        for _ in range(total_samples):
+            op = rng.choice(ops)
+            a = rng.integers(0, max_val)
+            b = rng.integers(0, max_val)
+            
+            # Curriculum: Start with simple addition
+            if difficulty < 0.3: op = '+'
+            elif difficulty < 0.6 and op == '*': op = '-'
+            
+            if op == '+': ans = a + b
+            elif op == '-': ans = a - b
+            elif op == '*': 
+                # Keep multiplication inputs smaller to avoid huge numbers
+                b = rng.integers(0, 10 + int(difficulty * 20)) 
+                ans = a * b
+                
+            q_str = f"{a}{op}{b}="
+            a_str = str(ans)
+            
+            # Encode using your TikToken setup (or character map if you switched)
+            # Since you are using TikToken 'cl100k_base', we use it here:
+            q_ids = ENCODING.encode(q_str)
+            a_ids = ENCODING.encode(a_str)
+            
+            q_toks = [SOS_ID] + q_ids + [EOS_ID]
+            a_toks = [SOS_ID] + a_ids + [EOS_ID]
+            
+            # Padding
+            q_toks += [PAD_ID] * (MAX_SEQ_LEN - len(q_toks))
+            a_toks += [PAD_ID] * (MAX_SEQ_LEN - len(a_toks))
+            
+            batch_q.append(q_toks[:MAX_SEQ_LEN])
+            batch_a.append(a_toks[:MAX_SEQ_LEN])
+            
+        # Convert to JAX arrays
+        q_arr = jnp.array(batch_q, dtype=jnp.int32)
+        a_arr = jnp.array(batch_a, dtype=jnp.int32)
+        
+        # Reshape back to (ACCUM, BATCH, LEN)
+        if isinstance(batch_size, tuple):
+            q_arr = q_arr.reshape(batch_size[0], batch_size[1], MAX_SEQ_LEN)
+            a_arr = a_arr.reshape(batch_size[0], batch_size[1], MAX_SEQ_LEN)
+            
+        return q_arr, a_arr
 
 
 def apply_rotary_emb(q, k, sin, cos):
