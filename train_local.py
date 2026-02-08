@@ -90,20 +90,71 @@ class UniversalTaskWorld:
         return batch_q, batch_a
 
 
+def apply_rotary_emb(q, k, base=10000):
+    # q, k: (batch, seq, heads, head_dim)
+    batch, seq_len, num_heads, head_dim = q.shape
+    freqs = 1.0 / (base ** (jnp.arange(0, head_dim, 2) / head_dim))
+    t = jnp.arange(seq_len)
+    freqs = jnp.outer(t, freqs)  # (seq_len, head_dim//2)
+    sin, cos = jnp.sin(freqs), jnp.cos(freqs)
+    
+    # Pre-broadcast to (1, seq, 1, head_dim)
+    sin_ext = jnp.stack([sin, sin], axis=-1).reshape(seq_len, head_dim)[None, :, None, :]
+    cos_ext = jnp.stack([cos, cos], axis=-1).reshape(seq_len, head_dim)[None, :, None, :]
+    
+    def rotate(x):
+        # x_rot = [-x_odd, x_even] interleaved
+        x_even, x_odd = x[..., 0::2], x[..., 1::2]
+        x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x.shape)
+        return x * cos_ext + x_rot * sin_ext
+
+    return rotate(q), rotate(k)
+
+class RotaryAttention(nnx.Module):
+    def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
+        self.num_heads = num_heads
+        self.in_features = in_features
+        self.head_dim = in_features // num_heads
+        
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+
+    def __call__(self, x):
+        b, s, d = x.shape
+        # Project and reshape to (B, S, H, D)
+        q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        
+        # Apply RoPE
+        q, k = apply_rotary_emb(q, k)
+        
+        # Transpose for attention: (B, H, S, D)
+        q = jnp.transpose(q, (0, 2, 1, 3))
+        k = jnp.transpose(k, (0, 2, 1, 3))
+        v = jnp.transpose(v, (0, 2, 1, 3))
+        
+        # Scaled dot-product attention
+        logits = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) / jnp.sqrt(self.head_dim)
+        weights = jax.nn.softmax(logits, axis=-1)
+        
+        out = jnp.matmul(weights, v)
+        # Reshape to (B, S, D)
+        out = jnp.transpose(out, (0, 2, 1, 3)).reshape(b, s, d)
+        return self.o_proj(out)
+
 class LatentReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.attn = nnx.MultiHeadAttention(num_heads=num_heads, in_features=latent_dim, dtype=dtype, rngs=rngs)
+        self.attn = RotaryAttention(num_heads=num_heads, in_features=latent_dim, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
         self.fc = nnx.Linear(latent_dim, latent_dim, dtype=dtype, rngs=rngs)
         self.norm2 = nnx.LayerNorm(latent_dim, dtype=dtype, rngs=rngs)
 
     def __call__(self, z):
-        z_norm = self.norm1(z)
-        z_attn = self.attn(z_norm, z_norm, decode=False)
-        z = z + z_attn
-        
-        z_next = self.fc(self.norm2(z))
-        z = z + nnx.gelu(z_next)
+        z = z + self.attn(self.norm1(z))
+        z = z + nnx.gelu(self.fc(self.norm2(z)))
         return z
 
 class UniversalReasoner(nnx.Module):
@@ -113,7 +164,6 @@ class UniversalReasoner(nnx.Module):
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=dtype, rngs=rngs)
-        self.pos_embed = nnx.Linear(1, latent_dim, dtype=dtype, rngs=rngs)
         
         self.processor = LatentReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         
@@ -125,10 +175,7 @@ class UniversalReasoner(nnx.Module):
         # tokens: (batch, seq_len)
         z = self.embed(tokens)
         
-        # Add simple positional encoding
-        seq_len = tokens.shape[1]
-        pos = jnp.arange(seq_len, dtype=jnp.float32)[:, None] / seq_len
-        z = z + self.pos_embed(pos[None, :, :])
+        # Positions are now handled by RoPE within the LatentReasoningBlock
         
         batch_size = z.shape[0]
         
