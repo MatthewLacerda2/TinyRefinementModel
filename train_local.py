@@ -14,14 +14,81 @@ ACCUM_STEPS = 2
 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
-VOCAB = "0123456789+-*()= "
-CHARS = ["<PAD>", "<SOS>", "<EOS>"] + list(VOCAB)
-CHAR_TO_ID = {c: i for i, c in enumerate(CHARS)}
-ID_TO_CHAR = {i: c for i, c in enumerate(CHARS)}
-VOCAB_SIZE = len(CHARS)
 MAX_SEQ_LEN = 32
 
+# Tiktoken integration
+import tiktoken
+ENCODING = tiktoken.get_encoding("cl100k_base")
+
+# Define special tokens extending the tiktoken vocab
+SOS_ID = ENCODING.n_vocab
+EOS_ID = ENCODING.n_vocab + 1
+PAD_ID = ENCODING.n_vocab + 2
+VOCAB_SIZE = ENCODING.n_vocab + 3
+
+# Precompute valid ids for random generation (digits and symbols)
+# We select single-token representations for 0-9 and operators
+_DIGITS = [str(i) for i in range(10)]
+_SYMBOLS = list("+-*()= ")
+_VALID_TOKENS_STR = _DIGITS + _SYMBOLS
+# Ensure they map to single tokens (cl100k usually does for these)
+VALID_TOKEN_IDS_LIST = []
+for t in _VALID_TOKENS_STR:
+    ids = ENCODING.encode(t)
+    if len(ids) == 1:
+        VALID_TOKEN_IDS_LIST.append(ids[0])
+    else:
+        # Fallback or just take first? For digits/ops in cl100k they are single.
+        VALID_TOKEN_IDS_LIST.append(ids[0])
+
+VALID_TOKEN_IDS = jnp.array(VALID_TOKEN_IDS_LIST, dtype=jnp.int32)
+
+
 class UniversalTaskWorld:
+    # A tiny "Physics Textbook" for the model to memorize
+    RAW_DATA = [
+        ("F = m * a", "Force equals mass times acceleration"),
+        ("E = m * c^2", "Energy equals mass times light speed squared"),
+        ("v = d / t", "Velocity is distance divided by time"),
+        ("What is gravity?", "Gravity is a force of attraction"),
+        ("Newton's First Law", "Objects in motion stay in motion"),
+    ]
+    
+    # --- PRE-COMPUTE DATA (The Fix) ---
+    # We tokenize EVERYTHING once at startup using Python
+    # This creates static numpy arrays that JAX can easily handle
+    
+    print("📚 Pre-tokenizing Physics Textbook...")
+    _QUESTIONS = []
+    _ANSWERS = []
+    
+    for q, a in RAW_DATA:
+        # Tokenize Question
+        q_ids = ENCODING.encode(q)
+        q_tokens = [SOS_ID] + q_ids + [EOS_ID]
+        # Pad Question
+        if len(q_tokens) < MAX_SEQ_LEN:
+            q_tokens += [PAD_ID] * (MAX_SEQ_LEN - len(q_tokens))
+        else:
+            q_tokens = q_tokens[:MAX_SEQ_LEN]
+            
+        # Tokenize Answer
+        a_ids = ENCODING.encode(a)
+        a_tokens = [SOS_ID] + a_ids + [EOS_ID]
+        # Pad Answer
+        if len(a_tokens) < MAX_SEQ_LEN:
+            a_tokens += [PAD_ID] * (MAX_SEQ_LEN - len(a_tokens))
+        else:
+            a_tokens = a_tokens[:MAX_SEQ_LEN]
+            
+        _QUESTIONS.append(q_tokens)
+        _ANSWERS.append(a_tokens)
+        
+    # Convert to JAX Arrays
+    QUESTIONS_DB = jnp.array(_QUESTIONS, dtype=jnp.int32)
+    ANSWERS_DB = jnp.array(_ANSWERS, dtype=jnp.int32)
+    print("✅ Textbook Loaded into VRAM.")
+
     @staticmethod
     def get_input_dim():
         return MAX_SEQ_LEN
@@ -31,51 +98,15 @@ class UniversalTaskWorld:
         return MAX_SEQ_LEN
 
     @staticmethod
-    def tokenize(text, max_len=MAX_SEQ_LEN):
-        tokens = [CHAR_TO_ID["<SOS>"]] + [CHAR_TO_ID.get(c, CHAR_TO_ID[" "]) for c in text] + [CHAR_TO_ID["<EOS>"]]
-        tokens = tokens[:max_len]
-        tokens = tokens + [CHAR_TO_ID["<PAD>"]] * (max_len - len(tokens))
-        return jnp.array(tokens, dtype=jnp.int32)
-
-    @staticmethod
     def generate_batch(key, batch_size, difficulty, steps=None):
-        # Generate simple arithmetic: "a + b ="
-        k1, k2, k3 = jax.random.split(key, 3)
+        # NOW this is 100% JAX-compatible!
+        # It's just picking rows from a matrix.
+        indices = jax.random.randint(key, (batch_size,), 0, len(UniversalTaskWorld.RAW_DATA))
         
-        # Difficulty scales the range of numbers
-        max_val = jnp.clip(10 + (difficulty * 10), 10, 1000).astype(jnp.int32)
+        batch_q = UniversalTaskWorld.QUESTIONS_DB[indices]
+        batch_a = UniversalTaskWorld.ANSWERS_DB[indices]
         
-        a = jax.random.randint(k1, (batch_size,), 0, max_val)
-        b = jax.random.randint(k2, (batch_size,), 0, max_val)
-        ops = jax.random.choice(k3, jnp.array([0, 1]), (batch_size,)) # 0: +, 1: -
-        
-        def gen_sample(a_val, b_val, op_val):
-            op_char = "+" if op_val == 0 else "-"
-            res = a_val + b_val if op_val == 0 else a_val - b_val
-            q = f"{a_val}{op_char}{b_val}="
-            ans = f"{res}"
-            return q, ans
-
-        # We can't easily string-format inside JAX without some overhead, 
-        # but for a PoC we can do it in a loop or pre-generate.
-        # However, to keep it "JAX-y" and fast, let's use a simpler numeric task 
-        # that represents "anything" as sequence of tokens.
-        
-        # New "Anything" Task: Reverse a sequence of random digits.
-        # This is a classic test for latent reasoning.
-        seq = jax.random.randint(k1, (batch_size, MAX_SEQ_LEN // 2 - 2), 3, VOCAB_SIZE)
-        
-        sos = jnp.full((batch_size, 1), CHAR_TO_ID["<SOS>"])
-        eos = jnp.full((batch_size, 1), CHAR_TO_ID["<EOS>"])
-        pad = jnp.full((batch_size, MAX_SEQ_LEN - (MAX_SEQ_LEN // 2)), CHAR_TO_ID["<PAD>"])
-        
-        inputs = jnp.concatenate([sos, seq, eos, pad], axis=1)[:, :MAX_SEQ_LEN]
-        
-        # Target is the reverse of the sequence
-        reversed_seq = seq[:, ::-1]
-        targets = jnp.concatenate([sos, reversed_seq, eos, pad], axis=1)[:, :MAX_SEQ_LEN]
-        
-        return inputs, targets
+        return batch_q, batch_a
 
 
 class LatentReasoningBlock(nnx.Module):
@@ -109,7 +140,7 @@ class UniversalReasoner(nnx.Module):
         self.halt_fc = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
         self.complexity_head = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
 
-    def __call__(self, tokens, max_steps=10, training=False, key=None):
+    def __call__(self, tokens, max_steps=16, training=False, key=None):
         # tokens: (batch, seq_len)
         z = self.embed(tokens)
         
@@ -193,18 +224,18 @@ def train_step(model, optimizer, subkeys, micro_batch, thinking_steps, difficult
             
             preds, step_probs, pred_steps = m(inputs, thinking_steps, True, noise_key)
             
-            # Cross entropy loss for tokens
-            # preds: (micro_batch, seq_len, vocab_size), targets: (micro_batch, seq_len)
-            log_probs = jax.nn.log_softmax(preds, axis=-1)
-            target_probs = jax.nn.one_hot(targets, VOCAB_SIZE)
-            ce_loss = -jnp.sum(target_probs * log_probs, axis=-1) # (micro_batch, seq_len)
+            # --- NEW: Masking Logic ---
+            # Create a mask where Valid Tokens = 1.0, Padding = 0.0
+            mask = (targets != PAD_ID).astype(jnp.float32)
             
-            # Mask out padding in loss if needed (optional for PoC)
-            # For simplicity, we'll average over all tokens
-            token_loss = jnp.mean(ce_loss)
+            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
             
-            # Correctness metric
-            accuracy = jnp.mean(jnp.argmax(preds, axis=-1) == targets)
+            # Apply mask: Only learn from real words
+            token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-6)
+            
+            # Accuracy only on non-padding tokens
+            correct = (jnp.argmax(preds, axis=-1) == targets)
+            accuracy = jnp.sum(correct * mask) / (jnp.sum(mask) + 1e-6)
             
             # Latent Reasoning Penalty (encourage efficiency)
             steps_range = jnp.arange(step_probs.shape[1], dtype=jnp.float32)[None, :, None]
@@ -313,7 +344,7 @@ while True:
             with open(ckpt_path, "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
 
-    if avg_acc > 0.99 and difficulty > 5.0:
+    if avg_acc > 0.98 and difficulty > 5.0:
         print(f"\n🧠 AGENT ACHIEVED MASTERY at Step {step}!")
         print(f"   - Final Accuracy: {avg_acc:.4f}")
         print(f"   - Difficulty: {difficulty:.2f}")

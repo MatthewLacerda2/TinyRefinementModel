@@ -5,3 +5,4 @@ optax
 orbax-checkpoint
 grain
 chex
+tiktoken
