@@ -1,16 +1,15 @@
 import os
 import pickle
-import json
 import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
 
-MAX_N = 64
-LATENT_DIM = 512
+LATENT_DIM = 256
 BATCH_SIZE = 8
-ACCUM_STEPS = 16
+ACCUM_STEPS = 8
+MAX_STEPS_LIMIT = 16
 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -190,28 +189,25 @@ class UniversalReasoner(nnx.Module):
         return w_out.astype(jnp.float32), step_probs, predicted_steps
 
 
-@nnx.jit(static_argnums=(3, 4))
-def train_step(model, optimizer, subkeys, micro_batch, thinking_steps, difficulty, baseline_error):
+@nnx.jit(static_argnums=(3,))
+def train_step(model, optimizer, batch_q, batch_a, noise_keys, difficulty, baseline_error):
+    # batch_q shape: (ACCUM_STEPS, BATCH_SIZE, SEQ_LEN)
+    # noise_keys shape: (ACCUM_STEPS, 2)
     loss_scale = 1000.0
     
     def loss_fn(model):
         graphdef, state = nnx.split(model)
         
-        def scan_body(current_baseline, key):
-            data_key, noise_key = jax.random.split(key)
+        def scan_body(current_baseline, inputs):
+            (q_in, a_in, noise_key) = inputs
             
             m = nnx.merge(graphdef, state)
-            inputs, targets = jax.lax.stop_gradient(
-                UniversalTaskWorld.generate_batch(data_key, micro_batch, difficulty)
-            )
+            preds, step_probs, pred_steps = m(q_in, MAX_STEPS_LIMIT, True, noise_key)
             
-            preds, step_probs, pred_steps = m(inputs, thinking_steps, True, noise_key)
+            # --- Masking Logic ---
+            mask = (a_in != PAD_ID).astype(jnp.float32)
             
-            # --- NEW: Masking Logic ---
-            # Create a mask where Valid Tokens = 1.0, Padding = 0.0
-            mask = (targets != PAD_ID).astype(jnp.float32)
-            
-            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
+            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=a_in)
             
             # Apply mask: Only learn from real words
             token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-6)
@@ -237,7 +233,8 @@ def train_step(model, optimizer, subkeys, micro_batch, thinking_steps, difficult
             }
             return current_baseline, (loss * loss_scale, metrics)
 
-        _, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, baseline_error, subkeys)
+        # Scan over batches and THEIR RESPECTIVE noise keys
+        _, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, baseline_error, (batch_q, batch_a, noise_keys))
         
         avg_metrics = jax.tree.map(jnp.mean, all_metrics)
         return jnp.mean(losses_with_scale), (avg_metrics, baseline_error)
@@ -281,12 +278,13 @@ if os.path.exists(log_file):
 print("🔥 Compiling Kernels (This may take 30s)...")
 while True:
     step += 1
-    key, subkey = jax.random.split(key)
-    subkeys = jax.random.split(subkey, ACCUM_STEPS)
+    key, subkey, noise_key = jax.random.split(key, 3)
+    # Generate data
+    accum_q, accum_a = UniversalTaskWorld.generate_batch(subkey, (ACCUM_STEPS, BATCH_SIZE), difficulty)
+    # Generate unique noise keys for each accumulation step
+    accum_noise_keys = jax.random.split(noise_key, ACCUM_STEPS)
     
-    thinking_steps = int(5 + (difficulty * 15))
-    
-    loss_val, step_metrics, baseline_error = train_step(model, optimizer, subkeys, BATCH_SIZE, thinking_steps, difficulty, baseline_error)
+    loss_val, step_metrics, baseline_error = train_step(model, optimizer, accum_q, accum_a, accum_noise_keys, difficulty, baseline_error)
     
     acc = float(step_metrics['accuracy'])
     accuracy_history.append(acc)
