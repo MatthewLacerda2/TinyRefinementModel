@@ -90,23 +90,15 @@ class UniversalTaskWorld:
         return batch_q, batch_a
 
 
-def apply_rotary_emb(q, k, base=10000):
+def apply_rotary_emb(q, k, sin, cos):
     # q, k: (batch, seq, heads, head_dim)
-    batch, seq_len, num_heads, head_dim = q.shape
-    freqs = 1.0 / (base ** (jnp.arange(0, head_dim, 2) / head_dim))
-    t = jnp.arange(seq_len)
-    freqs = jnp.outer(t, freqs)  # (seq_len, head_dim//2)
-    sin, cos = jnp.sin(freqs), jnp.cos(freqs)
-    
-    # Pre-broadcast to (1, seq, 1, head_dim)
-    sin_ext = jnp.stack([sin, sin], axis=-1).reshape(seq_len, head_dim)[None, :, None, :]
-    cos_ext = jnp.stack([cos, cos], axis=-1).reshape(seq_len, head_dim)[None, :, None, :]
+    # sin, cos: (1, seq, 1, head_dim)
     
     def rotate(x):
         # x_rot = [-x_odd, x_even] interleaved
         x_even, x_odd = x[..., 0::2], x[..., 1::2]
         x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x.shape)
-        return x * cos_ext + x_rot * sin_ext
+        return x * cos + x_rot * sin
 
     return rotate(q), rotate(k)
 
@@ -115,6 +107,15 @@ class RotaryAttention(nnx.Module):
         self.num_heads = num_heads
         self.in_features = in_features
         self.head_dim = in_features // num_heads
+        
+        # --- RoPE Cache ---
+        inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
+        t = jnp.arange(MAX_SEQ_LEN)
+        freqs = jnp.outer(t, inv_freq) # (MAX_SEQ_LEN, head_dim//2)
+        
+        # Cache sin/cos as fixed constants
+        self.sin_cached = jnp.sin(freqs)
+        self.cos_cached = jnp.cos(freqs)
         
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
@@ -129,7 +130,15 @@ class RotaryAttention(nnx.Module):
         v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         
         # Apply RoPE
-        q, k = apply_rotary_emb(q, k)
+        # Slice the cache to the current sequence length
+        sin = self.sin_cached[:s, :]
+        cos = self.cos_cached[:s, :]
+        
+        # Pre-stack to match head_dim and broadcast for heads: (1, S, 1, head_dim)
+        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
+        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
+        
+        q, k = apply_rotary_emb(q, k, sin_ext, cos_ext)
         
         # Transpose for attention: (B, H, S, D)
         q = jnp.transpose(q, (0, 2, 1, 3))
