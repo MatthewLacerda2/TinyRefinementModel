@@ -189,7 +189,7 @@ class UniversalReasoner(nnx.Module):
         return w_out.astype(jnp.float32), step_probs, predicted_steps
 
 
-@nnx.jit(static_argnums=(3,))
+@nnx.jit
 def train_step(model, optimizer, batch_q, batch_a, noise_keys, difficulty, baseline_error):
     # batch_q shape: (ACCUM_STEPS, BATCH_SIZE, SEQ_LEN)
     # noise_keys shape: (ACCUM_STEPS, 2)
