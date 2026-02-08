@@ -80,9 +80,9 @@ class UniversalTaskWorld:
 
     @staticmethod
     def generate_batch(key, batch_size, difficulty, steps=None):
-        # NOW this is 100% JAX-compatible!
-        # It's just picking rows from a matrix.
-        indices = jax.random.randint(key, (batch_size,), 0, len(UniversalTaskWorld.RAW_DATA))
+        # Handle both integer and tuple shapes
+        shape = batch_size if isinstance(batch_size, tuple) else (batch_size,)
+        indices = jax.random.randint(key, shape, 0, len(UniversalTaskWorld.RAW_DATA))
         
         batch_q = UniversalTaskWorld.QUESTIONS_DB[indices]
         batch_a = UniversalTaskWorld.ANSWERS_DB[indices]
