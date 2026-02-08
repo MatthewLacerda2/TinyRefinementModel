@@ -9,8 +9,8 @@ import optax
 
 MAX_N = 64
 LATENT_DIM = 512
-BATCH_SIZE = 128
-ACCUM_STEPS = 2
+BATCH_SIZE = 16
+ACCUM_STEPS = 16
 
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
