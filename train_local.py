@@ -118,7 +118,7 @@ class LatentReasoningBlock(nnx.Module):
 
     def __call__(self, z):
         z_norm = self.norm1(z)
-        z_attn = self.attn(z_norm, z_norm)
+        z_attn = self.attn(z_norm, z_norm, decode=False)
         z = z + z_attn
         
         z_next = self.fc(self.norm2(z))
@@ -344,7 +344,7 @@ while True:
             with open(ckpt_path, "wb") as f:
                 pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
 
-    if avg_acc > 0.98 and difficulty > 5.0:
+    if avg_acc > 0.98:
         print(f"\n🧠 AGENT ACHIEVED MASTERY at Step {step}!")
         print(f"   - Final Accuracy: {avg_acc:.4f}")
         print(f"   - Difficulty: {difficulty:.2f}")
