@@ -7,14 +7,13 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
-LATENT_DIM = 256
+LATENT_DIM = 512     # raises memory and compute quadratically
 BATCH_SIZE = 8
 ACCUM_STEPS = 8
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 16 # raises memory linearly
+MAX_SEQ_LEN = 64    # raises memory linearly and compute quadratically
 
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
-MAX_SEQ_LEN = 32
+#os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 # Tiktoken integration
 import tiktoken
