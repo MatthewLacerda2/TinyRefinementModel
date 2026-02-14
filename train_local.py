@@ -1,136 +1,31 @@
 import os
-import pickle
 import time
 import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
-
-LATENT_DIM = 512     # raises memory and compute quadratically
-BATCH_SIZE = 8
-ACCUM_STEPS = 8
-MAX_STEPS_LIMIT = 16 # raises memory linearly
-MAX_SEQ_LEN = 64    # raises memory linearly and compute quadratically
-
-#os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
-# Tiktoken integration
 import tiktoken
-ENCODING = tiktoken.get_encoding("cl100k_base")
+from datasets import load_dataset # pip install datasets
 
-# Define special tokens extending the tiktoken vocab
-SOS_ID = ENCODING.n_vocab
-EOS_ID = ENCODING.n_vocab + 1
-PAD_ID = ENCODING.n_vocab + 2
-VOCAB_SIZE = ENCODING.n_vocab + 3
+LATENT_DIM = 384      # Reduced from 512 to save VRAM
+BATCH_SIZE = 8        # Keep small
+ACCUM_STEPS = 16      # Increased to simulate larger batch size
+MAX_STEPS_LIMIT = 8   # "Reasoning depth" (recurrence). 8 is enough for PoC.
+MAX_SEQ_LEN = 128     # Increased for text (64 is too short for stories)
+VOCAB_SIZE = 50304    # Standard GPT-2/3 vocab size (rounded for efficiency)
 
-class UniversalTaskWorld:
-    """
-    Generates INFINITE procedural arithmetic problems.
-    Forces the model to learn ALGORITHMS, not just memorize answers.
-    """
-    # We remove the static "RAW_DATA" entirely.
-    
-    @staticmethod
-    def get_input_dim():
-        return MAX_SEQ_LEN
-
-    @staticmethod
-    def get_output_dim():
-        return MAX_SEQ_LEN
-
-    @staticmethod
-    def generate_batch(key, batch_size, difficulty):
-        # Handle tuple batch_size from your loop
-        total_samples = batch_size[0] * batch_size[1] if isinstance(batch_size, tuple) else batch_size
-        
-        batch_q = []
-        batch_a = []
-        
-        # Scale complexity with difficulty
-        # Diff 0.1 -> 3+5
-        # Diff 0.5 -> 23+89
-        # Diff 0.9 -> 123*4
-        max_val = int(10 + (difficulty * 990)) 
-        
-        # Use a localized random generator to avoid JAX/Numpy conflicts
-        # (We use the JAX key to seed it for reproducibility)
-        seed = int(jax.random.randint(key, (), 0, 1000000))
-        rng = np.random.default_rng(seed)
-        
-        ops = ['+', '-', '*']
-        
-        for _ in range(total_samples):
-            op = rng.choice(ops)
-            a = rng.integers(0, max_val)
-            b = rng.integers(0, max_val)
-            
-            # Curriculum: Start with simple addition
-            if difficulty < 0.3: op = '+'
-            elif difficulty < 0.6 and op == '*': op = '-'
-            
-            if op == '+': ans = a + b
-            elif op == '-': ans = a - b
-            elif op == '*': 
-                # Keep multiplication inputs smaller to avoid huge numbers
-                b = rng.integers(0, 10 + int(difficulty * 20)) 
-                ans = a * b
-                
-            q_str = f"{a}{op}{b}="
-            a_str = str(ans)
-            
-            # Encode using your TikToken setup (or character map if you switched)
-            # Since you are using TikToken 'cl100k_base', we use it here:
-            q_ids = ENCODING.encode(q_str)
-            a_ids = ENCODING.encode(a_str)
-            
-            q_toks = [SOS_ID] + q_ids + [EOS_ID]
-            a_toks = [SOS_ID] + a_ids + [EOS_ID]
-            
-            # Padding
-            q_toks += [PAD_ID] * (MAX_SEQ_LEN - len(q_toks))
-            a_toks += [PAD_ID] * (MAX_SEQ_LEN - len(a_toks))
-            
-            batch_q.append(q_toks[:MAX_SEQ_LEN])
-            batch_a.append(a_toks[:MAX_SEQ_LEN])
-            
-        # Convert to JAX arrays
-        q_arr = jnp.array(batch_q, dtype=jnp.int32)
-        a_arr = jnp.array(batch_a, dtype=jnp.int32)
-        
-        # Reshape back to (ACCUM, BATCH, LEN)
-        if isinstance(batch_size, tuple):
-            q_arr = q_arr.reshape(batch_size[0], batch_size[1], MAX_SEQ_LEN)
-            a_arr = a_arr.reshape(batch_size[0], batch_size[1], MAX_SEQ_LEN)
-            
-        return q_arr, a_arr
-
-
-def apply_rotary_emb(q, k, sin, cos):
-    # q, k: (batch, seq, heads, head_dim)
-    # sin, cos: (1, seq, 1, head_dim)
-    
-    def rotate(x):
-        # x_rot = [-x_odd, x_even] interleaved
-        x_even, x_odd = x[..., 0::2], x[..., 1::2]
-        x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x.shape)
-        return x * cos + x_rot * sin
-
-    return rotate(q), rotate(k)
-
+# --- 1. Fix Attention (Add Causal Mask) ---
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
         self.num_heads = num_heads
         self.in_features = in_features
         self.head_dim = in_features // num_heads
         
-        # --- RoPE Cache ---
+        # RoPE Setup
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN)
-        freqs = jnp.outer(t, inv_freq) # (MAX_SEQ_LEN, head_dim//2)
-        
-        # Cache sin/cos as fixed constants
+        freqs = jnp.outer(t, inv_freq)
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
         
@@ -141,33 +36,38 @@ class RotaryAttention(nnx.Module):
 
     def __call__(self, x):
         b, s, d = x.shape
-        # Project and reshape to (B, S, H, D)
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         
-        # Apply RoPE
-        # Slice the cache to the current sequence length
+        # RoPE Application
         sin = self.sin_cached[:s, :]
         cos = self.cos_cached[:s, :]
-        
-        # Pre-stack to match head_dim and broadcast for heads: (1, S, 1, head_dim)
         sin_ext = jnp.stack([sin, sin], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
         cos_ext = jnp.stack([cos, cos], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
         
-        q, k = apply_rotary_emb(q, k, sin_ext, cos_ext)
+        def rotate(x_in):
+            x_even, x_odd = x_in[..., 0::2], x_in[..., 1::2]
+            x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x_in.shape)
+            return x_in * cos_ext + x_rot * sin_ext
+
+        q, k = rotate(q), rotate(k)
         
-        # Transpose for attention: (B, H, S, D)
+        # Transpose: (B, H, S, D)
         q = jnp.transpose(q, (0, 2, 1, 3))
         k = jnp.transpose(k, (0, 2, 1, 3))
         v = jnp.transpose(v, (0, 2, 1, 3))
         
-        # Scaled dot-product attention
         logits = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) / jnp.sqrt(self.head_dim)
-        weights = jax.nn.softmax(logits, axis=-1)
         
+        # --- CAUSAL MASKING (Critical for Text) ---
+        # Mask out future tokens (upper triangle)
+        mask = jnp.tril(jnp.ones((s, s), dtype=bool))
+        mask = mask[None, None, :, :] # Broadcast over Batch and Heads
+        logits = jnp.where(mask, logits, -1e9)
+        
+        weights = jax.nn.softmax(logits, axis=-1)
         out = jnp.matmul(weights, v)
-        # Reshape to (B, S, D)
         out = jnp.transpose(out, (0, 2, 1, 3)).reshape(b, s, d)
         return self.o_proj(out)
 
@@ -261,149 +161,132 @@ class UniversalReasoner(nnx.Module):
         # Output is (batch, seq_len, vocab_size)
         return w_out.astype(jnp.float32), step_probs, predicted_steps
 
+# --- 2. HuggingFace Data Streamer ---
+class TextDataGenerator:
+    def __init__(self):
+        # Streaming = True prevents downloading the whole dataset (saves disk/ram)
+        self.dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
+        self.iterator = iter(self.dataset)
+        self.enc = tiktoken.get_encoding("cl100k_base")
+        
+    def get_batch(self, batch_size):
+        batch_ids = []
+        while len(batch_ids) < batch_size:
+            try:
+                item = next(self.iterator)
+            except StopIteration:
+                self.iterator = iter(self.dataset) # Restart if end reached
+                item = next(self.iterator)
+                
+            text = item['text']
+            tokens = self.enc.encode(text)
+            
+            # Simple truncation/padding to MAX_SEQ_LEN
+            if len(tokens) < MAX_SEQ_LEN:
+                tokens = tokens + [50256] * (MAX_SEQ_LEN - len(tokens)) # Pad (using EOS-like ID)
+            else:
+                tokens = tokens[:MAX_SEQ_LEN]
+                
+            batch_ids.append(tokens)
+            
+        return jnp.array(batch_ids, dtype=jnp.int32)
 
+# --- 3. Update Training Step for Next-Token Prediction ---
 @nnx.jit
-def train_step(model, optimizer, batch_q, batch_a, noise_keys, difficulty, baseline_error):
-    # batch_q shape: (ACCUM_STEPS, BATCH_SIZE, SEQ_LEN)
-    # noise_keys shape: (ACCUM_STEPS, 2)
+def train_step_text(model, optimizer, batch_tokens, noise_keys):
     loss_scale = 1000.0
+    
+    # Standard Causal Language Modeling setup:
+    # Input:  [A, B, C, D]
+    # Target: [B, C, D, E]
+    inputs = batch_tokens[:, :-1]
+    targets = batch_tokens[:, 1:]
     
     def loss_fn(model):
         graphdef, state = nnx.split(model)
         
-        def scan_body(current_baseline, inputs):
-            (q_in, a_in, noise_key) = inputs
+        def scan_body(carry, loop_inputs):
+            # Accumulation loop
+            (inp_slice, tgt_slice, key_slice) = loop_inputs
             
             m = nnx.merge(graphdef, state)
-            preds, step_probs, pred_steps = m(q_in, MAX_STEPS_LIMIT, True, noise_key)
+            # Run model (it now has causal mask!)
+            preds, step_probs, pred_steps = m(inp_slice, MAX_STEPS_LIMIT, True, key_slice)
             
-            # --- Masking Logic ---
-            mask = (a_in != PAD_ID).astype(jnp.float32)
+            # Cross Entropy
+            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=tgt_slice)
+            token_loss = jnp.mean(ce_loss)
             
-            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=a_in)
-            
-            # Apply mask: Only learn from real words
-            token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-6)
-            
-            # Accuracy only on non-padding tokens
-            correct = (jnp.argmax(preds, axis=-1) == a_in)
-            accuracy = jnp.sum(correct * mask) / (jnp.sum(mask) + 1e-6)
-            
-            # Latent Reasoning Penalty (encourage efficiency)
-            steps_range = jnp.arange(step_probs.shape[1], dtype=jnp.float32)[None, :, None]
-            actual_steps = jnp.sum(step_probs * steps_range, axis=1) # (batch, 1)
-            planner_err = jnp.mean((pred_steps - actual_steps)**2)
-            
+            # Latent Reasoning Penalty (keep your unique regularization)
+            actual_steps = jnp.sum(step_probs * jnp.arange(step_probs.shape[1])[None, :, None], axis=1)
             avg_steps = jnp.mean(actual_steps)
             
-            loss = token_loss + (planner_err * 0.1) + (avg_steps * 0.005)
+            loss = token_loss + (avg_steps * 0.001) # Small penalty for thinking too long
+            
+            return carry, (loss * loss_scale, token_loss)
 
-            metrics = {
-                'loss': token_loss,
-                'accuracy': accuracy,
-                'planner_err': jnp.mean(jnp.abs(pred_steps - actual_steps)),
-                'avg_steps': avg_steps,
-            }
-            return current_baseline, (loss * loss_scale, metrics)
-
-        # Scan over batches and THEIR RESPECTIVE noise keys
-        _, (losses_with_scale, all_metrics) = jax.lax.scan(scan_body, baseline_error, (batch_q, batch_a, noise_keys))
+        # Reshape for accumulation
+        # (ACCUM, BATCH, LEN)
+        inputs_reshaped = inputs.reshape(ACCUM_STEPS, BATCH_SIZE, -1)
+        targets_reshaped = targets.reshape(ACCUM_STEPS, BATCH_SIZE, -1)
         
-        avg_metrics = jax.tree.map(jnp.mean, all_metrics)
-        return jnp.mean(losses_with_scale), (avg_metrics, baseline_error)
+        _, (scaled_losses, raw_losses) = jax.lax.scan(
+            scan_body, None, (inputs_reshaped, targets_reshaped, noise_keys)
+        )
+        
+        return jnp.mean(scaled_losses), jnp.mean(raw_losses)
 
-    (loss_s, (metrics, new_baseline)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (loss_s, raw_loss), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     grads = jax.tree.map(lambda g: g / loss_scale, grads)
     optimizer.update(model, grads)
     
-    return loss_s / loss_scale, metrics, new_baseline
+    return raw_loss
 
+# --- Main Execution Block ---
+if __name__ == "__main__":
+    print("🚀 Initializing Text Reasoner...")
+    # Re-instantiate model with new VOCAB_SIZE and Latent Dim
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    # Make sure your UniversalReasoner calls the NEW RotaryAttention defined above!
 
-print(f"🚀 Initializing Universal Reasoner (Vocab Size={VOCAB_SIZE})...")
-model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-optimizer = nnx.Optimizer(model, optax.adam(3e-4), wrt=nnx.Param)
+    optimizer = nnx.Optimizer(model, optax.adamw(3e-4, weight_decay=0.1), wrt=nnx.Param)
+    data_gen = TextDataGenerator()
+    key = jax.random.key(0)
 
-key = jax.random.key(0)
-accuracy_history = []
-difficulty = 0.0
-start_time = time.time()
-step = 0
+    start_time = time.time()
 
-integral_error = 0.0
-prev_error = 0.0
-kp, ki, kd = 0.005, 0.0001, 0.01
-
-baseline_error = 1.0
-
-ckpt_path = "universal_reasoner.pkl"
-if os.path.exists(ckpt_path):
-    print(f"📂 Loading checkpoint from {ckpt_path}...")
-    with open(ckpt_path, "rb") as f:
-        ckpt = pickle.load(f)
-        nnx.update(model, ckpt['state'])
-        difficulty = ckpt.get('difficulty', 0.0)
-    print(f"✅ Loaded checkpoint weights")
-
-log_file = "training_log.csv"
-if os.path.exists(log_file):
-    os.remove(log_file) 
-
-print("🔥 Compiling Kernels (This may take 30s)...")
-while True:
-    step += 1
-    key, subkey, noise_key = jax.random.split(key, 3)
-    # Generate data
-    accum_q, accum_a = UniversalTaskWorld.generate_batch(subkey, (ACCUM_STEPS, BATCH_SIZE), difficulty)
-    # Generate unique noise keys for each accumulation step
-    accum_noise_keys = jax.random.split(noise_key, ACCUM_STEPS)
-    
-    loss_val, step_metrics, baseline_error = train_step(model, optimizer, accum_q, accum_a, accum_noise_keys, difficulty, baseline_error)
-    
-    acc = float(step_metrics['accuracy'])
-    accuracy_history.append(acc)
-    if len(accuracy_history) > 50: accuracy_history.pop(0)
-    avg_acc = sum(accuracy_history) / len(accuracy_history)
-    
-    planner_err = float(step_metrics['planner_err'])
-    avg_steps = float(step_metrics['avg_steps'])
-
-    # PID difficulty adjustment based on accuracy
-    # Target 95% accuracy
-    target_acc = 0.95
-    error = target_acc - acc
-
-    P = kp * error
-    I = ki * integral_error
-    D = kd * (error - prev_error)
-    adjustment = P + I + D
-
-    difficulty += adjustment
-    difficulty = max(0.0, difficulty)
-
-    integral_error += error
-    prev_error = error
-    
-    if abs(error) > 0.1: integral_error = 0.0
-
-    if step % 50 == 0:
-        sps = 50 / (time.time() - start_time + 1e-6)
+    # 5 Hours = 18000 seconds
+    # Estimate step time ~ 0.5s -> ~36k steps
+    for step in range(1, 10000): 
+        key, subkey = jax.random.split(key)
         
-        print(f"Step {step} | Diff: {difficulty:.3f} | Acc: {avg_acc:.4f} | Loss: {float(loss_val):.4f} | Steps: {avg_steps:.2f} (PlnErr: {planner_err:.2f}) | {sps:.1f} steps/s")
-        start_time = time.time()
+        # Get large batch for accumulation
+        batch_data = data_gen.get_batch(BATCH_SIZE * ACCUM_STEPS)
+        noise_keys = jax.random.split(subkey, ACCUM_STEPS)
         
-        with open(log_file, "a") as f:
-            f.write(f"{step},{difficulty:.4f},{float(loss_val):.4f},{avg_acc:.4f},{sps:.1f},{planner_err:.4f},{avg_steps:.2f}\n")
+        loss = train_step_text(model, optimizer, batch_data, noise_keys)
+        
+        if step % 10 == 0:
+            elapsed = time.time() - start_time
+            print(f"Step {step} | Loss: {loss:.4f} | Time: {elapsed:.2f}s")
             
-        if step % 1000 == 0:
-            with open(ckpt_path, "wb") as f:
-                pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
+            if elapsed > (5 * 3600): # 5 Hours
+                print("🛑 Time limit reached.")
+                break
 
-    if avg_acc > 0.98:
-        print(f"\n🧠 AGENT ACHIEVED MASTERY at Step {step}!")
-        print(f"   - Final Accuracy: {avg_acc:.4f}")
-        print(f"   - Difficulty: {difficulty:.2f}")
-        
-        with open("mastered_reasoner.pkl", "wb") as f:
-            pickle.dump({'state': nnx.state(model), 'difficulty': float(difficulty)}, f)
-        break
-
+        # Simple text generation test every 500 steps
+        if step % 500 == 0:
+            print("\n--- GENERATION TEST ---")
+            prompt = "Once upon a time"
+            enc = tiktoken.get_encoding("cl100k_base")
+            prompt_ids = jnp.array([enc.encode(prompt)], dtype=jnp.int32)
+            
+            # Very hacky greedy generation for PoC
+            curr = prompt_ids
+            for _ in range(20):
+                preds, _, _ = model(curr, MAX_STEPS_LIMIT, False)
+                next_token = jnp.argmax(preds[0, -1, :])
+                curr = jnp.concatenate([curr, next_token[None, None]], axis=1)
+            
+            print(enc.decode(np.array(curr[0])))
+            print("-----------------------\n")
