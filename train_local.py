@@ -1,6 +1,3 @@
-import os
-import time
-import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -8,10 +5,10 @@ import optax
 import tiktoken
 from datasets import load_dataset
 
-LATENT_DIM = 384
+LATENT_DIM = 512
 BATCH_SIZE = 8
 ACCUM_STEPS = 16
-MAX_STEPS_LIMIT = 8
+MAX_STEPS_LIMIT = 4
 MAX_SEQ_LEN = 128
 VOCAB_SIZE = 100277
 
@@ -29,10 +26,10 @@ class RotaryAttention(nnx.Module):
         freqs = jnp.outer(t, inv_freq)
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
-        self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
-        self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
     def __call__(self, x, mask=None):
         b, s, d = x.shape
@@ -87,7 +84,7 @@ class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
         dtype = jnp.float32
-        self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
+        self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=jnp.float16, rngs=rngs)
         self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, SCRATCH_SLOTS, latent_dim)) * 0.02)
         self.reasoning_penalty_weight = nnx.Param(jnp.array(0.001))
         self.processor = BranchingReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
