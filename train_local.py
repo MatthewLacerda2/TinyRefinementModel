@@ -8,13 +8,10 @@ from datasets import load_dataset
 LATENT_DIM = 512
 BATCH_SIZE = 8
 ACCUM_STEPS = 16
-MAX_STEPS_LIMIT = 4
+MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 128
+SCRATCH_SLOTS = 64 # Half the MAX_SEQ_LEN
 VOCAB_SIZE = 100277
-
-SCRATCH_SLOTS = 16
-NUM_BRANCHES = 4
-BRANCH_NOISE = 0.02
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
@@ -52,119 +49,79 @@ class RotaryAttention(nnx.Module):
         out = jnp.einsum('bhst,bthd->bshd', weights, v)
         return self.o_proj(out.reshape(b, s, d))
 
-class BranchingReasoningBlock(nnx.Module):
+class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.latent_dim = latent_dim
         self.attn = RotaryAttention(num_heads, latent_dim, rngs, dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.ffn = nnx.Sequential(
-            nnx.Linear(latent_dim, latent_dim * 2, rngs=rngs, dtype=dtype),
-            nnx.gelu,
-            nnx.Linear(latent_dim * 2, latent_dim, rngs=rngs, dtype=dtype)
-        )
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.branch_scorer = nnx.Linear(latent_dim, 1, rngs=rngs, dtype=dtype)
+        self.mlp = nnx.Sequential(
+            nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype),
+            nnx.gelu,
+            nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
+        )
 
-    def __call__(self, x_combined, mask, num_branches=NUM_BRANCHES, key=None):
-        res = self.attn(self.norm1(x_combined), mask=mask)
-        x_mid = x_combined + res
-        x_out = x_mid + self.ffn(self.norm2(x_mid))
-        scratch_start = x_combined.shape[1] - SCRATCH_SLOTS
-        proposal_full = x_out[:, scratch_start:, :]
-        proposals = jnp.tile(proposal_full[:, None, :, :], (1, num_branches, 1, 1))
-        if key is not None:
-            noise = jax.random.normal(key, proposals.shape) * BRANCH_NOISE
-            proposals = proposals + noise
-        scores = self.branch_scorer(proposals).mean(axis=(2, 3))
-        branch_weights = jax.nn.softmax(scores, axis=-1)
-        best_proposal = jnp.einsum('bk,bksd->bsd', branch_weights, proposals)
-        return best_proposal, branch_weights
+    def __call__(self, x, mask):
+        x = x + self.attn(self.norm1(x), mask=mask)
+        x = x + self.mlp(self.norm2(x))
+        return x
 
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs):
         self.latent_dim = latent_dim
-        dtype = jnp.float32
+        self.num_scratch = 64 
+        
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=jnp.float16, rngs=rngs)
-        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, SCRATCH_SLOTS, latent_dim)) * 0.02)
-        self.reasoning_penalty_weight = nnx.Param(jnp.array(0.001))
-        self.processor = BranchingReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
-        self.halt_head = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
-        self.difficulty_estimator = nnx.Linear(latent_dim, 1, dtype=dtype, rngs=rngs)
-        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=dtype, rngs=rngs)
+        self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=jnp.float16, rngs=rngs)
+        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)) * 0.02)
+        self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs)
+        
+        self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
+        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
 
     def get_mask(self, seq_len):
-        total_len = seq_len + SCRATCH_SLOTS
-        mask = jnp.ones((total_len, total_len), dtype=bool)
+        total_len = seq_len + self.num_scratch
+        
         causal = jnp.tril(jnp.ones((total_len, total_len), dtype=bool))
-        scratch_mask = jnp.arange(total_len) >= seq_len
-        final_mask = jnp.logical_or(causal, scratch_mask[:, None])
-        return final_mask[None, None, :, :]
+        
+        mask = causal.at[seq_len:, :].set(True)
+        
+        return mask[None, None, :, :]
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
         z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         
-        difficulty_logits = self.difficulty_estimator(z_seq).mean(axis=1)
-        predicted_steps = nnx.sigmoid(difficulty_logits) * max_steps
-        
-        if training and key is not None:
-            dropout_key, loop_key = jax.random.split(key)
-            mask_drop = jax.random.bernoulli(dropout_key, p=0.9, shape=(batch_size, seq_len, 1))
-            z_seq_view = z_seq * mask_drop
-        else:
-            loop_key = None
-            z_seq_view = z_seq
-            
-        if training and loop_key is not None:
-            step_keys = jax.random.split(loop_key, max_steps)
-        else:
-            step_keys = jnp.zeros((max_steps, 2), dtype=jnp.uint32)
-
+        z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
-        def refine_step(carry, step_key):
-            z_s, step_idx, cum_prob, accumulated_fused = carry
-            
-            combined = jnp.concatenate([z_seq_view, z_s], axis=1)
-            z_s_new, _ = self.processor(
-                combined, mask, key=step_key if training else None
-            )
-            
-            halt_logit = jnp.mean(self.halt_head(z_s_new), axis=1)
-            halt_prob = nnx.sigmoid(halt_logit)
-            p_halt_now = halt_prob * (1.0 - cum_prob)
-            
-            combined_readout = jnp.concatenate([z_seq, z_s_new], axis=1)
-            fused = self.processor.attn(self.processor.norm1(combined_readout), mask=mask)
-            fused = fused + self.processor.ffn(self.processor.norm2(fused))
-            fused_seq = fused[:, :seq_len, :]
-            
-            new_accumulated = accumulated_fused + fused_seq * p_halt_now[:, None, None]
-            new_prob = cum_prob + p_halt_now
-            
-            return (z_s_new, step_idx + 1, new_prob, new_accumulated), p_halt_now
+        if training:
+            active_steps = jax.random.randint(key, (), 1, max_steps + 1)
+        else:
+            active_steps = max_steps
 
-        init_accumulated = jnp.zeros((batch_size, seq_len, self.latent_dim))
-        init_carry = (z_scratch, 0, jnp.zeros((batch_size, 1)), init_accumulated)
+        def loop_step(i, carry):
+            curr_z, halts = carry
+            
+            t_signal = self.time_embed(i)[None, None, :] 
+            
+            # We add this signal to the CURRENT state before processing
+            # This allows the dense layer to say "If step==0, do extraction. If step==8, do summary."
+            z_with_time = curr_z + t_signal
+            
+            new_z = self.processor(z_with_time, mask)
+            
+            halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
+            halt_score = nnx.sigmoid(halt_logit)
+            
+            return (new_z, halts.at[i].set(halt_score))
+
+        init_halts = jnp.zeros((max_steps, batch_size))
         
-        (final_z_s, _, final_cum_prob, accumulated_fused), step_halts = jax.lax.scan(
-            refine_step, init_carry, step_keys, length=max_steps
-        )
+        final_z, halt_scores = jax.lax.fori_loop(0, active_steps, loop_step, (z_combined, init_halts))
         
-        remainder = 1.0 - final_cum_prob
-        combined_last = jnp.concatenate([z_seq, final_z_s], axis=1)
-        fused_last = self.processor.attn(self.processor.norm1(combined_last), mask=mask)
-        fused_last = fused_last + self.processor.ffn(self.processor.norm2(fused_last))
-        fused_seq_last = fused_last[:, :seq_len, :]
-        
-        final_readout_latent = accumulated_fused + fused_seq_last * remainder[:, None, None]
-        logits = self.decoder(final_readout_latent)
-        
-        step_halts = step_halts.at[-1].add(remainder)
-        step_halts_out = jnp.transpose(step_halts, (1, 0, 2))
-        
-        return logits, step_halts_out, predicted_steps
+        final_seq = final_z[:, :seq_len, :]
+        return self.decoder(final_seq), halt_scores
 
 class TextDataGenerator:
     def __init__(self):
@@ -194,22 +151,29 @@ def train_step(model, optimizer, batch_tokens, key):
     inputs = batch_tokens[:, :-1]
     targets = batch_tokens[:, 1:]
     def loss_fn(model):
-        preds, step_halts, pred_steps = model(inputs, training=True, key=key)
+        # We pass a key so the model can pick a random depth
+        preds, halt_scores = model(inputs, training=True, key=key)
+        
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != 100257)
         token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
-        steps_taken = jnp.sum(step_halts * jnp.arange(1, MAX_STEPS_LIMIT + 1)[None, :, None], axis=1)
-        avg_steps = jnp.mean(steps_taken)
-        difficulty_loss = jnp.mean((pred_steps - steps_taken) ** 2)
-        w = jax.nn.softplus(model.reasoning_penalty_weight.value)
-        total_loss = token_loss + (w * avg_steps) + (0.1 * difficulty_loss)
-        return total_loss, (token_loss, avg_steps, w)
-    (loss, (raw_ce, steps, w_val)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+        
+        # 2. Halt Loss: Teach it to say "I'm done" as steps increase
+        # We want halt_score to approach 1.0 as we get deeper
+        step_indices = jnp.arange(MAX_STEPS_LIMIT)[:, None] # [Steps, 1]
+        target_halt = jnp.minimum(1.0, step_indices / 4.0) # Linearly go to 1.0 by step 4
+        
+        halt_loss = jnp.mean((halt_scores - target_halt) ** 2)
+        
+        total_loss = token_loss + 0.1 * halt_loss
+        return total_loss, (token_loss, halt_loss)
+
+    (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     optimizer.update(model, grads)
-    return loss, raw_ce, steps, w_val
+    return loss, raw_ce, h_loss
 
 if __name__ == "__main__":
-    print(f"🚀 Initializing Branching Latent Reasoner (Dim={LATENT_DIM}, Scratch={SCRATCH_SLOTS})...")
+    print(f"🚀 Initializing Standard Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optax.adamw(3e-4), wrt=nnx.Param)
     data_gen = TextDataGenerator()
@@ -218,15 +182,15 @@ if __name__ == "__main__":
     for step in range(1, 10000):
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
-        loss, raw_ce, avg_steps, penalty_w = train_step(model, optimizer, batch, subkey)
+        loss, raw_ce, h_loss = train_step(model, optimizer, batch, subkey)
         if step % 50 == 0:
-            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Avg Think Steps: {avg_steps:.2f} | Penalty W: {penalty_w:.5f}")
+            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt Loss: {h_loss:.4f}")
             print("\n--- INFERENCE CHECK ---")
             prompt = "Once upon a time there was a specific"
             tokens = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
-            logits, _, pred_depth = model(tokens, training=False)
+            logits, halt_scores = model(tokens, training=False)
             next_tok = jnp.argmax(logits[0, -1])
             print(f"Input: {prompt}")
-            print(f"Predicted Depth: {pred_depth[0].item():.2f}")
+            print(f"Halt Scores: {jnp.round(halt_scores[:, 0], 2)}")
             print(f"Next Token: {data_gen.enc.decode([next_tok.item()])}")
             print("-----------------------\n")
