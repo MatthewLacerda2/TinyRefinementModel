@@ -28,20 +28,39 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
-    def __call__(self, x, mask=None):
+    def rotate(self, x_in, sin, cos):
+        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :]
+        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :]
+        x_even, x_odd = x_in[..., 0::2], x_in[..., 1::2]
+        x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x_in.shape)
+        return x_in * cos_ext + x_rot * sin_ext
+
+    def __call__(self, x, mask=None, cache_k=None, cache_v=None):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        sin = self.sin_cached[:s, :]
-        cos = self.cos_cached[:s, :]
-        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
-        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(s, self.head_dim)[None, :, None, :]
-        def rotate(x_in):
-            x_even, x_odd = x_in[..., 0::2], x_in[..., 1::2]
-            x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x_in.shape)
-            return x_in * cos_ext + x_rot * sin_ext
-        q, k = rotate(q), rotate(k)
+        
+        if cache_k is not None and cache_v is not None:
+            prefix_len = cache_k.shape[1]
+            # Only project and rotate the scratch part for K and V
+            x_scratch = x[:, prefix_len:, :]
+            k_scratch = self.k_proj(x_scratch).reshape(b, -1, self.num_heads, self.head_dim)
+            v_scratch = self.v_proj(x_scratch).reshape(b, -1, self.num_heads, self.head_dim)
+            
+            # Rotate Q (full) and K_scratch (part)
+            q = self.rotate(q, self.sin_cached[:s, :], self.cos_cached[:s, :])
+            k_scratch = self.rotate(k_scratch, self.sin_cached[prefix_len:s, :], self.cos_cached[prefix_len:s, :])
+            
+            k = jnp.concatenate([cache_k, k_scratch], axis=1)
+            v = jnp.concatenate([cache_v, v_scratch], axis=1)
+        else:
+            k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+            v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+            
+            sin = self.sin_cached[:s, :]
+            cos = self.cos_cached[:s, :]
+            q = self.rotate(q, sin, cos)
+            k = self.rotate(k, sin, cos)
+
         logits = jnp.einsum('bshd,bthd->bhst', q, k) * self.scale
         if mask is not None:
             logits = jnp.where(mask, logits, -1e9)
@@ -60,8 +79,8 @@ class StandardReasoningBlock(nnx.Module):
             nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
         )
 
-    def __call__(self, x, mask):
-        x = x + self.attn(self.norm1(x), mask=mask)
+    def __call__(self, x, mask, cache_k=None, cache_v=None):
+        x = x + self.attn(self.norm1(x), mask=mask, cache_k=cache_k, cache_v=cache_v)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -90,8 +109,17 @@ class UniversalReasoner(nnx.Module):
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         
+        # Precompute prompt KV once outside the loop
+        z_prompt_norm = self.processor.norm1(z_seq)
+        k_prompt = self.processor.attn.k_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
+        v_prompt = self.processor.attn.v_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
+        
+        sin_p = self.processor.attn.sin_cached[:seq_len, :]
+        cos_p = self.processor.attn.cos_cached[:seq_len, :]
+        k_prompt = self.processor.attn.rotate(k_prompt, sin_p, cos_p)
+
+        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
@@ -102,14 +130,12 @@ class UniversalReasoner(nnx.Module):
 
         def loop_step(i, carry):
             curr_z, halts = carry
-            
-            t_signal = self.time_embed(i)[None, None, :] 
-            
-            # We add this signal to the CURRENT state before processing
-            # This allows the dense layer to say "If step==0, do extraction. If step==8, do summary."
-            z_with_time = curr_z + t_signal
-            
-            new_z = self.processor(z_with_time, mask)
+            t_signal = self.time_embed(i)[None, None, :]
+            z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
+            z_with_time = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
+                        
+            # Use cached prompt KV for prefix cross-attn, and compute scratch KV normally
+            new_z = self.processor(z_with_time, mask, cache_k=k_prompt, cache_v=v_prompt)
             
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             halt_score = nnx.sigmoid(halt_logit)
@@ -117,7 +143,6 @@ class UniversalReasoner(nnx.Module):
             return (new_z, halts.at[i].set(halt_score))
 
         init_halts = jnp.zeros((max_steps, batch_size))
-        
         final_z, halt_scores = jax.lax.fori_loop(0, active_steps, loop_step, (z_combined, init_halts))
         
         final_seq = final_z[:, :seq_len, :]
@@ -125,7 +150,7 @@ class UniversalReasoner(nnx.Module):
 
 class TextDataGenerator:
     def __init__(self):
-        self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", split="train", streaming=True)
+        self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
         self.iterator = iter(self.dataset)
         self.enc = tiktoken.get_encoding("cl100k_base")
 
@@ -146,11 +171,15 @@ class TextDataGenerator:
             batch_ids.append(tokens)
         return jnp.array(batch_ids, dtype=jnp.int32)
 
-@nnx.jit
-def train_step(model, optimizer, batch_tokens, key):
-    inputs = batch_tokens[:, :-1]
-    targets = batch_tokens[:, 1:]
-    def loss_fn(model):
+optimizer_chain = optax.adamw(3e-4)
+
+@jax.jit
+def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
+    def loss_fn(state):
+        model = nnx.merge(graphdef, state)
+        inputs = batch_tokens[:, :-1]
+        targets = batch_tokens[:, 1:]
+        
         # We pass a key so the model can pick a random depth
         preds, halt_scores = model(inputs, training=True, key=key)
         
@@ -158,7 +187,7 @@ def train_step(model, optimizer, batch_tokens, key):
         mask = (targets != 100257)
         token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
         
-        # 2. Halt Loss: Teach it to say "I'm done" as steps increase
+        # Halt Loss: Teach it to say "I'm done" as steps increase
         # We want halt_score to approach 1.0 as we get deeper
         step_indices = jnp.arange(MAX_STEPS_LIMIT)[:, None] # [Steps, 1]
         target_halt = jnp.minimum(1.0, step_indices / 4.0) # Linearly go to 1.0 by step 4
@@ -168,24 +197,35 @@ def train_step(model, optimizer, batch_tokens, key):
         total_loss = token_loss + 0.1 * halt_loss
         return total_loss, (token_loss, halt_loss)
 
-    (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    optimizer.update(model, grads)
-    return loss, raw_ce, h_loss
+    (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
+    updates, new_opt_state = optimizer_chain.update(grads, opt_state, state)
+    new_state = optax.apply_updates(state, updates)
+    return new_state, new_opt_state, loss, raw_ce, h_loss
 
 if __name__ == "__main__":
     print(f"🚀 Initializing Standard Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-    optimizer = nnx.Optimizer(model, optax.adamw(3e-4), wrt=nnx.Param)
+    
+    # Split into graphdef and state for functional training
+    graphdef, state = nnx.split(model)
+    opt_state = optimizer_chain.init(state)
+    
     data_gen = TextDataGenerator()
     key = jax.random.key(0)
     print("Starting training loop...")
     for step in range(1, 10000):
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
-        loss, raw_ce, h_loss = train_step(model, optimizer, batch, subkey)
+        
+        state, opt_state, loss, raw_ce, h_loss = pure_train_step(
+            graphdef, state, opt_state, batch, subkey
+        )
         if step % 50 == 0:
             print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt Loss: {h_loss:.4f}")
             print("\n--- INFERENCE CHECK ---")
+            
+            # Reconstruct model for easy inference calls
+            model = nnx.merge(graphdef, state)
             prompt = "Once upon a time there was a specific"
             tokens = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
             logits, halt_scores = model(tokens, training=False)
