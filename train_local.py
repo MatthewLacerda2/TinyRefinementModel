@@ -6,7 +6,7 @@ import tiktoken
 from datasets import load_dataset
 
 LATENT_DIM = 512
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 128
 SCRATCH_SLOTS = 64 
@@ -229,11 +229,17 @@ if __name__ == "__main__":
             print("\n--- INFERENCE CHECK ---")
             
             model = nnx.merge(graphdef, state)
-            prompt = "Once upon a time there was a specific"
-            tokens = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
-            logits, halt_scores = model(tokens, training=False)
-            next_tok = jnp.argmax(logits[0, -1])
+            prompt = "Introduction: Hello, I am an AI model, my name is "
+            gen_tokens = data_gen.enc.encode(prompt)
+            
+            for _ in range(15):
+                curr_input = jnp.array([gen_tokens], dtype=jnp.int32)
+                logits, _ = model(curr_input, training=False)
+                next_tok = jnp.argmax(logits[0, -1]).item()
+                gen_tokens.append(next_tok)
+                if next_tok == 100257: 
+                    break
+            
             print(f"Input: {prompt}")
-            print(f"Halt Scores: {jnp.round(halt_scores[:, 0], 2)}")
-            print(f"Next Token: {data_gen.enc.decode([next_tok.item()])}")
+            print(f"Generated: {data_gen.enc.decode(gen_tokens)}")
             print("-----------------------\n")
