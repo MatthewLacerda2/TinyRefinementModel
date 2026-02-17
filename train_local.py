@@ -224,12 +224,12 @@ if __name__ == "__main__":
         state, opt_state, loss, raw_ce, h_loss = pure_train_step(
             graphdef, state, opt_state, batch, subkey
         )
-        if step % 50 == 0:
+        if step % 100 == 0:
             print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt Loss: {h_loss:.4f}")
             print("\n--- INFERENCE CHECK ---")
             
             model = nnx.merge(graphdef, state)
-            prompt = "Introduction: Hello, I am an AI model, my name is "
+            prompt = "Write a brief educational tip suited for college students"
             gen_tokens = data_gen.enc.encode(prompt)
             
             for _ in range(15):
