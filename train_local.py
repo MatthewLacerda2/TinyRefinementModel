@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 import tiktoken
-from datasets import load_dataset
+from datasets import load_dataset, interleave_datasets
 import pickle
 import csv
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -198,20 +198,34 @@ class UniversalReasoner(nnx.Module):
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
-        self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
-        self.iterator = iter(self.dataset)
         self.enc = tiktoken.get_encoding("gpt2")
+        
+        # All 8 splits of Cosmopedia-v2
+        configs = [
+            "web_samples_v1", "web_samples_v2", "stanford", 
+            "stories", "wikihow", "openstax", 
+            "khanacademy", "automathtext"
+        ]
+        
+        print(f"mixing {len(configs)} dataset splits...")
+        ds_list = [
+            load_dataset("HuggingFaceTB/cosmopedia-v2", c, split="train", streaming=True) 
+            for c in configs
+        ]
+        
+        # This creates a single stream that pulls from all datasets 
+        self.dataset = interleave_datasets(ds_list, stopping_strategy="all_exhausted")
+        self.iterator = iter(self.dataset)
         self.exhausted = False
 
     def get_batch(self, batch_size):
-        if self.exhausted:
-            return None
+        if self.exhausted: return None
         batch_ids = []
         while len(batch_ids) < batch_size:
             try:
                 item = next(self.iterator)
-                text = item['text']
-                tokens = self.enc.encode(text)
+                tokens = self.enc.encode(item['text'])
+                # Pad/Truncate logic
                 if len(tokens) < self.max_seq_len:
                     tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
                 else:
@@ -219,20 +233,7 @@ class TextDataGenerator:
                 batch_ids.append(tokens)
             except StopIteration:
                 self.exhausted = True
-                if not batch_ids:
-                    return None
                 break
-            except Exception as e:
-                print(f"⚠️ Dataset stream error: {e}. Re-initializing...")
-                # Transient network error? Sleep briefly and try to re-recreate iterator
-                import time
-                time.sleep(2)
-                try:
-                    self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
-                    self.iterator = iter(self.dataset)
-                except:
-                    pass
-                continue
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
