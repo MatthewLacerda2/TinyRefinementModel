@@ -109,7 +109,7 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
-    def generate(self, tokens, gen_len, key, temperature=0.7):
+    def generate(self, tokens, gen_len, key, temperature=0.7, top_p=0.9):
         # Static-shape generation to prevent OOM
         batch_size, start_len = tokens.shape
         
@@ -122,8 +122,23 @@ class UniversalReasoner(nnx.Module):
             valid_idx = start_len + i - 1
             next_logits = logits[:, valid_idx, :] / temperature
             
-            # Stochastic sampling instead of argmax to prevent repetition loops
-            next_token = jax.random.categorical(step_key, next_logits)[:, None]
+            # Top-P (Nucleus) Filtering
+            sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
+            sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
+            
+            probs = jax.nn.softmax(sorted_logits, axis=-1)
+            cum_probs = jnp.cumsum(probs, axis=-1)
+            
+            # Create a mask for tokens to exclude (those exceeding cumulative top_p)
+            # We shift the mask to ensure at least one token (the one that crosses the threshold) is kept
+            mask = cum_probs > top_p
+            mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
+            
+            filtered_logits = jnp.where(mask, -1e9, sorted_logits)
+            
+            # Sample from the filtered distribution
+            sample_indices = jax.random.categorical(step_key, filtered_logits)
+            next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
             
             new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
             return (new_tokens, next_loop_key)
