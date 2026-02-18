@@ -103,6 +103,7 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
+    @nnx.jit
     def generate(self, tokens, gen_len):
         # Static-shape generation to prevent OOM
         batch_size, start_len = tokens.shape
@@ -111,7 +112,9 @@ class UniversalReasoner(nnx.Module):
             logits, _ = self(current_tokens, training=False)
             
             valid_idx = start_len + i - 1
-            next_logits = logits[:, valid_idx, :] 
+            next_logits = logits[:, valid_idx, :] / 0.8 # Temperature 0.8
+            
+            # Simple top-k or just argmax? Let's stick to argmax for speed but fix repetition later if needed
             next_token = jnp.argmax(next_logits, axis=-1)[:, None]
             
             return jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
@@ -171,7 +174,8 @@ class UniversalReasoner(nnx.Module):
         return self.decoder(final_seq), all_halts
 
 class TextDataGenerator:
-    def __init__(self):
+    def __init__(self, max_seq_len=MAX_SEQ_LEN):
+        self.max_seq_len = max_seq_len
         self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
         self.iterator = iter(self.dataset)
         self.enc = tiktoken.get_encoding("cl100k_base")
@@ -186,10 +190,10 @@ class TextDataGenerator:
                 item = next(self.iterator)
             text = item['text']
             tokens = self.enc.encode(text)
-            if len(tokens) < MAX_SEQ_LEN:
-                tokens = tokens + [100257] * (MAX_SEQ_LEN - len(tokens))
+            if len(tokens) < self.max_seq_len:
+                tokens = tokens + [100257] * (self.max_seq_len - len(tokens))
             else:
-                tokens = tokens[:MAX_SEQ_LEN]
+                tokens = tokens[:self.max_seq_len]
             batch_ids.append(tokens)
         return jnp.array(batch_ids, dtype=jnp.int32)
 
@@ -239,30 +243,38 @@ if __name__ == "__main__":
             start_step = ckpt.get('step', 0) + 1
         print(f"✅ Resuming from step {start_step}")
 
-    data_gen = TextDataGenerator()
+    data_gen = TextDataGenerator(MAX_SEQ_LEN)
     key = jax.random.key(start_step)
     print("Starting training loop...")
+    import time
     for step in range(start_step, 10000):
+        t0 = time.time()
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
+        t_data = time.time() - t0
         
+        t1 = time.time()
         state, opt_state, loss, raw_ce, h_loss = pure_train_step(
             graphdef, state, opt_state, batch, subkey
         )
+        t_train = time.time() - t1
 
-        if step % 100 == 0:
+        if step % 250 == 0:
+            if hasattr(jax, "clear_caches"): jax.clear_caches()
+            
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
             
-            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt Loss: {h_loss:.4f}")
-            print("\n--- INFERENCE CHECK ---")
+            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
+            print("--- INFERENCE CHECK ---")
+            model_eval = nnx.merge(graphdef, state)
+            prompt = "What do you know about?"
+            tokens_in = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
             
-            model = nnx.merge(graphdef, state)
-            prompt = "What do you understand about?"
-            tokens = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
+            gen_tokens = model_eval.generate(tokens_in, gen_len=64)
             
-            gen_tokens = model.generate(tokens, gen_len=128)
-            
+            decoded = data_gen.enc.decode(gen_tokens[0, tokens_in.shape[1]:].tolist())
             print(f"Prompt: {prompt}")
-            print(f"Output: {data_gen.enc.decode(gen_tokens[0, tokens.shape[1]:].tolist())}")
+            print(f"Output: {decoded}")
             print("-----------------------\n")
+            del model_eval
