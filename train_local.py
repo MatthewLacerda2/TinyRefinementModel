@@ -144,13 +144,14 @@ class UniversalReasoner(nnx.Module):
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
-        
-        last_weight = step_weights[-1] + p_remain[-1] * (1.0 - all_halts[-1])
-        step_weights = step_weights.at[-1].set(last_weight)
+
+        last_step_halt_prob = all_halts[-1]
+        remaining_prob = p_remain[-1] * (1.0 - last_step_halt_prob)
+        step_weights = step_weights.at[-1].add(remaining_prob)
 
         # Average the embeddings of the sequence tokens
         all_z_seq = all_z[:, :, :seq_len, :]
-        weighted_z = jnp.einsum('sb,sbsd->bsd', step_weights, all_z_seq)
+        weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
         
         # Ponder cost = sum of (weight * step_index)
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
