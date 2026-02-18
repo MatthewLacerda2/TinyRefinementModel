@@ -4,12 +4,14 @@ from flax import nnx
 import optax
 import tiktoken
 from datasets import load_dataset
+import os
+import pickle
 
 LATENT_DIM = 384
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 MAX_STEPS_LIMIT = 8
-MAX_SEQ_LEN = 128
-SCRATCH_SLOTS = 64 
+MAX_SEQ_LEN = 1024
+SCRATCH_SLOTS = 128 
 VOCAB_SIZE = 100277
 
 class RotaryAttention(nnx.Module):
@@ -101,6 +103,25 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
+    def generate(self, tokens, gen_len):
+        # Static-shape generation to prevent OOM
+        batch_size, start_len = tokens.shape
+        
+        def body_fn(i, current_tokens):
+            logits, _ = self(current_tokens, training=False)
+            
+            valid_idx = start_len + i - 1
+            next_logits = logits[:, valid_idx, :] 
+            next_token = jnp.argmax(next_logits, axis=-1)[:, None]
+            
+            return jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
+
+        # Pad tokens to a fixed max length
+        padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=100257)
+        
+        final_tokens = jax.lax.fori_loop(0, gen_len, body_fn, padded_tokens)
+        return final_tokens
+
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
@@ -114,19 +135,16 @@ class UniversalReasoner(nnx.Module):
         cos_p = self.processor.attn.cos_cached[:seq_len, :]
         k_prompt = self.processor.attn.rotate(k_prompt, sin_p, cos_p)
 
-        # FIXED: Use [...] instead of .value to avoid warning
         z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
-        # We always scan the full MAX_STEPS to keep the graph static
         scan_steps = jnp.arange(max_steps)
 
         @jax.checkpoint
         def scan_step(carry, i):
             curr_z = carry
             t_signal = self.time_embed(i)[None, None, :]
-            # Apply time only to scratchpad
             z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
             z_with_time = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
                         
@@ -135,12 +153,8 @@ class UniversalReasoner(nnx.Module):
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             halt_score = nnx.sigmoid(halt_logit)
             
-            # Carry is new_z
-            # Output stack is (new_z, halt_score)
             return new_z, (new_z, halt_score)
 
-        # FIXED: Use lax.scan instead of fori_loop
-        # Returns: final_z, (stacked_all_zs, stacked_halt_scores)
         _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, scan_steps)
         
         if training and key is not None:
@@ -215,32 +229,40 @@ if __name__ == "__main__":
     graphdef, state = nnx.split(model)
     opt_state = optimizer_chain.init(state)
     
+    start_step = 1
+    if os.path.exists("checkpoint.pkl"):
+        print("🔄 Found checkpoint! Loading weights...")
+        with open("checkpoint.pkl", "rb") as f:
+            ckpt = pickle.load(f)
+            state = ckpt['state']
+            opt_state = ckpt['opt_state']
+            start_step = ckpt.get('step', 0) + 1
+        print(f"✅ Resuming from step {start_step}")
+
     data_gen = TextDataGenerator()
-    key = jax.random.key(0)
+    key = jax.random.key(start_step)
     print("Starting training loop...")
-    for step in range(1, 10000):
+    for step in range(start_step, 10000):
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
         
         state, opt_state, loss, raw_ce, h_loss = pure_train_step(
             graphdef, state, opt_state, batch, subkey
         )
+
         if step % 100 == 0:
+            with open("checkpoint.pkl", "wb") as f:
+                pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
+            
             print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt Loss: {h_loss:.4f}")
             print("\n--- INFERENCE CHECK ---")
             
             model = nnx.merge(graphdef, state)
-            prompt = "Write a brief educational tip suited for college students"
-            gen_tokens = data_gen.enc.encode(prompt)
+            prompt = "What do you understand about?"
+            tokens = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
             
-            for _ in range(15):
-                curr_input = jnp.array([gen_tokens], dtype=jnp.int32)
-                logits, _ = model(curr_input, training=False)
-                next_tok = jnp.argmax(logits[0, -1]).item()
-                gen_tokens.append(next_tok)
-                if next_tok == 100257: 
-                    break
+            gen_tokens = model.generate(tokens, gen_len=128)
             
-            print(f"-Input: {prompt}")
-            print(f"Output: {data_gen.enc.decode(gen_tokens)}")
+            print(f"Prompt: {prompt}")
+            print(f"Output: {data_gen.enc.decode(gen_tokens[0, tokens.shape[1]:].tolist())}")
             print("-----------------------\n")
