@@ -9,6 +9,7 @@ import tiktoken
 from datasets import load_dataset
 import pickle
 import json
+import csv
 
 LATENT_DIM = 384
 BATCH_SIZE = 8
@@ -108,26 +109,29 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
-    @nnx.jit(static_argnames=('gen_len',))
-    def generate(self, tokens, gen_len):
+    def generate(self, tokens, gen_len, key, temperature=0.7):
         # Static-shape generation to prevent OOM
         batch_size, start_len = tokens.shape
         
-        def body_fn(i, current_tokens):
+        def body_fn(i, carry):
+            current_tokens, loop_key = carry
+            step_key, next_loop_key = jax.random.split(loop_key)
+            
             logits, _ = self(current_tokens, training=False)
             
             valid_idx = start_len + i - 1
-            next_logits = logits[:, valid_idx, :] / 0.8 # Temperature 0.8
+            next_logits = logits[:, valid_idx, :] / temperature
             
-            # Simple top-k or just argmax? Let's stick to argmax for speed but fix repetition later if needed
-            next_token = jnp.argmax(next_logits, axis=-1)[:, None]
+            # Stochastic sampling instead of argmax to prevent repetition loops
+            next_token = jax.random.categorical(step_key, next_logits)[:, None]
             
-            return jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
+            new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
+            return (new_tokens, next_loop_key)
 
         # Pad tokens to a fixed max length
         padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
         
-        final_tokens = jax.lax.fori_loop(0, gen_len, body_fn, padded_tokens)
+        (final_tokens, _) = jax.lax.fori_loop(0, gen_len, body_fn, (padded_tokens, key))
         return final_tokens
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
@@ -205,6 +209,17 @@ class TextDataGenerator:
                 if not batch_ids:
                     return None
                 break
+            except Exception as e:
+                print(f"⚠️ Dataset stream error: {e}. Re-initializing...")
+                # Transient network error? Sleep briefly and try to re-recreate iterator
+                import time
+                time.sleep(2)
+                try:
+                    self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
+                    self.iterator = iter(self.dataset)
+                except:
+                    pass
+                continue
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
@@ -279,16 +294,16 @@ if __name__ == "__main__":
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     key = jax.random.key(start_step)
 
-    history = []
-    if os.path.exists("history.json"):
+    history_file = "training_history.json"
+    if os.path.exists(history_file):
         try:
-            with open("history.json", "r") as f:
-                history = json.load(f)
-            history = [entry for entry in history if entry['step'] < start_step]
-            print(f"📊 Loaded training history ({len(history)} entries)")
+            with open(history_file, "r") as f:
+                reader = csv.DictReader(f)
+                history_steps = [int(row['step']) for row in reader]
+                if history_steps:
+                    print(f"📊 Found training history up to step {max(history_steps)}")
         except Exception as e:
-            print(f"⚠️ Could not load history: {e}")
-            history = []
+            print(f"⚠️ Could not read history: {e}")
 
     import time
     monitor = LossMonitor()
@@ -327,23 +342,29 @@ if __name__ == "__main__":
             prompt = "What do you know about?"
             tokens_in = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
             
-            gen_tokens = model_eval.generate(tokens_in, gen_len=64)
+            # Use the entropy of the current step for sampling
+            gen_key = jax.random.key(step)
+            gen_tokens = model_eval.generate(tokens_in, gen_len=64, key=gen_key)
             
             decoded = data_gen.enc.decode(gen_tokens[0, tokens_in.shape[1]:].tolist())
             print(f"Prompt: {prompt}")
             print(f"Output: {decoded}")
             print("-----------------------\n")
             
-            history.append({
-                "step": int(step),
-                "loss": float(loss),
-                "ce": float(raw_ce),
-                "halt_loss": float(h_loss),
-                "t_train": float(t_train),
-                "t_data": float(t_data)
-            })
-            with open("history.json", "w") as f:
-                json.dump(history, f, indent=4)
+            # Append to CSV-formatted .json file
+            file_exists = os.path.exists(history_file)
+            with open(history_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "halt_loss", "t_train", "t_data"])
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow({
+                    "step": int(step),
+                    "loss": f"{float(loss):.4f}",
+                    "ce": f"{float(raw_ce):.4f}",
+                    "halt_loss": f"{float(h_loss):.4f}",
+                    "t_train": f"{float(t_train):.2f}",
+                    "t_data": f"{float(t_data):.2f}"
+                })
                 
             del model_eval
 
