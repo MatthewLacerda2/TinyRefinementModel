@@ -6,6 +6,7 @@ import tiktoken
 from datasets import load_dataset
 import os
 import pickle
+import json
 
 LATENT_DIM = 384
 BATCH_SIZE = 2
@@ -246,7 +247,18 @@ if __name__ == "__main__":
 
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     key = jax.random.key(start_step)
-    print("Starting training loop...")
+
+    history = []
+    if os.path.exists("history.json"):
+        try:
+            with open("history.json", "r") as f:
+                history = json.load(f)
+            history = [entry for entry in history if entry['step'] < start_step]
+            print(f"📊 Loaded training history ({len(history)} entries)")
+        except Exception as e:
+            print(f"⚠️ Could not load history: {e}")
+            history = []
+
     import time
     for step in range(start_step, 10000):
         t0 = time.time()
@@ -260,14 +272,14 @@ if __name__ == "__main__":
         )
         t_train = time.time() - t1
 
-        if step % 250 == 0:
+        if step % 500 == 0:
             if hasattr(jax, "clear_caches"): jax.clear_caches()
             
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
             
-            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
             print("--- INFERENCE CHECK ---")
+            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
             model_eval = nnx.merge(graphdef, state)
             prompt = "What do you know about?"
             tokens_in = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
@@ -278,4 +290,16 @@ if __name__ == "__main__":
             print(f"Prompt: {prompt}")
             print(f"Output: {decoded}")
             print("-----------------------\n")
+            
+            history.append({
+                "step": int(step),
+                "loss": float(loss),
+                "ce": float(raw_ce),
+                "halt_loss": float(h_loss),
+                "t_train": float(t_train),
+                "t_data": float(t_data)
+            })
+            with open("history.json", "w") as f:
+                json.dump(history, f, indent=4)
+                
             del model_eval
