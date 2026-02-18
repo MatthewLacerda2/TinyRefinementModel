@@ -201,11 +201,7 @@ class TextDataGenerator:
         self.enc = tiktoken.get_encoding("gpt2")
         
         # All 8 splits of Cosmopedia-v2
-        configs = [
-            "web_samples_v1", "web_samples_v2", "stanford", 
-            "stories", "wikihow", "openstax", 
-            "khanacademy", "automathtext"
-        ]
+        configs = ["cosmopedia-v2", "fineweb-edu-dedup", "python-edu"]
         
         print(f"mixing {len(configs)} dataset splits...")
         ds_list = [
