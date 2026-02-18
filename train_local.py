@@ -309,7 +309,7 @@ if __name__ == "__main__":
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     key = jax.random.key(start_step)
 
-    history_file = "training_history.json"
+    history_file = "training_history.csv"
     if os.path.exists(history_file):
         try:
             with open(history_file, "r") as f:
