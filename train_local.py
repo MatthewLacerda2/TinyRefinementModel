@@ -7,8 +7,11 @@ import tiktoken
 from datasets import load_dataset, interleave_datasets
 import pickle
 import csv
+import time
+
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+# --- Constants ---
 LATENT_DIM = 384
 BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 8
@@ -16,6 +19,7 @@ MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
+PONDER_LAMBDA = 0.01  # The "tax" per step taken
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
@@ -108,42 +112,25 @@ class UniversalReasoner(nnx.Module):
         return mask[None, None, :, :]
 
     def generate(self, tokens, gen_len, key, temperature=0.7, top_p=0.9):
-        # Static-shape generation to prevent OOM
         batch_size, start_len = tokens.shape
-        
         def body_fn(i, carry):
             current_tokens, loop_key = carry
             step_key, next_loop_key = jax.random.split(loop_key)
-            
             logits, _ = self(current_tokens, training=False)
-            
             valid_idx = start_len + i - 1
             next_logits = logits[:, valid_idx, :] / temperature
-            
-            # Top-P (Nucleus) Filtering
             sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
             sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
-            
             probs = jax.nn.softmax(sorted_logits, axis=-1)
             cum_probs = jnp.cumsum(probs, axis=-1)
-            
-            # Create a mask for tokens to exclude (those exceeding cumulative top_p)
-            # We shift the mask to ensure at least one token (the one that crosses the threshold) is kept
             mask = cum_probs > top_p
             mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
-            
             filtered_logits = jnp.where(mask, -1e9, sorted_logits)
-            
-            # Sample from the filtered distribution
             sample_indices = jax.random.categorical(step_key, filtered_logits)
             next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
-            
             new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
             return (new_tokens, next_loop_key)
-
-        # Pad tokens to a fixed max length
         padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
-        
         (final_tokens, _) = jax.lax.fori_loop(0, gen_len, body_fn, (padded_tokens, key))
         return final_tokens
 
@@ -155,7 +142,6 @@ class UniversalReasoner(nnx.Module):
         z_prompt_norm = self.processor.norm1(z_seq)
         k_prompt = self.processor.attn.k_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
         v_prompt = self.processor.attn.v_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
-        
         sin_p = self.processor.attn.sin_cached[:seq_len, :]
         cos_p = self.processor.attn.cos_cached[:seq_len, :]
         k_prompt = self.processor.attn.rotate(k_prompt, sin_p, cos_p)
@@ -164,53 +150,47 @@ class UniversalReasoner(nnx.Module):
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
-        scan_steps = jnp.arange(max_steps)
-
         @jax.checkpoint
         def scan_step(carry, i):
             curr_z = carry
             t_signal = self.time_embed(i)[None, None, :]
             z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
             z_with_time = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
-                        
             new_z = self.processor(z_with_time, mask, cache_k=k_prompt, cache_v=v_prompt)
-            
+            # Halting signal from scratchpad tokens
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
-            halt_score = nnx.sigmoid(halt_logit)
-            
-            return new_z, (new_z, halt_score)
+            halt_prob = nnx.sigmoid(halt_logit)
+            return new_z, (new_z, halt_prob)
 
-        _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, scan_steps)
+        _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, jnp.arange(max_steps))
         
-        halt_probs = jnp.concatenate([all_halts, jnp.ones((1, batch_size))], axis=0)
+        # --- ACT Weighted Averaging ---
+        # Calculate P(stopping exactly at step t)
+        p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts[:-1], axis=0)], axis=0)
+        step_weights = all_halts * p_remain[:-1]
         
-        p_continue = jnp.cumprod(1.0 - halt_probs[:-1], axis=0)
-        p_continue = jnp.concatenate([jnp.ones((1, batch_size)), p_continue], axis=0)
-        
-        step_weights = p_continue[:-1] * halt_probs[:-1] # [Steps, Batch]
-        
-        step_weights = step_weights / (jnp.sum(step_weights, axis=0, keepdims=True) + 1e-9)
+        # Force halt at the final step by assigning all remaining probability to it
+        last_weight = step_weights[-1] + p_remain[-1] * (1.0 - all_halts[-1])
+        step_weights = step_weights.at[-1].set(last_weight)
 
-        weighted_z = jnp.einsum('sb,sbsd->bsd', step_weights, all_z)
+        # Average the embeddings of the sequence tokens
+        all_z_seq = all_z[:, :, :seq_len, :] # [Steps, Batch, Seq, Dim]
+        weighted_z = jnp.einsum('sb,sbsd->bsd', step_weights, all_z_seq)
         
-        step_indices = jnp.arange(1, max_steps + 1)[:, None] # [Steps, 1]
+        # Ponder cost = sum of (weight * step_index)
+        step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0) # [Batch]
 
-        weighted_seq_z = weighted_z[:, :seq_len, :]
-        return self.decoder(weighted_seq_z), ponder_cost
+        return self.decoder(weighted_z), ponder_cost
 
+# --- Data and Optimization (unchanged except for names) ---
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
         self.enc = tiktoken.get_encoding("gpt2")
-        
         print("🚀 Preparing SmolLM-Corpus mix...")
-        
         ds_cosmo = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True).select_columns(["text"])
         ds_fineweb = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", split="train", streaming=True).select_columns(["text"])
-        #ds_python = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True).
-        #ds_python = ds_python.rename_column("content", "text").select_columns(["text"])
-        
         self.dataset = interleave_datasets([ds_cosmo, ds_fineweb], stopping_strategy="all_exhausted")
         self.iterator = iter(self.dataset)
         self.exhausted = False
@@ -221,113 +201,64 @@ class TextDataGenerator:
         while len(batch_ids) < batch_size:
             try:
                 item = next(self.iterator)
-
                 tokens = self.enc.encode(item['text'])
                 if len(tokens) < self.max_seq_len:
                     tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
                 else:
                     tokens = tokens[:self.max_seq_len]
                 batch_ids.append(tokens)
-            except StopIteration:
-                self.exhausted = True
-                break
-            except Exception as e:
-                print(f"⚠️ Warning: Skipping a corrupted row: {e}")
-                continue
+            except StopIteration: self.exhausted = True; break
+            except Exception as e: continue
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
     def __init__(self, patience=50000, window=5000):
-        self.patience = patience
-        self.window = window
-        self.history = []
-        self.best_loss = float('inf')
-        self.last_improvement_step = 0
-
+        self.patience, self.window = patience, window
+        self.history, self.best_loss, self.last_improvement_step = [], float('inf'), 0
     def push(self, step, loss):
         self.history.append(loss)
-        if len(self.history) > self.window:
-            self.history.pop(0)
-        
+        if len(self.history) > self.window: self.history.pop(0)
         avg_loss = sum(self.history) / len(self.history)
         if avg_loss < (self.best_loss - 0.01):
-            self.best_loss = avg_loss
-            self.last_improvement_step = step
+            self.best_loss, self.last_improvement_step = avg_loss, step
             return False
-        
-        if (step - self.last_improvement_step) > self.patience:
-            return True # Converged
-        return False
+        return (step - self.last_improvement_step) > self.patience
 
-schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-6,
-    peak_value=8e-5,
-    warmup_steps=1000,
-    decay_steps=100000,
-    end_value=1e-6
-)
-
-optimizer_chain = optax.chain(
-    optax.clip_by_global_norm(1.0),
-    optax.adamw(learning_rate=schedule)
-)
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
+optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
 
 @jax.jit
 def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
     def loss_fn(state):
         model = nnx.merge(graphdef, state)
-        inputs = batch_tokens[:, :-1]
-        targets = batch_tokens[:, 1:]
-        
+        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
         preds, ponder_cost = model(inputs, training=True, key=key)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
         
-        avg_steps = jnp.mean(ponder_cost)
-        total_ponder_loss = 0.01 * avg_steps
+        # ACT Ponder Loss (encourage efficiency)
+        avg_ponder = jnp.mean(ponder_cost)
+        ponder_loss = PONDER_LAMBDA * avg_ponder
         
-        total_loss = token_loss + total_ponder_loss
-        return total_loss, (token_loss, avg_steps)
+        return token_loss + ponder_loss, (token_loss, avg_ponder)
 
-    (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
+    (loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
     updates, new_opt_state = optimizer_chain.update(grads, opt_state, state)
     new_state = optax.apply_updates(state, updates)
-    return new_state, new_opt_state, loss, raw_ce, h_loss
+    return new_state, new_opt_state, loss, raw_ce, avg_p
 
 if __name__ == "__main__":
-    print(f"🚀 Initializing Standard Latent Reasoner (Dim={LATENT_DIM})...")
+    print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-    
     graphdef, state = nnx.split(model)
     opt_state = optimizer_chain.init(state)
     
     start_step = 1
-    if os.path.exists("checkpoint.pkl"):
-        print("🔄 Found checkpoint! Loading weights...")
-        with open("checkpoint.pkl", "rb") as f:
-            ckpt = pickle.load(f)
-            state = ckpt['state']
-            opt_state = ckpt['opt_state']
-            start_step = ckpt.get('step', 0) + 1
-        print(f"✅ Resuming from step {start_step}")
-
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     key = jax.random.key(start_step)
-
     history_file = "training_history.csv"
-    if os.path.exists(history_file):
-        try:
-            with open(history_file, "r") as f:
-                reader = csv.DictReader(f)
-                history_steps = [int(row['step']) for row in reader]
-                if history_steps:
-                    print(f"📊 Found training history up to step {max(history_steps)}")
-        except Exception as e:
-            print(f"⚠️ Could not read history: {e}")
-
-    import time
     monitor = LossMonitor()
     step = start_step
     
@@ -335,44 +266,24 @@ if __name__ == "__main__":
         t0 = time.time()
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
-        
-        if batch is None:
-            print("🎉 Dataset finished! Training complete.")
-            break
-            
-        t_data = time.time() - t0
+        if batch is None: break
         
         t1 = time.time()
-        state, opt_state, loss, raw_ce, h_loss = pure_train_step(
-            graphdef, state, opt_state, batch, subkey
-        )
+        state, opt_state, loss, raw_ce, avg_p = pure_train_step(graphdef, state, opt_state, batch, subkey)
         loss.block_until_ready()
-        t_train = time.time() - t1
+        t_train, t_data = time.time() - t1, t1 - t0
 
-        if monitor.push(step, float(loss)):
-            print(f"📉 Model converged (no improvement in {monitor.patience} steps). Stopping.")
-            break
+        if monitor.push(step, float(loss)): break
 
         if step % 500 == 0:
-            if hasattr(jax, "clear_caches"): jax.clear_caches()
-            
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
             
-            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | AvgSteps: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
+            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Avg Steps: {avg_p:.2f}")
             
-            file_exists = os.path.exists(history_file)
             with open(history_file, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "halt_loss", "t_train", "t_data"])
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow({
-                    "step": int(step),
-                    "loss": f"{float(loss):.4f}",
-                    "ce": f"{float(raw_ce):.4f}",
-                    "halt_loss": f"{float(h_loss):.4f}",
-                    "t_train": f"{float(t_train):.2f}",
-                    "t_data": f"{float(t_data):.2f}"
-                })
-
+                writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "t_train", "t_data"])
+                if not os.path.exists(history_file) or os.stat(history_file).st_size == 0: writer.writeheader()
+                writer.writerow({"step": int(step), "loss": f"{float(loss):.4f}", "ce": f"{float(raw_ce):.4f}", 
+                                 "avg_ponder": f"{float(avg_p):.4f}", "t_train": f"{t_train:.2f}", "t_data": f"{t_data:.2f}"})
         step += 1
