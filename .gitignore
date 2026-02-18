@@ -214,6 +214,5 @@ __marimo__/
 auxpy.py
 auxmd.md
 *.pkl
-training_history.json
-training_log.csv
+training_history.csv
 *.png

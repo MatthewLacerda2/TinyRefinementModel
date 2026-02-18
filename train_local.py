@@ -1,6 +1,4 @@
 import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -8,8 +6,8 @@ import optax
 import tiktoken
 from datasets import load_dataset
 import pickle
-import json
 import csv
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 LATENT_DIM = 384
 BATCH_SIZE = 8
@@ -260,9 +258,17 @@ class LossMonitor:
             return True # Converged
         return False
 
+schedule = optax.warmup_cosine_decay_schedule(
+    init_value=1e-5,
+    peak_value=1e-4,
+    warmup_steps=500,
+    decay_steps=50000,
+    end_value=1e-6
+)
+
 optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
-    optax.adamw(3e-4)
+    optax.adamw(learning_rate=schedule)
 )
 
 @jax.jit
@@ -370,7 +376,6 @@ if __name__ == "__main__":
             print(f"Output: {decoded}")
             print("-----------------------\n")
             
-            # Append to CSV-formatted .json file
             file_exists = os.path.exists(history_file)
             with open(history_file, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "halt_loss", "t_train", "t_data"])

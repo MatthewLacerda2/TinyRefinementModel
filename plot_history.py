@@ -1,26 +1,33 @@
-import json
+import csv
 import matplotlib.pyplot as plt
 import os
 
-def plot_training_history(log_path="history.json"):
+def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
         print(f"Error: {log_path} not found.")
         return
 
+    history = []
     try:
         with open(log_path, 'r') as f:
-            history = json.load(f)
+            reader = csv.DictReader(f)
+            for row in reader:
+                history.append({
+                    'step': int(row['step']),
+                    'loss': float(row['loss']),
+                    'halt_loss': float(row.get('halt_loss', 0))
+                })
     except Exception as e:
         print(f"Error reading {log_path}: {e}")
         return
 
     if not history:
-        print("No data in history.json to plot.")
+        print(f"No data in {log_path} to plot.")
         return
 
     steps = [entry['step'] for entry in history]
     losses = [entry['loss'] for entry in history]
-    halt_losses = [entry.get('halt_loss', 0) for entry in history]
+    halt_losses = [entry['halt_loss'] for entry in history]
 
     # Create a clean, modern plot
     plt.style.use('dark_background')
