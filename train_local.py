@@ -256,10 +256,10 @@ class LossMonitor:
         return False
 
 schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-5,
-    peak_value=1e-4,
-    warmup_steps=500,
-    decay_steps=50000,
+    init_value=1e-6,
+    peak_value=8e-5,
+    warmup_steps=1000,
+    decay_steps=100000,
     end_value=1e-6
 )
 
@@ -287,7 +287,7 @@ def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
         # halt_scores is [Steps, Batch]
         halt_loss = jnp.mean((halt_scores - target_halt) ** 2)
         
-        total_loss = token_loss + 0.1 * halt_loss
+        total_loss = token_loss + 0.05 * halt_loss
         return total_loss, (token_loss, halt_loss)
 
     (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
