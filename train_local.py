@@ -1,15 +1,17 @@
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
 import tiktoken
 from datasets import load_dataset
-import os
 import pickle
 import json
 
 LATENT_DIM = 384
-BATCH_SIZE = 2
+BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64 
@@ -32,8 +34,9 @@ class RotaryAttention(nnx.Module):
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
     def rotate(self, x_in, sin, cos):
-        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :]
-        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :]
+        dtype = x_in.dtype
+        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :].astype(dtype)
+        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :].astype(dtype)
         x_even, x_odd = x_in[..., 0::2], x_in[..., 1::2]
         x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x_in.shape)
         return x_in * cos_ext + x_rot * sin_ext
@@ -71,7 +74,7 @@ class RotaryAttention(nnx.Module):
         return self.o_proj(out.reshape(b, s, d))
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
         self.attn = RotaryAttention(num_heads, latent_dim, rngs, dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -87,17 +90,17 @@ class StandardReasoningBlock(nnx.Module):
         return x
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs):
+    def __init__(self, latent_dim, rngs, dtype=jnp.float16):
         self.latent_dim = latent_dim
         self.num_scratch = SCRATCH_SLOTS 
         
-        self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=jnp.float16, rngs=rngs)
-        self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=jnp.float16, rngs=rngs)
+        self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
+        self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
         self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)) * 0.02)
-        self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs)
+        self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
+        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=dtype, rngs=rngs)
 
     def get_mask(self, seq_len):
         total_len = seq_len + self.num_scratch
@@ -181,23 +184,51 @@ class TextDataGenerator:
         self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
         self.iterator = iter(self.dataset)
         self.enc = tiktoken.get_encoding("gpt2")
+        self.exhausted = False
 
     def get_batch(self, batch_size):
+        if self.exhausted:
+            return None
         batch_ids = []
         while len(batch_ids) < batch_size:
             try:
                 item = next(self.iterator)
+                text = item['text']
+                tokens = self.enc.encode(text)
+                if len(tokens) < self.max_seq_len:
+                    tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
+                else:
+                    tokens = tokens[:self.max_seq_len]
+                batch_ids.append(tokens)
             except StopIteration:
-                self.iterator = iter(self.dataset)
-                item = next(self.iterator)
-            text = item['text']
-            tokens = self.enc.encode(text)
-            if len(tokens) < self.max_seq_len:
-                tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
-            else:
-                tokens = tokens[:self.max_seq_len]
-            batch_ids.append(tokens)
+                self.exhausted = True
+                if not batch_ids:
+                    return None
+                break
         return jnp.array(batch_ids, dtype=jnp.int32)
+
+class LossMonitor:
+    def __init__(self, patience=50000, window=5000):
+        self.patience = patience
+        self.window = window
+        self.history = []
+        self.best_loss = float('inf')
+        self.last_improvement_step = 0
+
+    def push(self, step, loss):
+        self.history.append(loss)
+        if len(self.history) > self.window:
+            self.history.pop(0)
+        
+        avg_loss = sum(self.history) / len(self.history)
+        if avg_loss < (self.best_loss - 0.01):
+            self.best_loss = avg_loss
+            self.last_improvement_step = step
+            return False
+        
+        if (step - self.last_improvement_step) > self.patience:
+            return True # Converged
+        return False
 
 optimizer_chain = optax.adamw(3e-4)
 
@@ -260,10 +291,18 @@ if __name__ == "__main__":
             history = []
 
     import time
-    for step in range(start_step, 10000):
+    monitor = LossMonitor()
+    step = start_step
+    
+    while True:
         t0 = time.time()
         key, subkey = jax.random.split(key)
         batch = data_gen.get_batch(BATCH_SIZE)
+        
+        if batch is None:
+            print("🎉 Dataset finished! Training complete.")
+            break
+            
         t_data = time.time() - t0
         
         t1 = time.time()
@@ -271,6 +310,10 @@ if __name__ == "__main__":
             graphdef, state, opt_state, batch, subkey
         )
         t_train = time.time() - t1
+
+        if monitor.push(step, float(loss)):
+            print(f"📉 Model converged (no improvement in {monitor.patience} steps). Stopping.")
+            break
 
         if step % 500 == 0:
             if hasattr(jax, "clear_caches"): jax.clear_caches()
@@ -303,3 +346,5 @@ if __name__ == "__main__":
                 json.dump(history, f, indent=4)
                 
             del model_eval
+
+        step += 1
