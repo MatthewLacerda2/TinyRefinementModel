@@ -182,18 +182,22 @@ class UniversalReasoner(nnx.Module):
 
         _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, scan_steps)
         
-        if training and key is not None:
-            # Pick a random depth to train on
-            # 1-based index (1..MAX) -> 0-based array index (0..MAX-1)
-            active_steps = jax.random.randint(key, (), 1, max_steps + 1)
-            idx = active_steps - 1
-            final_z = all_z[idx]
-        else:
-            # Inference: Use the final result
-            final_z = all_z[-1]
+        halt_probs = jnp.concatenate([all_halts, jnp.ones((1, batch_size))], axis=0)
+        
+        p_continue = jnp.cumprod(1.0 - halt_probs[:-1], axis=0)
+        p_continue = jnp.concatenate([jnp.ones((1, batch_size)), p_continue], axis=0)
+        
+        step_weights = p_continue[:-1] * halt_probs[:-1] # [Steps, Batch]
+        
+        step_weights = step_weights / (jnp.sum(step_weights, axis=0, keepdims=True) + 1e-9)
 
-        final_seq = final_z[:, :seq_len, :]
-        return self.decoder(final_seq), all_halts
+        weighted_z = jnp.einsum('sb,sbsd->bsd', step_weights, all_z)
+        
+        step_indices = jnp.arange(1, max_steps + 1)[:, None] # [Steps, 1]
+        ponder_cost = jnp.sum(step_weights * step_indices, axis=0) # [Batch]
+
+        weighted_seq_z = weighted_z[:, :seq_len, :]
+        return self.decoder(weighted_seq_z), ponder_cost
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
@@ -275,20 +279,17 @@ def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
         inputs = batch_tokens[:, :-1]
         targets = batch_tokens[:, 1:]
         
-        preds, halt_scores = model(inputs, training=True, key=key)
+        preds, ponder_cost = model(inputs, training=True, key=key)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
         
-        step_indices = jnp.arange(MAX_STEPS_LIMIT)[:, None]
-        target_halt = jnp.minimum(1.0, step_indices / 4.0)
+        avg_steps = jnp.mean(ponder_cost)
+        total_ponder_loss = 0.01 * avg_steps
         
-        # halt_scores is [Steps, Batch]
-        halt_loss = jnp.mean((halt_scores - target_halt) ** 2)
-        
-        total_loss = token_loss + 0.05 * halt_loss
-        return total_loss, (token_loss, halt_loss)
+        total_loss = token_loss + total_ponder_loss
+        return total_loss, (token_loss, avg_steps)
 
     (loss, (raw_ce, h_loss)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
     updates, new_opt_state = optimizer_chain.update(grads, opt_state, state)
@@ -358,20 +359,7 @@ if __name__ == "__main__":
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
             
-            print("--- INFERENCE CHECK ---")
-            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | Halt: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
-            model_eval = nnx.merge(graphdef, state)
-            prompt = "What do you know about?"
-            tokens_in = jnp.array([data_gen.enc.encode(prompt)], dtype=jnp.int32)
-            
-            # Use the entropy of the current step for sampling
-            gen_key = jax.random.key(step)
-            gen_tokens = model_eval.generate(tokens_in, gen_len=64, key=gen_key)
-            
-            decoded = data_gen.enc.decode(gen_tokens[0, tokens_in.shape[1]:].tolist())
-            print(f"Prompt: {prompt}")
-            print(f"Output: {decoded}")
-            print("-----------------------\n")
+            print(f"Step {step:04d} | Loss: {loss:.4f} | CE: {raw_ce:.4f} | AvgSteps: {h_loss:.4f} | Train: {t_train:.2f}s | Data: {t_data:.2f}s")
             
             file_exists = os.path.exists(history_file)
             with open(history_file, "a", newline="") as f:
@@ -386,7 +374,5 @@ if __name__ == "__main__":
                     "t_train": f"{float(t_train):.2f}",
                     "t_data": f"{float(t_data):.2f}"
                 })
-                
-            del model_eval
 
         step += 1
