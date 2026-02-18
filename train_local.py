@@ -12,7 +12,8 @@ BATCH_SIZE = 2
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64 
-VOCAB_SIZE = 100277
+VOCAB_SIZE = 50257
+PAD_TOKEN_ID = 50256
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
@@ -120,7 +121,7 @@ class UniversalReasoner(nnx.Module):
             return jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
 
         # Pad tokens to a fixed max length
-        padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=100257)
+        padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
         
         final_tokens = jax.lax.fori_loop(0, gen_len, body_fn, padded_tokens)
         return final_tokens
@@ -178,7 +179,7 @@ class TextDataGenerator:
         self.max_seq_len = max_seq_len
         self.dataset = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
         self.iterator = iter(self.dataset)
-        self.enc = tiktoken.get_encoding("cl100k_base")
+        self.enc = tiktoken.get_encoding("gpt2")
 
     def get_batch(self, batch_size):
         batch_ids = []
@@ -191,7 +192,7 @@ class TextDataGenerator:
             text = item['text']
             tokens = self.enc.encode(text)
             if len(tokens) < self.max_seq_len:
-                tokens = tokens + [100257] * (self.max_seq_len - len(tokens))
+                tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
             else:
                 tokens = tokens[:self.max_seq_len]
             batch_ids.append(tokens)
@@ -209,7 +210,7 @@ def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
         preds, halt_scores = model(inputs, training=True, key=key)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-        mask = (targets != 100257)
+        mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
         
         step_indices = jnp.arange(MAX_STEPS_LIMIT)[:, None]
