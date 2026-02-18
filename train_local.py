@@ -200,17 +200,14 @@ class TextDataGenerator:
         self.max_seq_len = max_seq_len
         self.enc = tiktoken.get_encoding("gpt2")
         
-        # All 8 splits of Cosmopedia-v2
-        configs = ["cosmopedia-v2", "fineweb-edu-dedup", "python-edu"]
+        print("🚀 Preparing SmolLM-Corpus mix...")
         
-        print(f"mixing {len(configs)} dataset splits...")
-        ds_list = [
-            load_dataset("HuggingFaceTB/cosmopedia-v2", c, split="train", streaming=True) 
-            for c in configs
-        ]
+        ds_cosmo = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True).select_columns(["text"])
+        ds_fineweb = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", split="train", streaming=True).select_columns(["text"])
+        ds_python = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
+        ds_python = ds_python.rename_column("content", "text").select_columns(["text"])
         
-        # This creates a single stream that pulls from all datasets 
-        self.dataset = interleave_datasets(ds_list, stopping_strategy="all_exhausted")
+        self.dataset = interleave_datasets([ds_cosmo, ds_fineweb, ds_python], stopping_strategy="all_exhausted")
         self.iterator = iter(self.dataset)
         self.exhausted = False
 
@@ -220,8 +217,8 @@ class TextDataGenerator:
         while len(batch_ids) < batch_size:
             try:
                 item = next(self.iterator)
+
                 tokens = self.enc.encode(item['text'])
-                # Pad/Truncate logic
                 if len(tokens) < self.max_seq_len:
                     tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
                 else:
@@ -230,6 +227,9 @@ class TextDataGenerator:
             except StopIteration:
                 self.exhausted = True
                 break
+            except Exception as e:
+                print(f"⚠️ Warning: Skipping a corrupted row: {e}")
+                continue
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
