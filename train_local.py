@@ -101,7 +101,7 @@ class UniversalReasoner(nnx.Module):
         self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=dtype, rngs=rngs)
+        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
 
     def get_mask(self, seq_len):
         total_len = seq_len + self.num_scratch
@@ -260,7 +260,10 @@ class LossMonitor:
             return True # Converged
         return False
 
-optimizer_chain = optax.adamw(3e-4)
+optimizer_chain = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.adamw(3e-4)
+)
 
 @jax.jit
 def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
@@ -339,6 +342,7 @@ if __name__ == "__main__":
         state, opt_state, loss, raw_ce, h_loss = pure_train_step(
             graphdef, state, opt_state, batch, subkey
         )
+        loss.block_until_ready()
         t_train = time.time() - t1
 
         if monitor.push(step, float(loss)):
