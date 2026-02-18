@@ -7,10 +7,10 @@ import tiktoken
 from datasets import load_dataset, interleave_datasets
 import pickle
 import csv
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.80
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 LATENT_DIM = 384
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
