@@ -11,7 +11,6 @@ import time
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-# --- Constants ---
 LATENT_DIM = 384
 BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 8
@@ -19,7 +18,8 @@ MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
-PONDER_LAMBDA = 0.01  # The "tax" per step taken
+PONDER_LAMBDA = 0.01
+CHECKPOINT_INTERVAL = 500
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
@@ -111,28 +111,6 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
-    def generate(self, tokens, gen_len, key, temperature=0.7, top_p=0.9):
-        batch_size, start_len = tokens.shape
-        def body_fn(i, carry):
-            current_tokens, loop_key = carry
-            step_key, next_loop_key = jax.random.split(loop_key)
-            logits, _ = self(current_tokens, training=False)
-            valid_idx = start_len + i - 1
-            next_logits = logits[:, valid_idx, :] / temperature
-            sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
-            sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
-            probs = jax.nn.softmax(sorted_logits, axis=-1)
-            cum_probs = jnp.cumsum(probs, axis=-1)
-            mask = cum_probs > top_p
-            mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
-            filtered_logits = jnp.where(mask, -1e9, sorted_logits)
-            sample_indices = jax.random.categorical(step_key, filtered_logits)
-            next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
-            new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
-            return (new_tokens, next_loop_key)
-        padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
-        (final_tokens, _) = jax.lax.fori_loop(0, gen_len, body_fn, (padded_tokens, key))
-        return final_tokens
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
@@ -164,17 +142,14 @@ class UniversalReasoner(nnx.Module):
 
         _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, jnp.arange(max_steps))
         
-        # --- ACT Weighted Averaging ---
-        # Calculate P(stopping exactly at step t)
-        p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts[:-1], axis=0)], axis=0)
-        step_weights = all_halts * p_remain[:-1]
+        p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
+        step_weights = all_halts * p_remain
         
-        # Force halt at the final step by assigning all remaining probability to it
         last_weight = step_weights[-1] + p_remain[-1] * (1.0 - all_halts[-1])
         step_weights = step_weights.at[-1].set(last_weight)
 
         # Average the embeddings of the sequence tokens
-        all_z_seq = all_z[:, :, :seq_len, :] # [Steps, Batch, Seq, Dim]
+        all_z_seq = all_z[:, :, :seq_len, :]
         weighted_z = jnp.einsum('sb,sbsd->bsd', step_weights, all_z_seq)
         
         # Ponder cost = sum of (weight * step_index)
@@ -183,7 +158,6 @@ class UniversalReasoner(nnx.Module):
 
         return self.decoder(weighted_z), ponder_cost
 
-# --- Data and Optimization (unchanged except for names) ---
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
@@ -275,7 +249,7 @@ if __name__ == "__main__":
 
         if monitor.push(step, float(loss)): break
 
-        if step % 500 == 0:
+        if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
             
