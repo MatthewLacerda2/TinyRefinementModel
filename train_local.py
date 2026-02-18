@@ -5,8 +5,8 @@ import optax
 import tiktoken
 from datasets import load_dataset
 
-LATENT_DIM = 512
-BATCH_SIZE = 4
+LATENT_DIM = 384
+BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 128
 SCRATCH_SLOTS = 64 
@@ -122,6 +122,7 @@ class UniversalReasoner(nnx.Module):
         # We always scan the full MAX_STEPS to keep the graph static
         scan_steps = jnp.arange(max_steps)
 
+        @jax.checkpoint
         def scan_step(carry, i):
             curr_z = carry
             t_signal = self.time_embed(i)[None, None, :]
@@ -240,6 +241,6 @@ if __name__ == "__main__":
                 if next_tok == 100257: 
                     break
             
-            print(f"Input: {prompt}")
-            print(f"Generated: {data_gen.enc.decode(gen_tokens)}")
+            print(f"-Input: {prompt}")
+            print(f"Output: {data_gen.enc.decode(gen_tokens)}")
             print("-----------------------\n")
