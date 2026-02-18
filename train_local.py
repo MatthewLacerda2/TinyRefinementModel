@@ -13,7 +13,7 @@ LATENT_DIM = 384
 BATCH_SIZE = 16
 MAX_STEPS_LIMIT = 8
 MAX_SEQ_LEN = 512
-SCRATCH_SLOTS = 128
+SCRATCH_SLOTS = 64
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 
@@ -204,10 +204,10 @@ class TextDataGenerator:
         
         ds_cosmo = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True).select_columns(["text"])
         ds_fineweb = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", split="train", streaming=True).select_columns(["text"])
-        ds_python = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
-        ds_python = ds_python.rename_column("content", "text").select_columns(["text"])
+        #ds_python = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True).
+        #ds_python = ds_python.rename_column("content", "text").select_columns(["text"])
         
-        self.dataset = interleave_datasets([ds_cosmo, ds_fineweb, ds_python], stopping_strategy="all_exhausted")
+        self.dataset = interleave_datasets([ds_cosmo, ds_fineweb], stopping_strategy="all_exhausted")
         self.iterator = iter(self.dataset)
         self.exhausted = False
 
