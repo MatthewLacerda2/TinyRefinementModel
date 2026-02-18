@@ -8,10 +8,10 @@ import os
 import pickle
 
 LATENT_DIM = 384
-BATCH_SIZE = 4
+BATCH_SIZE = 2
 MAX_STEPS_LIMIT = 8
-MAX_SEQ_LEN = 1024
-SCRATCH_SLOTS = 128 
+MAX_SEQ_LEN = 512
+SCRATCH_SLOTS = 64 
 VOCAB_SIZE = 100277
 
 class RotaryAttention(nnx.Module):
