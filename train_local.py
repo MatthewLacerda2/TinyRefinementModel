@@ -105,7 +105,7 @@ class UniversalReasoner(nnx.Module):
         mask = causal.at[seq_len:, :].set(True)
         return mask[None, None, :, :]
 
-    @nnx.jit
+    @nnx.jit(static_argnames=('gen_len',))
     def generate(self, tokens, gen_len):
         # Static-shape generation to prevent OOM
         batch_size, start_len = tokens.shape

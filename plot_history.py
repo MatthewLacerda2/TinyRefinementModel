@@ -1,63 +1,51 @@
-import csv
+import json
 import matplotlib.pyplot as plt
 import os
 
-def plot_training_history(log_path="training_log.csv"):
+def plot_training_history(log_path="history.json"):
     if not os.path.exists(log_path):
         print(f"Error: {log_path} not found.")
         return
 
-    steps = []
-    losses = []
-    avg_losses = []
-    difficulties = []
-    avg_steps = []
-
     try:
         with open(log_path, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                steps.append(int(float(row['step'])))
-                losses.append(float(row['loss']))
-                avg_losses.append(float(row['avg_loss']))
-                difficulties.append(float(row['difficulty']))
-                avg_steps.append(float(row['avg_steps']))
+            history = json.load(f)
     except Exception as e:
         print(f"Error reading {log_path}: {e}")
         return
 
-    if not steps:
-        print("No data to plot.")
+    if not history:
+        print("No data in history.json to plot.")
         return
 
-    # Create a 3-panel plot
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 18), sharex=True)
+    steps = [entry['step'] for entry in history]
+    losses = [entry['loss'] for entry in history]
+    halt_losses = [entry.get('halt_loss', 0) for entry in history]
 
-    # 1. Loss (Log Scale)
-    ax1.plot(steps, losses, color='#3498db', alpha=0.3, label='Step Loss')
-    ax1.plot(steps, avg_losses, color='#2980b9', linewidth=2, label='Avg Loss (Smoothed)')
-    ax1.set_ylabel('Loss (Log)')
-    ax1.set_yscale('log')
-    ax1.set_title('Training Loss - Log Scale')
-    ax1.grid(True, which="both", alpha=0.3)
+    # Create a clean, modern plot
+    plt.style.use('dark_background')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    
+    # 1. Total Loss
+    ax1.plot(steps, losses, color='#00f2ff', linewidth=2, label='Total Loss')
+    ax1.fill_between(steps, losses, color='#00f2ff', alpha=0.1)
+    ax1.set_ylabel('Loss', color='#00f2ff', fontweight='bold')
+    ax1.set_title('Training Progress: Total Loss', fontsize=14, pad=15, color='white')
+    ax1.grid(True, linestyle='--', alpha=0.2)
     ax1.legend()
 
-    # 2. Difficulty
-    ax2.plot(steps, difficulties, color='#e74c3c', linewidth=2)
-    ax2.set_ylabel('Difficulty')
-    ax2.set_title('Simulation Difficulty Over Time')
-    ax2.grid(True, alpha=0.3)
-    
-    # 3. Avg Steps (Complexity)
-    ax3.plot(steps, avg_steps, color='#f39c12', linewidth=2)
-    ax3.set_ylabel('Horizon / Steps')
-    ax3.set_xlabel('Training Step')
-    ax3.set_title('Prediction Horizon (Avg Steps)')
-    ax3.grid(True, alpha=0.3)
+    # 2. Halt Loss (Targeting timing/efficiency)
+    ax2.plot(steps, halt_losses, color='#ff007b', linewidth=2, label='Halt Loss')
+    ax2.fill_between(steps, halt_losses, color='#ff007b', alpha=0.1)
+    ax2.set_ylabel('Halt Loss', color='#ff007b', fontweight='bold')
+    ax2.set_xlabel('Training Step', fontweight='bold')
+    ax2.set_title('Guided Halting Progress (Stability)', fontsize=14, pad=15, color='white')
+    ax2.grid(True, linestyle='--', alpha=0.2)
+    ax2.legend()
 
     plt.tight_layout()
-    plt.savefig('training_plot.png')
-    print("Full training plot saved to training_plot.png")
+    plt.savefig('training_plot.png', dpi=120)
+    print("✨ Training analytics updated: training_plot.png")
 
 if __name__ == "__main__":
     plot_training_history()
