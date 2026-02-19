@@ -27,43 +27,34 @@ def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
     return jnp.concatenate([-x2, x1], axis=-1)
 
-def apply_rope(q, k, sin, cos):
-    sin = sin[None, :, None, :]
-    cos = cos[None, :, None, :]
-    q_rope = (q * cos) + (rotate_half(q) * sin)
-    k_rope = (k * cos) + (rotate_half(k) * sin)
-    return q_rope, k_rope
-
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
         self.num_heads = num_heads
         self.head_dim = in_features // num_heads
         self.scale = self.head_dim ** -0.5
+        
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN + SCRATCH_SLOTS)
         freqs = jnp.outer(t, inv_freq)
         freqs = jnp.concatenate([freqs, freqs], axis=-1)
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
+        
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
-    def rotate(self, x, sin, cos):
-        sin = sin[None, :, None, :]
-        cos = cos[None, :, None, :]
-        return (x * cos) + (rotate_half(x) * sin)
-
-    def __call__(self, x, mask=None, cache_k=None, cache_v=None):
+    def __call__(self, x, mask=None):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-
-        sin = self.sin_cached[:s, :]
-        cos = self.cos_cached[:s, :]
-        q, k = apply_rope(q, k, sin, cos)
+        
+        sin = self.sin_cached[:s, None, :]
+        cos = self.cos_cached[:s, None, :]
+        q = (q * cos) + (rotate_half(q) * sin)
+        k = (k * cos) + (rotate_half(k) * sin)
 
         q, k, v = [y.transpose(0, 2, 1, 3) for y in (q, k, v)]
 
@@ -73,7 +64,8 @@ class RotaryAttention(nnx.Module):
             scale=self.scale
         )
 
-        return self.o_proj(out.transpose(0, 2, 1, 3).reshape(b, s, d))
+        out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
+        return self.o_proj(out)
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
@@ -116,31 +108,37 @@ class UniversalReasoner(nnx.Module):
         # Note: Scratchpad tokens (seq_len:total_len) can see EVERYTHING (mask is True)
         return mask[None, None, :, :]
 
-
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        
         z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
+        
+        # Combined context: [Prompt (seq_len) | Scratchpad (num_scratch)]
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
+        
+        # Correctly sized mask (1, 1, Total_Len, Total_Len)
         mask = self.get_mask(seq_len)
 
         def scan_step(carry, i):
             curr_z = carry
+            # Add time embedding only to the scratchpad section
             t_signal = self.time_embed(i)[None, None, :]
             z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
-            z_with_time = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
-            new_z = self.processor(z_with_time, mask)
-            # Halting signal from scratchpad tokens
+            
+            # Reconstruct sequence for the processor
+            z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
+            
+            # Pass through reasoning block
+            new_z = self.processor(z_input, mask) 
+            
+            # Halting logic
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             halt_prob = nnx.sigmoid(halt_logit)
+            
             return new_z, (new_z, halt_prob)
 
-        def ran_scan(z_init, steps):
-            _, (all_z, all_halts) = jax.lax.scan(scan_step, z_init, steps)
-            return all_z, all_halts
-
-        all_z, all_halts = nnx.remat(ran_scan)(z_combined, jnp.arange(max_steps))
+        # Using remat to save memory during backprop
+        all_z, all_halts = nnx.remat(jax.lax.scan)(scan_step, z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
