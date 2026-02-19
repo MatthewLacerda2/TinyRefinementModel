@@ -102,14 +102,13 @@ class UniversalReasoner(nnx.Module):
 
     def get_mask(self, seq_len):
         total_len = seq_len + self.num_scratch
-        mask = jnp.ones((total_len, total_len), dtype=bool)
         causal_text = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
+        
+        mask = jnp.ones((total_len, total_len), dtype=bool)
         mask = mask.at[:seq_len, :seq_len].set(causal_text)
         
-        # Prompt cannot see scratchpad
         mask = mask.at[:seq_len, seq_len:].set(False)
         
-        # Return as (1, 1, total_len, total_len) to broadcast across Batch and Heads
         return mask[None, None, :, :]
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
@@ -117,25 +116,20 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
         
-        # Combined context: [Prompt (seq_len) | Scratchpad (num_scratch)]
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         
-        # Correctly sized mask (1, 1, Total_Len, Total_Len)
         mask = self.get_mask(seq_len)
 
         def scan_step(carry, i):
             curr_z = carry
-            # Add time embedding only to the scratchpad section
+
             t_signal = self.time_embed(i)[None, None, :]
             z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
             
-            # Reconstruct sequence for the processor
             z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
             
-            # Pass through reasoning block
             new_z = self.processor(z_input, mask) 
             
-            # Halting logic
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             halt_prob = nnx.sigmoid(halt_logit)
             
@@ -155,7 +149,6 @@ class UniversalReasoner(nnx.Module):
         all_z_seq = all_z[:, :, :seq_len, :]
         weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
         
-        # Ponder cost = sum of (weight * step_index)
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
 
