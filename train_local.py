@@ -47,12 +47,16 @@ class RotaryAttention(nnx.Module):
 
     def __call__(self, x, mask=None):
         b, s, d = x.shape
+        # Ensure input is float16 if it isn't already
+        x = x.astype(jnp.float16)
+        
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         
-        sin = self.sin_cached[:s, None, :]
-        cos = self.cos_cached[:s, None, :]
+        sin = self.sin_cached[:s, None, :].astype(jnp.float16)
+        cos = self.cos_cached[:s, None, :].astype(jnp.float16)
+        
         q = (q * cos) + (rotate_half(q) * sin)
         k = (k * cos) + (rotate_half(k) * sin)
 
@@ -61,7 +65,7 @@ class RotaryAttention(nnx.Module):
         out = jax.nn.dot_product_attention(
             q, k, v, 
             mask=mask,
-            scale=self.scale
+            scale=jnp.array(self.scale, dtype=jnp.float16)
         )
 
         out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
@@ -90,7 +94,7 @@ class UniversalReasoner(nnx.Module):
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
-        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)) * 0.02)
+        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float16) * 0.02)
         self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
