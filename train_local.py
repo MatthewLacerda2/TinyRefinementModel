@@ -130,7 +130,6 @@ class UniversalReasoner(nnx.Module):
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
-        @jax.checkpoint
         def scan_step(carry, i):
             curr_z = carry
             t_signal = self.time_embed(i)[None, None, :]
@@ -142,7 +141,11 @@ class UniversalReasoner(nnx.Module):
             halt_prob = nnx.sigmoid(halt_logit)
             return new_z, (new_z, halt_prob)
 
-        _, (all_z, all_halts) = jax.lax.scan(scan_step, z_combined, jnp.arange(max_steps))
+        def ran_scan(z_init, steps):
+            _, (all_z, all_halts) = jax.lax.scan(scan_step, z_init, steps)
+            return all_z, all_halts
+
+        all_z, all_halts = nnx.remat(ran_scan)(z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
