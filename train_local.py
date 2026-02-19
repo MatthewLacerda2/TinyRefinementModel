@@ -137,8 +137,8 @@ class UniversalReasoner(nnx.Module):
             
             return new_z, (new_z, halt_prob)
 
-        # Using remat to save memory during backprop
-        all_z, all_halts = nnx.remat(jax.lax.scan)(scan_step, z_combined, jnp.arange(max_steps))
+        scan_fn = nnx.remat(nnx.scan(scan_step))
+        all_z, all_halts = scan_fn(z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
