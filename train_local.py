@@ -11,7 +11,7 @@ import time
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-LATENT_DIM = 384    # Keep it divisible by 128, sugar
+LATENT_DIM = 384
 BATCH_SIZE = 8
 MAX_STEPS_LIMIT = 4
 MAX_SEQ_LEN = 512
@@ -23,6 +23,17 @@ CHECKPOINT_INTERVAL = 500
 ACCUMULATION_STEPS = 8
 LOSS_SCALE = 128.0
 
+def rotate_half(x):
+    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+    return jnp.concatenate([-x2, x1], axis=-1)
+
+def apply_rope(q, k, sin, cos):
+    sin = sin[None, :, None, :]
+    cos = cos[None, :, None, :]
+    q_rope = (q * cos) + (rotate_half(q) * sin)
+    k_rope = (k * cos) + (rotate_half(k) * sin)
+    return q_rope, k_rope
+
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, rngs, dtype=jnp.float32):
         self.num_heads = num_heads
@@ -31,6 +42,7 @@ class RotaryAttention(nnx.Module):
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN + SCRATCH_SLOTS)
         freqs = jnp.outer(t, inv_freq)
+        freqs = jnp.concatenate([freqs, freqs], axis=-1)
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
@@ -38,13 +50,10 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
-    def rotate(self, x_in, sin, cos):
-        dtype = x_in.dtype
-        sin_ext = jnp.stack([sin, sin], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :].astype(dtype)
-        cos_ext = jnp.stack([cos, cos], axis=-1).reshape(x_in.shape[-3], self.head_dim)[None, :, None, :].astype(dtype)
-        x_even, x_odd = x_in[..., 0::2], x_in[..., 1::2]
-        x_rot = jnp.stack([-x_odd, x_even], axis=-1).reshape(x_in.shape)
-        return x_in * cos_ext + x_rot * sin_ext
+    def rotate(self, x, sin, cos):
+        sin = sin[None, :, None, :]
+        cos = cos[None, :, None, :]
+        return (x * cos) + (rotate_half(x) * sin)
 
     def __call__(self, x, mask=None, cache_k=None, cache_v=None):
         b, s, d = x.shape
@@ -68,15 +77,20 @@ class RotaryAttention(nnx.Module):
             v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
             sin = self.sin_cached[:s, :]
             cos = self.cos_cached[:s, :]
-            q = self.rotate(q, sin, cos)
-            k = self.rotate(k, sin, cos)
+            q, k = apply_rope(q, k, sin, cos)
 
-        logits = jnp.einsum('bshd,bthd->bhst', q, k) * self.scale
-        if mask is not None:
-            logits = jnp.where(mask, logits, -1e9)
-        weights = jax.nn.softmax(logits, axis=-1)
-        out = jnp.einsum('bhst,bthd->bshd', weights, v)
-        return self.o_proj(out.reshape(b, s, d))
+        q = q.transpose(0, 2, 1, 3)
+        k = k.transpose(0, 2, 1, 3)
+        v = v.transpose(0, 2, 1, 3)
+
+        out = jax.nn.dot_product_attention(
+            q, k, v, 
+            mask=mask,
+            scale=self.scale
+        )
+
+        out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
+        return self.o_proj(out)
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
@@ -109,8 +123,14 @@ class UniversalReasoner(nnx.Module):
 
     def get_mask(self, seq_len):
         total_len = seq_len + self.num_scratch
-        causal = jnp.tril(jnp.ones((total_len, total_len), dtype=bool))
-        mask = causal.at[seq_len:, :].set(True)
+        mask = jnp.ones((total_len, total_len), dtype=bool)
+        causal_text = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
+        mask = mask.at[:seq_len, :seq_len].set(causal_text)
+        
+        # This prevents the prompt from "cheating" by reading the scratchpad's final answer
+        mask = mask.at[:seq_len, seq_len:].set(False)
+        
+        # Note: Scratchpad tokens (seq_len:total_len) can see EVERYTHING (mask is True)
         return mask[None, None, :, :]
 
 
