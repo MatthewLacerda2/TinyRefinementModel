@@ -58,30 +58,14 @@ class RotaryAttention(nnx.Module):
     def __call__(self, x, mask=None, cache_k=None, cache_v=None):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        
-        if cache_k is not None and cache_v is not None:
-            prefix_len = cache_k.shape[1]
-            x_scratch = x[:, prefix_len:, :]
-            k_scratch = self.k_proj(x_scratch).reshape(b, -1, self.num_heads, self.head_dim)
-            v_scratch = self.v_proj(x_scratch).reshape(b, -1, self.num_heads, self.head_dim)
-            
-            sin = self.sin_cached
-            cos = self.cos_cached
-            q = self.rotate(q, sin[:s, :], cos[:s, :])
-            k_scratch = self.rotate(k_scratch, sin[prefix_len:s, :], cos[prefix_len:s, :])
-            
-            k = jnp.concatenate([cache_k, k_scratch], axis=1)
-            v = jnp.concatenate([cache_v, v_scratch], axis=1)
-        else:
-            k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-            v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-            sin = self.sin_cached[:s, :]
-            cos = self.cos_cached[:s, :]
-            q, k = apply_rope(q, k, sin, cos)
+        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
-        q = q.transpose(0, 2, 1, 3)
-        k = k.transpose(0, 2, 1, 3)
-        v = v.transpose(0, 2, 1, 3)
+        sin = self.sin_cached[:s, :]
+        cos = self.cos_cached[:s, :]
+        q, k = apply_rope(q, k, sin, cos)
+
+        q, k, v = [y.transpose(0, 2, 1, 3) for y in (q, k, v)]
 
         out = jax.nn.dot_product_attention(
             q, k, v, 
@@ -89,8 +73,7 @@ class RotaryAttention(nnx.Module):
             scale=self.scale
         )
 
-        out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
-        return self.o_proj(out)
+        return self.o_proj(out.transpose(0, 2, 1, 3).reshape(b, s, d))
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
@@ -103,8 +86,8 @@ class StandardReasoningBlock(nnx.Module):
             nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
         )
 
-    def __call__(self, x, mask, cache_k=None, cache_v=None):
-        x = x + self.attn(self.norm1(x), mask=mask, cache_k=cache_k, cache_v=cache_v)
+    def __call__(self, x, mask):
+        x = x + self.attn(self.norm1(x), mask=mask)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -138,14 +121,6 @@ class UniversalReasoner(nnx.Module):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
         
-        # Precompute prompt KV
-        z_prompt_norm = self.processor.norm1(z_seq)
-        k_prompt = self.processor.attn.k_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
-        v_prompt = self.processor.attn.v_proj(z_prompt_norm).reshape(batch_size, seq_len, self.processor.attn.num_heads, self.processor.attn.head_dim)
-        sin_p = self.processor.attn.sin_cached[:seq_len, :]
-        cos_p = self.processor.attn.cos_cached[:seq_len, :]
-        k_prompt = self.processor.attn.rotate(k_prompt, sin_p, cos_p)
-
         z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
@@ -155,7 +130,7 @@ class UniversalReasoner(nnx.Module):
             t_signal = self.time_embed(i)[None, None, :]
             z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
             z_with_time = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
-            new_z = self.processor(z_with_time, mask, cache_k=k_prompt, cache_v=v_prompt)
+            new_z = self.processor(z_with_time, mask)
             # Halting signal from scratchpad tokens
             halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             halt_prob = nnx.sigmoid(halt_logit)
