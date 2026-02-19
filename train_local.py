@@ -10,9 +10,11 @@ import csv
 import time
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 LATENT_DIM = 384
-BATCH_SIZE = 8
+BATCH_SIZE = 4
+ACCUMULATION_STEPS = 16
 MAX_STEPS_LIMIT = 4
 MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
@@ -20,7 +22,6 @@ VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 PONDER_LAMBDA = 0.005
 CHECKPOINT_INTERVAL = 500
-ACCUMULATION_STEPS = 8
 LOSS_SCALE = 128.0
 
 def rotate_half(x):
@@ -59,10 +60,6 @@ class RotaryAttention(nnx.Module):
         
         q = (q * cos) + (rotate_half(q) * sin)
         k = (k * cos) + (rotate_half(k) * sin)
-
-        q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
         out = jax.nn.dot_product_attention(
             q, k, v, 
@@ -138,7 +135,7 @@ class UniversalReasoner(nnx.Module):
             return new_z, (new_z, halt_prob)
 
         scan_fn = nnx.remat(nnx.scan(scan_step))
-        all_z, all_halts = scan_fn(z_combined, jnp.arange(max_steps))
+        _, (all_z, all_halts) = scan_fn(z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
