@@ -2,6 +2,7 @@ import os
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.training import dynamic_scale as dynamic_scale_lib
 import optax
 import tiktoken
 from datasets import load_dataset, interleave_datasets
@@ -13,12 +14,12 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 LATENT_DIM = 384
 BATCH_SIZE = 8
-MAX_STEPS_LIMIT = 8
+MAX_STEPS_LIMIT = 4
 MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
-PONDER_LAMBDA = 0.01
+PONDER_LAMBDA = 0.005
 CHECKPOINT_INTERVAL = 500
 
 class RotaryAttention(nnx.Module):
@@ -155,7 +156,7 @@ class UniversalReasoner(nnx.Module):
         
         # Ponder cost = sum of (weight * step_index)
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
-        ponder_cost = jnp.sum(step_weights * step_indices, axis=0) # [Batch]
+        ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
 
         return self.decoder(weighted_z), ponder_cost
 
@@ -203,7 +204,7 @@ schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
 
 @jax.jit
-def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
+def pure_train_step(graphdef, state, opt_state, batch_tokens, key, dynamic_scale):
     def loss_fn(state):
         model = nnx.merge(graphdef, state)
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
@@ -217,18 +218,36 @@ def pure_train_step(graphdef, state, opt_state, batch_tokens, key):
         avg_ponder = jnp.mean(ponder_cost)
         ponder_loss = PONDER_LAMBDA * avg_ponder
         
-        return token_loss + ponder_loss, (token_loss, avg_ponder)
+        total_loss = token_loss + ponder_loss
+        return total_loss * dynamic_scale.scale, (token_loss, avg_ponder)
 
-    (loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
-    updates, new_opt_state = optimizer_chain.update(grads, opt_state, state)
-    new_state = optax.apply_updates(state, updates)
-    return new_state, new_opt_state, loss, raw_ce, avg_p
+    (scaled_loss, (raw_ce, avg_p)), scaled_grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
+
+    # Unscale gradients and check for NaNs/Infs
+    grads = dynamic_scale.unscale(scaled_grads)
+    is_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(g)) for g in jax.tree_util.tree_leaves(grads)]))
+
+    def update_fn(state, opt_state):
+        updates, new_opt_state = optimizer_chain.update(grads, opt_state, state)
+        new_state = optax.apply_updates(state, updates)
+        return new_state, new_opt_state
+
+    def skip_fn(state, opt_state):
+        return state, opt_state
+
+    new_state, new_opt_state = jax.lax.cond(is_finite, update_fn, skip_fn, state, opt_state)
+
+    # 4. Adjust the scale factor for the next step
+    new_dynamic_scale = dynamic_scale.update(is_finite)
+
+    return new_state, new_opt_state, scaled_loss / dynamic_scale.scale, raw_ce, avg_p, new_dynamic_scale
 
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     graphdef, state = nnx.split(model)
     opt_state = optimizer_chain.init(state)
+    dynamic_scale = dynamic_scale_lib.DynamicScale(initial_scale=2**15, growth_interval=2000)
     
     start_step = 1
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
@@ -244,7 +263,9 @@ if __name__ == "__main__":
         if batch is None: break
         
         t1 = time.time()
-        state, opt_state, loss, raw_ce, avg_p = pure_train_step(graphdef, state, opt_state, batch, subkey)
+        state, opt_state, loss, raw_ce, avg_p, dynamic_scale = pure_train_step(
+            graphdef, state, opt_state, batch, subkey, dynamic_scale
+        )
         loss.block_until_ready()
         t_train, t_data = time.time() - t1, t1 - t0
 
