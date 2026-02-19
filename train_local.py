@@ -106,10 +106,10 @@ class UniversalReasoner(nnx.Module):
         causal_text = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
         mask = mask.at[:seq_len, :seq_len].set(causal_text)
         
-        # This prevents the prompt from "cheating" by reading the scratchpad's final answer
+        # Prompt cannot see scratchpad
         mask = mask.at[:seq_len, seq_len:].set(False)
         
-        # Note: Scratchpad tokens (seq_len:total_len) can see EVERYTHING (mask is True)
+        # Return as (1, 1, total_len, total_len) to broadcast across Batch and Heads
         return mask[None, None, :, :]
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
