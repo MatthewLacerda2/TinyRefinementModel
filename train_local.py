@@ -60,7 +60,9 @@ class RotaryAttention(nnx.Module):
         q = (q * cos) + (rotate_half(q) * sin)
         k = (k * cos) + (rotate_half(k) * sin)
 
-        q, k, v = [y.transpose(0, 2, 1, 3) for y in (q, k, v)]
+        q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
         out = jax.nn.dot_product_attention(
             q, k, v, 
