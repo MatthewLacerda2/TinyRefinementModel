@@ -46,29 +46,29 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
-        def __call__(self, x, mask=None):
-            b, s, d = x.shape
-            x = x.astype(jnp.float16)
-            
-            q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-            k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-            v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+    def __call__(self, x, mask=None):
+        b, s, d = x.shape
+        x = x.astype(jnp.float16)
+        
+        q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
+        v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
-            sin = self.sin_cached[:s, None, :].astype(jnp.float32)
-            cos = self.cos_cached[:s, None, :].astype(jnp.float32)
-            
-            q = (q.astype(jnp.float32) * cos) + (rotate_half(q.astype(jnp.float32)) * sin)
-            k = (k.astype(jnp.float32) * cos) + (rotate_half(k.astype(jnp.float32)) * sin)
-            v = v.astype(jnp.float32)
+        sin = self.sin_cached[:s, None, :].astype(jnp.float32)
+        cos = self.cos_cached[:s, None, :].astype(jnp.float32)
+        
+        q = (q.astype(jnp.float32) * cos) + (rotate_half(q.astype(jnp.float32)) * sin)
+        k = (k.astype(jnp.float32) * cos) + (rotate_half(k.astype(jnp.float32)) * sin)
+        v = v.astype(jnp.float32)
 
-            q = q * jnp.array(self.scale, dtype=jnp.float32)
+        q = q * jnp.array(self.scale, dtype=jnp.float32)
 
-            q, k, v = [t.transpose(0, 2, 1, 3) for t in (q, k, v)]
+        q, k, v = [t.transpose(0, 2, 1, 3) for t in (q, k, v)]
 
-            out = jax.nn.dot_product_attention(q, k, v, mask=mask)
+        out = jax.nn.dot_product_attention(q, k, v, mask=mask)
 
-            out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
-            return self.o_proj(out.astype(jnp.float16))
+        out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
+        return self.o_proj(out.astype(jnp.float16))
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
