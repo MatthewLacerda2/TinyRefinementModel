@@ -43,11 +43,9 @@ def plot_training_history(log_path="training_history.csv"):
     ponder_steps = [entry['avg_ponder'] for entry in history]
     times = [entry['t_total'] for entry in history]
 
-    # Create a clean, modern plot
     plt.style.use('dark_background')
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
     
-    # 1. Aggregate Loss
     ax1.plot(steps, losses, color='#00f2ff', linewidth=2, label='Agg Loss')
     ax1.fill_between(steps, losses, color='#00f2ff', alpha=0.1)
     ax1.set_ylabel('Agg Loss', color='#00f2ff', fontweight='bold')
@@ -55,7 +53,6 @@ def plot_training_history(log_path="training_history.csv"):
     ax1.grid(True, linestyle='--', alpha=0.2)
     ax1.legend()
 
-    # 2. CE Loss
     ax2.plot(steps, ce_losses, color='#ff007b', linewidth=2, label='CE Loss')
     ax2.fill_between(steps, ce_losses, color='#ff007b', alpha=0.1)
     ax2.set_ylabel('CE Loss', color='#ff007b', fontweight='bold')
@@ -63,7 +60,6 @@ def plot_training_history(log_path="training_history.csv"):
     ax2.grid(True, linestyle='--', alpha=0.2)
     ax2.legend()
 
-    # 3. Ponder (Average Steps)
     ax3.plot(steps, ponder_steps, color='#adff2f', linewidth=2, label='Avg Ponder')
     ax3.fill_between(steps, ponder_steps, color='#adff2f', alpha=0.1)
     ax3.set_ylabel('Steps', color='#adff2f', fontweight='bold')
@@ -76,29 +72,27 @@ def plot_training_history(log_path="training_history.csv"):
     plt.savefig('training_plot.png', dpi=120)
     print("✨ Training analytics updated: training_plot.png")
 
-    # --- Prediction & Time Logic ---
     target_ppl = 40
     target_ce = math.log(target_ppl)
     
     current_step = steps[-1]
-    elapsed_time = sum(times)
     
-    # Calculate average time per step (recent window for accuracy)
     recent_time_window = times[-20:] if len(times) >= 20 else times
     avg_step_time = sum(recent_time_window) / len(recent_time_window)
+    
+    elapsed_time = current_step * avg_step_time
 
     print(f"\n📊 --- Training Status ---")
     print(f"📍 Current Step: {current_step}")
-    print(f"⏱️  Current Time: {format_time(elapsed_time)}")
+    print(f"⏱️  Current Time: {format_time(elapsed_time)} (est.)")
     
     if len(steps) > 10:
         try:
-            # Fit CE loss to a Logarithmic curve: CE = a + b * log(step)
-            valid_idx = [i for i, s in enumerate(steps) if s > 0]
+            valid_idx = [i for i, s in enumerate(steps) if s > 0 and ce_losses[i] > 0]
             log_steps = np.log([steps[i] for i in valid_idx])
-            log_ce = [ce_losses[i] for i in valid_idx]
+            log_ce_actual = np.log([ce_losses[i] for i in valid_idx])
             
-            b, a = np.polyfit(log_steps, log_ce, 1)
+            b, a = np.polyfit(log_steps, log_ce_actual, 1)
             
             current_ce = ce_losses[-1]
             current_ppl = math.exp(current_ce)
@@ -110,8 +104,9 @@ def plot_training_history(log_path="training_history.csv"):
             elif b >= 0:
                 print(f"⚠️  Warning: CE loss is not strictly decreasing. Prediction unreliable.")
             else:
-                # target_ce = a + b * log(target_step)
-                target_step = math.exp((target_ce - a) / b)
+                log_target_ce = math.log(target_ce)
+                target_step = math.exp((log_target_ce - a) / b)
+                
                 steps_remaining = target_step - current_step
                 additional_time = steps_remaining * avg_step_time
                 total_expected_time = elapsed_time + additional_time

@@ -11,8 +11,6 @@ from train_local import (
     LATENT_DIM, 
     MAX_SEQ_LEN, 
     PAD_TOKEN_ID,
-    SCRATCH_SLOTS,
-    MAX_STEPS_LIMIT
 )
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
  

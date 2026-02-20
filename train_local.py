@@ -13,11 +13,11 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 2
-ACCUMULATION_STEPS = 64
-LATENT_DIM = 384
-SCRATCH_SLOTS = 128 # half this if vram becomes an issue
+MAX_STEPS_LIMIT = 4
+ACCUMULATION_STEPS = 32
+SCRATCH_SLOTS = 64 # half this if vram becomes an issue
+LATENT_DIM = 384    # 384 if OOM immediatelly!
 MAX_SEQ_LEN = 512
-MAX_STEPS_LIMIT = 8
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
@@ -178,17 +178,39 @@ class TextDataGenerator:
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
-    def __init__(self, patience=50000, window=5000):
-        self.patience, self.window = patience, window
-        self.history, self.best_loss, self.last_improvement_step = [], float('inf'), 0
-    def push(self, step, loss):
-        self.history.append(loss)
-        if len(self.history) > self.window: self.history.pop(0)
-        avg_loss = sum(self.history) / len(self.history)
-        if avg_loss < (self.best_loss - 0.01):
-            self.best_loss, self.last_improvement_step = avg_loss, step
+    def __init__(self, patience=2000, window=500, max_ponder_limit=7.5):
+        self.patience = patience
+        self.window = window
+        self.max_ponder_limit = max_ponder_limit
+        
+        self.ce_history = []
+        self.best_ce = float('inf')
+        self.last_improvement_step = 0
+
+    def push(self, step, ce_loss, avg_ponder):
+        self.ce_history.append(ce_loss)
+        if len(self.ce_history) > self.window: 
+            self.ce_history.pop(0)
+            
+        avg_ce = sum(self.ce_history) / len(self.ce_history)
+        
+        # Condition 1: Check for actual learning (CE loss dropping)
+        if avg_ce < (self.best_ce - 0.01):
+            self.best_ce = avg_ce
+            self.last_improvement_step = step
             return False
-        return (step - self.last_improvement_step) > self.patience
+            
+        # Condition 2: Out of patience for CE improvement
+        if (step - self.last_improvement_step) > self.patience:
+            print(f"\n🛑 Plateau detected: No CE improvement > 0.01 for {self.patience} steps.")
+            return True
+            
+        # Condition 3: Saturation detected (Pondering maxed out)
+        if avg_ponder >= self.max_ponder_limit:
+            print(f"\n🛑 Saturation detected: Avg ponder steps maxed out at {avg_ponder:.2f}.")
+            return True
+            
+        return False
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
@@ -255,7 +277,7 @@ if __name__ == "__main__":
         accumulated_grads = None
         t_total = time.time() - t0
 
-        if monitor.push(step, float(accum_loss)): break
+        if monitor.push(step, float(accum_ce), float(accum_p)): break
         if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
                 pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
