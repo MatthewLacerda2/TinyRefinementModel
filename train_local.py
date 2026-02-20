@@ -12,17 +12,17 @@ import time
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
+BATCH_SIZE = 2
+ACCUMULATION_STEPS = 32
 LATENT_DIM = 384
-BATCH_SIZE = 4
-ACCUMULATION_STEPS = 16
-MAX_STEPS_LIMIT = 4
-MAX_SEQ_LEN = 512
 SCRATCH_SLOTS = 64
+MAX_SEQ_LEN = 512
+MAX_STEPS_LIMIT = 4
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
-PONDER_LAMBDA = 0.005
-CHECKPOINT_INTERVAL = 100
 LOSS_SCALE = 128.0
+CHECKPOINT_INTERVAL = 100
+PONDER_LAMBDA = 0.005
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -41,10 +41,10 @@ class RotaryAttention(nnx.Module):
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
         
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
-        self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
-        self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
+        self.k_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
+        self.v_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
 
     def __call__(self, x, mask=None):
         b, s, d = x.shape
@@ -59,7 +59,7 @@ class RotaryAttention(nnx.Module):
         q = (q * cos) + (rotate_half(q) * sin)
         k = (k * cos) + (rotate_half(k) * sin)
 
-        q = q * jnp.array(self.scale, dtype=jnp.float32)
+        q = q * self.scale
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask)
 
@@ -67,7 +67,7 @@ class RotaryAttention(nnx.Module):
         return self.o_proj(out)
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = RotaryAttention(num_heads, latent_dim, rngs, dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -83,13 +83,13 @@ class StandardReasoningBlock(nnx.Module):
         return x
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, dtype=jnp.float16):
+    def __init__(self, latent_dim, rngs, dtype=jnp.float32):
         self.latent_dim = latent_dim
         self.num_scratch = SCRATCH_SLOTS 
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
-        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float16) * 0.02)
+        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
         self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
