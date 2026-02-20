@@ -67,7 +67,7 @@ class RotaryAttention(nnx.Module):
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask)
 
-        out = out.transpose(0, 2, 1, 3).reshape(b, s, d)
+        out = out.reshape(b, s, d)
         return self.o_proj(out.astype(jnp.float16))
 
 class StandardReasoningBlock(nnx.Module):
