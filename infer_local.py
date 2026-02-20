@@ -16,30 +16,40 @@ from train_local import (
 )
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
  
-def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9):
+def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
     batch_size, start_len = tokens.shape
     def body_fn(i, carry):
         current_tokens, loop_key = carry
         step_key, next_loop_key = jax.random.split(loop_key)
         logits, _ = model(current_tokens, training=False)
+        
         valid_idx = start_len + i - 1
-        next_logits = logits[:, valid_idx, :] / temperature
+        next_logits = logits[:, valid_idx, :] / jnp.maximum(temperature, 1e-6)
+
+        if top_k > 0:
+            top_k_values, _ = jax.lax.top_k(next_logits, top_k)
+            k_min = top_k_values[:, -1:]
+            next_logits = jnp.where(next_logits < k_min, -1e9, next_logits)
+        
         sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
         sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
         probs = jax.nn.softmax(sorted_logits, axis=-1)
         cum_probs = jnp.cumsum(probs, axis=-1)
+        
         mask = cum_probs > top_p
         mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
         filtered_logits = jnp.where(mask, -1e9, sorted_logits)
+        
         sample_indices = jax.random.categorical(step_key, filtered_logits)
         next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
+        
         new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
         return (new_tokens, next_loop_key)
     padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
     (final_tokens, _) = jax.lax.fori_loop(0, gen_len, body_fn, (padded_tokens, key))
     return final_tokens
 
- def run_inference():
+def run_inference():
     print("🔮 Loading TinyRefinementModel for inference...")
     
     enc = tiktoken.get_encoding("gpt2")
@@ -89,7 +99,6 @@ def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9):
             
             print("🤖 Assistant: ", end="", flush=True)
             
-            # Note: We use a different key each time for variety
             gen_key = jax.random.key(int(time.time()))
             
             # We'll generate a chunk of tokens. 
