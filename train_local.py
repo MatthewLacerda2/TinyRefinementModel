@@ -48,25 +48,23 @@ class RotaryAttention(nnx.Module):
 
     def __call__(self, x, mask=None):
         b, s, d = x.shape
-        x = x.astype(jnp.float16)
         
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(b, s, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
-        sin = self.sin_cached[:s, None, :].astype(jnp.float32)
-        cos = self.cos_cached[:s, None, :].astype(jnp.float32)
+        sin = self.sin_cached[:s, None, :]
+        cos = self.cos_cached[:s, None, :]
         
-        q = (q.astype(jnp.float32) * cos) + (rotate_half(q.astype(jnp.float32)) * sin)
-        k = (k.astype(jnp.float32) * cos) + (rotate_half(k.astype(jnp.float32)) * sin)
-        v = v.astype(jnp.float32)
+        q = (q * cos) + (rotate_half(q) * sin)
+        k = (k * cos) + (rotate_half(k) * sin)
 
         q = q * jnp.array(self.scale, dtype=jnp.float32)
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask)
 
         out = out.reshape(b, s, d)
-        return self.o_proj(out.astype(jnp.float16))
+        return self.o_proj(out)
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
@@ -204,18 +202,14 @@ def compute_gradients(graphdef, state, batch_tokens, key):
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
-        token_loss = jnp.sum(ce_loss * mask) / jnp.sum(mask)
+        token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
         
-        avg_ponder = jnp.mean(ponder_cost)
-        ponder_loss = PONDER_LAMBDA * avg_ponder
-        
-        return (token_loss + ponder_loss) * LOSS_SCALE, (token_loss, avg_ponder)
+        ponder_loss = PONDER_LAMBDA * jnp.mean(ponder_cost)
+        return (token_loss + ponder_loss), (token_loss, jnp.mean(ponder_cost))
 
-    (scaled_loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
+    (loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
     
-    grads = jax.tree_util.tree_map(lambda x: x / LOSS_SCALE, grads)
-    
-    return grads, scaled_loss / LOSS_SCALE, raw_ce, avg_p
+    return grads, loss, raw_ce, avg_p
 
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
