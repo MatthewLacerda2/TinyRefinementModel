@@ -56,6 +56,18 @@ Training stops automatically upon reaching **human mastery**:
 
 Achieved at ~6200 steps with stable low error on chaotic multi-body dynamics.
 
+## GPU vs TPU Setup
+
+| Feature | GPU | TPU |
+| :--- | :--- | :--- |
+| **NUM_DIM** | Must be multiple of 8 | Must be multiple of 128 |
+| **Batch Size** | Max 8 (currently) | Min 128 (recommended) |
+| **Max Seq Len** | 512 (avoid OOM) | 2048+ (lowballing) |
+| **Vocabulary** | GPT-2 (or OOM) | GPT-3 (set and forget) |
+| **Precision** | `float16` is needed | `bfloat16` (set and forget) |
+
+> **Note:** Use `Orbax` Checkpointer for better compatibility across devices.
+
 ## Results
 
 The trained model reliably predicts accurate trajectories for 4 particles over 74+ steps in both physics modes, handling:

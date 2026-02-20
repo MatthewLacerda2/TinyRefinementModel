@@ -63,8 +63,6 @@ class RotaryAttention(nnx.Module):
 
         q = q * jnp.array(self.scale, dtype=jnp.float32)
 
-        q, k, v = [t.transpose(0, 2, 1, 3) for t in (q, k, v)]
-
         out = jax.nn.dot_product_attention(q, k, v, mask=mask)
 
         out = out.reshape(b, s, d)
