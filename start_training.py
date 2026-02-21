@@ -97,9 +97,8 @@ if __name__ == "__main__":
             nnx.update(model, checkpoint["model_state"])
             nnx.update(manager.optimizer, checkpoint["optim_state"])
         else:
-            print("⚠️ Old checkpoint format detected. Attempting to load model weights only...")
-            if "state" in checkpoint and "model" in checkpoint["state"]:
-                nnx.update(model, checkpoint["state"]["model"])
+            print("❌ Error: Valid checkpoint state not found.")
+            exit(1)
         
         start_step = checkpoint.get("step", 0) + 1
         

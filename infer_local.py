@@ -103,12 +103,6 @@ def run_inference():
     
     if "model_state" in ckpt:
         nnx.update(model, ckpt["model_state"])
-    elif "state" in ckpt:
-        state = ckpt["state"]
-        if "model" in state:
-            nnx.update(model, state["model"])
-        else:
-            nnx.update(model, state)
     else:
         print("❌ Error: Could not find model state in checkpoint.")
         return

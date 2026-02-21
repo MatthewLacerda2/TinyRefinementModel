@@ -76,11 +76,11 @@ class RotaryAttention(nnx.Module):
         v_expanded = v_expanded.reshape(b, v.shape[1], self.num_heads, self.head_dim)
 
         out = jax.nn.dot_product_attention(
-            q.transpose(0,2,1,3),
-            k_expanded.transpose(0,2,1,3),
-            v_expanded.transpose(0,2,1,3),
+            q,
+            k_expanded,
+            v_expanded,
             mask=mask
-        ).transpose(0, 2, 1, 3)
+        )
 
         out = out.reshape(b, s, d)
         return self.o_proj(out), new_cache
