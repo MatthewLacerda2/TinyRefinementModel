@@ -224,7 +224,7 @@ class TrainingManager:
     def __init__(self, model, optimizer_transform):
         self.state = nnx.TrainState(
             model, 
-            optimizer=nnx.Optimizer(model, optimizer_transform)
+            optimizer=nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
         )
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.state.params)
         self.acc_count = 0
