@@ -249,7 +249,7 @@ class TrainingManager:
 
     def apply_updates(self):
         avg_grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, self.grad_buffer)
-        self.optimizer.update(avg_grads)
+        self.optimizer.update(self.model, avg_grads)
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.grad_buffer)
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
