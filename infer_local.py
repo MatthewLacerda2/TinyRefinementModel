@@ -11,54 +11,77 @@ from train_local import (
     LATENT_DIM, 
     MAX_SEQ_LEN, 
     PAD_TOKEN_ID,
+    MAX_STEPS_LIMIT
 )
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
- 
-def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
-    batch_size, start_len = tokens.shape
-    padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
 
-    def cond_fn(state):
-        step, current_tokens, loop_key = state
-        under_limit = step < gen_len
 
-        last_token = current_tokens[0, start_len + step - 1]
-        not_finished = last_token != PAD_TOKEN_ID
-        
-        return jnp.logical_and(under_limit, not_finished)
-
-    def body_fn(state):
-        step, current_tokens, loop_key = state
-        step_key, next_loop_key = jax.random.split(loop_key)
-        logits = model.infer(current_tokens)
-        
-        valid_idx = start_len + step - 1
-        next_logits = logits[:, valid_idx, :] / jnp.maximum(temperature, 1e-6)
-
-        if top_k > 0:
-            top_k_values, _ = jax.lax.top_k(next_logits, top_k)
-            k_min = top_k_values[:, -1:]
-            next_logits = jnp.where(next_logits < k_min, -1e9, next_logits)
-        
-        sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
-        sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
-        probs = jax.nn.softmax(sorted_logits, axis=-1)
-        cum_probs = jnp.cumsum(probs, axis=-1)  #haha
-        
-        mask = cum_probs > top_p
-        mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
-        filtered_logits = jnp.where(mask, -1e9, sorted_logits)
-        
-        sample_indices = jax.random.categorical(step_key, filtered_logits)
-        next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
-        
-        new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + step))
-        return (step + 1, new_tokens, next_loop_key)
+def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps=MAX_STEPS_LIMIT, threshold=0.5):
+    batch_size = prompt_tokens.shape[0]
     
-    init_state = (0, padded_tokens, key)
+    current_z = model.embed(prompt_tokens)
+    prompt_len = prompt_tokens.shape[1]
+    
+    print("🤖 Assistant: ", end="", flush=True)
+    
+    for step in range(max_new_tokens):
+        seq_len = current_z.shape[1]
+        
+        pad_tokens = jnp.full((batch_size, 1), PAD_TOKEN_ID, dtype=jnp.int32)
+        pad_z = model.embed(pad_tokens)
+        z_seq = jnp.concatenate([current_z, pad_z], axis=1)
+        new_seq_len = seq_len + 1
+        
+        z_scratch = jnp.tile(model.scratch_token[...], (batch_size, 1, 1))
+        z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
+        mask = model.get_mask(new_seq_len)
 
-    final_step, final_tokens, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    return final_tokens
+        def cond_fn(state):
+            p_step, _, halt_prob = state
+            return jnp.logical_and(p_step < max_ponder_steps, jnp.all(halt_prob < threshold))
+
+        def body_fn(state):
+            p_step, curr_z, _ = state
+            
+            t_signal = model.time_embed(p_step)[None, None, :]
+            z_scratch_with_time = curr_z[:, new_seq_len:, :] + t_signal
+            z_input = jnp.concatenate([curr_z[:, :new_seq_len, :], z_scratch_with_time], axis=1)
+            
+            new_z_raw = model.processor(z_input, mask)
+
+            curr_seq = curr_z[:, :new_seq_len, :]
+            new_seq_raw = new_z_raw[:, :new_seq_len, :]
+
+            salience = nnx.sigmoid(model.salience_head(curr_seq))
+            new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
+            new_scratch = new_z_raw[:, new_seq_len:, :]
+            
+            new_z = jnp.concatenate([new_seq, new_scratch], axis=1)
+
+            latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
+            base_halt_logit = model.halt_head(new_scratch).mean(axis=(1, 2))
+            halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
+            
+            return (p_step + 1, new_z, halt_prob)
+
+        init_state = (0, z_combined, jnp.zeros((batch_size,)))
+        final_step, final_z, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+        
+        current_z = final_z[:, :new_seq_len, :]
+        
+        logits = model.decoder(current_z)
+        current_tokens = jnp.argmax(logits, axis=-1)[0]
+        
+        generated_tokens = [t for t in current_tokens[prompt_len:].tolist() if t != PAD_TOKEN_ID]
+        text_output = enc.decode(generated_tokens)
+        
+        print(f"\r🤖 Assistant: {text_output}", end="", flush=True)
+        
+        if current_tokens[-1] == PAD_TOKEN_ID:
+            break
+            
+    print()
+    return current_tokens
 
 def run_inference():
     print("🔮 Loading TinyRefinementModel for inference...")
@@ -108,21 +131,10 @@ def run_inference():
             
             tokens_in = jnp.array([tokens_list], dtype=jnp.int32)
             
-            print("🤖 Assistant: ", end="", flush=True)
-            
             gen_key = jax.random.key(int(time.time()))
             
-            # We'll generate a chunk of tokens. 
-            # In a more advanced version, we could do streaming token by token,
-            # but UniversalReasoner.generate is currently designed for batch generation.
-            gen_tokens = generate(model, tokens_in, gen_len=128, key=gen_key)
+            gen_tokens = generate_dynamic(model, tokens_in, max_new_tokens=128, enc=enc)
             
-            new_tokens = gen_tokens[0, len(tokens_list):].tolist()
-            
-            actual_tokens = [t for t in new_tokens if t != PAD_TOKEN_ID]
-            response = enc.decode(actual_tokens)
-            
-            print(response.strip())
             print("\n" + "-"*30)
 
         except KeyboardInterrupt:

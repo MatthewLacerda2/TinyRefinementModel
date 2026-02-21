@@ -117,37 +117,62 @@ def plot_training_history(log_path="training_history.csv"):
     print(f"⏱️  Current Time: {format_time(elapsed_time)} (est.)")
     
     if len(steps) > 10:
+        print(f"\n🎯 --- Convergence Prediction ---")
         try:
+            from scipy.optimize import curve_fit
+            
             valid_idx = [i for i, s in enumerate(steps) if s > 0 and ce_losses[i] > 0]
-            log_steps = np.log([steps[i] for i in valid_idx])
-            log_ce_actual = np.log([ce_losses[i] for i in valid_idx])
+            x_data = np.array([steps[i] for i in valid_idx], dtype=float)
+            y_data = np.array([ce_losses[i] for i in valid_idx], dtype=float)
             
-            b, a = np.polyfit(log_steps, log_ce_actual, 1)
+            def power_law(x, a, b, c):
+                return a * np.power(x, -b) + c
+                
+            min_y = np.min(y_data)
+            p0 = [y_data[0] - min_y, 0.5, min_y * 0.9]
             
+            bounds = ([0, 0, 0], [np.inf, 5.0, min_y])
+            
+            popt, _ = curve_fit(power_law, x_data, y_data, p0=p0, bounds=bounds, maxfev=10000)
+            a, b, c = popt
+            
+            asymptotic_ppl = math.exp(c)
             current_ce = ce_losses[-1]
             current_ppl = math.exp(current_ce)
             
             print(f"📈 Current Perplexity: {current_ppl:.2f}")
+            print(f"🧱 Absolute PPL Floor (Theoretical Asymptote): ~{asymptotic_ppl:.2f}")
             
-            if current_ppl <= target_ppl:
-                print(f"✅ Goal Reached! Target perplexity {target_ppl} achieved.")
-            elif b >= 0:
-                print(f"⚠️  Warning: CE loss is not strictly decreasing. Prediction unreliable.")
-            else:
-                log_target_ce = math.log(target_ce)
-                target_step = math.exp((log_target_ce - a) / b)
+            pred_step = current_step
+            while pred_step < 1_000_000:
+                current_loss = power_law(pred_step, a, b, c)
+                future_loss = power_law(pred_step + 2000, a, b, c)
                 
-                steps_remaining = target_step - current_step
+                if (current_loss - future_loss) < 0.01:
+                    break
+                pred_step += 50
+                
+            final_ce = power_law(pred_step, a, b, c)
+            final_ppl = math.exp(final_ce)
+            
+            steps_remaining = pred_step - current_step
+            
+            if steps_remaining <= 0:
+                print("\n🛑 Model is projected to be converging right now based on the monitor thresholds!")
+            else:
                 additional_time = steps_remaining * avg_step_time
                 total_expected_time = elapsed_time + additional_time
                 
-                print(f"\n🎯 --- Goal Prediction (PPL {target_ppl}) ---")
-                print(f"🔭 Projected Final Step: ~{int(target_step)}")
+                print(f"\n🔭 Projected Halt Step (LossMonitor Trigger): ~{int(pred_step)}")
+                print(f"🎯 Projected Final PPL at Halt: ~{final_ppl:.2f}")
                 print(f"⏳ Steps Remaining: ~{int(steps_remaining)}")
                 print(f"🕰️  Total Expected Time: {format_time(total_expected_time)}")
                 print(f"⌛ Remaining Time: {format_time(additional_time)}")
+                
+        except ImportError:
+            print("⚠️  Scipy is required for asymptotic projection. Please run `pip install scipy`.")
         except Exception as e:
-            print(f"Could not calculate projection: {e}")
+            print(f"⚠️  Could not calculate convergence projection: {e}")
 
 if __name__ == "__main__":
     plot_training_history()
