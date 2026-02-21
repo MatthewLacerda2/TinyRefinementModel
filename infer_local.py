@@ -16,12 +16,23 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
  
 def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
     batch_size, start_len = tokens.shape
-    def body_fn(i, carry):
-        current_tokens, loop_key = carry
-        step_key, next_loop_key = jax.random.split(loop_key)
-        logits, _ = model(current_tokens, training=False)
+    padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
+
+    def cond_fn(state):
+        step, current_tokens, loop_key = state
+        under_limit = step < gen_len
+
+        last_token = current_tokens[0, start_len + step - 1]
+        not_finished = last_token != PAD_TOKEN_ID
         
-        valid_idx = start_len + i - 1
+        return jnp.logical_and(under_limit, not_finished)
+
+    def body_fn(state):
+        step, current_tokens, loop_key = state
+        step_key, next_loop_key = jax.random.split(loop_key)
+        logits = model.infer(current_tokens, training=False)
+        
+        valid_idx = start_len + step - 1
         next_logits = logits[:, valid_idx, :] / jnp.maximum(temperature, 1e-6)
 
         if top_k > 0:
@@ -32,7 +43,7 @@ def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
         sorted_indices = jnp.argsort(next_logits, axis=-1)[:, ::-1]
         sorted_logits = jnp.take_along_axis(next_logits, sorted_indices, axis=-1)
         probs = jax.nn.softmax(sorted_logits, axis=-1)
-        cum_probs = jnp.cumsum(probs, axis=-1)
+        cum_probs = jnp.cumsum(probs, axis=-1)  #haha
         
         mask = cum_probs > top_p
         mask = jnp.concatenate([jnp.zeros((batch_size, 1), dtype=bool), mask[:, :-1]], axis=-1)
@@ -41,10 +52,12 @@ def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
         sample_indices = jax.random.categorical(step_key, filtered_logits)
         next_token = jnp.take_along_axis(sorted_indices, sample_indices[:, None], axis=-1)
         
-        new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + i))
-        return (new_tokens, next_loop_key)
-    padded_tokens = jnp.pad(tokens, ((0, 0), (0, gen_len)), constant_values=PAD_TOKEN_ID)
-    (final_tokens, _) = jax.lax.fori_loop(0, gen_len, body_fn, (padded_tokens, key))
+        new_tokens = jax.lax.dynamic_update_slice(current_tokens, next_token, (0, start_len + step))
+        return (step + 1, new_tokens, next_loop_key)
+    
+    init_state = (0, padded_tokens, key)
+
+    final_tokens, final_step, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return final_tokens
 
 def run_inference():

@@ -169,6 +169,52 @@ class UniversalReasoner(nnx.Module):
 
         return self.decoder(weighted_z), ponder_cost, temporal_loss
 
+    def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
+        batch_size, seq_len = tokens.shape
+        z_seq = self.embed(tokens)
+        z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
+        
+        z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
+        mask = self.get_mask(seq_len)
+
+        def cond_fn(state):
+            step, _, halt_prob = state
+            # Keep looping if under max steps AND we haven't crossed the halt threshold
+            return jnp.logical_and(step < max_steps, jnp.all(halt_prob < threshold))
+
+        def body_fn(state):
+            step, curr_z, _ = state
+            
+            t_signal = self.time_embed(step)[None, None, :]
+            z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
+            z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
+            
+            new_z_raw = self.processor(z_input, mask)
+
+            curr_seq = curr_z[:, :seq_len, :]
+            new_seq_raw = new_z_raw[:, :seq_len, :]
+
+            # Apply salience gating
+            salience_logists = self.salience_head(curr_seq)
+            salience = nnx.sigmoid(salience_logists)
+            new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
+            new_scratch = new_z_raw[:, seq_len:, :]
+            
+            new_z = jnp.concatenate([new_seq, new_scratch], axis=1)
+
+            # Check latent convergence
+            latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
+            base_halt_logit = self.halt_head(new_scratch).mean(axis=(1, 2))
+            halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
+            
+            return (step + 1, new_z, halt_prob)
+
+        init_state = (0, z_combined, jnp.zeros((batch_size,)))
+        final_step, final_z, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+        
+        final_z_seq = final_z[:, :seq_len, :]
+        return self.decoder(final_z_seq)
+
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
