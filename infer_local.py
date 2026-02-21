@@ -30,7 +30,7 @@ def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
     def body_fn(state):
         step, current_tokens, loop_key = state
         step_key, next_loop_key = jax.random.split(loop_key)
-        logits = model.infer(current_tokens, training=False)
+        logits = model.infer(current_tokens)
         
         valid_idx = start_len + step - 1
         next_logits = logits[:, valid_idx, :] / jnp.maximum(temperature, 1e-6)
@@ -57,7 +57,7 @@ def generate(model, tokens, gen_len, key, temperature=0.7, top_p=0.9, top_k=50):
     
     init_state = (0, padded_tokens, key)
 
-    final_tokens, final_step, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    final_step, final_tokens, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return final_tokens
 
 def run_inference():
