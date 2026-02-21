@@ -10,7 +10,8 @@ import tiktoken
 from datasets import load_dataset, interleave_datasets
 from train_local import (
     UniversalReasoner,
-    compute_gradients, optimizer_chain,
+    TrainingManager,
+    optimizer_chain,
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, CHECKPOINT_INTERVAL,
     PAD_TOKEN_ID
 )
@@ -80,7 +81,7 @@ class LossMonitor:
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-    graphdef, state = nnx.split(model)
+    manager = TrainingManager(model, optimizer_chain)
     
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     history_file = "training_history.csv"
@@ -91,8 +92,8 @@ if __name__ == "__main__":
         print(f"📖 Loading checkpoint from {checkpoint_path}...")
         with open(checkpoint_path, "rb") as f:
             checkpoint = pickle.load(f)
-        state = checkpoint["state"]
-        opt_state = checkpoint["opt_state"]
+        
+        manager.state.state = checkpoint["state"]
         start_step = checkpoint["step"] + 1
         
         if "monitor_state" in checkpoint:
@@ -106,12 +107,10 @@ if __name__ == "__main__":
         print(f"✅ Resuming from step {start_step}")
     else:
         print("🆕 No checkpoint found, starting from scratch...")
-        opt_state = optimizer_chain.init(state)
         start_step = 1
 
     key = jax.random.key(start_step)
     step = start_step
-    accumulated_grads = None
     accum_loss, accum_ce, accum_p = 0.0, 0.0, 0.0
 
     while True:
@@ -121,34 +120,28 @@ if __name__ == "__main__":
             key, subkey = jax.random.split(key)
             batch = data_gen.get_batch(BATCH_SIZE)
             if batch is None: break
-            
-            grads, loss, raw_ce, avg_p = compute_gradients(graphdef, state, batch, subkey)
-            
-            if accumulated_grads is None:
-                accumulated_grads = grads
-            else:
-                accumulated_grads = jax.tree_util.tree_map(lambda x, y: x + y, accumulated_grads, grads)
-            
-            accum_loss += loss / ACCUMULATION_STEPS
-            accum_ce += raw_ce / ACCUMULATION_STEPS
-            accum_p += avg_p / ACCUMULATION_STEPS
+
+            manager.grad_buffer, loss, aux = manager.accumulate_grad_step(
+                batch, subkey, manager.grad_buffer
+            )
+
+            token_loss, ponder_val = aux
+            accum_loss += float(loss) / ACCUMULATION_STEPS
+            accum_ce += float(token_loss) / ACCUMULATION_STEPS
+            accum_p += float(ponder_val) / ACCUMULATION_STEPS
 
         if batch is None: break
 
-        accumulated_grads = jax.tree_util.tree_map(lambda x: x / ACCUMULATION_STEPS, accumulated_grads)
-
-        updates, opt_state = optimizer_chain.update(accumulated_grads, opt_state, state)
-        state = optax.apply_updates(state, updates)
+        manager.apply_updates()
         
-        accumulated_grads = None
         t_total = time.time() - t0
 
-        if monitor.push(step, float(accum_ce), float(accum_p)): break
+        if monitor.push(step, accum_ce, accum_p): break
+        
         if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
                 checkpoint_data = {
-                    "state": state, 
-                    "opt_state": opt_state, 
+                    "state": manager.state.state, 
                     "step": step,
                     "monitor_state": {
                         "ce_history": monitor.ce_history,
@@ -165,9 +158,9 @@ if __name__ == "__main__":
                 if f.tell() == 0: writer.writeheader()
                 writer.writerow({
                     "step": int(step), 
-                    "loss": f"{float(accum_loss):.4f}", 
-                    "ce": f"{float(accum_ce):.4f}", 
-                    "avg_ponder": f"{float(accum_p):.4f}", 
+                    "loss": f"{accum_loss:.4f}", 
+                    "ce": f"{accum_ce:.4f}", 
+                    "avg_ponder": f"{accum_p:.2f}", 
                     "t_total": f"{t_total:.2f}"
                 })
             

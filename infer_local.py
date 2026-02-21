@@ -47,7 +47,7 @@ def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps
             z_scratch_with_time = curr_z[:, new_seq_len:, :] + t_signal
             z_input = jnp.concatenate([curr_z[:, :new_seq_len, :], z_scratch_with_time], axis=1)
             
-            new_z_raw = model.processor(z_input, mask)
+            new_z_raw, _ = model.processor(z_input, mask)
 
             curr_seq = curr_z[:, :new_seq_len, :]
             new_seq_raw = new_z_raw[:, :new_seq_len, :]
