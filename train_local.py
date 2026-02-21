@@ -15,9 +15,9 @@ os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 BATCH_SIZE = 2
 MAX_STEPS_LIMIT = 4
 ACCUMULATION_STEPS = 64
-SCRATCH_SLOTS = 256 # Cut by 2x if OOM
+SCRATCH_SLOTS = 256
 LATENT_DIM = 384
-MAX_SEQ_LEN = 8192  # Cut it by 16x if OOM
+MAX_SEQ_LEN = 512
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
@@ -124,10 +124,12 @@ class UniversalReasoner(nnx.Module):
             
             z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
             
-            new_z = self.processor(z_input, mask) 
+            new_z = self.processor(z_input, mask)
+
+            latent_shift = jnp.mean(jnp.abs(new_z[:, :seq_len, :] - curr_z[:, :seq_len, :]), axis=(1, 2))
+            base_halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
             
-            halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
-            halt_prob = nnx.sigmoid(halt_logit)
+            halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
             
             return new_z, (new_z, halt_prob)
 
