@@ -32,7 +32,7 @@ def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps
         z_seq = jnp.concatenate([current_z, pad_z], axis=1)
         new_seq_len = seq_len + 1
         
-        z_scratch = jnp.tile(model.scratch_token[...], (batch_size, 1, 1))
+        z_scratch = jnp.tile(model.scratch_token.value, (batch_size, 1, 1))
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = model.get_mask(new_seq_len)
 
@@ -52,7 +52,7 @@ def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps
             curr_seq = curr_z[:, :new_seq_len, :]
             new_seq_raw = new_z_raw[:, :new_seq_len, :]
 
-            salience = nnx.sigmoid(model.salience_head(curr_seq))
+            salience = jax.nn.sigmoid(model.salience_head(curr_seq))
             new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
             new_scratch = new_z_raw[:, new_seq_len:, :]
             
@@ -60,7 +60,7 @@ def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps
 
             latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
             base_halt_logit = model.halt_head(new_scratch).mean(axis=(1, 2))
-            halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
+            halt_prob = jax.nn.sigmoid(base_halt_logit - latent_shift)
             
             return (p_step + 1, new_z, halt_prob)
 
@@ -100,10 +100,18 @@ def run_inference():
     print(f"🔄 Loading weights from {checkpoint_path}...")
     with open(checkpoint_path, "rb") as f:
         ckpt = pickle.load(f)
-        state = ckpt['state']
     
-    graphdef, _ = nnx.split(model)
-    model = nnx.merge(graphdef, state)
+    if "model_state" in ckpt:
+        nnx.update(model, ckpt["model_state"])
+    elif "state" in ckpt:
+        state = ckpt["state"]
+        if "model" in state:
+            nnx.update(model, state["model"])
+        else:
+            nnx.update(model, state)
+    else:
+        print("❌ Error: Could not find model state in checkpoint.")
+        return
     print("✅ Model loaded and ready!")
 
     print("\n" + "="*50)

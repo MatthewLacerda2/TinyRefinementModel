@@ -92,7 +92,7 @@ class StandardReasoningBlock(nnx.Module):
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.mlp = nnx.Sequential(
             nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype),
-            nnx.gelu,
+            jax.nn.gelu,
             nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
         )
 
@@ -132,7 +132,7 @@ class UniversalReasoner(nnx.Module):
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
+        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
@@ -150,7 +150,7 @@ class UniversalReasoner(nnx.Module):
             new_seq_raw = new_z_raw[:, :seq_len, :]
 
             salience_logists = self.salience_head(curr_seq)
-            salience = nnx.sigmoid(salience_logists)
+            salience = jax.nn.sigmoid(salience_logists)
 
             new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
             new_scratch = new_z_raw[:, seq_len:, :]
@@ -162,7 +162,7 @@ class UniversalReasoner(nnx.Module):
             latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
             base_halt_logit = self.halt_head(new_scratch).mean(axis=(1, 2))
             
-            halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
+            halt_prob = jax.nn.sigmoid(base_halt_logit - latent_shift)
             
             return new_z, (new_z, halt_prob, step_temp_loss)
 
@@ -189,10 +189,10 @@ class UniversalReasoner(nnx.Module):
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
+        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
 
         mask = self.get_mask(seq_len)
-        _, current_cache = self.processor.attn(z_seq, mask=mask[:, :, :seq_len, :seq_len])
+        _, current_cache = self.processor.attn(self.processor.norm1(z_seq), mask=mask[:, :, :seq_len, :seq_len])
 
         def cond_fn(state):
             step, _, _, halt_prob = state
@@ -206,11 +206,11 @@ class UniversalReasoner(nnx.Module):
             
             new_scratch_raw, new_cache = self.processor(z_input, mask=None, cache=cache)
 
-            salience = nnx.sigmoid(self.salience_head(curr_seq))
+            salience = jax.nn.sigmoid(self.salience_head(curr_seq))
             new_seq = curr_seq
             
             latent_shift = jnp.mean(jnp.abs(new_scratch_raw - curr_scratch), axis=(1, 2))
-            halt_prob = nnx.sigmoid(self.halt_head(new_scratch_raw).mean(axis=(1, 2)) - latent_shift)
+            halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch_raw).mean(axis=(1, 2)) - latent_shift)
             
             return (step + 1, new_seq, new_scratch_raw, halt_prob, new_cache)
 
@@ -220,38 +220,36 @@ class UniversalReasoner(nnx.Module):
         return self.decoder(final_seq)
 
 
+@nnx.jit
+def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
+    def loss_fn(m):
+        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
+        preds, ponder_cost, temporal_cost = m(inputs, training=True, key=key)
+        
+        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
+        mask = (targets != PAD_TOKEN_ID)
+        token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
+        
+        total_loss = token_loss + (PONDER_LAMBDA * jnp.mean(ponder_cost)) + (TEMP_LAMBDA * jnp.mean(temporal_cost))
+        return total_loss, (token_loss, jnp.mean(ponder_cost))
+
+    grads, (loss, aux) = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    new_grad_buffer = jax.tree.map(lambda b, g: b + g, grad_buffer, grads)
+    return new_grad_buffer, loss, aux
+
+
 class TrainingManager:
     def __init__(self, model, optimizer_transform):
-        self.state = nnx.TrainState(
-            model,
-            nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
-        )
-        self.grad_buffer = jax.tree.map(jnp.zeros_like, self.state.params)
+        self.model = model
+        self.optimizer = nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
+        self.grad_buffer = jax.tree.map(jnp.zeros_like, nnx.state(self.model, nnx.Param))
 
-    @nnx.jit
     def accumulate_grad_step(self, batch_tokens, key, grad_buffer):
-        def loss_fn(model):
-            inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-            preds, ponder_cost, temporal_cost = model(inputs, training=True, key=key)
-            
-            ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-            mask = (targets != PAD_TOKEN_ID)
-            token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
-            
-            total_loss = token_loss + (PONDER_LAMBDA * jnp.mean(ponder_cost)) + (TEMP_LAMBDA * jnp.mean(temporal_cost))
-            return total_loss, (token_loss, jnp.mean(ponder_cost))
-
-        grads, (loss, aux) = nnx.value_and_grad(loss_fn, has_aux=True)(self.state.model)
-        
-        new_grad_buffer = jax.tree.map(lambda b, g: b + g, grad_buffer, grads)
-        
-        return new_grad_buffer, loss, aux
+        return _accumulate_step_fn(self.model, batch_tokens, key, grad_buffer)
 
     def apply_updates(self):
         avg_grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, self.grad_buffer)
-        
-        self.state.update_state(avg_grads)
-        
+        self.optimizer.update(avg_grads)
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.grad_buffer)
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)

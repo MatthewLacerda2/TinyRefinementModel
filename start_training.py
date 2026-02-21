@@ -93,8 +93,15 @@ if __name__ == "__main__":
         with open(checkpoint_path, "rb") as f:
             checkpoint = pickle.load(f)
         
-        manager.state.state = checkpoint["state"]
-        start_step = checkpoint["step"] + 1
+        if "model_state" in checkpoint:
+            nnx.update(model, checkpoint["model_state"])
+            nnx.update(manager.optimizer, checkpoint["optim_state"])
+        else:
+            print("⚠️ Old checkpoint format detected. Attempting to load model weights only...")
+            if "state" in checkpoint and "model" in checkpoint["state"]:
+                nnx.update(model, checkpoint["state"]["model"])
+        
+        start_step = checkpoint.get("step", 0) + 1
         
         if "monitor_state" in checkpoint:
             m_state = checkpoint["monitor_state"]
@@ -141,7 +148,8 @@ if __name__ == "__main__":
         if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
                 checkpoint_data = {
-                    "state": manager.state.state, 
+                    "model_state": nnx.state(model),
+                    "optim_state": nnx.state(manager.optimizer), 
                     "step": step,
                     "monitor_state": {
                         "ce_history": monitor.ce_history,
