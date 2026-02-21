@@ -233,7 +233,7 @@ def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
         total_loss = token_loss + (PONDER_LAMBDA * jnp.mean(ponder_cost)) + (TEMP_LAMBDA * jnp.mean(temporal_cost))
         return total_loss, (token_loss, jnp.mean(ponder_cost))
 
-    grads, (loss, aux) = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     new_grad_buffer = jax.tree.map(lambda b, g: b + g, grad_buffer, grads)
     return new_grad_buffer, loss, aux
 
