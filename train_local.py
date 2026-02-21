@@ -221,8 +221,11 @@ class UniversalReasoner(nnx.Module):
 
 
 class TrainingManager:
-    def __init__(self, model, optimizer):
-        self.state = nnx.TrainState(model, optimizer=optimizer)
+    def __init__(self, model, optimizer_transform):
+        self.state = nnx.TrainState(
+            model, 
+            optimizer=nnx.Optimizer(model, optimizer_transform)
+        )
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.state.params)
         self.acc_count = 0
 
