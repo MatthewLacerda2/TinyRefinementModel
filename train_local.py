@@ -93,7 +93,7 @@ class UniversalReasoner(nnx.Module):
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
         self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
-        self.processor = nnx.remat(StandardReasoningBlock)(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.processor = nnx.remat(lambda: StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype))()
 
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias = jnp.full((1,), 1.0)
