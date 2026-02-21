@@ -15,9 +15,9 @@ os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 BATCH_SIZE = 2
 MAX_STEPS_LIMIT = 4
 ACCUMULATION_STEPS = 64
-SCRATCH_SLOTS = 128
+SCRATCH_SLOTS = 256 # Cut by 2x if OOM
 LATENT_DIM = 384
-MAX_SEQ_LEN = 512
+MAX_SEQ_LEN = 8192  # Cut it by 16x if OOM
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
@@ -237,13 +237,38 @@ if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     graphdef, state = nnx.split(model)
-    opt_state = optimizer_chain.init(state)
-    start_step = 1
+    
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
-    key = jax.random.key(start_step)
     history_file = "training_history.csv"
     monitor = LossMonitor()
     
+    checkpoint_path = "checkpoint.pkl"
+    if os.path.exists(checkpoint_path):
+        print(f"📖 Loading checkpoint from {checkpoint_path}...")
+        with open(checkpoint_path, "rb") as f:
+            checkpoint = pickle.load(f)
+        state = checkpoint["state"]
+        opt_state = checkpoint["opt_state"]
+        start_step = checkpoint["step"] + 1
+        
+        # Resume monitor state if available
+        if "monitor_state" in checkpoint:
+            m_state = checkpoint["monitor_state"]
+            monitor.ce_history = m_state.get("ce_history", [])
+            monitor.best_ce = m_state.get("best_ce", float('inf'))
+            monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
+        else:
+            # If no monitor state, at least set last improvement to start_step 
+            # to avoid immediate plateau triggers
+            monitor.last_improvement_step = start_step
+            
+        print(f"✅ Resuming from step {start_step}")
+    else:
+        print("🆕 No checkpoint found, starting from scratch...")
+        opt_state = optimizer_chain.init(state)
+        start_step = 1
+
+    key = jax.random.key(start_step)
     step = start_step
     accumulated_grads = None
     accum_loss, accum_ce, accum_p = 0.0, 0.0, 0.0
@@ -280,13 +305,23 @@ if __name__ == "__main__":
         if monitor.push(step, float(accum_ce), float(accum_p)): break
         if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
-                pickle.dump({"state": state, "opt_state": opt_state, "step": step}, f)
+                checkpoint_data = {
+                    "state": state, 
+                    "opt_state": opt_state, 
+                    "step": step,
+                    "monitor_state": {
+                        "ce_history": monitor.ce_history,
+                        "best_ce": monitor.best_ce,
+                        "last_improvement_step": monitor.last_improvement_step
+                    }
+                }
+                pickle.dump(checkpoint_data, f)
             
             print(f"Step {step:04d} | Agg Loss: {accum_loss:.4f} | Avg Steps: {accum_p:.2f} | Time: {t_total:.2f}s")
             
             with open(history_file, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "t_total"])
-                if not os.path.exists(history_file) or os.stat(history_file).st_size == 0: writer.writeheader()
+                if f.tell() == 0: writer.writeheader()
                 writer.writerow({
                     "step": int(step), 
                     "loss": f"{float(accum_loss):.4f}", 
