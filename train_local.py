@@ -224,10 +224,9 @@ class TrainingManager:
     def __init__(self, model, optimizer_transform):
         self.state = nnx.TrainState(
             model,
-            nnx.Optimizer(model, optimizer_transform)
+            nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
         )
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.state.params)
-        self.acc_count = 0
 
     @nnx.jit
     def accumulate_grad_step(self, batch_tokens, key, grad_buffer):
