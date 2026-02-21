@@ -7,7 +7,6 @@ import pickle
 import csv
 import time
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 2
@@ -69,11 +68,8 @@ class RotaryAttention(nnx.Module):
         new_cache = (k, v)
 
         repeats = self.num_heads // self.num_groups
-        k_expanded = jnp.broadcast_to(k[:, :, :, None, :], (b, k.shape[1], self.num_groups, repeats, self.head_dim))
-        k_expanded = k_expanded.reshape(b, k.shape[1], self.num_heads, self.head_dim)
-        
-        v_expanded = jnp.broadcast_to(v[:, :, :, None, :], (b, v.shape[1], self.num_groups, repeats, self.head_dim))
-        v_expanded = v_expanded.reshape(b, v.shape[1], self.num_heads, self.head_dim)
+        k_expanded = jnp.repeat(k, repeats, axis=2)
+        v_expanded = jnp.repeat(v, repeats, axis=2)
 
         out = jax.nn.dot_product_attention(
             q,
