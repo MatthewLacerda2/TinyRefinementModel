@@ -123,7 +123,6 @@ def run_inference():
             if not user_input:
                 continue
 
-            # Encode input
             tokens_list = enc.encode(user_input)
             if len(tokens_list) > MAX_SEQ_LEN - 64: # Leave some space for generation
                 print(f"⚠️ Warning: Prompt is long ({len(tokens_list)} tokens). Truncating...")
