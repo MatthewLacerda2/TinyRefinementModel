@@ -23,6 +23,7 @@ PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
 CHECKPOINT_INTERVAL = 100
 PONDER_LAMBDA = 0.005
+TEMP_LAMBDA = 0.01
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -85,12 +86,15 @@ class StandardReasoningBlock(nnx.Module):
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs, dtype=jnp.float32):
         self.latent_dim = latent_dim
-        self.num_scratch = SCRATCH_SLOTS 
+        self.num_scratch = SCRATCH_SLOTS
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
         self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
         self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+
+        self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
+        self.salience_head.bias = jnp.full((1,), 1.0)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias = jnp.full((1,), -3.0)
@@ -113,7 +117,6 @@ class UniversalReasoner(nnx.Module):
         z_scratch = jnp.tile(self.scratch_token[...], (batch_size, 1, 1))
         
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
-        
         mask = self.get_mask(seq_len)
 
         def scan_step(carry, i):
@@ -124,17 +127,30 @@ class UniversalReasoner(nnx.Module):
             
             z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
             
-            new_z = self.processor(z_input, mask)
+            new_z_raw = self.processor(z_input, mask)
 
-            latent_shift = jnp.mean(jnp.abs(new_z[:, :seq_len, :] - curr_z[:, :seq_len, :]), axis=(1, 2))
-            base_halt_logit = self.halt_head(new_z[:, seq_len:, :]).mean(axis=(1, 2))
+            curr_seq = curr_z[:, :seq_len, :]
+            new_seq_raw = new_z_raw[:, :seq_len, :]
+
+            salience_logists = self.salience_head(curr_seq)
+            salience = nnx.sigmoid(salience_logists)
+
+            new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
+            new_scratch = new_z_raw[:, seq_len:, :]
+            
+            new_z = jnp.concatenate([new_seq, new_scratch], axis=1)
+
+            step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(new_seq_raw - curr_seq), axis=(1, 2))
+
+            latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
+            base_halt_logit = self.halt_head(new_scratch).mean(axis=(1, 2))
             
             halt_prob = nnx.sigmoid(base_halt_logit - latent_shift)
             
-            return new_z, (new_z, halt_prob)
+            return new_z, (new_z, halt_prob, step_temp_loss)
 
         scan_fn = nnx.remat(nnx.scan(scan_step))
-        _, (all_z, all_halts) = scan_fn(z_combined, jnp.arange(max_steps))
+        _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
@@ -143,14 +159,15 @@ class UniversalReasoner(nnx.Module):
         remaining_prob = p_remain[-1] * (1.0 - last_step_halt_prob)
         step_weights = step_weights.at[-1].add(remaining_prob)
 
-        # Average the embeddings of the sequence tokens
         all_z_seq = all_z[:, :, :seq_len, :]
         weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
         
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
 
-        return self.decoder(weighted_z), ponder_cost
+        temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
+
+        return self.decoder(weighted_z), ponder_cost, temporal_loss
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
@@ -222,14 +239,19 @@ def compute_gradients(graphdef, state, batch_tokens, key):
     def loss_fn(state):
         model = nnx.merge(graphdef, state)
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        preds, ponder_cost = model(inputs, training=True, key=key)
+        preds, ponder_cost, temporal_cost = model(inputs, training=True, key=key)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
         
         ponder_loss = PONDER_LAMBDA * jnp.mean(ponder_cost)
-        return (token_loss + ponder_loss), (token_loss, jnp.mean(ponder_cost))
+
+        temporal_loss = TEMP_LAMBDA * jnp.mean(temporal_cost)
+
+        total_loss = token_loss + ponder_loss + temporal_loss
+        
+        return total_loss, (token_loss, jnp.mean(ponder_cost))
 
     (loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
     
@@ -253,15 +275,12 @@ if __name__ == "__main__":
         opt_state = checkpoint["opt_state"]
         start_step = checkpoint["step"] + 1
         
-        # Resume monitor state if available
         if "monitor_state" in checkpoint:
             m_state = checkpoint["monitor_state"]
             monitor.ce_history = m_state.get("ce_history", [])
             monitor.best_ce = m_state.get("best_ce", float('inf'))
             monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         else:
-            # If no monitor state, at least set last improvement to start_step 
-            # to avoid immediate plateau triggers
             monitor.last_improvement_step = start_step
             
         print(f"✅ Resuming from step {start_step}")
