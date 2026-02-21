@@ -14,9 +14,9 @@ os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 2
 MAX_STEPS_LIMIT = 4
-ACCUMULATION_STEPS = 32
-SCRATCH_SLOTS = 64 # half this if vram becomes an issue
-LATENT_DIM = 384    # 384 if OOM immediatelly!
+ACCUMULATION_STEPS = 64
+SCRATCH_SLOTS = 128
+LATENT_DIM = 384
 MAX_SEQ_LEN = 512
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256

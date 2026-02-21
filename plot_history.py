@@ -71,6 +71,36 @@ def plot_training_history(log_path="training_history.csv"):
     plt.tight_layout()
     plt.savefig('training_plot.png', dpi=120)
     print("✨ Training analytics updated: training_plot.png")
+    plt.close()
+
+    # Log Scale Plot
+    fig_log, (ax_l1, ax_l2) = plt.subplots(2, 1, figsize=(10, 8))
+    
+    # Agg Loss Log-Log
+    ax_l1.plot(steps, losses, color='#00f2ff', linewidth=2, label='Agg Loss (Log)')
+    ax_l1.fill_between(steps, losses, color='#00f2ff', alpha=0.1)
+    ax_l1.set_xscale('log')
+    ax_l1.set_yscale('log')
+    ax_l1.set_ylabel('Agg Loss (Log)', color='#00f2ff', fontweight='bold')
+    ax_l1.set_title('Training Progress: Agg Loss (Log-Log Scale)', fontsize=14, pad=10, color='white')
+    ax_l1.grid(True, which="both", ls="-", alpha=0.1)
+    ax_l1.legend()
+
+    # CE Loss Log-Log
+    ax_l2.plot(steps, ce_losses, color='#ff007b', linewidth=2, label='CE Loss (Log)')
+    ax_l2.fill_between(steps, ce_losses, color='#ff007b', alpha=0.1)
+    ax_l2.set_xscale('log')
+    ax_l2.set_yscale('log')
+    ax_l2.set_ylabel('CE Loss (Log)', color='#ff007b', fontweight='bold')
+    ax_l2.set_xlabel('Training Step (Log)', fontweight='bold')
+    ax_l2.set_title('Cross-Entropy (Log-Log Scale)', fontsize=14, pad=10, color='white')
+    ax_l2.grid(True, which="both", ls="-", alpha=0.1)
+    ax_l2.legend()
+
+    plt.tight_layout()
+    plt.savefig('training_plot_log.png', dpi=120)
+    plt.close()
+    print("✨ Log analytics updated: training_plot_log.png")
 
     target_ppl = 40
     target_ce = math.log(target_ppl)
