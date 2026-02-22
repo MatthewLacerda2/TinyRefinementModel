@@ -11,30 +11,24 @@ from train_local import (
     LATENT_DIM, 
     MAX_SEQ_LEN, 
     PAD_TOKEN_ID,
-    MAX_STEPS_LIMIT
 )
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 
-def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps=MAX_STEPS_LIMIT, threshold=0.9):
-    batch_size = prompt_tokens.shape[0]
+def generate_dynamic(model, prompt_tokens, max_new_tokens, enc):
     current_tokens = prompt_tokens
     prompt_len = prompt_tokens.shape[1]
     
     print("🤖 Assistant: ", end="", flush=True)
     
     for i in range(max_new_tokens):
-        # The new model handles internal pondering via its .infer() method
-        # It returns logits for the entire sequence (B, S, V)
         logits = model.infer(current_tokens)
         
-        # Greedily pick the next token from the last position
         next_token_logits = logits[:, -1, :]
         next_token = jnp.argmax(next_token_logits, axis=-1)[:, None]
         
         current_tokens = jnp.concatenate([current_tokens, next_token], axis=1)
         
-        # Partial decoding for smooth UI
         decoded_text = enc.decode(current_tokens[0, prompt_len:].tolist())
         print(f"\r🤖 Assistant: {decoded_text}", end="", flush=True)
         
@@ -69,8 +63,6 @@ def run_inference():
         return
     print("✅ Model loaded and ready!")
 
-    print("\n" + "="*50)
-    print("Welcome to TinyRefinementModel CLI!")
     print("Type your prompt and press Enter.")
     print("Type '/exit' to quit.")
     print("="*50 + "\n")
