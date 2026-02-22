@@ -5,18 +5,19 @@ from flax import nnx
 import optax
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.7"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 1
 MAX_STEPS_LIMIT = 8
 ACCUMULATION_STEPS = 128
 SCRATCH_SLOTS = 256
+LATENT_DIM = 256
 MAX_SEQ_LEN = 256
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
-CHECKPOINT_INTERVAL = 100
+CHECKPOINT_INTERVAL = 20
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
 
@@ -137,11 +138,12 @@ class UniversalReasoner(nnx.Module):
         z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
         mask = self.get_mask(seq_len)
 
-        def scan_step(carry, i):
+        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+
+        def scan_step(carry, t_signal):
             curr_z = carry
 
-            t_signal = self.time_embed(i)[None, None, :]
-            z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal
+            z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal[None, None, :]
             
             z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
             
@@ -168,8 +170,8 @@ class UniversalReasoner(nnx.Module):
             return new_z, (new_z, halt_prob, step_temp_loss)
 
         scan_step_remat = nnx.remat(scan_step)
-        scan_fn = nnx.scan(scan_step_remat)
-        _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, jnp.arange(max_steps))
+        scan_fn = nnx.scan(scan_step_remat, in_axes=0, unroll=4)
+        _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, all_time_embeds)
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
@@ -196,15 +198,12 @@ class UniversalReasoner(nnx.Module):
         mask = self.get_mask(seq_len)
         _, current_cache = self.processor.attn(self.processor.norm1(z_seq), mask=mask[:, :, :seq_len, :seq_len])
 
-        def cond_fn(state):
-            step, _, _, halt_prob = state
-            return jnp.logical_and(step < max_steps, jnp.all(halt_prob < threshold))
+        all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
-        def body_fn(state):
-            step, curr_seq, curr_scratch, _, cache = state
-            t_signal = self.time_embed(step)[None, None, :]
+        def scan_step(state, t_signal):
+            step, curr_seq, curr_scratch, halt_prob, cache = state
             
-            z_input = curr_scratch + t_signal
+            z_input = curr_scratch + t_signal[None, None, :]
             
             new_scratch_raw, new_cache = self.processor(z_input, mask=None, cache=cache)
 
@@ -212,12 +211,24 @@ class UniversalReasoner(nnx.Module):
             new_seq = curr_seq
             
             latent_shift = jnp.mean(jnp.abs(new_scratch_raw - curr_scratch), axis=(1, 2))
-            halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch_raw).mean(axis=(1, 2)) - latent_shift)
+            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch_raw).mean(axis=(1, 2)) - latent_shift)
             
-            return (step + 1, new_seq, new_scratch_raw, halt_prob, new_cache)
+            has_halted = halt_prob >= threshold
+            
+            # Only update if not yet halted
+            final_scratch = jnp.where(has_halted[:, None, None], curr_scratch, new_scratch_raw)
+            final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
+            
+            new_k, new_v = new_cache
+            curr_k, curr_v = cache
+            final_k = jnp.where(has_halted[:, None, None, None], curr_k, new_k)
+            final_v = jnp.where(has_halted[:, None, None, None], curr_v, new_v)
+            
+            return (step + 1, new_seq, final_scratch, final_halt_prob, (final_k, final_v)), None
 
         init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)), current_cache)
-        _, final_seq, _, _, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+        scan_fn = nnx.scan(scan_step, in_axes=0)
+        (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
         return self.decoder(final_seq)
 

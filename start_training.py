@@ -2,7 +2,6 @@ import os
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import optax
 import pickle
 import csv
 import time
