@@ -16,68 +16,29 @@ from train_local import (
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 
-def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps=MAX_STEPS_LIMIT, threshold=0.5):
+def generate_dynamic(model, prompt_tokens, max_new_tokens, enc, max_ponder_steps=MAX_STEPS_LIMIT, threshold=0.9):
     batch_size = prompt_tokens.shape[0]
-    
-    current_z = model.embed(prompt_tokens)
+    current_tokens = prompt_tokens
     prompt_len = prompt_tokens.shape[1]
     
     print("🤖 Assistant: ", end="", flush=True)
     
-    for step in range(max_new_tokens):
-        seq_len = current_z.shape[1]
+    for i in range(max_new_tokens):
+        # The new model handles internal pondering via its .infer() method
+        # It returns logits for the entire sequence (B, S, V)
+        logits = model.infer(current_tokens)
         
-        pad_tokens = jnp.full((batch_size, 1), PAD_TOKEN_ID, dtype=jnp.int32)
-        pad_z = model.embed(pad_tokens)
-        z_seq = jnp.concatenate([current_z, pad_z], axis=1)
-        new_seq_len = seq_len + 1
+        # Greedily pick the next token from the last position
+        next_token_logits = logits[:, -1, :]
+        next_token = jnp.argmax(next_token_logits, axis=-1)[:, None]
         
-        z_scratch = jnp.tile(model.scratch_token.value, (batch_size, 1, 1))
-        z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
-        mask = model.get_mask(new_seq_len)
-
-        def cond_fn(state):
-            p_step, _, halt_prob = state
-            return jnp.logical_and(p_step < max_ponder_steps, jnp.all(halt_prob < threshold))
-
-        def body_fn(state):
-            p_step, curr_z, _ = state
-            
-            t_signal = model.time_embed(p_step)[None, None, :]
-            z_scratch_with_time = curr_z[:, new_seq_len:, :] + t_signal
-            z_input = jnp.concatenate([curr_z[:, :new_seq_len, :], z_scratch_with_time], axis=1)
-            
-            new_z_raw, _ = model.processor(z_input, mask)
-
-            curr_seq = curr_z[:, :new_seq_len, :]
-            new_seq_raw = new_z_raw[:, :new_seq_len, :]
-
-            salience = jax.nn.sigmoid(model.salience_head(curr_seq))
-            new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
-            new_scratch = new_z_raw[:, new_seq_len:, :]
-            
-            new_z = jnp.concatenate([new_seq, new_scratch], axis=1)
-
-            latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
-            base_halt_logit = model.halt_head(new_scratch).mean(axis=(1, 2))
-            halt_prob = jax.nn.sigmoid(base_halt_logit - latent_shift)
-            
-            return (p_step + 1, new_z, halt_prob)
-
-        init_state = (0, z_combined, jnp.zeros((batch_size,)))
-        final_step, final_z, _ = jax.lax.while_loop(cond_fn, body_fn, init_state)
+        current_tokens = jnp.concatenate([current_tokens, next_token], axis=1)
         
-        current_z = final_z[:, :new_seq_len, :]
+        # Partial decoding for smooth UI
+        decoded_text = enc.decode(current_tokens[0, prompt_len:].tolist())
+        print(f"\r🤖 Assistant: {decoded_text}", end="", flush=True)
         
-        logits = model.decoder(current_z)
-        current_tokens = jnp.argmax(logits, axis=-1)[0]
-        
-        generated_tokens = [t for t in current_tokens[prompt_len:].tolist() if t != PAD_TOKEN_ID]
-        text_output = enc.decode(generated_tokens)
-        
-        print(f"\r🤖 Assistant: {text_output}", end="", flush=True)
-        
-        if current_tokens[-1] == PAD_TOKEN_ID:
+        if next_token[0, 0] == PAD_TOKEN_ID:
             break
             
     print()

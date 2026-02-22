@@ -3,21 +3,21 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
-import gc
+#import gc
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 #os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 1
-MAX_STEPS_LIMIT = 8
+MAX_STEPS_LIMIT = 16
 ACCUMULATION_STEPS = 128
-SCRATCH_SLOTS = 256
-LATENT_DIM = 256
+SCRATCH_SLOTS = 1024
+LATENT_DIM = 384
 MAX_SEQ_LEN = 256
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
-PONDER_LAMBDA = 0.005
+PONDER_LAMBDA = 0.01
 TEMP_LAMBDA = 0.01
 
 def rotate_half(x):
@@ -102,117 +102,88 @@ class StandardReasoningBlock(nnx.Module):
         x = x + self.mlp(self.norm2(x))
         return x, new_cache
 
-class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, dtype=jnp.float32):
+class RelationalUniversalReasoner(nnx.Module):
+    def __init__(self, latent_dim, rngs, num_slots=SCRATCH_SLOTS, dtype=jnp.float32):
         self.latent_dim = latent_dim
-        self.num_scratch = SCRATCH_SLOTS
+        self.num_slots = num_slots
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
-        self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
-        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
+        
+        self.slot_seeds = nnx.Param(
+            jax.random.normal(rngs(), (1, num_slots, latent_dim)).astype(jnp.float32) * 0.02
+        )
+        
+        self.router = RotaryAttention(8, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
+        
         self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
-        self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.salience_head.bias = jnp.full((1,), 1.0)
-        
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias = jnp.full((1,), -3.0)
         self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
 
-    def get_mask(self, seq_len):
-        total_len = seq_len + self.num_scratch
-        causal_text = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
-        
-        mask = jnp.ones((total_len, total_len), dtype=bool)
-        mask = mask.at[:seq_len, :seq_len].set(causal_text)
-        mask = mask.at[:seq_len, seq_len:].set(False)
-        
-        return mask[None, None, :, :]
-
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        z_seq, _ = self.processor(z_seq, mask=None) 
         
-        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
-        all_time_embeds = self.time_embed(jnp.arange(max_steps))
-
-        def scan_step(carry, t_signal):
-            curr_seq, curr_scratch = carry
-            
-            z_scratch_in = curr_scratch + t_signal[None, None, :]
-            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
-            
-            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
-            
-            salience_logits = self.salience_head(curr_seq)
-            salience = jax.nn.sigmoid(salience_logits)
-            
-            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
-            
-            step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
-            
-            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
-            halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
-            
-            return (new_seq, new_scratch), (new_seq, halt_prob, step_temp_loss)
-
-        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0), unroll=4)
-        _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_scratch), all_time_embeds)
+        initial_slots = jnp.tile(self.slot_seeds.value, (batch_size, 1, 1))
+        initial_slots, _ = self.router(initial_slots, context=z_seq)
         
+        def scan_step(curr_slots, t):
+            new_slots, _ = self.processor(curr_slots)
+            
+            latent_shift_sq = jnp.mean(jnp.square(new_slots - curr_slots), axis=(1, 2))
+            latent_shift_abs = jnp.mean(jnp.abs(new_slots - curr_slots), axis=(1, 2))
+            
+            halt_prob = jax.nn.sigmoid(self.halt_head(new_slots).mean(axis=(1, 2)) - latent_shift_abs)
+            
+            return new_slots, (new_slots, halt_prob, latent_shift_sq)
+
+        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
+        _, (all_slots, all_halts, all_shift_sq) = scan_fn(initial_slots, jnp.arange(max_steps))
+
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
-
-        last_step_halt_prob = all_halts[-1]
-        remaining_prob = p_remain[-1] * (1.0 - last_step_halt_prob)
+        remaining_prob = p_remain[-1] * (1.0 - all_halts[-1])
         step_weights = step_weights.at[-1].add(remaining_prob)
-
-        weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
+        
+        final_thought = jnp.einsum('sb,sbnd->bnd', step_weights, all_slots)
+        
+        output_repr, _ = self.router(z_seq, context=final_thought)
+        logits = self.decoder(output_repr)
         
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
-        temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
+        temporal_loss = jnp.sum(step_weights * all_shift_sq, axis=0)
+        
+        return logits, ponder_cost, temporal_loss
 
-        return self.decoder(weighted_z), ponder_cost, temporal_loss
-
-    def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
+    def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.9):
         batch_size, seq_len = tokens.shape
-        
         z_seq = self.embed(tokens)
-        z_seq, _ = self.processor(z_seq, mask=None)
         
-        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
-        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+        initial_slots = jnp.tile(self.slot_seeds.value, (batch_size, 1, 1))
+        initial_slots, _ = self.router(initial_slots, context=z_seq)
+        
+        def scan_step(state, t):
+            curr_slots, halt_prob, has_halted = state
+            new_slots, _ = self.processor(curr_slots)
+            
+            latent_shift_abs = jnp.mean(jnp.abs(new_slots - curr_slots), axis=(1, 2))
+            step_halt_prob = jax.nn.sigmoid(self.halt_head(new_slots).mean(axis=(1, 2)) - latent_shift_abs)
+            
+            new_has_halted = has_halted | (step_halt_prob >= threshold)
+            final_slots = jnp.where(has_halted[:, None, None], curr_slots, new_slots)
+            
+            return (final_slots, step_halt_prob, new_has_halted), None
 
-        def scan_step(state, t_signal):
-            step, curr_seq, curr_scratch, halt_prob = state
-            
-            z_scratch_in = curr_scratch + t_signal[None, None, :]
-            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
-            
-            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
-            
-            salience_logits = self.salience_head(curr_seq)
-            salience = jax.nn.sigmoid(salience_logits)
-            
-            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
-            
-            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
-            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
-            
-            has_halted = halt_prob >= threshold
-            
-            final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
-            final_scratch = jnp.where(has_halted[:, None, None], curr_scratch, new_scratch)
-            final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
-            
-            return (step + 1, final_seq, final_scratch, final_halt_prob), None
-
-        init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)))
+        init_state = (initial_slots, jnp.zeros((batch_size,)), jnp.zeros((batch_size,), dtype=bool))
         scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
-        (final_step, final_seq, _, _), _ = scan_fn(init_state, all_time_embeds)
+        (final_thought, _, _), _ = scan_fn(init_state, jnp.arange(max_steps))
         
-        return self.decoder(final_seq)
+        output_repr, _ = self.router(z_seq, context=final_thought)
+        return self.decoder(output_repr)
+
+UniversalReasoner = RelationalUniversalReasoner
 
 
 @nnx.jit
@@ -250,7 +221,7 @@ class TrainingManager:
         
         # Force JAX to sync and clear the dispatch queue
         jax.tree_util.tree_map(lambda x: x.block_until_ready(), self.grad_buffer)
-        gc.collect()
+        #gc.collect()
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))

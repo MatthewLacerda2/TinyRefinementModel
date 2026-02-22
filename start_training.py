@@ -11,12 +11,13 @@ from train_local import (
     UniversalReasoner,
     TrainingManager,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, MAX_STEPS_LIMIT
 )
-import gc
+#import gc
 
 SYNC_INTERVAL = 8
 CHECKPOINT_INTERVAL = 20
+MAX_PONDER_LIMIT = MAX_STEPS_LIMIT * 0.9
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
@@ -46,7 +47,7 @@ class TextDataGenerator:
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=500, max_ponder_limit=7.5):
+    def __init__(self, patience=2000, window=500, max_ponder_limit=MAX_PONDER_LIMIT):
         self.patience = patience
         self.window = window
         self.max_ponder_limit = max_ponder_limit
@@ -144,7 +145,7 @@ if __name__ == "__main__":
         if batch is None: break
 
         manager.apply_updates()
-        gc.collect()
+        #gc.collect()
         
         t_total = time.time() - t0
 
