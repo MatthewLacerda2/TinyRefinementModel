@@ -3,18 +3,16 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
-import pickle
-import csv
-import time
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
-BATCH_SIZE = 2
-MAX_STEPS_LIMIT = 4
-ACCUMULATION_STEPS = 64
+BATCH_SIZE = 1
+MAX_STEPS_LIMIT = 8
+ACCUMULATION_STEPS = 128
 SCRATCH_SLOTS = 256
-LATENT_DIM = 384
-MAX_SEQ_LEN = 512
+MAX_SEQ_LEN = 256
 VOCAB_SIZE = 50257
 PAD_TOKEN_ID = 50256
 LOSS_SCALE = 128.0
@@ -68,8 +66,15 @@ class RotaryAttention(nnx.Module):
         new_cache = (k, v)
 
         repeats = self.num_heads // self.num_groups
-        k_expanded = jnp.repeat(k, repeats, axis=2)
-        v_expanded = jnp.repeat(v, repeats, axis=2)
+        k_expanded = jnp.broadcast_to(
+            k[:, :, :, None, :], 
+            (b, k.shape[1], self.num_groups, repeats, self.head_dim)
+        ).reshape(b, k.shape[1], self.num_heads, self.head_dim)
+
+        v_expanded = jnp.broadcast_to(
+            v[:, :, :, None, :], 
+            (b, k.shape[1], self.num_groups, repeats, self.head_dim)
+        ).reshape(b, k.shape[1], self.num_heads, self.head_dim)
 
         out = jax.nn.dot_product_attention(
             q,
@@ -162,7 +167,8 @@ class UniversalReasoner(nnx.Module):
             
             return new_z, (new_z, halt_prob, step_temp_loss)
 
-        scan_fn = nnx.remat(nnx.scan(scan_step))
+        scan_step_remat = nnx.remat(scan_step)
+        scan_fn = nnx.scan(scan_step_remat)
         _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, jnp.arange(max_steps))
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
@@ -246,7 +252,11 @@ class TrainingManager:
     def apply_updates(self):
         avg_grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, self.grad_buffer)
         self.optimizer.update(self.model, avg_grads)
+        # Reset buffer
         self.grad_buffer = jax.tree.map(jnp.zeros_like, self.grad_buffer)
+        
+        # Force JAX to sync and clear the dispatch queue
+        jax.tree_util.tree_map(lambda x: x.block_until_ready(), self.grad_buffer)
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
