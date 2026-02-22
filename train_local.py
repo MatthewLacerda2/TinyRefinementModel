@@ -170,7 +170,7 @@ class UniversalReasoner(nnx.Module):
             return new_z, (new_z, halt_prob, step_temp_loss)
 
         scan_step_remat = nnx.remat(scan_step)
-        scan_fn = nnx.scan(scan_step_remat, in_axes=0, unroll=4)
+        scan_fn = nnx.scan(scan_step_remat, in_axes=(nnx.Carry, 0), unroll=4)
         _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, all_time_embeds)
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
@@ -227,7 +227,7 @@ class UniversalReasoner(nnx.Module):
             return (step + 1, new_seq, final_scratch, final_halt_prob, (final_k, final_v)), None
 
         init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)), current_cache)
-        scan_fn = nnx.scan(scan_step, in_axes=0)
+        scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
         (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
         return self.decoder(final_seq)
