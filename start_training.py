@@ -11,9 +11,12 @@ from train_local import (
     UniversalReasoner,
     TrainingManager,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, CHECKPOINT_INTERVAL,
-    PAD_TOKEN_ID
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
 )
+import gc
+
+SYNC_INTERVAL = 8
+CHECKPOINT_INTERVAL = 20
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
@@ -130,6 +133,9 @@ if __name__ == "__main__":
                 batch, subkey, manager.grad_buffer
             )
 
+            if i % SYNC_INTERVAL == 0:
+                jax.tree_util.tree_map(lambda x: x.block_until_ready(), grad_buffer)
+
             token_loss, ponder_val = aux
             accum_loss += float(loss) / ACCUMULATION_STEPS
             accum_ce += float(token_loss) / ACCUMULATION_STEPS
@@ -138,6 +144,7 @@ if __name__ == "__main__":
         if batch is None: break
 
         manager.apply_updates()
+        gc.collect()
         
         t_total = time.time() - t0
 
