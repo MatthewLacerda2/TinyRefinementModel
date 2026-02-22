@@ -3,9 +3,10 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
+import gc
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.7"
+#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 BATCH_SIZE = 1
@@ -42,28 +43,34 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
 
-    def __call__(self, x, mask=None, cache=None):
+    def __call__(self, x, context=None, mask=None, cache=None):
         b, s, d = x.shape
         
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
-        k = self.k_proj(x).reshape(b, s, self.num_groups, self.head_dim)
-        v = self.v_proj(x).reshape(b, s, self.num_groups, self.head_dim)
+        
+        kv_input = context if context is not None else x
+        s_kv = kv_input.shape[1]
+        
+        k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
+        v = self.v_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
 
-        offset = cache[0].shape[1] if cache is not None else 0
-
-        sin = self.sin_cached[offset:offset+s, None, :]
-        cos = self.cos_cached[offset:offset+s, None, :]
-
+        # Apply RoPE
+        sin = self.sin_cached[:s, None, :]
+        cos = self.cos_cached[:s, None, :]
         q = (q * cos) + (rotate_half(q) * sin)
-        k = (k * cos) + (rotate_half(k) * sin)
+        
+        sin_kv = self.sin_cached[:s_kv, None, :]
+        cos_kv = self.cos_cached[:s_kv, None, :]
+        k = (k * cos_kv) + (rotate_half(k) * sin_kv)
 
         if cache is not None:
             prev_k, prev_v = cache
             k = jnp.concatenate([prev_k, k], axis=1)
             v = jnp.concatenate([prev_v, v], axis=1)
         
-        new_cache = (k, v)
+        new_cache = (k, v) if cache is not None else None
 
+        # Multi-Query/Grouped-Query Expansion
         repeats = self.num_heads // self.num_groups
         k_expanded = jnp.broadcast_to(
             k[:, :, :, None, :], 
@@ -75,15 +82,8 @@ class RotaryAttention(nnx.Module):
             (b, k.shape[1], self.num_groups, repeats, self.head_dim)
         ).reshape(b, k.shape[1], self.num_heads, self.head_dim)
 
-        out = jax.nn.dot_product_attention(
-            q,
-            k_expanded,
-            v_expanded,
-            mask=mask
-        )
-
-        out = out.reshape(b, s, d)
-        return self.o_proj(out), new_cache
+        out = jax.nn.dot_product_attention(q, k_expanded, v_expanded, mask=mask)
+        return self.o_proj(out.reshape(b, s, d)), new_cache
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
@@ -96,8 +96,8 @@ class StandardReasoningBlock(nnx.Module):
             nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
         )
 
-    def __call__(self, x, mask, cache=None):
-        attn_out, new_cache=self.attn(self.norm1(x),mask=mask, cache=cache)
+    def __call__(self, x, context=None, mask=None, cache=None):
+        attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache)
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
         return x, new_cache
@@ -132,44 +132,33 @@ class UniversalReasoner(nnx.Module):
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
+        z_seq, _ = self.processor(z_seq, mask=None) 
+        
         z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
-        z_combined = jnp.concatenate([z_seq, z_scratch], axis=1)
-        mask = self.get_mask(seq_len)
-
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(carry, t_signal):
-            curr_z = carry
-
-            z_scratch_with_time = curr_z[:, seq_len:, :] + t_signal[None, None, :]
+            curr_seq, curr_scratch = carry
             
-            z_input = jnp.concatenate([curr_z[:, :seq_len, :], z_scratch_with_time], axis=1)
+            z_scratch_in = curr_scratch + t_signal[None, None, :]
+            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
             
-            new_z_raw, _ = self.processor(z_input, mask)
-
-            curr_seq = curr_z[:, :seq_len, :]
-            new_seq_raw = new_z_raw[:, :seq_len, :]
-
-            salience_logists = self.salience_head(curr_seq)
-            salience = jax.nn.sigmoid(salience_logists)
-
-            new_seq = curr_seq + salience * (new_seq_raw - curr_seq)
-            new_scratch = new_z_raw[:, seq_len:, :]
+            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
             
-            new_z = jnp.concatenate([new_seq, new_scratch], axis=1)
-
-            step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(new_seq_raw - curr_seq), axis=(1, 2))
-
-            latent_shift = jnp.mean(jnp.abs(new_seq - curr_seq), axis=(1, 2))
-            base_halt_logit = self.halt_head(new_scratch).mean(axis=(1, 2))
+            salience_logits = self.salience_head(curr_seq)
+            salience = jax.nn.sigmoid(salience_logits)
             
-            halt_prob = jax.nn.sigmoid(base_halt_logit - latent_shift)
+            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
             
-            return new_z, (new_z, halt_prob, step_temp_loss)
+            step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
+            
+            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
+            halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
+            
+            return (new_seq, new_scratch), (new_seq, halt_prob, step_temp_loss)
 
-        scan_step_remat = nnx.remat(scan_step)
-        scan_fn = nnx.scan(scan_step_remat, in_axes=(nnx.Carry, 0), unroll=4)
-        _, (all_z, all_halts, all_temp_loss) = scan_fn(z_combined, all_time_embeds)
+        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0), unroll=4)
+        _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_scratch), all_time_embeds)
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
@@ -178,55 +167,50 @@ class UniversalReasoner(nnx.Module):
         remaining_prob = p_remain[-1] * (1.0 - last_step_halt_prob)
         step_weights = step_weights.at[-1].add(remaining_prob)
 
-        all_z_seq = all_z[:, :, :seq_len, :]
         weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
         
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
-
         temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
 
         return self.decoder(weighted_z), ponder_cost, temporal_loss
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
+        
         z_seq = self.embed(tokens)
+        z_seq, _ = self.processor(z_seq, mask=None)
+        
         z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
-
-        mask = self.get_mask(seq_len)
-        _, current_cache = self.processor.attn(self.processor.norm1(z_seq), mask=mask[:, :, :seq_len, :seq_len])
-
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(state, t_signal):
-            step, curr_seq, curr_scratch, halt_prob, cache = state
+            step, curr_seq, curr_scratch, halt_prob = state
             
-            z_input = curr_scratch + t_signal[None, None, :]
+            z_scratch_in = curr_scratch + t_signal[None, None, :]
+            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
             
-            new_scratch_raw, new_cache = self.processor(z_input, mask=None, cache=cache)
-
-            salience = jax.nn.sigmoid(self.salience_head(curr_seq))
-            new_seq = curr_seq
+            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
             
-            latent_shift = jnp.mean(jnp.abs(new_scratch_raw - curr_scratch), axis=(1, 2))
-            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch_raw).mean(axis=(1, 2)) - latent_shift)
+            salience_logits = self.salience_head(curr_seq)
+            salience = jax.nn.sigmoid(salience_logits)
+            
+            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
+            
+            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
+            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
             
             has_halted = halt_prob >= threshold
             
-            # Only update if not yet halted
-            final_scratch = jnp.where(has_halted[:, None, None], curr_scratch, new_scratch_raw)
+            final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
+            final_scratch = jnp.where(has_halted[:, None, None], curr_scratch, new_scratch)
             final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
             
-            new_k, new_v = new_cache
-            curr_k, curr_v = cache
-            final_k = jnp.where(has_halted[:, None, None, None], curr_k, new_k)
-            final_v = jnp.where(has_halted[:, None, None, None], curr_v, new_v)
-            
-            return (step + 1, new_seq, final_scratch, final_halt_prob, (final_k, final_v)), None
+            return (step + 1, final_seq, final_scratch, final_halt_prob), None
 
-        init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)), current_cache)
+        init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)))
         scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
-        (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
+        (final_step, final_seq, _, _), _ = scan_fn(init_state, all_time_embeds)
         
         return self.decoder(final_seq)
 
@@ -266,6 +250,7 @@ class TrainingManager:
         
         # Force JAX to sync and clear the dispatch queue
         jax.tree_util.tree_map(lambda x: x.block_until_ready(), self.grad_buffer)
+        gc.collect()
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
