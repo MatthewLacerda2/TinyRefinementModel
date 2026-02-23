@@ -1,22 +1,15 @@
-import os
 import jax
 import jax.numpy as jnp
 from flax import nnx
 import optax
-import gc
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
-
-BATCH_SIZE = 1
-MAX_STEPS_LIMIT = 8
-ACCUMULATION_STEPS = 128
-SCRATCH_SLOTS = 256
-LATENT_DIM = 256
-MAX_SEQ_LEN = 256
-VOCAB_SIZE = 50257
-PAD_TOKEN_ID = 50256
+BATCH_SIZE = 128
+MAX_STEPS_LIMIT = 16
+SCRATCH_SLOTS = 1024
+LATENT_DIM = 768
+MAX_SEQ_LEN = 4096
+VOCAB_SIZE = 100277
+PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
 
@@ -110,7 +103,8 @@ class UniversalReasoner(nnx.Module):
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
         self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
-        self.processor = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias = jnp.full((1,), 1.0)
@@ -132,7 +126,8 @@ class UniversalReasoner(nnx.Module):
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
-        z_seq, _ = self.processor(z_seq, mask=None) 
+        h_seq, _ = self.processor1(z_seq, mask=None)
+        z_seq, _ = self.processor2(h_seq, mask=None)
         
         z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
@@ -141,9 +136,11 @@ class UniversalReasoner(nnx.Module):
             curr_seq, curr_scratch = carry
             
             z_scratch_in = curr_scratch + t_signal[None, None, :]
-            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
+            h_scratch, _ = self.processor1(z_scratch_in, context=curr_seq)
+            new_scratch, _ = self.processor2(h_scratch, context=curr_seq)
             
-            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
+            h_proposed, _ = self.processor1(curr_seq, context=new_scratch)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_scratch)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
@@ -179,7 +176,8 @@ class UniversalReasoner(nnx.Module):
         batch_size, seq_len = tokens.shape
         
         z_seq = self.embed(tokens)
-        z_seq, _ = self.processor(z_seq, mask=None)
+        h_seq, _ = self.processor1(z_seq, mask=None)
+        z_seq, _ = self.processor2(h_seq, mask=None)
         
         z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
@@ -188,9 +186,11 @@ class UniversalReasoner(nnx.Module):
             step, curr_seq, curr_scratch, halt_prob = state
             
             z_scratch_in = curr_scratch + t_signal[None, None, :]
-            new_scratch, _ = self.processor(z_scratch_in, context=curr_seq)
+            h_scratch, _ = self.processor1(z_scratch_in, context=curr_seq)
+            new_scratch, _ = self.processor2(h_scratch, context=curr_seq)
             
-            proposed_updates, _ = self.processor(curr_seq, context=new_scratch)
+            h_proposed, _ = self.processor1(curr_seq, context=new_scratch)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_scratch)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
@@ -216,7 +216,7 @@ class UniversalReasoner(nnx.Module):
 
 
 @nnx.jit
-def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
+def _train_step_fn(model, optimizer, batch_tokens, key):
     def loss_fn(m):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
         preds, ponder_cost, temporal_cost = m(inputs, training=True, key=key)
@@ -229,52 +229,18 @@ def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
         return total_loss, (token_loss, jnp.mean(ponder_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    new_grad_buffer = jax.tree.map(lambda b, g: b + g, grad_buffer, grads)
-    return new_grad_buffer, loss, aux
+    optimizer.update(model, grads)
+    return loss, aux
 
 
 class TrainingManager:
     def __init__(self, model, optimizer_transform):
         self.model = model
         self.optimizer = nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
-        self.grad_buffer = jax.tree.map(jnp.zeros_like, nnx.state(self.model, nnx.Param))
 
-    def accumulate_grad_step(self, batch_tokens, key, grad_buffer):
-        return _accumulate_step_fn(self.model, batch_tokens, key, grad_buffer)
-
-    def apply_updates(self):
-        avg_grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, self.grad_buffer)
-        self.optimizer.update(self.model, avg_grads)
-        # Reset buffer
-        self.grad_buffer = jax.tree.map(jnp.zeros_like, self.grad_buffer)
-        
-        # Force JAX to sync and clear the dispatch queue
-        jax.tree_util.tree_map(lambda x: x.block_until_ready(), self.grad_buffer)
-        gc.collect()
+    def train_step(self, batch_tokens, key):
+        loss, aux = _train_step_fn(self.model, self.optimizer, batch_tokens, key)
+        return loss, aux
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
 optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
-
-
-@jax.jit
-def compute_gradients(graphdef, state, batch_tokens, key):
-    def loss_fn(state):
-        model = nnx.merge(graphdef, state)
-        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        preds, ponder_cost, temporal_cost = model(inputs, training=True, key=key)
-        
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-        mask = (targets != PAD_TOKEN_ID)
-        token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
-        
-        ponder_loss = PONDER_LAMBDA * jnp.mean(ponder_cost)
-
-        temporal_loss = TEMP_LAMBDA * jnp.mean(temporal_cost)
-
-        total_loss = token_loss + ponder_loss + temporal_loss
-        
-        return total_loss, (token_loss, jnp.mean(ponder_cost))
-
-    (loss, (raw_ce, avg_p)), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state)
-    
-    return grads, loss, raw_ce, avg_p
