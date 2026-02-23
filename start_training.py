@@ -11,12 +11,12 @@ from train_local import (
     UniversalReasoner,
     TrainingManager,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
 )
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-CHECKPOINT_INTERVAL = 20
+CHECKPOINT_INTERVAL = 1000
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
@@ -98,7 +98,7 @@ class LossMonitor:
 
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42), dtype=jnp.bfloat16)
     manager = TrainingManager(model, optimizer_chain)
     
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
@@ -135,20 +135,28 @@ if __name__ == "__main__":
 
     key = jax.random.key(start_step)
     step = start_step
+    accum_loss, accum_ce, accum_p = 0.0, 0.0, 0.0
+
     while True:
         t0 = time.time()
         
-        key, subkey = jax.random.split(key)
-        batch = data_gen.get_batch(BATCH_SIZE)
+        for i in range(ACCUMULATION_STEPS):
+            key, subkey = jax.random.split(key)
+            batch = data_gen.get_batch(BATCH_SIZE)
+            if batch is None: break
+
+            manager.grad_buffer, loss, aux = manager.accumulate_grad_step(
+                batch, subkey, manager.grad_buffer
+            )
+
+            token_loss, ponder_val = aux
+            accum_loss += float(loss) / ACCUMULATION_STEPS
+            accum_ce += float(token_loss) / ACCUMULATION_STEPS
+            accum_p += float(ponder_val) / ACCUMULATION_STEPS
+
         if batch is None: break
 
-        loss, aux = manager.train_step(batch, subkey)
-        token_loss, ponder_val = aux
-        
-
-        accum_loss = float(loss)
-        accum_ce = float(token_loss)
-        accum_p = float(ponder_val)
+        manager.apply_updates()
         
         t_total = time.time() - t0
 
