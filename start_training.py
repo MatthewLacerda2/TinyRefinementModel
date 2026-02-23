@@ -9,7 +9,7 @@ import os
 from datasets import load_dataset, interleave_datasets
 from train_local import (
     UniversalReasoner,
-    TrainingManager,
+    train_step,
     optimizer_chain,
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
 )
@@ -99,7 +99,7 @@ class LossMonitor:
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42), dtype=jnp.bfloat16)
-    manager = TrainingManager(model, optimizer_chain)
+    optimizer = nnx.Optimizer(model, optimizer_chain) 
     
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     history_file = "training_history.csv"
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         
         if "model_state" in checkpoint:
             nnx.update(model, checkpoint["model_state"])
-            nnx.update(manager.optimizer, checkpoint["optim_state"])
+            nnx.update(optimizer, checkpoint["optim_state"])
         else:
             print("❌ Error: Valid checkpoint state not found.")
             exit(1)
@@ -133,40 +133,37 @@ if __name__ == "__main__":
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
-    key = jax.random.key(start_step)
     step = start_step
-    accum_loss, accum_ce, accum_p = 0.0, 0.0, 0.0
-
     while True:
         t0 = time.time()
+        # Reset monitors for this "Macro-Step"
+        step_loss, step_ce, step_p = 0.0, 0.0, 0.0
         
         for i in range(ACCUMULATION_STEPS):
-            key, subkey = jax.random.split(key)
             batch = data_gen.get_batch(BATCH_SIZE)
             if batch is None: break
 
-            manager.grad_buffer, loss, aux = manager.accumulate_grad_step(
-                batch, subkey, manager.grad_buffer
-            )
-
-            token_loss, ponder_val = aux
-            accum_loss += float(loss) / ACCUMULATION_STEPS
-            accum_ce += float(token_loss) / ACCUMULATION_STEPS
-            accum_p += float(ponder_val) / ACCUMULATION_STEPS
+            loss, (ce, p) = train_step(model, optimizer, batch)
+            
+            step_loss += float(loss)
+            step_ce += float(ce)
+            step_p += float(p)
 
         if batch is None: break
-
-        manager.apply_updates()
+        
+        avg_loss = step_loss / ACCUMULATION_STEPS
+        avg_ce = step_ce / ACCUMULATION_STEPS
+        avg_p = step_p / ACCUMULATION_STEPS
         
         t_total = time.time() - t0
 
-        if monitor.push(step, accum_ce, accum_p): break
+        if monitor.push(step, avg_ce, avg_p): break
         
         if step % CHECKPOINT_INTERVAL == 0:
             with open("checkpoint.pkl", "wb") as f:
                 checkpoint_data = {
                     "model_state": nnx.state(model),
-                    "optim_state": nnx.state(manager.optimizer), 
+                    "optim_state": nnx.state(optimizer), 
                     "step": step,
                     "monitor_state": {
                         "ce_history": monitor.ce_history,
@@ -176,16 +173,16 @@ if __name__ == "__main__":
                 }
                 pickle.dump(checkpoint_data, f)
             
-            print(f"Step {step:04d} | Agg Loss: {accum_loss:.4f} | Avg Steps: {accum_p:.2f} | Time: {t_total:.2f}s")
+            print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | Time: {t_total:.2f}s")
             
             with open(history_file, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "t_total"])
                 if f.tell() == 0: writer.writeheader()
                 writer.writerow({
                     "step": int(step), 
-                    "loss": f"{accum_loss:.4f}", 
-                    "ce": f"{accum_ce:.4f}", 
-                    "avg_ponder": f"{accum_p:.2f}", 
+                    "loss": f"{avg_loss:.4f}", 
+                    "ce": f"{avg_ce:.4f}", 
+                    "avg_ponder": f"{avg_p:.2f}", 
                     "t_total": f"{t_total:.2f}"
                 })
             

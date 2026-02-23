@@ -124,7 +124,7 @@ class UniversalReasoner(nnx.Module):
         
         return mask[None, None, :, :]
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, key=None):
+    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
         z_seq = self.embed(tokens)
         h_seq, _ = self.processor1(z_seq, mask=None)
@@ -217,10 +217,10 @@ class UniversalReasoner(nnx.Module):
 
 
 @nnx.jit
-def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
+def train_step(model, optimizer, batch_tokens):
     def loss_fn(m):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        preds, ponder_cost, temporal_cost = m(inputs, training=True, key=key)
+        preds, ponder_cost, temporal_cost = m(inputs, training=True) 
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
@@ -230,25 +230,15 @@ def _accumulate_step_fn(model, batch_tokens, key, grad_buffer):
         return total_loss, (token_loss, jnp.mean(ponder_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    new_grad_buffer = jax.tree.map(lambda b, g: b + g, grad_buffer, grads)
-    return new_grad_buffer, loss, aux
+    
+    optimizer.update(grads) 
+    
+    return loss, aux
 
-
-class TrainingManager:
-    def __init__(self, model, optimizer_transform):
-        self.model = model
-        self.optimizer = nnx.Optimizer(model, optimizer_transform, wrt=nnx.Param)
-        self.grad_buffer = jax.tree.map(jnp.zeros_like, nnx.state(self.model, nnx.Param))
-
-    def accumulate_grad_step(self, batch_tokens, key, grad_buffer):
-        return _accumulate_step_fn(self.model, batch_tokens, key, grad_buffer)
-
-    def apply_updates(self):
-        avg_grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, self.grad_buffer)
-        self.optimizer.update(self.model, avg_grads)
-        self.grad_buffer = jax.tree.map(jnp.zeros_like, self.grad_buffer)
-        
-        jax.tree.map(lambda x: x.block_until_ready(), self.grad_buffer)
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
-optimizer_chain = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(learning_rate=schedule))
+base_optimizer = optax.chain(
+    optax.clip_by_global_norm(1.0), 
+    optax.adamw(learning_rate=schedule)
+)
+optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
