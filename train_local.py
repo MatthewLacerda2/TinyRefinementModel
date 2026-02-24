@@ -6,7 +6,7 @@ import optax
 BATCH_SIZE = 16
 MAX_STEPS_LIMIT = 16
 ACCUMULATION_STEPS = 8
-SCRATCH_SLOTS = 1024
+SCRATCH_SLOTS = 512
 LATENT_DIM = 768
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
@@ -26,7 +26,7 @@ class RotaryAttention(nnx.Module):
         self.scale = self.head_dim ** -0.5
         
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
-        t = jnp.arange(MAX_SEQ_LEN + SCRATCH_SLOTS)
+        t = jnp.arange(MAX_SEQ_LEN + 4 * SCRATCH_SLOTS)
         freqs = jnp.outer(t, inv_freq)
         freqs = jnp.concatenate([freqs, freqs], axis=-1)
         self.sin_cached = jnp.sin(freqs)
@@ -37,7 +37,7 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
 
-    def __call__(self, x, context=None, mask=None, cache=None):
+    def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None):
         b, s, d = x.shape
         
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
@@ -48,13 +48,17 @@ class RotaryAttention(nnx.Module):
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
         v = self.v_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
 
-        # Apply RoPE
-        sin = self.sin_cached[:s, None, :]
-        cos = self.cos_cached[:s, None, :]
-        q = (q * cos) + (rotate_half(q) * sin)
+        if q_pos is None:
+            q_pos = jnp.arange(s)
+        if kv_pos is None:
+            kv_pos = jnp.arange(s_kv)
+
+        sin_q = self.sin_cached[q_pos, None, :]
+        cos_q = self.cos_cached[q_pos, None, :]
+        q = (q * cos_q) + (rotate_half(q) * sin_q)
         
-        sin_kv = self.sin_cached[:s_kv, None, :]
-        cos_kv = self.cos_cached[:s_kv, None, :]
+        sin_kv = self.sin_cached[kv_pos, None, :]
+        cos_kv = self.cos_cached[kv_pos, None, :]
         k = (k * cos_kv) + (rotate_half(k) * sin_kv)
 
         if cache is not None:
@@ -64,7 +68,6 @@ class RotaryAttention(nnx.Module):
         
         new_cache = (k, v) if cache is not None else None
 
-        # Multi-Query/Grouped-Query Expansion
         repeats = self.num_heads // self.num_groups
         k_expanded = jnp.broadcast_to(
             k[:, :, :, None, :], 
@@ -79,6 +82,7 @@ class RotaryAttention(nnx.Module):
         out = jax.nn.dot_product_attention(q, k_expanded, v_expanded, mask=mask)
         return self.o_proj(out.reshape(b, s, d)), new_cache
 
+
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
@@ -90,11 +94,12 @@ class StandardReasoningBlock(nnx.Module):
             nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
         )
 
-    def __call__(self, x, context=None, mask=None, cache=None):
-        attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache)
+    def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None):
+        attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache, q_pos=q_pos, kv_pos=kv_pos)
         x = x + attn_out
         x = x + self.mlp(self.norm2(x))
         return x, new_cache
+
 
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs, dtype=jnp.bfloat16):
@@ -103,7 +108,11 @@ class UniversalReasoner(nnx.Module):
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
-        self.scratch_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
+        
+        self.reason_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
+        self.knowledge_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
+        self.output_token = nnx.Param(jax.random.normal(rngs(), (1, self.num_scratch, latent_dim)).astype(jnp.float32) * 0.02)
+        
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
@@ -114,49 +123,68 @@ class UniversalReasoner(nnx.Module):
         self.halt_head.bias = jnp.full((1,), -3.0)
         self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
 
-    def get_mask(self, seq_len):
-        total_len = seq_len + self.num_scratch
-        causal_text = jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
-        
-        mask = jnp.ones((total_len, total_len), dtype=bool)
-        mask = mask.at[:seq_len, :seq_len].set(causal_text)
-        mask = mask.at[:seq_len, seq_len:].set(False)
-        
-        return mask[None, None, :, :]
+    def _get_positions(self, seq_len):
+        seq_pos = jnp.arange(seq_len)
+        reason_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + self.num_scratch)
+        know_pos = jnp.arange(MAX_SEQ_LEN + self.num_scratch, MAX_SEQ_LEN + 2 * self.num_scratch)
+        output_pos = jnp.arange(MAX_SEQ_LEN + 2 * self.num_scratch, MAX_SEQ_LEN + 3 * self.num_scratch)
+        return seq_pos, reason_pos, know_pos, output_pos
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
+        seq_pos, reason_pos, know_pos, output_pos = self._get_positions(seq_len)
+
         z_seq = self.embed(tokens)
-        h_seq, _ = self.processor1(z_seq, mask=None)
-        z_seq, _ = self.processor2(h_seq, mask=None)
+        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
+        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         
-        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
+        z_reason = jnp.tile(self.reason_token.value, (batch_size, 1, 1))
+        z_know = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
+        z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(carry, t_signal):
-            curr_seq, curr_scratch = carry
+            curr_seq, curr_reason, curr_know, curr_output = carry
             
-            z_scratch_in = curr_scratch + t_signal[None, None, :]
-            h_scratch, _ = self.processor1(z_scratch_in, context=curr_seq)
-            new_scratch, _ = self.processor2(h_scratch, context=curr_seq)
+            # 1. Update Reasoning Scratch
+            z_reason_in = curr_reason + t_signal[None, None, :]
+            reason_ctx = jnp.concatenate([curr_seq, curr_know], axis=1)
+            reason_kv_pos = jnp.concatenate([seq_pos, know_pos])
+            h_reason, _ = self.processor1(z_reason_in, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
             
-            h_proposed, _ = self.processor1(curr_seq, context=new_scratch)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_scratch)
+            # 2. Update Knowledge Scratch
+            z_know_in = curr_know + t_signal[None, None, :]
+            know_ctx = jnp.concatenate([curr_seq, new_reason], axis=1)
+            know_kv_pos = jnp.concatenate([seq_pos, reason_pos])
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            
+            # 3. Update Output Scratch
+            z_output_in = curr_output + t_signal[None, None, :]
+            output_ctx = jnp.concatenate([curr_seq, new_reason, new_know], axis=1)
+            output_kv_pos = jnp.concatenate([seq_pos, reason_pos, know_pos])
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            
+            # 4. Propose sequence updates from Output Scratch
+            seq_kv_pos = output_pos
+            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
-            
             new_seq = curr_seq + salience * (proposed_updates - curr_seq)
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
             
-            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
-            halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
+            latent_shift = jnp.mean(jnp.abs(new_reason - curr_reason), axis=(1, 2))
+            halt_prob = jax.nn.sigmoid(self.halt_head(new_reason).mean(axis=(1, 2)) - latent_shift)
             
-            return (new_seq, new_scratch), (new_seq, halt_prob, step_temp_loss)
+            return (new_seq, new_reason, new_know, new_output), (new_seq, halt_prob, step_temp_loss)
 
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0), unroll=4)
-        _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_scratch), all_time_embeds)
+        _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_reason, z_know, z_output), all_time_embeds)
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
@@ -175,43 +203,66 @@ class UniversalReasoner(nnx.Module):
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
+        seq_pos, reason_pos, know_pos, output_pos = self._get_positions(seq_len)
         
         z_seq = self.embed(tokens)
-        h_seq, _ = self.processor1(z_seq, mask=None)
-        z_seq, _ = self.processor2(h_seq, mask=None)
+        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
+        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         
-        z_scratch = jnp.tile(self.scratch_token.value, (batch_size, 1, 1))
+        z_reason = jnp.tile(self.reason_token.value, (batch_size, 1, 1))
+        z_know = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
+        z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(state, t_signal):
-            step, curr_seq, curr_scratch, halt_prob = state
+            step, curr_seq, curr_reason, curr_know, curr_output, halt_prob = state
             
-            z_scratch_in = curr_scratch + t_signal[None, None, :]
-            h_scratch, _ = self.processor1(z_scratch_in, context=curr_seq)
-            new_scratch, _ = self.processor2(h_scratch, context=curr_seq)
+            # 1. Update Reasoning Scratch
+            z_reason_in = curr_reason + t_signal[None, None, :]
+            reason_ctx = jnp.concatenate([curr_seq, curr_know], axis=1)
+            reason_kv_pos = jnp.concatenate([seq_pos, know_pos])
+            h_reason, _ = self.processor1(z_reason_in, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
             
-            h_proposed, _ = self.processor1(curr_seq, context=new_scratch)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_scratch)
+            # 2. Update Knowledge Scratch
+            z_know_in = curr_know + t_signal[None, None, :]
+            know_ctx = jnp.concatenate([curr_seq, new_reason], axis=1)
+            know_kv_pos = jnp.concatenate([seq_pos, reason_pos])
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            
+            # 3. Update Output Scratch
+            z_output_in = curr_output + t_signal[None, None, :]
+            output_ctx = jnp.concatenate([curr_seq, new_reason, new_know], axis=1)
+            output_kv_pos = jnp.concatenate([seq_pos, reason_pos, know_pos])
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            
+            # 4. Propose sequence updates from Output Scratch
+            seq_kv_pos = output_pos
+            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
-            
             new_seq = curr_seq + salience * (proposed_updates - curr_seq)
             
-            latent_shift = jnp.mean(jnp.abs(new_scratch - curr_scratch), axis=(1, 2))
-            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_scratch).mean(axis=(1, 2)) - latent_shift)
+            latent_shift = jnp.mean(jnp.abs(new_reason - curr_reason), axis=(1, 2))
+            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_reason).mean(axis=(1, 2)) - latent_shift)
             
             has_halted = halt_prob >= threshold
             
             final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
-            final_scratch = jnp.where(has_halted[:, None, None], curr_scratch, new_scratch)
+            final_reason = jnp.where(has_halted[:, None, None], curr_reason, new_reason)
+            final_know = jnp.where(has_halted[:, None, None], curr_know, new_know)
+            final_output = jnp.where(has_halted[:, None, None], curr_output, new_output)
             final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
             
-            return (step + 1, final_seq, final_scratch, final_halt_prob), None
+            return (step + 1, final_seq, final_reason, final_know, final_output, final_halt_prob), None
 
-        init_state = (0, z_seq, z_scratch, jnp.zeros((batch_size,)))
+        init_state = (0, z_seq, z_reason, z_know, z_output, jnp.zeros((batch_size,)))
         scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
-        (final_step, final_seq, _, _), _ = scan_fn(init_state, all_time_embeds)
+        (final_step, final_seq, _, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
         return self.decoder(final_seq)
 
