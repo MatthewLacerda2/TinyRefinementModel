@@ -1,7 +1,7 @@
 import jax
-import jax.numpy as jnp
-from flax import nnx
 import optax
+from flax import nnx
+import jax.numpy as jnp
 
 BATCH_SIZE = 16
 MAX_STEPS_LIMIT = 16
@@ -13,6 +13,8 @@ VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
+BUDGET_LAMBDA = 0.01
+BUDGET_GATE_SHARPNESS = 10.0
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -101,6 +103,13 @@ class StandardReasoningBlock(nnx.Module):
         return x, new_cache
 
 
+def make_slot_gate(budget, num_slots, sharpness=BUDGET_GATE_SHARPNESS):
+    slot_frac = (jnp.arange(num_slots) + 0.5) / num_slots
+    dist = (budget[:, None] - slot_frac[None, :]) * sharpness
+    gate = jax.nn.sigmoid(dist)
+    return gate[:, :, None]
+
+
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs, dtype=jnp.bfloat16):
         self.latent_dim = latent_dim
@@ -116,6 +125,9 @@ class UniversalReasoner(nnx.Module):
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
+        self.budget_head = nnx.Linear(latent_dim, 2, dtype=jnp.float32, rngs=rngs)
+        self.budget_head.bias = jnp.array([0.5, 0.5])
+
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias = jnp.full((1,), 1.0)
         
@@ -130,6 +142,14 @@ class UniversalReasoner(nnx.Module):
         output_pos = jnp.arange(MAX_SEQ_LEN + 2 * self.num_scratch, MAX_SEQ_LEN + 3 * self.num_scratch)
         return seq_pos, reason_pos, know_pos, output_pos
 
+    def _predict_budgets(self, z_seq):
+        seq_repr = z_seq.mean(axis=1)
+        budgets = jax.nn.sigmoid(self.budget_head(seq_repr))
+        know_budget   = budgets[:, 0]
+        reason_budget = budgets[:, 1]
+        budget_loss = (know_budget + reason_budget) / 2.0
+        return know_budget, reason_budget, budget_loss
+
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
         seq_pos, reason_pos, know_pos, output_pos = self._get_positions(seq_len)
@@ -137,37 +157,39 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
-        
+
+        know_budget, reason_budget, budget_loss = self._predict_budgets(z_seq)
+        know_gate   = make_slot_gate(know_budget,   self.num_scratch)
+        reason_gate = make_slot_gate(reason_budget, self.num_scratch)
+
         z_reason = jnp.tile(self.reason_token.value, (batch_size, 1, 1))
-        z_know = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
+        z_know   = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(carry, t_signal):
             curr_seq, curr_reason, curr_know, curr_output = carry
             
-            # 1. Update Reasoning Scratch
             z_reason_in = curr_reason + t_signal[None, None, :]
             reason_ctx = jnp.concatenate([curr_seq, curr_know], axis=1)
             reason_kv_pos = jnp.concatenate([seq_pos, know_pos])
             h_reason, _ = self.processor1(z_reason_in, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
-            new_reason, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason_raw, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason = new_reason_raw * reason_gate + curr_reason * (1.0 - reason_gate)
             
-            # 2. Update Knowledge Scratch
             z_know_in = curr_know + t_signal[None, None, :]
             know_ctx = jnp.concatenate([curr_seq, new_reason], axis=1)
             know_kv_pos = jnp.concatenate([seq_pos, reason_pos])
             h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
-            new_know, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know = new_know_raw * know_gate + curr_know * (1.0 - know_gate)
             
-            # 3. Update Output Scratch
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_reason, new_know], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, reason_pos, know_pos])
             h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
             new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
             
-            # 4. Propose sequence updates from Output Scratch
             seq_kv_pos = output_pos
             h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
             proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
@@ -199,7 +221,7 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
 
-        return self.decoder(weighted_z), ponder_cost, temporal_loss
+        return self.decoder(weighted_z), ponder_cost, temporal_loss, budget_loss, (know_budget, reason_budget)
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
@@ -208,37 +230,39 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
+
+        know_budget, reason_budget, _ = self._predict_budgets(z_seq)
+        know_gate   = make_slot_gate(know_budget,   self.num_scratch)
+        reason_gate = make_slot_gate(reason_budget, self.num_scratch)
         
         z_reason = jnp.tile(self.reason_token.value, (batch_size, 1, 1))
-        z_know = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
+        z_know   = jnp.tile(self.knowledge_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(state, t_signal):
             step, curr_seq, curr_reason, curr_know, curr_output, halt_prob = state
             
-            # 1. Update Reasoning Scratch
             z_reason_in = curr_reason + t_signal[None, None, :]
             reason_ctx = jnp.concatenate([curr_seq, curr_know], axis=1)
             reason_kv_pos = jnp.concatenate([seq_pos, know_pos])
             h_reason, _ = self.processor1(z_reason_in, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
-            new_reason, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason_raw, _ = self.processor2(h_reason, context=reason_ctx, q_pos=reason_pos, kv_pos=reason_kv_pos)
+            new_reason = new_reason_raw * reason_gate + curr_reason * (1.0 - reason_gate)
             
-            # 2. Update Knowledge Scratch
             z_know_in = curr_know + t_signal[None, None, :]
             know_ctx = jnp.concatenate([curr_seq, new_reason], axis=1)
             know_kv_pos = jnp.concatenate([seq_pos, reason_pos])
             h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
-            new_know, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=know_pos, kv_pos=know_kv_pos)
+            new_know = new_know_raw * know_gate + curr_know * (1.0 - know_gate)
             
-            # 3. Update Output Scratch
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_reason, new_know], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, reason_pos, know_pos])
             h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
             new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
             
-            # 4. Propose sequence updates from Output Scratch
             seq_kv_pos = output_pos
             h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
             proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
@@ -252,9 +276,9 @@ class UniversalReasoner(nnx.Module):
             
             has_halted = halt_prob >= threshold
             
-            final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
+            final_seq    = jnp.where(has_halted[:, None, None], curr_seq,    new_seq)
             final_reason = jnp.where(has_halted[:, None, None], curr_reason, new_reason)
-            final_know = jnp.where(has_halted[:, None, None], curr_know, new_know)
+            final_know   = jnp.where(has_halted[:, None, None], curr_know,   new_know)
             final_output = jnp.where(has_halted[:, None, None], curr_output, new_output)
             final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
             
@@ -271,19 +295,22 @@ class UniversalReasoner(nnx.Module):
 def train_step(model, optimizer, batch_tokens):
     def loss_fn(m):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        preds, ponder_cost, temporal_cost = m(inputs, training=True) 
+        preds, ponder_cost, temporal_cost, budget_loss, (know_b, reason_b) = m(inputs, training=True)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
         
-        total_loss = token_loss + (PONDER_LAMBDA * jnp.mean(ponder_cost)) + (TEMP_LAMBDA * jnp.mean(temporal_cost))
-        return total_loss, (token_loss, jnp.mean(ponder_cost))
+        total_loss = (
+            token_loss
+            + PONDER_LAMBDA  * jnp.mean(ponder_cost)
+            + TEMP_LAMBDA    * jnp.mean(temporal_cost)
+            + BUDGET_LAMBDA  * jnp.mean(budget_loss)
+        )
+        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(know_b), jnp.mean(reason_b))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    
-    optimizer.update(grads) 
-    
+    optimizer.update(grads)
     return loss, aux
 
 
@@ -293,3 +320,4 @@ base_optimizer = optax.chain(
     optax.adamw(learning_rate=schedule)
 )
 optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
+optimizer = nnx.Optimizer(optimizer_chain, model)
