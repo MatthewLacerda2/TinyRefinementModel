@@ -3,22 +3,18 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-BATCH_SIZE = 16
+LATENT_DIM = 384
 MAX_STEPS_LIMIT = 16
 ACCUMULATION_STEPS = 8
-
-# We now have a massive shared pool, and a dedicated output space
-SHARED_SLOTS = 1024 
-OUTPUT_SLOTS = 512
-
-LATENT_DIM = 768
+SHARED_SLOTS = 256
+OUTPUT_SLOTS = 256
+BATCH_SIZE = 16
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
-
-BUDGET_GATE_SHARPNESS = 10.0 
+HALT_TEMP = 5.0 
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -117,8 +113,6 @@ class UniversalReasoner(nnx.Module):
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
-        self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias = jnp.full((1,), 1.0)
         
@@ -132,19 +126,6 @@ class UniversalReasoner(nnx.Module):
         output_pos = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS, MAX_SEQ_LEN + SHARED_SLOTS + OUTPUT_SLOTS)
         return seq_pos, shared_pos, output_pos
 
-    def _get_sliding_divider_masks(self, z_seq):
-        seq_repr = z_seq.mean(axis=1)
-
-        reason_ratio = jax.nn.sigmoid(self.budget_head(seq_repr)) 
-        divider_pos = reason_ratio * SHARED_SLOTS
-        
-        indices = jnp.arange(SHARED_SLOTS)
-        dist = (divider_pos - indices[None, :]) * BUDGET_GATE_SHARPNESS
-        reason_mask = jax.nn.sigmoid(dist)[:, :, None] 
-        know_mask = 1.0 - reason_mask
-        
-        return reason_mask, know_mask, reason_ratio
-
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
@@ -153,8 +134,6 @@ class UniversalReasoner(nnx.Module):
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
 
-        reason_mask, know_mask, reason_ratio = self._get_sliding_divider_masks(z_seq)
-
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
@@ -162,22 +141,12 @@ class UniversalReasoner(nnx.Module):
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output = carry
             
-            z_reason_in = curr_shared + t_signal[None, None, :]
+            z_shared_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            
-            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
-            
-            z_know_in = shared_after_reason + t_signal[None, None, :]
-            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
-            
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            
-            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
+            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
@@ -196,8 +165,11 @@ class UniversalReasoner(nnx.Module):
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
             
+            mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            halt_prob = jax.nn.sigmoid(self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift)
+            
+            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift - mean_salience
+            halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
             
             return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
 
@@ -217,7 +189,7 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
 
-        return self.decoder(weighted_z), ponder_cost, temporal_loss, reason_ratio
+        return self.decoder(weighted_z), ponder_cost, temporal_loss
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
@@ -227,8 +199,6 @@ class UniversalReasoner(nnx.Module):
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
 
-        reason_mask, know_mask, _ = self._get_sliding_divider_masks(z_seq)
-        
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
@@ -236,20 +206,12 @@ class UniversalReasoner(nnx.Module):
         def scan_step(state, t_signal):
             step, curr_seq, curr_shared, curr_output, halt_prob = state
             
-            z_reason_in = curr_shared + t_signal[None, None, :]
+            z_shared_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
-            
-            z_know_in = shared_after_reason + t_signal[None, None, :]
-            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
-            
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
+            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
@@ -266,8 +228,10 @@ class UniversalReasoner(nnx.Module):
             salience = jax.nn.sigmoid(salience_logits)
             new_seq = curr_seq + salience * (proposed_updates - curr_seq)
             
+            mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            new_halt_prob = jax.nn.sigmoid(self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift)
+            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift - mean_salience
+            new_halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
             
             has_halted = halt_prob >= threshold
             
@@ -290,7 +254,8 @@ model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 def train_step(m, opt, batch_tokens):
     def loss_fn(model_instance):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        preds, ponder_cost, temporal_cost, reason_ratio = model_instance(inputs, training=True)
+        
+        preds, ponder_cost, temporal_cost = model_instance(inputs, training=True)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         mask = (targets != PAD_TOKEN_ID)
@@ -301,7 +266,7 @@ def train_step(m, opt, batch_tokens):
             + PONDER_LAMBDA  * jnp.mean(ponder_cost)
             + TEMP_LAMBDA    * jnp.mean(temporal_cost)
         )
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(reason_ratio))
+        return total_loss, (token_loss, jnp.mean(ponder_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
     opt.update(grads)

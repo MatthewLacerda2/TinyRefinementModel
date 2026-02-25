@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import pickle
+import orbax.checkpoint as ocp
 import csv
 import time
 import tiktoken
@@ -105,29 +105,41 @@ if __name__ == "__main__":
     history_file = "training_history.csv"
     monitor = LossMonitor()
     
-    checkpoint_path = "checkpoint.pkl"
-    if os.path.exists(checkpoint_path):
-        print(f"📖 Loading checkpoint from {checkpoint_path}...")
-        with open(checkpoint_path, "rb") as f:
-            checkpoint = pickle.load(f)
+    mngr = ocp.CheckpointManager(
+        os.path.abspath("orbax_checkpoints"),
+        item_names=('model', 'optimizer', 'monitor_state', 'step'),
+        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True)
+    )
+
+    if mngr.latest_step() is not None:
+        latest_step = mngr.latest_step()
+        print(f"📖 Loading Orbax checkpoint from step {latest_step}...")
         
-        if "model_state" in checkpoint:
-            nnx.update(model, checkpoint["model_state"])
-            nnx.update(optimizer, checkpoint["optim_state"])
-        else:
-            print("❌ Error: Valid checkpoint state not found.")
-            exit(1)
+        abstract_state = {
+            'model': nnx.state(model),
+            'optimizer': nnx.state(optimizer),
+            'monitor_state': {
+                'ce_history': monitor.ce_history,
+                'best_ce': monitor.best_ce,
+                'last_improvement_step': monitor.last_improvement_step
+            },
+            'step': 0
+        }
         
-        start_step = checkpoint.get("step", 0) + 1
+        restored = mngr.restore(latest_step, args=ocp.args.Composite(**{
+            k: ocp.args.StandardRestore(v) for k, v in abstract_state.items()
+        }))
+
+        nnx.update(model, restored['model'])
+        nnx.update(optimizer, restored['optimizer'])
         
-        if "monitor_state" in checkpoint:
-            m_state = checkpoint["monitor_state"]
-            monitor.ce_history = m_state.get("ce_history", [])
-            monitor.best_ce = m_state.get("best_ce", float('inf'))
-            monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
-        else:
-            monitor.last_improvement_step = start_step
-            
+        start_step = restored['step'] + 1
+        
+        m_state = restored['monitor_state']
+        monitor.ce_history = m_state['ce_history']
+        monitor.best_ce = m_state['best_ce']
+        monitor.last_improvement_step = m_state['last_improvement_step']
+        
         print(f"✅ Resuming from step {start_step}")
     else:
         print("🆕 No checkpoint found, starting from scratch...")
@@ -160,18 +172,21 @@ if __name__ == "__main__":
         if monitor.push(step, avg_ce, avg_p): break
         
         if step % CHECKPOINT_INTERVAL == 0:
-            with open("checkpoint.pkl", "wb") as f:
-                checkpoint_data = {
-                    "model_state": nnx.state(model),
-                    "optim_state": nnx.state(optimizer), 
-                    "step": step,
-                    "monitor_state": {
-                        "ce_history": monitor.ce_history,
-                        "best_ce": monitor.best_ce,
-                        "last_improvement_step": monitor.last_improvement_step
-                    }
-                }
-                pickle.dump(checkpoint_data, f)
+            state_to_save = {
+                'model': nnx.state(model),
+                'optimizer': nnx.state(optimizer),
+                'monitor_state': {
+                    'ce_history': monitor.ce_history,
+                    'best_ce': monitor.best_ce,
+                    'last_improvement_step': monitor.last_improvement_step
+                },
+                'step': step
+            }
+            
+            mngr.save(step, args=ocp.args.Composite(**{
+                k: ocp.args.StandardSave(v) for k, v in state_to_save.items()
+            }))
+            mngr.wait_until_finished()
             
             print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | Time: {t_total:.2f}s")
             
