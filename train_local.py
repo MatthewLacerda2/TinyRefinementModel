@@ -9,7 +9,7 @@ ACCUMULATION_STEPS = 8
 SHARED_SLOTS = 256
 OUTPUT_SLOTS = 256
 BATCH_SIZE = 16
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 1024   #Output window
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
@@ -266,7 +266,7 @@ def train_step(m, opt, batch_tokens):
             + PONDER_LAMBDA  * jnp.mean(ponder_cost)
             + TEMP_LAMBDA    * jnp.mean(temporal_cost)
         )
-        return total_loss, (token_loss, jnp.mean(ponder_cost))
+        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
     opt.update(grads)

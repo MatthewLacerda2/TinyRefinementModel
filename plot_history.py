@@ -27,6 +27,7 @@ def plot_training_history(log_path="training_history.csv"):
                     'loss': float(row['loss']),
                     'ce': float(row.get('ce', 0)),
                     'avg_ponder': float(row.get('avg_ponder', 0)),
+                    'temp_loss': float(row.get('temp_loss', 0)),
                     't_total': float(row.get('t_total', 0))
                 })
     except Exception as e:
@@ -41,11 +42,13 @@ def plot_training_history(log_path="training_history.csv"):
     losses = [entry['loss'] for entry in history]
     ce_losses = [entry['ce'] for entry in history]
     ponder_steps = [entry['avg_ponder'] for entry in history]
+    temp_losses = [entry.get('temp_loss', 0) for entry in history]
     times = [entry['t_total'] for entry in history]
 
     plt.style.use('dark_background')
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 15), sharex=True)
     
+    # Aggregate Loss
     ax1.plot(steps, losses, color='#00f2ff', linewidth=2, label='Agg Loss')
     ax1.fill_between(steps, losses, color='#00f2ff', alpha=0.1)
     ax1.set_ylabel('Agg Loss', color='#00f2ff', fontweight='bold')
@@ -53,6 +56,7 @@ def plot_training_history(log_path="training_history.csv"):
     ax1.grid(True, linestyle='--', alpha=0.2)
     ax1.legend()
 
+    # CE Loss
     ax2.plot(steps, ce_losses, color='#ff007b', linewidth=2, label='CE Loss')
     ax2.fill_between(steps, ce_losses, color='#ff007b', alpha=0.1)
     ax2.set_ylabel('CE Loss', color='#ff007b', fontweight='bold')
@@ -60,13 +64,22 @@ def plot_training_history(log_path="training_history.csv"):
     ax2.grid(True, linestyle='--', alpha=0.2)
     ax2.legend()
 
-    ax3.plot(steps, ponder_steps, color='#adff2f', linewidth=2, label='Avg Ponder')
-    ax3.fill_between(steps, ponder_steps, color='#adff2f', alpha=0.1)
-    ax3.set_ylabel('Steps', color='#adff2f', fontweight='bold')
-    ax3.set_xlabel('Training Step', fontweight='bold')
-    ax3.set_title('Average Ponder Steps', fontsize=14, pad=10, color='white')
+    # Temporal Loss
+    ax3.plot(steps, temp_losses, color='#ffcc00', linewidth=2, label='Temp Loss')
+    ax3.fill_between(steps, temp_losses, color='#ffcc00', alpha=0.1)
+    ax3.set_ylabel('Temp Loss', color='#ffcc00', fontweight='bold')
+    ax3.set_title('Temporal Consistency Loss', fontsize=14, pad=10, color='white')
     ax3.grid(True, linestyle='--', alpha=0.2)
     ax3.legend()
+
+    # Ponder Steps
+    ax4.plot(steps, ponder_steps, color='#adff2f', linewidth=2, label='Avg Ponder')
+    ax4.fill_between(steps, ponder_steps, color='#adff2f', alpha=0.1)
+    ax4.set_ylabel('Steps', color='#adff2f', fontweight='bold')
+    ax4.set_xlabel('Training Step', fontweight='bold')
+    ax4.set_title('Average Ponder Steps', fontsize=14, pad=10, color='white')
+    ax4.grid(True, linestyle='--', alpha=0.2)
+    ax4.legend()
 
     plt.tight_layout()
     plt.savefig('training_plot.png', dpi=120)
