@@ -1,3 +1,4 @@
+import os
 import jax
 import optax
 from flax import nnx
@@ -9,13 +10,17 @@ ACCUMULATION_STEPS = 32
 SHARED_SLOTS = 256
 OUTPUT_SLOTS = 256
 BATCH_SIZE = 4
-MAX_SEQ_LEN = 1024   
+MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
 HALT_TEMP = 5.0 
-BUDGET_GATE_SHARPNESS = 10.0 
+BUDGET_GATE_SHARPNESS = 10.0
+
+#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
