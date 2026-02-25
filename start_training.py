@@ -148,24 +148,25 @@ if __name__ == "__main__":
     step = start_step
     while True:
         t0 = time.time()
-        # Reset monitors for this "Macro-Step"
-        step_loss, step_ce, step_p = 0.0, 0.0, 0.0
+        step_loss, step_ce, step_p, step_t_cost = 0.0, 0.0, 0.0, 0.0 
         
         for i in range(ACCUMULATION_STEPS):
             batch = data_gen.get_batch(BATCH_SIZE)
             if batch is None: break
 
-            loss, (ce, p) = train_step(model, optimizer, batch)
+            loss, (ce, p, t_cost) = train_step(model, optimizer, batch)
             
             step_loss += float(loss)
             step_ce += float(ce)
             step_p += float(p)
+            step_t_cost += float(t_cost)
 
         if batch is None: break
         
         avg_loss = step_loss / ACCUMULATION_STEPS
         avg_ce = step_ce / ACCUMULATION_STEPS
         avg_p = step_p / ACCUMULATION_STEPS
+        avg_t_cost = step_t_cost / ACCUMULATION_STEPS
         
         t_total = time.time() - t0
 
@@ -188,16 +189,17 @@ if __name__ == "__main__":
             }))
             mngr.wait_until_finished()
             
-            print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | Time: {t_total:.2f}s")
+            print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | T-Cost: {avg_t_cost:.4f} | Time: {t_total:.2f}s")
             
             with open(history_file, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "t_total"])
+                writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "avg_t_cost", "t_total"])
                 if f.tell() == 0: writer.writeheader()
                 writer.writerow({
                     "step": int(step), 
                     "loss": f"{avg_loss:.4f}", 
                     "ce": f"{avg_ce:.4f}", 
                     "avg_ponder": f"{avg_p:.2f}", 
+                    "avg_t_cost": f"{avg_t_cost:.4f}",
                     "t_total": f"{t_total:.2f}"
                 })
             

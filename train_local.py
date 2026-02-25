@@ -5,11 +5,11 @@ import jax.numpy as jnp
 
 LATENT_DIM = 384
 MAX_STEPS_LIMIT = 16
-ACCUMULATION_STEPS = 8
+ACCUMULATION_STEPS = 32
 SHARED_SLOTS = 256
 OUTPUT_SLOTS = 256
-BATCH_SIZE = 16
-MAX_SEQ_LEN = 1024   #Output window
+BATCH_SIZE = 4
+MAX_SEQ_LEN = 1024   
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
@@ -88,20 +88,28 @@ class StandardReasoningBlock(nnx.Module):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.mlp = nnx.Sequential(
-            nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype),
-            jax.nn.gelu,
-            nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
-        )
+        
+        self.mlp_fc1 = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
+        self.mlp_fc2 = nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
 
-    def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None):
+    def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None, hyper_mods=None):
         attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache, q_pos=q_pos, kv_pos=kv_pos)
         x = x + attn_out
-        x = x + self.mlp(self.norm2(x))
+        
+        mlp_in = self.norm2(x)
+        
+        if hyper_mods is not None:
+            gamma, beta = hyper_mods
+            mlp_in = mlp_in * (1.0 + gamma) + beta
+            
+        hidden = jax.nn.gelu(self.mlp_fc1(mlp_in))
+        mlp_out = self.mlp_fc2(hidden)
+        
+        x = x + mlp_out
         return x, new_cache
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, dtype=jnp.bfloat16):
+    def __init__(self, latent_dim, rngs, dtype=jnp.float32):
         self.latent_dim = latent_dim
         
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
@@ -109,6 +117,12 @@ class UniversalReasoner(nnx.Module):
         
         self.shared_token = nnx.Param(jax.random.normal(rngs(), (1, SHARED_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
         self.output_token = nnx.Param(jax.random.normal(rngs(), (1, OUTPUT_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
+        
+        self.hyper_net = nnx.Sequential(
+            nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
+            jax.nn.gelu,
+            nnx.Linear(latent_dim // 2, latent_dim * 4, rngs=rngs, dtype=dtype)
+        )
         
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
@@ -118,21 +132,33 @@ class UniversalReasoner(nnx.Module):
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias = jnp.full((1,), -3.0)
-        self.decoder = nnx.Linear(latent_dim, VOCAB_SIZE, dtype=jnp.float32, rngs=rngs)
 
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         output_pos = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS, MAX_SEQ_LEN + SHARED_SLOTS + OUTPUT_SLOTS)
         return seq_pos, shared_pos, output_pos
+        
+    def _get_hyper_mods(self, z_seq):
+        prompt_context = jnp.mean(z_seq, axis=1) 
+        hyper_out = self.hyper_net(prompt_context)
+        
+        gamma1, beta1, gamma2, beta2 = jnp.split(hyper_out, 4, axis=-1)
+        
+        mods = [x[:, None, :] for x in (gamma1, beta1, gamma2, beta2)]
+        
+        return (mods[0], mods[1]), (mods[2], mods[3])
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
 
         z_seq = self.embed(tokens)
-        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
-        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
+        
+        mods1, mods2 = self._get_hyper_mods(z_seq)
+        
+        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
+        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
@@ -145,19 +171,19 @@ class UniversalReasoner(nnx.Module):
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
-            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
+            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
             
             seq_kv_pos = output_pos
-            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
+            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods2)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
@@ -189,15 +215,20 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
 
-        return self.decoder(weighted_z), ponder_cost, temporal_loss
+        logits = weighted_z @ self.embed.embedding.value.T
+        
+        return logits, ponder_cost, temporal_loss
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
         
         z_seq = self.embed(tokens)
-        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
-        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos)
+        
+        mods1, mods2 = self._get_hyper_mods(z_seq)
+        
+        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
+        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
@@ -210,19 +241,19 @@ class UniversalReasoner(nnx.Module):
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
-            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
-            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos)
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
+            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
             
             seq_kv_pos = output_pos
-            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos)
+            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
+            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods2)
             
             salience_logits = self.salience_head(curr_seq)
             salience = jax.nn.sigmoid(salience_logits)
@@ -246,7 +277,8 @@ class UniversalReasoner(nnx.Module):
         scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
         (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
-        return self.decoder(final_seq)
+        logits = final_seq @ self.embed.embedding.value.T
+        return logits
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 
