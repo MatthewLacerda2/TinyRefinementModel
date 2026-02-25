@@ -15,6 +15,7 @@ PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 0.01
 HALT_TEMP = 5.0 
+BUDGET_GATE_SHARPNESS = 10.0 
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -127,6 +128,8 @@ class UniversalReasoner(nnx.Module):
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
+        self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
+
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias = jnp.full((1,), 1.0)
         
@@ -144,10 +147,21 @@ class UniversalReasoner(nnx.Module):
         hyper_out = self.hyper_net(prompt_context)
         
         gamma1, beta1, gamma2, beta2 = jnp.split(hyper_out, 4, axis=-1)
-        
         mods = [x[:, None, :] for x in (gamma1, beta1, gamma2, beta2)]
         
         return (mods[0], mods[1]), (mods[2], mods[3])
+
+    def _get_sliding_divider_masks(self, z_seq):
+        seq_repr = jnp.mean(z_seq, axis=1)
+        reason_ratio = jax.nn.sigmoid(self.budget_head(seq_repr)) 
+        divider_pos = reason_ratio * SHARED_SLOTS
+        
+        indices = jnp.arange(SHARED_SLOTS)
+        dist = (divider_pos - indices[None, :]) * BUDGET_GATE_SHARPNESS
+        reason_mask = jax.nn.sigmoid(dist)[:, :, None] 
+        know_mask = 1.0 - reason_mask 
+        
+        return reason_mask, know_mask
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         batch_size, seq_len = tokens.shape
@@ -156,6 +170,7 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         
         mods1, mods2 = self._get_hyper_mods(z_seq)
+        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq)
         
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
@@ -167,12 +182,22 @@ class UniversalReasoner(nnx.Module):
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output = carry
             
-            z_shared_in = curr_shared + t_signal[None, None, :]
+            z_reason_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            
+            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
+            
+            z_know_in = shared_after_reason + t_signal[None, None, :]
+            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
+            
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            
+            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
@@ -226,6 +251,7 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         
         mods1, mods2 = self._get_hyper_mods(z_seq)
+        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq)
         
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
@@ -237,12 +263,20 @@ class UniversalReasoner(nnx.Module):
         def scan_step(state, t_signal):
             step, curr_seq, curr_shared, curr_output, halt_prob = state
             
-            z_shared_in = curr_shared + t_signal[None, None, :]
+            z_reason_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_shared, _ = self.processor1(z_shared_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_shared, _ = self.processor2(h_shared, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
+            
+            z_know_in = shared_after_reason + t_signal[None, None, :]
+            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
+            
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
             z_output_in = curr_output + t_signal[None, None, :]
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
