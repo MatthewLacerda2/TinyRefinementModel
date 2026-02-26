@@ -340,7 +340,7 @@ def train_step(m, opt, batch_tokens):
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
-    opt.update(grads)
+    opt.update(m, grads)
     return loss, aux
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
