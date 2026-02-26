@@ -350,4 +350,4 @@ base_optimizer = optax.chain(
 )
 optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
 
-optimizer = nnx.Optimizer(model, optimizer_chain)
+optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
