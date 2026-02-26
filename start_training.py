@@ -19,7 +19,7 @@ load_dotenv()
 if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-CHECKPOINT_INTERVAL = 1
+CHECKPOINT_INTERVAL = 50
 
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):

@@ -5,7 +5,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 LATENT_DIM = 384
-MAX_STEPS_LIMIT = 8
+MAX_STEPS_LIMIT = 16
 ACCUMULATION_STEPS = 64
 SHARED_SLOTS = 256
 OUTPUT_SLOTS = 256
@@ -14,7 +14,7 @@ MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
-TEMP_LAMBDA = 0.01
+TEMP_LAMBDA = 1e-5
 HALT_TEMP = 5.0 
 BUDGET_GATE_SHARPNESS = 10.0
 
@@ -332,10 +332,11 @@ def train_step(m, opt, batch_tokens):
         mask = (targets != PAD_TOKEN_ID)
         token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
         
+        temporal_cost_clipped = jnp.clip(jnp.mean(temporal_cost), a_max=10.0)
         total_loss = (
             token_loss
-            + PONDER_LAMBDA  * jnp.mean(ponder_cost)
-            + TEMP_LAMBDA    * jnp.mean(temporal_cost)
+            + PONDER_LAMBDA * jnp.mean(ponder_cost)
+            + TEMP_LAMBDA * temporal_cost_clipped
         )
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
