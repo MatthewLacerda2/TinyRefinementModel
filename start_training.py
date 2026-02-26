@@ -118,20 +118,12 @@ if __name__ == "__main__":
         latest_step = mngr.latest_step()
         print(f"📖 Loading Orbax checkpoint from step {latest_step}...")
         
-        abstract_state = {
-            'model': nnx.state(model),
-            'optimizer': nnx.state(optimizer),
-            'monitor_state': {
-                'ce_history': monitor.ce_history,
-                'best_ce': monitor.best_ce,
-                'last_improvement_step': monitor.last_improvement_step
-            },
-            'step': 0
-        }
-        
-        restored = mngr.restore(latest_step, args=ocp.args.Composite(**{
-            k: ocp.args.StandardRestore(v) for k, v in abstract_state.items()
-        }))
+        restored = mngr.restore(latest_step, args=ocp.args.Composite(
+            model=ocp.args.StandardRestore(nnx.state(model)),
+            optimizer=ocp.args.StandardRestore(nnx.state(optimizer)),
+            monitor_state=ocp.args.JsonRestore(),
+            step=ocp.args.JsonRestore()
+        ))
 
         nnx.update(model, restored['model'])
         nnx.update(optimizer, restored['optimizer'])
@@ -176,20 +168,16 @@ if __name__ == "__main__":
         if monitor.push(step, avg_ce, avg_p): break
         
         if step % CHECKPOINT_INTERVAL == 0:
-            state_to_save = {
-                'model': nnx.state(model),
-                'optimizer': nnx.state(optimizer),
-                'monitor_state': {
+            mngr.save(step, args=ocp.args.Composite(
+                model=ocp.args.StandardSave(nnx.state(model)),
+                optimizer=ocp.args.StandardSave(nnx.state(optimizer)),
+                monitor_state=ocp.args.JsonSave({
                     'ce_history': monitor.ce_history,
                     'best_ce': monitor.best_ce,
                     'last_improvement_step': monitor.last_improvement_step
-                },
-                'step': step
-            }
-            
-            mngr.save(step, args=ocp.args.Composite(**{
-                k: ocp.args.StandardSave(v) for k, v in state_to_save.items()
-            }))
+                }),
+                step=ocp.args.JsonSave(step)
+            ))
             mngr.wait_until_finished()
             
             print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | T-Cost: {avg_t_cost:.4f} | Time: {t_total:.2f}s")
