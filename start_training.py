@@ -99,7 +99,7 @@ class LossMonitor:
 if __name__ == "__main__":
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42), dtype=jnp.float32)
-    optimizer = nnx.Optimizer(model, optimizer_chain) 
+    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
     
     data_gen = TextDataGenerator(MAX_SEQ_LEN)
     history_file = "training_history.csv"
