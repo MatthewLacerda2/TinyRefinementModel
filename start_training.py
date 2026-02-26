@@ -6,6 +6,7 @@ import csv
 import time
 import tiktoken
 import os
+from dotenv import load_dotenv
 from datasets import load_dataset, interleave_datasets
 from train_local import (
     UniversalReasoner,
@@ -14,7 +15,10 @@ from train_local import (
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
 )
 
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+load_dotenv()
+
+if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
 CHECKPOINT_INTERVAL = 1000
 
