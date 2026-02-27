@@ -118,6 +118,10 @@ class UniversalReasoner(nnx.Module):
         
         self.shared_token = nnx.Param(jax.random.normal(rngs(), (1, SHARED_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
         self.output_token = nnx.Param(jax.random.normal(rngs(), (1, OUTPUT_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
+
+        self.seq_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.shared_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.output_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         
         self.hyper_net = nnx.Sequential(
             nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
@@ -138,7 +142,7 @@ class UniversalReasoner(nnx.Module):
         self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
 
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.salience_head.bias.value = jnp.full((1,), 1.0)
+        self.salience_head.bias.value = jnp.full((1,), -2.0)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), -3.0)
@@ -188,8 +192,10 @@ class UniversalReasoner(nnx.Module):
 
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output = carry
+
+            scaled_t_signal = t_signal[None, None, :] * 0.1
+            z_reason_in = curr_shared + scaled_t_signal
             
-            z_reason_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
@@ -198,7 +204,7 @@ class UniversalReasoner(nnx.Module):
             
             shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
             
-            z_know_in = shared_after_reason + t_signal[None, None, :]
+            z_know_in = shared_after_reason + scaled_t_signal
             know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
             
             h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
@@ -206,7 +212,7 @@ class UniversalReasoner(nnx.Module):
             
             new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
-            z_output_in = curr_output + t_signal[None, None, :]
+            z_output_in = curr_output + scaled_t_signal
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
@@ -228,6 +234,10 @@ class UniversalReasoner(nnx.Module):
             
             halt_logits = self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift - mean_salience
             halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
+
+            new_seq = self.seq_norm(new_seq)
+            new_shared = self.shared_norm(new_shared)
+            new_output = self.output_norm(new_output)
             
             return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
 
@@ -270,8 +280,10 @@ class UniversalReasoner(nnx.Module):
 
         def scan_step(state, t_signal):
             step, curr_seq, curr_shared, curr_output, halt_prob = state
+
+            scaled_t_signal = t_signal[None, None, :] * 0.1
+            z_reason_in = curr_shared + scaled_t_signal
             
-            z_reason_in = curr_shared + t_signal[None, None, :]
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
@@ -279,14 +291,14 @@ class UniversalReasoner(nnx.Module):
             new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
             
-            z_know_in = shared_after_reason + t_signal[None, None, :]
+            z_know_in = shared_after_reason + scaled_t_signal
             know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
             
             h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
             new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
-            z_output_in = curr_output + t_signal[None, None, :]
+            z_output_in = curr_output + scaled_t_signal
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
@@ -312,6 +324,10 @@ class UniversalReasoner(nnx.Module):
             final_shared = jnp.where(has_halted[:, None, None], curr_shared, new_shared)
             final_output = jnp.where(has_halted[:, None, None], curr_output, new_output)
             final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
+
+            final_seq = self.seq_norm(final_seq)
+            final_shared = self.shared_norm(final_shared)
+            final_output = self.output_norm(final_output)
             
             return (step + 1, final_seq, final_shared, final_output, final_halt_prob), None
 
