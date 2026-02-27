@@ -145,7 +145,7 @@ class UniversalReasoner(nnx.Module):
         self.salience_head.bias.value = jnp.full((1,), -2.0)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -3.0)
+        self.halt_head.bias.value = jnp.full((1,), 0.0)
 
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
@@ -232,7 +232,7 @@ class UniversalReasoner(nnx.Module):
             mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
             
-            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift - mean_salience
+            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2))
             halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
 
             new_seq = self.seq_norm(new_seq)
@@ -315,7 +315,7 @@ class UniversalReasoner(nnx.Module):
             
             mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2)) - latent_shift - mean_salience
+            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2))
             new_halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
             
             has_halted = halt_prob >= threshold
@@ -360,7 +360,7 @@ def train_step(m, opt, batch_tokens):
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
-    opt.update(grads)
+    opt.update(m, grads)
     return loss, aux
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
