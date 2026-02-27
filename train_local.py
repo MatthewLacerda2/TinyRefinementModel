@@ -199,13 +199,20 @@ class UniversalReasoner(nnx.Module):
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
 
+        pad_mask = (tokens != PAD_TOKEN_ID)
+        
+        seq_attn_mask = pad_mask[:, None, None, :]
+        
+        memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
+        extended_ctx_mask = jnp.concatenate([seq_attn_mask, memory_mask], axis=-1)
+
         z_seq = self.embed(tokens)
         
-        mods1, mods2 = self._get_hyper_mods(z_seq)
-        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq)
+        mods1, mods2 = self._get_hyper_mods(z_seq, mask=pad_mask)
+        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq, mask=pad_mask)
         
-        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
-        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
+        h_seq, _ = self.processor1(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
+        z_seq, _ = self.processor2(h_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
         z_shared = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
         z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
@@ -220,25 +227,23 @@ class UniversalReasoner(nnx.Module):
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            
+            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
             
             z_know_in = shared_after_reason + scaled_t_signal
             know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
             
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
             z_output_in = curr_output + scaled_t_signal
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
-            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
+            new_output, _ = self.processor2(h_output, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
             
             seq_kv_pos = output_pos
             h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
@@ -252,7 +257,6 @@ class UniversalReasoner(nnx.Module):
             
             mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            
             halt_logits = self.halt_head(new_shared).mean(axis=(1, 2))
             halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
 
@@ -287,13 +291,20 @@ class UniversalReasoner(nnx.Module):
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
         
+        pad_mask = (tokens != PAD_TOKEN_ID)
+        
+        seq_attn_mask = pad_mask[:, None, None, :]
+        
+        memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
+        extended_ctx_mask = jnp.concatenate([seq_attn_mask, memory_mask], axis=-1)
+
         z_seq = self.embed(tokens)
         
-        mods1, mods2 = self._get_hyper_mods(z_seq)
-        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq)
+        mods1, mods2 = self._get_hyper_mods(z_seq, mask=pad_mask)
+        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq, mask=pad_mask)
         
-        h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
-        z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
+        h_seq, _ = self.processor1(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
+        z_seq, _ = self.processor2(h_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
         z_shared = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
         z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
@@ -308,23 +319,23 @@ class UniversalReasoner(nnx.Module):
             shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
             
             z_know_in = shared_after_reason + scaled_t_signal
             know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
             
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
+            h_know, _ = self.processor1(z_know_in, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
+            new_know_raw, _ = self.processor2(h_know, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
             new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
             
             z_output_in = curr_output + scaled_t_signal
             output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
             output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
             
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
-            new_output, _ = self.processor2(h_output, context=output_ctx, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
+            h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
+            new_output, _ = self.processor2(h_output, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
             
             seq_kv_pos = output_pos
             h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
