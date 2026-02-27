@@ -64,6 +64,7 @@ class RotaryAttention(nnx.Module):
         sin_q = self.sin_cached[q_pos, None, :]
         cos_q = self.cos_cached[q_pos, None, :]
         q = (q * cos_q) + (rotate_half(q) * sin_q)
+        q = q * self.scale
         
         sin_kv = self.sin_cached[kv_pos, None, :]
         cos_kv = self.cos_cached[kv_pos, None, :]
@@ -136,10 +137,10 @@ class UniversalReasoner(nnx.Module):
         self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
 
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.salience_head.bias = jnp.full((1,), 1.0)
+        self.salience_head.bias.value = jnp.full((1,), 1.0)
         
         self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias = jnp.full((1,), -3.0)
+        self.halt_head.bias.value = jnp.full((1,), -3.0)
 
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
@@ -231,6 +232,7 @@ class UniversalReasoner(nnx.Module):
 
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0), unroll=4)
         _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
+        all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
@@ -337,7 +339,7 @@ def train_step(m, opt, batch_tokens):
             token_loss
             + PONDER_LAMBDA * jnp.mean(ponder_cost)
             + TEMP_LAMBDA * temporal_cost_clipped
-        )
+        ) / ACCUMULATION_STEPS
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)

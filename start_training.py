@@ -95,7 +95,7 @@ class LossMonitor:
         # Condition 3: Saturation detected (Pondering maxed out)
         if avg_ponder >= self.max_ponder_limit:
             print(f"\n🛑 Saturation detected: Avg ponder steps maxed out at {avg_ponder:.2f}.")
-            return True
+            return False
             
         return False
 
