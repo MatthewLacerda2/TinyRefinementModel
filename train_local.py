@@ -77,16 +77,9 @@ class RotaryAttention(nnx.Module):
         new_cache = (k, v) if cache is not None else None
 
         repeats = self.num_heads // self.num_groups
-        k_expanded = jnp.broadcast_to(
-            k[:, :, :, None, :], 
-            (b, k.shape[1], self.num_groups, repeats, self.head_dim)
-        ).reshape(b, k.shape[1], self.num_heads, self.head_dim)
-
-        v_expanded = jnp.broadcast_to(
-            v[:, :, :, None, :], 
-            (b, k.shape[1], self.num_groups, repeats, self.head_dim)
-        ).reshape(b, k.shape[1], self.num_heads, self.head_dim)
-
+        k_expanded = jnp.repeat(k, repeats, axis=2)
+        v_expanded = jnp.repeat(v, repeats, axis=2)
+        
         out = jax.nn.dot_product_attention(q, k_expanded, v_expanded, mask=mask)
         return self.o_proj(out.reshape(b, s, d)), new_cache
 
@@ -189,8 +182,8 @@ class UniversalReasoner(nnx.Module):
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
-        z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
-        z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
+        z_shared = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
+        z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(carry, t_signal):
@@ -238,7 +231,7 @@ class UniversalReasoner(nnx.Module):
             
             return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
 
-        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0), unroll=4)
+        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
         _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
@@ -271,8 +264,8 @@ class UniversalReasoner(nnx.Module):
         h_seq, _ = self.processor1(z_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
         z_seq, _ = self.processor2(h_seq, mask=None, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
 
-        z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
-        z_output = jnp.tile(self.output_token.value, (batch_size, 1, 1))
+        z_shared = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
+        z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
         def scan_step(state, t_signal):
@@ -351,7 +344,7 @@ def train_step(m, opt, batch_tokens):
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
-    opt.update(m, grads)
+    opt.update(grads)
     return loss, aux
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)

@@ -65,7 +65,7 @@ class TextDataGenerator:
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=500, max_ponder_limit=7.5):
+    def __init__(self, patience=2000, window=500, max_ponder_limit=14):
         self.patience = patience
         self.window = window
         self.max_ponder_limit = max_ponder_limit
@@ -157,15 +157,10 @@ if __name__ == "__main__":
             step_t_cost += float(t_cost)
 
         if batch is None: break
-        
-        avg_loss = step_loss / ACCUMULATION_STEPS
-        avg_ce = step_ce / ACCUMULATION_STEPS
-        avg_p = step_p / ACCUMULATION_STEPS
-        avg_t_cost = step_t_cost / ACCUMULATION_STEPS
-        
+                
         t_total = time.time() - t0
 
-        if monitor.push(step, avg_ce, avg_p): break
+        if monitor.push(step, step_ce, step_p): break
         
         if step % CHECKPOINT_INTERVAL == 0:
             mngr.save(step, args=ocp.args.Composite(
@@ -180,17 +175,17 @@ if __name__ == "__main__":
             ))
             mngr.wait_until_finished()
             
-            print(f"Step {step:04d} | Agg Loss: {avg_loss:.4f} | Avg Steps: {avg_p:.2f} | T-Cost: {avg_t_cost:.4f} | Time: {t_total:.2f}s")
+            print(f"Step {step:04d} | Agg Loss: {step_loss:.4f} | Avg Steps: {step_p:.2f} | T-Cost: {step_t_cost:.4f} | Time: {t_total:.2f}s")
             
             with open(history_file, "a", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=["step", "loss", "ce", "avg_ponder", "avg_t_cost", "t_total"])
                 if f.tell() == 0: writer.writeheader()
                 writer.writerow({
                     "step": int(step), 
-                    "loss": f"{avg_loss:.4f}", 
-                    "ce": f"{avg_ce:.4f}", 
-                    "avg_ponder": f"{avg_p:.2f}", 
-                    "avg_t_cost": f"{avg_t_cost:.4f}",
+                    "loss": f"{step_loss:.4f}", 
+                    "ce": f"{step_ce:.4f}", 
+                    "avg_ponder": f"{step_p:.2f}", 
+                    "avg_t_cost": f"{step_t_cost:.4f}",
                     "t_total": f"{t_total:.2f}"
                 })
             
