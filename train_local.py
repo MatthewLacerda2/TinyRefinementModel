@@ -109,6 +109,25 @@ class StandardReasoningBlock(nnx.Module):
         x = x + mlp_out
         return x, new_cache
 
+class AttentionPooling(nnx.Module):
+    def __init__(self, latent_dim, rngs, dtype=jnp.float32):
+        self.attention_net = nnx.Sequential(
+            nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
+            jax.nn.tanh,
+            nnx.Linear(latent_dim // 2, 1, rngs=rngs, dtype=dtype)
+        )
+
+    def __call__(self, x, mask=None):
+        scores = self.attention_net(x)
+        
+        if mask is not None:
+            scores = jnp.where(mask[..., None], scores, -1e9)
+            
+        attn_weights = jax.nn.softmax(scores, axis=1)
+        pooled_output = jnp.sum(attn_weights * x, axis=1)
+        
+        return pooled_output
+
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs, dtype=jnp.float32):
         self.latent_dim = latent_dim
@@ -122,6 +141,8 @@ class UniversalReasoner(nnx.Module):
         self.seq_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.shared_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.output_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+
+        self.pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
         
         self.hyper_net = nnx.Sequential(
             nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
@@ -153,8 +174,8 @@ class UniversalReasoner(nnx.Module):
         output_pos = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS, MAX_SEQ_LEN + SHARED_SLOTS + OUTPUT_SLOTS)
         return seq_pos, shared_pos, output_pos
         
-    def _get_hyper_mods(self, z_seq):
-        prompt_context = jnp.mean(z_seq, axis=1) 
+    def _get_hyper_mods(self, z_seq, mask=None):
+        prompt_context = self.pooler(z_seq, mask=mask)
         hyper_out = self.hyper_net(prompt_context)
         
         gamma1, beta1, gamma2, beta2 = jnp.split(hyper_out, 4, axis=-1)
@@ -162,8 +183,8 @@ class UniversalReasoner(nnx.Module):
         
         return (mods[0], mods[1]), (mods[2], mods[3])
 
-    def _get_sliding_divider_masks(self, z_seq):
-        seq_repr = jnp.mean(z_seq, axis=1)
+    def _get_sliding_divider_masks(self, z_seq, mask=None):
+        seq_repr = self.pooler(z_seq, mask=mask)
         reason_ratio = jax.nn.sigmoid(self.budget_head(seq_repr)) 
         divider_pos = reason_ratio * SHARED_SLOTS
         
