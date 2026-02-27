@@ -107,6 +107,7 @@ class StandardReasoningBlock(nnx.Module):
         
         if hyper_mods is not None:
             gamma, beta = hyper_mods
+            gamma = jax.nn.tanh(gamma)
             mlp_in = mlp_in * (1.0 + gamma) + beta
             
         hidden = jax.nn.gelu(self.mlp_fc1(mlp_in))
@@ -128,7 +129,14 @@ class UniversalReasoner(nnx.Module):
         self.hyper_net = nnx.Sequential(
             nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
             jax.nn.gelu,
-            nnx.Linear(latent_dim // 2, latent_dim * 4, rngs=rngs, dtype=dtype)
+            nnx.Linear(
+                latent_dim // 2, 
+                latent_dim * 4, 
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+                rngs=rngs, 
+                dtype=dtype
+            )
         )
         
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
