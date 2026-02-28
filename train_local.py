@@ -80,7 +80,7 @@ class RotaryAttention(nnx.Module):
         k_expanded = jnp.repeat(k, repeats, axis=2)
         v_expanded = jnp.repeat(v, repeats, axis=2)
         
-        out = jax.nn.dot_product_attention(q, k_expanded, v_expanded, mask=mask)
+        out = jax.nn.dot_product_attention(q, k_expanded, v_expanded, mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1])) if mask is not None else None)
         return self.o_proj(out.reshape(b, s, d)), new_cache
 
 class StandardReasoningBlock(nnx.Module):
@@ -201,10 +201,12 @@ class UniversalReasoner(nnx.Module):
 
         pad_mask = (tokens != PAD_TOKEN_ID)
         
-        seq_attn_mask = pad_mask[:, None, None, :]
+        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
         
+        pad_mask_1d = pad_mask[:, None, None, :]
         memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
-        extended_ctx_mask = jnp.concatenate([seq_attn_mask, memory_mask], axis=-1)
+        extended_ctx_mask = jnp.concatenate([pad_mask_1d, memory_mask], axis=-1)
 
         z_seq = self.embed(tokens)
         

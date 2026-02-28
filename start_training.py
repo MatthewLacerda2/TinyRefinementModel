@@ -161,7 +161,6 @@ if __name__ == "__main__":
         step_ce /= ACCUMULATION_STEPS
         step_p /= ACCUMULATION_STEPS
         step_t_cost /= ACCUMULATION_STEPS
-        step_loss /= ACCUMULATION_STEPS
                 
         t_total = time.time() - t0
 
