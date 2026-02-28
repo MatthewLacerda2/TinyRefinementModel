@@ -295,10 +295,12 @@ class UniversalReasoner(nnx.Module):
         
         pad_mask = (tokens != PAD_TOKEN_ID)
         
-        seq_attn_mask = pad_mask[:, None, None, :]
+        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
         
+        pad_mask_1d = pad_mask[:, None, None, :]
         memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
-        extended_ctx_mask = jnp.concatenate([seq_attn_mask, memory_mask], axis=-1)
+        extended_ctx_mask = jnp.concatenate([pad_mask_1d, memory_mask], axis=-1)
 
         z_seq = self.embed(tokens)
         
