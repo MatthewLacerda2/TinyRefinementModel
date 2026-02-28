@@ -275,7 +275,7 @@ class UniversalReasoner(nnx.Module):
             
             return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
 
-        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
+        scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
         _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
