@@ -150,6 +150,8 @@ if __name__ == "__main__":
             if batch is None: break
 
             loss, (ce, p, t_cost) = train_step(model, optimizer, batch)
+
+            loss.block_until_ready()
             
             step_loss += float(loss)
             step_ce += float(ce)
