@@ -213,6 +213,7 @@ __marimo__/
 #Project specifics
 auxpy.py
 auxmd.md
-*.pkl
 training_history.csv
+*.pkl
 *.png
+orbax_checkpoints/

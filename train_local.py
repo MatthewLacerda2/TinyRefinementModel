@@ -1,12 +1,17 @@
 import os
+
+#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+
 import jax
 import optax
 from flax import nnx
 import jax.numpy as jnp
 
 LATENT_DIM = 384
-BATCH_SIZE = 2
-ACCUMULATION_STEPS = 64
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
 MAX_STEPS_LIMIT = 8
 SHARED_SLOTS = 256  # Context window
 OUTPUT_SLOTS = 256  # Output window
@@ -17,10 +22,6 @@ PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 1e-4
 HALT_TEMP = 5.0 
 BUDGET_GATE_SHARPNESS = 10.0
-
-#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -275,7 +276,7 @@ class UniversalReasoner(nnx.Module):
             
             return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
 
-        scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
+        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
         _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
@@ -381,7 +382,7 @@ class UniversalReasoner(nnx.Module):
             return (step + 1, final_seq, final_shared, final_output, final_halt_prob), None
 
         init_state = (0, z_seq, z_shared, z_output, jnp.zeros((batch_size,)))
-        scan_fn = nnx.scan(scan_step, in_axes=(nnx.Carry, 0))
+        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
         (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
         logits = final_seq @ self.embed.embedding.value.T
