@@ -7,14 +7,14 @@ import jax.numpy as jnp
 LATENT_DIM = 384
 BATCH_SIZE = 2
 ACCUMULATION_STEPS = 64
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 8
 SHARED_SLOTS = 256  # Context window
 OUTPUT_SLOTS = 256  # Output window
 MAX_SEQ_LEN = 256   # Output Tokens window
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
-TEMP_LAMBDA = 1e-5
+TEMP_LAMBDA = 1e-4
 HALT_TEMP = 5.0 
 BUDGET_GATE_SHARPNESS = 10.0
 
@@ -165,7 +165,8 @@ class UniversalReasoner(nnx.Module):
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.salience_head.bias.value = jnp.full((1,), -2.0)
         
-        self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
+        self.halt_pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
+        self.halt_head = nnx.Linear(latent_dim + 1, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), 0.0)
 
     def _get_positions(self, seq_len):
@@ -259,7 +260,13 @@ class UniversalReasoner(nnx.Module):
             
             mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2))
+            
+            # Apply attention pooling and concatenate the scalar shift
+            halt_pooled = self.halt_pooler(new_shared)
+            halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
+            
+            # Project to logits and squeeze the last dimension to shape (batch_size,)
+            halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
             halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
 
             new_seq = self.seq_norm(new_seq)
@@ -297,7 +304,7 @@ class UniversalReasoner(nnx.Module):
         
         causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
         seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
-        
+
         pad_mask_1d = pad_mask[:, None, None, :]
         memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
         extended_ctx_mask = jnp.concatenate([pad_mask_1d, memory_mask], axis=-1)
@@ -351,7 +358,13 @@ class UniversalReasoner(nnx.Module):
             
             mean_salience = jnp.mean(salience, axis=(1, 2))
             latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            halt_logits = self.halt_head(new_shared).mean(axis=(1, 2))
+            
+            # Apply attention pooling and concatenate the scalar shift
+            halt_pooled = self.halt_pooler(new_shared)
+            halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
+            
+            # Project to logits and squeeze the last dimension to shape (batch_size,)
+            halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
             new_halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
             
             has_halted = halt_prob >= threshold
