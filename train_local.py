@@ -197,7 +197,8 @@ class UniversalReasoner(nnx.Module):
         
         return reason_mask, know_mask
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
+    def _prepare_reasoning_context(self, tokens, max_steps):
+        """Extracts the shared initialization for both train and infer modes."""
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
 
@@ -222,54 +223,71 @@ class UniversalReasoner(nnx.Module):
         z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
 
+        ctx = {
+            'seq_pos': seq_pos, 'shared_pos': shared_pos, 'output_pos': output_pos,
+            'extended_ctx_mask': extended_ctx_mask,
+            'mods1': mods1, 'mods2': mods2,
+            'reason_mask': reason_mask, 'know_mask': know_mask,
+            'batch_size': batch_size
+        }
+        return z_seq, z_shared, z_output, all_time_embeds, ctx
+
+    def _core_reasoning_step(self, curr_seq, curr_shared, curr_output, t_signal, ctx):
+        """The heavy lifting of the scan step, completely shared between __call__ and infer."""
+        scaled_t_signal = t_signal[None, None, :] * 0.1
+        z_reason_in = curr_shared + scaled_t_signal
+        
+        shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
+        shared_kv_pos = jnp.concatenate([ctx['seq_pos'], ctx['shared_pos']])
+        
+        h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['shared_pos'], kv_pos=shared_kv_pos, hyper_mods=ctx['mods1'])
+        new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['shared_pos'], kv_pos=shared_kv_pos, hyper_mods=ctx['mods2'])
+        shared_after_reason = new_reason_raw * ctx['reason_mask'] + curr_shared * (1.0 - ctx['reason_mask'])
+        
+        z_know_in = shared_after_reason + scaled_t_signal
+        know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
+        
+        h_know, _ = self.processor1(z_know_in, context=know_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['shared_pos'], kv_pos=shared_kv_pos, hyper_mods=ctx['mods1'])
+        new_know_raw, _ = self.processor2(h_know, context=know_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['shared_pos'], kv_pos=shared_kv_pos, hyper_mods=ctx['mods2'])
+        new_shared = new_know_raw * ctx['know_mask'] + shared_after_reason * (1.0 - ctx['know_mask'])
+        
+        z_output_in = curr_output + scaled_t_signal
+        output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
+        output_kv_pos = jnp.concatenate([ctx['seq_pos'], ctx['shared_pos']])
+        
+        h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods1'])
+        new_output, _ = self.processor2(h_output, context=output_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods2'])
+        
+        seq_kv_pos = ctx['output_pos']
+        h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods1'])
+        proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods2'])
+        
+        salience_logits = self.salience_head(curr_seq)
+        salience = jax.nn.sigmoid(salience_logits)
+        new_seq = curr_seq + salience * (proposed_updates - curr_seq)
+        
+        latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
+        
+        halt_pooled = self.halt_pooler(new_shared)
+        halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
+        
+        halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
+        halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
+
+        return new_seq, new_shared, new_output, proposed_updates, salience, halt_prob
+
+    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
+        z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
+
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output = carry
 
-            scaled_t_signal = t_signal[None, None, :] * 0.1
-            z_reason_in = curr_shared + scaled_t_signal
-            
-            shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
-            shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-            
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
-            
-            z_know_in = shared_after_reason + scaled_t_signal
-            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
-            
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
-            
-            z_output_in = curr_output + scaled_t_signal
-            output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
-            output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-            
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
-            new_output, _ = self.processor2(h_output, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
-            
-            seq_kv_pos = output_pos
-            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods2)
-            
-            salience_logits = self.salience_head(curr_seq)
-            salience = jax.nn.sigmoid(salience_logits)
-            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
+            new_seq, new_shared, new_output, proposed_updates, salience, halt_prob = self._core_reasoning_step(
+                curr_seq, curr_shared, curr_output, t_signal, ctx
+            )
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
             
-            mean_salience = jnp.mean(salience, axis=(1, 2))
-            latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            
-            # Apply attention pooling and concatenate the scalar shift
-            halt_pooled = self.halt_pooler(new_shared)
-            halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
-            
-            # Project to logits and squeeze the last dimension to shape (batch_size,)
-            halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
-            halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
-
             new_seq = self.seq_norm(new_seq)
             new_shared = self.shared_norm(new_shared)
             new_output = self.output_norm(new_output)
@@ -280,7 +298,7 @@ class UniversalReasoner(nnx.Module):
         _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
-        p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
+        p_remain = jnp.concatenate([jnp.ones((1, ctx['batch_size'])), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
 
         last_step_halt_prob = all_halts[-1]
@@ -298,75 +316,14 @@ class UniversalReasoner(nnx.Module):
         return logits, ponder_cost, temporal_loss
 
     def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
-        batch_size, seq_len = tokens.shape
-        seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
-        
-        pad_mask = (tokens != PAD_TOKEN_ID)
-        
-        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-        seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
-
-        pad_mask_1d = pad_mask[:, None, None, :]
-        memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
-        extended_ctx_mask = jnp.concatenate([pad_mask_1d, memory_mask], axis=-1)
-
-        z_seq = self.embed(tokens)
-        
-        mods1, mods2 = self._get_hyper_mods(z_seq, mask=pad_mask)
-        reason_mask, know_mask = self._get_sliding_divider_masks(z_seq, mask=pad_mask)
-        
-        h_seq, _ = self.processor1(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods1)
-        z_seq, _ = self.processor2(h_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods=mods2)
-
-        z_shared = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
-        z_output = jnp.broadcast_to(self.output_token.value, (batch_size, OUTPUT_SLOTS, self.latent_dim))
-        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+        z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
 
         def scan_step(state, t_signal):
             step, curr_seq, curr_shared, curr_output, halt_prob = state
 
-            scaled_t_signal = t_signal[None, None, :] * 0.1
-            z_reason_in = curr_shared + scaled_t_signal
-            
-            shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
-            shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-            
-            h_reason, _ = self.processor1(z_reason_in, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_reason_raw, _ = self.processor2(h_reason, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            shared_after_reason = new_reason_raw * reason_mask + curr_shared * (1.0 - reason_mask)
-            
-            z_know_in = shared_after_reason + scaled_t_signal
-            know_ctx = jnp.concatenate([curr_seq, shared_after_reason], axis=1)
-            
-            h_know, _ = self.processor1(z_know_in, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods1)
-            new_know_raw, _ = self.processor2(h_know, context=know_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos, hyper_mods=mods2)
-            new_shared = new_know_raw * know_mask + shared_after_reason * (1.0 - know_mask)
-            
-            z_output_in = curr_output + scaled_t_signal
-            output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
-            output_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-            
-            h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods1)
-            new_output, _ = self.processor2(h_output, context=output_ctx, mask=extended_ctx_mask, q_pos=output_pos, kv_pos=output_kv_pos, hyper_mods=mods2)
-            
-            seq_kv_pos = output_pos
-            h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods1)
-            proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=seq_pos, kv_pos=seq_kv_pos, hyper_mods=mods2)
-            
-            salience_logits = self.salience_head(curr_seq)
-            salience = jax.nn.sigmoid(salience_logits)
-            new_seq = curr_seq + salience * (proposed_updates - curr_seq)
-            
-            mean_salience = jnp.mean(salience, axis=(1, 2))
-            latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
-            
-            # Apply attention pooling and concatenate the scalar shift
-            halt_pooled = self.halt_pooler(new_shared)
-            halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
-            
-            # Project to logits and squeeze the last dimension to shape (batch_size,)
-            halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
-            new_halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
+            new_seq, new_shared, new_output, _, _, new_halt_prob = self._core_reasoning_step(
+                curr_seq, curr_shared, curr_output, t_signal, ctx
+            )
             
             has_halted = halt_prob >= threshold
             
@@ -381,7 +338,7 @@ class UniversalReasoner(nnx.Module):
             
             return (step + 1, final_seq, final_shared, final_output, final_halt_prob), None
 
-        init_state = (0, z_seq, z_shared, z_output, jnp.zeros((batch_size,)))
+        init_state = (0, z_seq, z_shared, z_output, jnp.zeros((ctx['batch_size'],)))
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
         (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
         
