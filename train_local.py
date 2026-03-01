@@ -9,13 +9,13 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-LATENT_DIM = 384
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
+LATENT_DIM = 512
+BATCH_SIZE = 2
+ACCUMULATION_STEPS = 64
 MAX_STEPS_LIMIT = 16
 SHARED_SLOTS = 256  # Context window
 OUTPUT_SLOTS = 256  # Output window
-MAX_SEQ_LEN = 1024   # Output Tokens window
+MAX_SEQ_LEN = 2048   # Output Tokens window
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
@@ -89,10 +89,16 @@ class StandardReasoningBlock(nnx.Module):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+
+        hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
         
-        self.gate_proj = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
-        self.up_proj = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
-        self.down_proj = nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
+        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
+        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
+        self.down_proj = nnx.Linear(
+            hidden_dim, latent_dim, 
+            kernel_init=jax.nn.initializers.zeros, 
+            rngs=rngs, dtype=dtype
+        )
 
     def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None, hyper_mods=None):
         attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache, q_pos=q_pos, kv_pos=kv_pos)
@@ -102,14 +108,10 @@ class StandardReasoningBlock(nnx.Module):
         
         if hyper_mods is not None:
             gamma, beta = hyper_mods
-            gamma = jax.nn.tanh(gamma)
-            mlp_in = mlp_in * (1.0 + gamma) + beta
+            gamma_scaled = jax.nn.tanh(gamma)
+            mlp_in = mlp_in * (1.0 + gamma_scaled) + beta
 
-        gate = jax.nn.silu(self.gate_proj(mlp_in))
-
-        up = self.up_proj(mlp_in)
-            
-        hidden = gate * up
+        hidden = jax.nn.silu(self.gate_proj(mlp_in)) * self.up_proj(mlp_in)
         mlp_out = self.down_proj(hidden)
         
         x = x + mlp_out
@@ -162,14 +164,14 @@ class UniversalReasoner(nnx.Module):
                 dtype=dtype
             )
         )
-        
+
         self.processor1 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
         self.processor2 = StandardReasoningBlock(latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
         self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
 
         self.salience_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.salience_head.bias.value = jnp.full((1,), -2.0)
+        self.salience_head.bias.value = jnp.full((1,), 0.0)
         
         self.halt_pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(latent_dim + 1, 1, dtype=jnp.float32, rngs=rngs)
