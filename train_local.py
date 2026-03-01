@@ -10,12 +10,12 @@ from flax import nnx
 import jax.numpy as jnp
 
 LATENT_DIM = 512
-BATCH_SIZE = 2
-ACCUMULATION_STEPS = 64
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
 MAX_STEPS_LIMIT = 16
 SHARED_SLOTS = 256  # Context window
 OUTPUT_SLOTS = 256  # Output window
-MAX_SEQ_LEN = 2048   # Output Tokens window
+MAX_SEQ_LEN = 1024   # Output Tokens window
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
@@ -87,8 +87,8 @@ class RotaryAttention(nnx.Module):
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
-        self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
         
@@ -146,9 +146,9 @@ class UniversalReasoner(nnx.Module):
         self.shared_token = nnx.Param(jax.random.normal(rngs(), (1, SHARED_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
         self.output_token = nnx.Param(jax.random.normal(rngs(), (1, OUTPUT_SLOTS, latent_dim)).astype(jnp.float32) * 0.02)
 
-        self.seq_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.shared_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.output_norm = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.output_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
         
@@ -324,6 +324,26 @@ class UniversalReasoner(nnx.Module):
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 
+ponder_lambda_schedule = optax.linear_schedule(
+    init_value=0.0, 
+    end_value=0.005, 
+    transition_steps=200
+)
+
+temp_lambda_schedule = optax.linear_schedule(
+    init_value=1e-4, 
+    end_value=1e-5, 
+    transition_steps=200
+)
+
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 200, 800, 1e-6)
+base_optimizer = optax.chain(
+    optax.clip_by_global_norm(1.0), 
+    optax.adamw(learning_rate=schedule)
+)
+optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
+optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+
 @nnx.jit
 def train_step(m, opt, batch_tokens, step):
 
@@ -351,23 +371,3 @@ def train_step(m, opt, batch_tokens, step):
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
     opt.update(m, grads)
     return loss, aux
-
-ponder_lambda_schedule = optax.linear_schedule(
-    init_value=0.0, 
-    end_value=0.005, 
-    transition_steps=200
-)
-
-temp_lambda_schedule = optax.linear_schedule(
-    init_value=1e-4, 
-    end_value=1e-5, 
-    transition_steps=200
-)
-
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 200, 800, 1e-6)
-base_optimizer = optax.chain(
-    optax.clip_by_global_norm(1.0), 
-    optax.adamw(learning_rate=schedule)
-)
-optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
-optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
