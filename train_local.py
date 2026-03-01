@@ -12,10 +12,10 @@ import jax.numpy as jnp
 LATENT_DIM = 384
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
-MAX_STEPS_LIMIT = 8
+MAX_STEPS_LIMIT = 16
 SHARED_SLOTS = 256  # Context window
 OUTPUT_SLOTS = 256  # Output window
-MAX_SEQ_LEN = 256   # Output Tokens window
+MAX_SEQ_LEN = 1024   # Output Tokens window
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005

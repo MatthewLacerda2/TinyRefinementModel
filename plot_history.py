@@ -3,6 +3,12 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import math
+import sys
+
+# Ensure UTF-8 encoding for console output (important for Windows)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 
 def format_time(seconds):
     hours = int(seconds // 3600)
@@ -75,13 +81,13 @@ def plot_training_history(log_path="training_history.csv"):
     # Ponder Steps
     ax4.plot(steps, ponder_steps, color='#adff2f', linewidth=2.5, label='Avg Ponder Steps', marker='o', markersize=4)
     ax4.fill_between(steps, ponder_steps, color='#adff2f', alpha=0.1)
-    ax4.axhline(y=8, color='#adff2f', linestyle='--', alpha=0.5, label='MAX (8 steps)')
+    ax4.axhline(y=16, color='#adff2f', linestyle='--', alpha=0.5, label='MAX (16 steps)')
     ax4.set_ylabel('Steps', color='#adff2f', fontweight='bold', fontsize=11)
     ax4.set_xlabel('Training Step', fontweight='bold', fontsize=11)
     ax4.set_title('Average Ponder Steps (Model Learning Depth)', fontsize=14, pad=10, color='white', fontweight='bold')
     ax4.grid(True, linestyle='--', alpha=0.3)
     ax4.legend(loc='upper left')
-    ax4.set_ylim([0, 8.5])
+    ax4.set_ylim([0, 16.5])
 
     plt.tight_layout()
     plt.savefig('training_plot.png', dpi=150, bbox_inches='tight')
