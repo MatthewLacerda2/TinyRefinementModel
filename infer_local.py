@@ -13,6 +13,7 @@ from train_local import (
     PAD_TOKEN_ID,
     MAX_STEPS_LIMIT
 )
+from inference_core import run_model_inference
 
 CHECKPOINT_DIR = os.path.abspath("orbax_checkpoints")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -27,8 +28,8 @@ def generate_text(model, enc, prompt, max_new_tokens=128, threshold=0.5):
     
     @nnx.jit
     def get_next_logits(m, tks):
-        logits = m.infer(tks, threshold=threshold)
-        return logits[:, -1, :] # Return logits for the last token in sequence
+        logits = run_model_inference(m, tks, max_steps=MAX_STEPS_LIMIT, threshold=threshold)
+        return logits[:, -1, :]  # Return logits for the last token in sequence
 
     print("🤖 Assistant: ", end="", flush=True)
     

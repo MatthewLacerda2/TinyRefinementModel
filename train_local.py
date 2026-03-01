@@ -90,8 +90,9 @@ class StandardReasoningBlock(nnx.Module):
         self.norm1 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.LayerNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.mlp_fc1 = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
-        self.mlp_fc2 = nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
+        self.gate_proj = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
+        self.up_proj = nnx.Linear(latent_dim, latent_dim * 4, rngs=rngs, dtype=dtype)
+        self.down_proj = nnx.Linear(latent_dim * 4, latent_dim, rngs=rngs, dtype=dtype)
 
     def __call__(self, x, context=None, mask=None, cache=None, q_pos=None, kv_pos=None, hyper_mods=None):
         attn_out, new_cache = self.attn(self.norm1(x), context=context, mask=mask, cache=cache, q_pos=q_pos, kv_pos=kv_pos)
@@ -103,9 +104,13 @@ class StandardReasoningBlock(nnx.Module):
             gamma, beta = hyper_mods
             gamma = jax.nn.tanh(gamma)
             mlp_in = mlp_in * (1.0 + gamma) + beta
+
+        gate = jax.nn.silu(self.gate_proj(mlp_in))
+
+        up = self.up_proj(mlp_in)
             
-        hidden = jax.nn.gelu(self.mlp_fc1(mlp_in))
-        mlp_out = self.mlp_fc2(hidden)
+        hidden = gate * up
+        mlp_out = self.down_proj(hidden)
         
         x = x + mlp_out
         return x, new_cache
@@ -315,36 +320,6 @@ class UniversalReasoner(nnx.Module):
         
         return logits, ponder_cost, temporal_loss
 
-    def infer(self, tokens, max_steps=MAX_STEPS_LIMIT, threshold=0.5):
-        z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
-
-        def scan_step(state, t_signal):
-            step, curr_seq, curr_shared, curr_output, halt_prob = state
-
-            new_seq, new_shared, new_output, _, _, new_halt_prob = self._core_reasoning_step(
-                curr_seq, curr_shared, curr_output, t_signal, ctx
-            )
-            
-            has_halted = halt_prob >= threshold
-            
-            final_seq    = jnp.where(has_halted[:, None, None], curr_seq,    new_seq)
-            final_shared = jnp.where(has_halted[:, None, None], curr_shared, new_shared)
-            final_output = jnp.where(has_halted[:, None, None], curr_output, new_output)
-            final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
-
-            final_seq = self.seq_norm(final_seq)
-            final_shared = self.shared_norm(final_shared)
-            final_output = self.output_norm(final_output)
-            
-            return (step + 1, final_seq, final_shared, final_output, final_halt_prob), None
-
-        init_state = (0, z_seq, z_shared, z_output, jnp.zeros((ctx['batch_size'],)))
-        scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
-        (final_step, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
-        
-        logits = final_seq @ self.embed.embedding.value.T
-        return logits
-
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 
 @nnx.jit
@@ -361,8 +336,7 @@ def train_step(m, opt, batch_tokens, step):
         preds, ponder_cost, temporal_cost = model_instance(inputs, training=True)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-        mask = (targets != PAD_TOKEN_ID)
-        token_loss = jnp.sum(ce_loss * mask) / (jnp.sum(mask) + 1e-8)
+        token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
         
         temporal_cost_clipped = jnp.clip(jnp.mean(temporal_cost), a_max=10.0)
         total_loss = (
