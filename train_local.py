@@ -348,7 +348,13 @@ class UniversalReasoner(nnx.Module):
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 
 @nnx.jit
-def train_step(m, opt, batch_tokens):
+def train_step(m, opt, batch_tokens, step):
+
+    macro_step = step // ACCUMULATION_STEPS
+
+    curr_ponder_lambda = ponder_lambda_schedule(macro_step)
+    curr_temp_lambda = temp_lambda_schedule(macro_step)
+
     def loss_fn(model_instance):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
         
@@ -361,8 +367,8 @@ def train_step(m, opt, batch_tokens):
         temporal_cost_clipped = jnp.clip(jnp.mean(temporal_cost), a_max=10.0)
         total_loss = (
             token_loss
-            + PONDER_LAMBDA * jnp.mean(ponder_cost)
-            + TEMP_LAMBDA * temporal_cost_clipped
+            + curr_ponder_lambda * jnp.mean(ponder_cost)
+            + curr_temp_lambda * temporal_cost_clipped
         ) / ACCUMULATION_STEPS
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
 
@@ -370,11 +376,22 @@ def train_step(m, opt, batch_tokens):
     opt.update(m, grads)
     return loss, aux
 
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 1000, 100000, 1e-6)
+ponder_lambda_schedule = optax.linear_schedule(
+    init_value=0.0, 
+    end_value=0.005, 
+    transition_steps=200
+)
+
+temp_lambda_schedule = optax.linear_schedule(
+    init_value=1e-4, 
+    end_value=1e-5, 
+    transition_steps=200
+)
+
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 200, 800, 1e-6)
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0), 
     optax.adamw(learning_rate=schedule)
 )
 optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
-
 optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)

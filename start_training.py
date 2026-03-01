@@ -87,7 +87,7 @@ class TextDataGenerator:
 
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=500, max_ponder_limit=14):
+    def __init__(self, patience=200, window=500, max_ponder_limit=15):
         self.patience = patience
         self.window = window
         self.max_ponder_limit = max_ponder_limit
