@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 from flax import nnx
 
@@ -17,12 +18,22 @@ def run_model_inference(
 
     def scan_step(state, t_signal):
         step, curr_seq, curr_shared, curr_output, halt_prob = state
-
-        new_seq, new_shared, new_output, _, _, new_halt_prob = model._core_reasoning_step(
-            curr_seq, curr_shared, curr_output, t_signal, ctx
-        )
-
         has_halted = halt_prob >= threshold
+
+        def full_compute(_):
+            new_seq, new_shared, new_output, _, _, new_halt_prob, _ = model._core_reasoning_step(
+                curr_seq, curr_shared, curr_output, t_signal, ctx
+            )
+            return new_seq, new_shared, new_output, new_halt_prob
+
+        def skip_compute(_):
+            return curr_seq, curr_shared, curr_output, halt_prob
+
+        # Skip heavy compute once everything in the batch has halted.
+        should_run = jnp.any(~has_halted)
+        new_seq, new_shared, new_output, new_halt_prob = jax.lax.cond(
+            should_run, full_compute, skip_compute, operand=None
+        )
 
         final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
         final_shared = jnp.where(has_halted[:, None, None], curr_shared, new_shared)

@@ -23,6 +23,7 @@ TEMP_LAMBDA = 1e-4
 HALT_TEMP = 2.5
 FORGET_LAMBDA = 1e-4
 BUDGET_GATE_SHARPNESS = 10.0
+AWAKE_PROB_THRESHOLD = 1e-2
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -295,25 +296,40 @@ class UniversalReasoner(nnx.Module):
         z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
 
         def scan_step(carry, t_signal):
-            curr_seq, curr_shared, curr_output = carry
+            curr_seq, curr_shared, curr_output, p_remain_prev = carry
 
-            new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget = self._core_reasoning_step(
-                curr_seq, curr_shared, curr_output, t_signal, ctx
+            def full_compute(_):
+                return self._core_reasoning_step(curr_seq, curr_shared, curr_output, t_signal, ctx)
+
+            def skip_compute(_):
+                proposed_updates = curr_seq
+                salience = jnp.zeros_like(curr_seq[..., :1])
+                halt_prob = jnp.ones_like(p_remain_prev)
+                forget = jnp.zeros_like(curr_shared)
+                return curr_seq, curr_shared, curr_output, proposed_updates, salience, halt_prob, forget
+
+            # `lax.cond` requires a scalar predicate; we skip only when *all* batch items are effectively halted.
+            should_run = jnp.any(p_remain_prev > AWAKE_PROB_THRESHOLD)
+            new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget = jax.lax.cond(
+                should_run, full_compute, skip_compute, operand=None
             )
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
             
             step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2))
 
+            p_remain_next = p_remain_prev * (1.0 - halt_prob)
+
             new_seq = self.seq_norm(new_seq)
             new_shared = self.shared_norm(new_shared)
             new_output = self.output_norm(new_output)
             
-            return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss, step_forget_l1)
+            return (new_seq, new_shared, new_output, p_remain_next), (new_seq, halt_prob, step_temp_loss, step_forget_l1)
 
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
 
-        _, (all_z_seq, all_halts, all_temp_loss, all_forget_l1) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
+        p_remain0 = jnp.ones((ctx['batch_size'],), dtype=z_seq.dtype)
+        _, (all_z_seq, all_halts, all_temp_loss, all_forget_l1) = scan_fn((z_seq, z_shared, z_output, p_remain0), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
         p_remain = jnp.concatenate([jnp.ones((1, ctx['batch_size'])), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
