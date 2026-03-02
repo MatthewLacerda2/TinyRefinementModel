@@ -21,6 +21,7 @@ PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.005
 TEMP_LAMBDA = 1e-4
 HALT_TEMP = 2.5
+FORGET_LAMBDA = 1e-4
 BUDGET_GATE_SHARPNESS = 10.0
 
 def rotate_half(x):
@@ -177,6 +178,10 @@ class UniversalReasoner(nnx.Module):
         self.halt_head = nnx.Linear(latent_dim + 1, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), 0.0)
 
+        self.forget_head = nnx.Linear(latent_dim, latent_dim, 
+            bias_init=jax.nn.initializers.constant(2.0),
+            rngs=rngs, dtype=dtype)
+
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
@@ -273,6 +278,9 @@ class UniversalReasoner(nnx.Module):
         salience = jax.nn.sigmoid(salience_logits)
         new_seq = curr_seq + salience * (proposed_updates - curr_seq)
         
+        forget = jax.nn.sigmoid(self.forget_head(new_shared))
+        new_shared = forget * new_shared + (1.0 - forget) * curr_shared
+        
         latent_shift = jnp.mean(jnp.abs(new_shared - curr_shared), axis=(1, 2))
         
         halt_pooled = self.halt_pooler(new_shared)
@@ -281,7 +289,7 @@ class UniversalReasoner(nnx.Module):
         halt_logits = self.halt_head(halt_features).squeeze(axis=-1)
         halt_prob = jax.nn.sigmoid(halt_logits * HALT_TEMP)
 
-        return new_seq, new_shared, new_output, proposed_updates, salience, halt_prob
+        return new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
@@ -289,20 +297,23 @@ class UniversalReasoner(nnx.Module):
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output = carry
 
-            new_seq, new_shared, new_output, proposed_updates, salience, halt_prob = self._core_reasoning_step(
+            new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget = self._core_reasoning_step(
                 curr_seq, curr_shared, curr_output, t_signal, ctx
             )
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
             
+            step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2))
+
             new_seq = self.seq_norm(new_seq)
             new_shared = self.shared_norm(new_shared)
             new_output = self.output_norm(new_output)
             
-            return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss)
+            return (new_seq, new_shared, new_output), (new_seq, halt_prob, step_temp_loss, step_forget_l1)
 
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
-        _, (all_z_seq, all_halts, all_temp_loss) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
+
+        _, (all_z_seq, all_halts, all_temp_loss, all_forget_l1) = scan_fn((z_seq, z_shared, z_output), all_time_embeds)
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
         p_remain = jnp.concatenate([jnp.ones((1, ctx['batch_size'])), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
@@ -318,9 +329,11 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
 
+        forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
+
         logits = weighted_z @ self.embed.embedding.value.T
         
-        return logits, ponder_cost, temporal_loss
+        return logits, ponder_cost, temporal_loss, forget_loss
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
 
@@ -336,10 +349,16 @@ temp_lambda_schedule = optax.linear_schedule(
     transition_steps=200
 )
 
+forget_lambda_schedule = optax.linear_schedule(
+    init_value=1e-5, 
+    end_value=1e-4, 
+    transition_steps=200
+)
+
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 8e-5, 200, 800, 1e-6)
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0), 
-    optax.adamw(learning_rate=schedule)
+    optax.adafactor(learning_rate=schedule, multiply_by_parameter_scale=True)   #dropped adamw and added the multiply parameter
 )
 optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
 optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
@@ -351,11 +370,12 @@ def train_step(m, opt, batch_tokens, step):
 
     curr_ponder_lambda = ponder_lambda_schedule(macro_step)
     curr_temp_lambda = temp_lambda_schedule(macro_step)
+    curr_forget_lambda = forget_lambda_schedule(macro_step)
 
     def loss_fn(model_instance):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
         
-        preds, ponder_cost, temporal_cost = model_instance(inputs, training=True)
+        preds, ponder_cost, temporal_cost, forget_cost = model_instance(inputs, training=True)
         
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
@@ -365,8 +385,9 @@ def train_step(m, opt, batch_tokens, step):
             token_loss
             + curr_ponder_lambda * jnp.mean(ponder_cost)
             + curr_temp_lambda * temporal_cost_clipped
+            + curr_forget_lambda * jnp.mean(forget_cost)
         ) / ACCUMULATION_STEPS
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost))
+        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(temporal_cost), jnp.mean(forget_cost))
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(m)
     opt.update(m, grads)
