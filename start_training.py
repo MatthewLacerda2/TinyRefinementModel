@@ -176,7 +176,7 @@ if __name__ == "__main__":
             if batch is None:
                 break
 
-            loss, (ce, p, t_cost) = train_step(model, optimizer, batch)
+            loss, (ce, p, t_cost) = train_step(model, optimizer, batch, step)
 
             loss.block_until_ready()
 
