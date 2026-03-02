@@ -1,6 +1,6 @@
 import os
 
-#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 #os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
@@ -211,7 +211,6 @@ class UniversalReasoner(nnx.Module):
         return reason_mask, know_mask
 
     def _prepare_reasoning_context(self, tokens, max_steps):
-        """Extracts the shared initialization for both train and infer modes."""
         batch_size, seq_len = tokens.shape
         seq_pos, shared_pos, output_pos = self._get_positions(seq_len)
 
@@ -223,6 +222,18 @@ class UniversalReasoner(nnx.Module):
         pad_mask_1d = pad_mask[:, None, None, :]
         memory_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
         extended_ctx_mask = jnp.concatenate([pad_mask_1d, memory_mask], axis=-1)
+
+        causal_output_seq_mask = jnp.tril(
+            jnp.ones((OUTPUT_SLOTS, seq_len), dtype=jnp.bool_)
+        )[None, None, :, :]
+        causal_output_seq_mask = jnp.broadcast_to(causal_output_seq_mask, (batch_size, 1, OUTPUT_SLOTS, seq_len))
+        shared_slots_mask = jnp.ones((batch_size, 1, OUTPUT_SLOTS, SHARED_SLOTS), dtype=jnp.bool_)
+        causal_output_ctx_mask = jnp.concatenate([causal_output_seq_mask, shared_slots_mask], axis=-1)
+
+        causal_cross_mask = jnp.tril(
+            jnp.ones((seq_len, OUTPUT_SLOTS), dtype=jnp.bool_)
+        )[None, None, :, :]
+        causal_cross_mask = jnp.broadcast_to(causal_cross_mask, (batch_size, 1, seq_len, OUTPUT_SLOTS))
 
         z_seq = self.embed(tokens)
         
@@ -239,6 +250,8 @@ class UniversalReasoner(nnx.Module):
         ctx = {
             'seq_pos': seq_pos, 'shared_pos': shared_pos, 'output_pos': output_pos,
             'extended_ctx_mask': extended_ctx_mask,
+            'causal_output_ctx_mask': causal_output_ctx_mask,
+            'causal_cross_mask': causal_cross_mask,
             'mods1': mods1, 'mods2': mods2,
             'reason_mask': reason_mask, 'know_mask': know_mask,
             'batch_size': batch_size
@@ -246,7 +259,6 @@ class UniversalReasoner(nnx.Module):
         return z_seq, z_shared, z_output, all_time_embeds, ctx
 
     def _core_reasoning_step(self, curr_seq, curr_shared, curr_output, t_signal, ctx):
-        """The heavy lifting of the scan step, completely shared between __call__ and infer."""
         scaled_t_signal = t_signal[None, None, :] * 0.1
         z_reason_in = curr_shared + scaled_t_signal
         
@@ -268,12 +280,12 @@ class UniversalReasoner(nnx.Module):
         output_ctx = jnp.concatenate([curr_seq, new_shared], axis=1)
         output_kv_pos = jnp.concatenate([ctx['seq_pos'], ctx['shared_pos']])
         
-        h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods1'])
-        new_output, _ = self.processor2(h_output, context=output_ctx, mask=ctx['extended_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods2'])
+        h_output, _ = self.processor1(z_output_in, context=output_ctx, mask=ctx['causal_output_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods1'])
+        new_output, _ = self.processor2(h_output, context=output_ctx, mask=ctx['causal_output_ctx_mask'], q_pos=ctx['output_pos'], kv_pos=output_kv_pos, hyper_mods=ctx['mods2'])
         
         seq_kv_pos = ctx['output_pos']
-        h_proposed, _ = self.processor1(curr_seq, context=new_output, q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods1'])
-        proposed_updates, _ = self.processor2(h_proposed, context=new_output, q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods2'])
+        h_proposed, _ = self.processor1(curr_seq, context=new_output, mask=ctx['causal_cross_mask'], q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods1'])
+        proposed_updates, _ = self.processor2(h_proposed, context=new_output, mask=ctx['causal_cross_mask'], q_pos=ctx['seq_pos'], kv_pos=seq_kv_pos, hyper_mods=ctx['mods2'])
         
         salience_logits = self.salience_head(curr_seq)
         salience = jax.nn.sigmoid(salience_logits)
@@ -292,12 +304,12 @@ class UniversalReasoner(nnx.Module):
 
         return new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
-        z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(tokens, max_steps)
+    def encode(self, prompt_tokens, max_steps=MAX_STEPS_LIMIT, training=False):
+        z_seq, z_shared, z_output, all_time_embeds, ctx = self._prepare_reasoning_context(prompt_tokens, max_steps)
 
         def scan_step(carry, t_signal):
             curr_seq, curr_shared, curr_output, p_remain_prev = carry
-
+            
             def full_compute(_):
                 return self._core_reasoning_step(curr_seq, curr_shared, curr_output, t_signal, ctx)
 
@@ -308,47 +320,59 @@ class UniversalReasoner(nnx.Module):
                 forget = jnp.zeros_like(curr_shared)
                 return curr_seq, curr_shared, curr_output, proposed_updates, salience, halt_prob, forget
 
-            # `lax.cond` requires a scalar predicate; we skip only when *all* batch items are effectively halted.
             should_run = jnp.any(p_remain_prev > AWAKE_PROB_THRESHOLD)
             new_seq, new_shared, new_output, proposed_updates, salience, halt_prob, forget = jax.lax.cond(
                 should_run, full_compute, skip_compute, operand=None
             )
             
             step_temp_loss = jnp.mean((1.0 - salience) * jnp.square(proposed_updates - curr_seq), axis=(1, 2))
-            
             step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2))
-
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
 
             new_seq = self.seq_norm(new_seq)
             new_shared = self.shared_norm(new_shared)
             new_output = self.output_norm(new_output)
             
-            return (new_seq, new_shared, new_output, p_remain_next), (new_seq, halt_prob, step_temp_loss, step_forget_l1)
+            return (new_seq, new_shared, new_output, p_remain_next), (new_shared, halt_prob, step_temp_loss, step_forget_l1)
 
         scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
-
         p_remain0 = jnp.ones((ctx['batch_size'],), dtype=z_seq.dtype)
-        _, (all_z_seq, all_halts, all_temp_loss, all_forget_l1) = scan_fn((z_seq, z_shared, z_output, p_remain0), all_time_embeds)
-        all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         
-        p_remain = jnp.concatenate([jnp.ones((1, ctx['batch_size'])), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
-        step_weights = all_halts * p_remain
-
-        last_step_halt_prob = all_halts[-1]
-        remaining_prob = p_remain[-1] * (1.0 - last_step_halt_prob)
-        step_weights = step_weights.at[-1].add(remaining_prob)
-
-        weighted_z = jnp.einsum('sb,sbnd->bnd', step_weights, all_z_seq)
+        final_state, (all_shared, all_halts, all_temp_loss, all_forget_l1) = scan_fn((z_seq, z_shared, z_output, p_remain0), all_time_embeds)
         
-        step_indices = jnp.arange(1, max_steps + 1)[:, None]
-        ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
-        temporal_loss = jnp.sum(step_weights * all_temp_loss, axis=0)
-
-        forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
-
-        logits = weighted_z @ self.embed.embedding.value.T
+        _, final_pondered_shared, _, _ = final_state
         
+        ponder_cost = jnp.mean(all_halts)
+        temporal_loss = jnp.mean(all_temp_loss)
+        forget_loss = jnp.mean(all_forget_l1)
+
+        return final_pondered_shared, ponder_cost, temporal_loss, forget_loss
+
+    def decode(self, decoder_inputs, encoded_shared):
+        batch_size, seq_len = decoder_inputs.shape
+        
+        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        causal_mask = causal_mask[None, None, :, :]
+        
+        cross_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+
+        z_dec = self.embed(decoder_inputs)
+        
+        seq_pos = jnp.arange(seq_len)
+        h_dec, _ = self.processor1(z_dec, context=z_dec, mask=causal_mask, q_pos=seq_pos, kv_pos=seq_pos)
+        
+        shared_pos = jnp.arange(SHARED_SLOTS)
+        out_dec, _ = self.processor2(h_dec, context=encoded_shared, mask=cross_mask, q_pos=seq_pos, kv_pos=shared_pos)
+        
+        logits = out_dec @ self.embed.embedding.value.T
+        return logits
+
+    def __call__(self, prompt_tokens, decoder_inputs=None, max_steps=MAX_STEPS_LIMIT, training=False):
+        if decoder_inputs is None:
+            decoder_inputs = prompt_tokens
+
+        encoded_shared, ponder_cost, temporal_loss, forget_loss = self.encode(prompt_tokens, max_steps, training)
+        logits = self.decode(decoder_inputs, encoded_shared)
         return logits, ponder_cost, temporal_loss, forget_loss
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0))
@@ -389,12 +413,20 @@ def train_step(m, opt, batch_tokens, step):
     curr_forget_lambda = forget_lambda_schedule(macro_step)
 
     def loss_fn(model_instance):
-        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
+        seq_len = batch_tokens.shape[1]
+        split_idx = seq_len // 2
         
-        preds, ponder_cost, temporal_cost, forget_cost = model_instance(inputs, training=True)
+        prompt_tokens = batch_tokens[:, :split_idx]
         
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-        token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
+        decoder_inputs = batch_tokens[:, split_idx-1 : -1]
+        labels = batch_tokens[:, split_idx:]
+        
+        preds, ponder_cost, temporal_cost, forget_cost = model_instance(
+            prompt_tokens, decoder_inputs, training=True
+        )
+        
+        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=labels)
+        token_loss = jnp.mean(ce_loss, where=(labels != PAD_TOKEN_ID))
         
         temporal_cost_clipped = jnp.clip(jnp.mean(temporal_cost), a_max=10.0)
         total_loss = (
