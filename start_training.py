@@ -25,7 +25,6 @@ CHECKPOINT_INTERVAL = 10
 # Larger = better global ordering but more RAM. 10k is a good balance.
 SORT_BUFFER_SIZE = 10_000
 
-
 class TextDataGenerator:
     def __init__(self, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
@@ -34,10 +33,6 @@ class TextDataGenerator:
         token = os.environ.get("HF_TOKEN")
         print(f"🚀 Preparing FineWeb-Edu (sorted by difficulty) (Auth: {'Yes' if token else 'No'})...")
 
-        # HuggingFaceFW/fineweb-edu contains an 'score' column (1-5, educational quality).
-        # We use it as a difficulty proxy: low score = simple/easy, high score = complex/hard.
-        # Streaming doesn't allow a global sort, so we do chunk-level curriculum sorting:
-        # buffer SORT_BUFFER_SIZE examples, sort ascending by score, then yield in order.
         ds = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             name="default",
@@ -50,7 +45,6 @@ class TextDataGenerator:
         self.exhausted = False
 
     def _curriculum_iterator(self, ds):
-        """Buffer chunks of examples and yield them sorted by score (easy → hard)."""
         buffer = []
         for example in ds:
             buffer.append(example)
@@ -58,7 +52,6 @@ class TextDataGenerator:
                 buffer.sort(key=lambda x: x["score"])
                 yield from buffer
                 buffer = []
-        # Flush remaining
         if buffer:
             buffer.sort(key=lambda x: x["score"])
             yield from buffer
@@ -169,14 +162,14 @@ if __name__ == "__main__":
     step = start_step
     while True:
         t0 = time.time()
-        step_loss, step_ce, step_p, step_t_cost = 0.0, 0.0, 0.0, 0.0
+        step_loss, step_ce, step_p, step_t_cost, step_f_cost = 0.0, 0.0, 0.0, 0.0, 0.0
 
         for i in range(ACCUMULATION_STEPS):
             batch = data_gen.get_batch(BATCH_SIZE)
             if batch is None:
                 break
 
-            loss, (ce, p, t_cost) = train_step(model, optimizer, batch, step)
+            loss, (ce, p, t_cost, f_cost) = train_step(model, optimizer, batch, step)
 
             loss.block_until_ready()
 
@@ -184,6 +177,7 @@ if __name__ == "__main__":
             step_ce += float(ce)
             step_p += float(p)
             step_t_cost += float(t_cost)
+            step_f_cost += float(f_cost)
 
         if batch is None:
             break
@@ -191,6 +185,7 @@ if __name__ == "__main__":
         step_ce /= ACCUMULATION_STEPS
         step_p /= ACCUMULATION_STEPS
         step_t_cost /= ACCUMULATION_STEPS
+        step_f_cost /= ACCUMULATION_STEPS
 
         t_total = time.time() - t0
 
@@ -215,8 +210,9 @@ if __name__ == "__main__":
             )
             mngr.wait_until_finished()
 
+            # FIXED: Added F-Cost to the console print
             print(
-                f"Step {step:04d} | Agg Loss: {step_loss:.4f} | Avg Steps: {step_p:.2f} | T-Cost: {step_t_cost:.4f} | Time: {t_total:.2f}s"
+                f"Step {step:04d} | Agg Loss: {step_loss:.4f} | Avg Steps: {step_p:.2f} | T-Cost: {step_t_cost:.4f} | F-Cost: {step_f_cost:.4f} | Time: {t_total:.2f}s"
             )
 
             with open(history_file, "a", newline="") as f:
