@@ -194,6 +194,8 @@ class UniversalReasoner(nnx.Module):
 
         self.budget_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
 
+        self.budget_temp = nnx.Param(jnp.zeros((1,), dtype=jnp.float32))
+
         self.halt_pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(latent_dim + 1, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), 0.0)
@@ -218,10 +220,10 @@ class UniversalReasoner(nnx.Module):
     def _get_sliding_divider_masks(self, z_seq, mask=None):
         seq_repr = self.pooler(z_seq, mask=mask)
         reason_ratio = jax.nn.sigmoid(self.budget_head(seq_repr))
-        divider_pos = reason_ratio * SHARED_SLOTS
-        indices = jnp.arange(SHARED_SLOTS)
-        dist = (divider_pos - indices[None, :]) * BUDGET_GATE_SHARPNESS
-        reason_mask = jax.nn.sigmoid(dist)[:, :, None]
+        normalized_indices = jnp.arange(SHARED_SLOTS) / SHARED_SLOTS
+        raw_dist = reason_ratio - normalized_indices[None, :]
+        sharpness = jnp.exp(self.budget_temp.value) 
+        reason_mask = jax.nn.sigmoid(raw_dist * sharpness)[:, :, None]
         know_mask = 1.0 - reason_mask
         return reason_mask, know_mask
 
