@@ -10,12 +10,12 @@ from flax import nnx
 import jax.numpy as jnp
 
 NUM_BLOCKS = 4
-LATENT_DIM = 768
-BATCH_SIZE = 2
-ACCUMULATION_STEPS = 64
-MAX_STEPS_LIMIT = 8
-SHARED_SLOTS = 128
-MAX_SEQ_LEN = 2048
+LATENT_DIM = 512
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
+MAX_STEPS_LIMIT = 16
+SHARED_SLOTS = 256
+MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 0.001
@@ -361,7 +361,7 @@ model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
 ponder_lambda_schedule = optax.linear_schedule(init_value=0.0, end_value=0.001, transition_steps=200)
 forget_lambda_schedule = optax.linear_schedule(init_value=0.0, end_value=5e-5, transition_steps=200)
 
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 1.5e-4, 200, 600, 5e-6)
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 1.5e-4, 200, 800, 5e-6)
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adafactor(learning_rate=schedule, multiply_by_parameter_scale=True),

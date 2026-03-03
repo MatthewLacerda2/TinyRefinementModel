@@ -5,6 +5,8 @@ import csv
 import time
 import tiktoken
 import os
+import threading
+import queue
 from dotenv import load_dotenv
 from datasets import load_dataset
 from train_local import (
@@ -21,6 +23,21 @@ if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
 
 CHECKPOINT_INTERVAL = 10
 SORT_BUFFER_SIZE = 10_000
+
+PREFETCH_SIZE = 4  # keep 4 batches ready ahead of time
+
+def start_prefetch_worker(data_gen, batch_size, q):
+    def worker():
+        while True:
+            batch = data_gen.get_batch(batch_size)
+            if batch is None:
+                q.put(None)
+                return
+            q.put(batch)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    return t
 
 
 class TextDataGenerator:
@@ -154,27 +171,37 @@ if __name__ == "__main__":
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
+    batch_queue = queue.Queue(maxsize=PREFETCH_SIZE)
+    start_prefetch_worker(data_gen, BATCH_SIZE, batch_queue)
+
     step = start_step
     while True:
         t0 = time.time()
         step_loss, step_ce, step_p, step_forget_cost = 0.0, 0.0, 0.0, 0.0
+        last_loss = None
 
         for i in range(ACCUMULATION_STEPS):
-            batch = data_gen.get_batch(BATCH_SIZE)
+            batch = batch_queue.get()
             if batch is None:
                 break
 
-            loss, (ce, p, forget_cost) = train_step(model, optimizer, batch, step * ACCUMULATION_STEPS + i)
+            loss, (ce, p, forget_cost) = train_step(
+                model, optimizer, batch, step * ACCUMULATION_STEPS + i
+            )
+            # DON'T block here — let GPU run async
 
-            loss.block_until_ready()
-
-            step_loss += float(loss)
-            step_ce += float(ce)
+            step_ce += float(ce)  # these implicitly sync only once
             step_p += float(p)
             step_forget_cost += float(forget_cost)
+            step_loss += float(loss)
+            last_loss = loss
 
         if batch is None:
             break
+
+        # Sync once per macro-step, not 128 times
+        if last_loss is not None:
+            last_loss.block_until_ready()
 
         step_ce /= ACCUMULATION_STEPS
         step_p /= ACCUMULATION_STEPS
