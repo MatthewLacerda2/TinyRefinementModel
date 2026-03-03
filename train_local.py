@@ -412,6 +412,6 @@ def train_step(model, opt, batch_tokens, step):
         ) / ACCUMULATION_STEPS
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost))
 
-    grads, aux = nnx.grad(loss_fn, has_aux=True)(model)
+    (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     opt.update(model, grads)
-    return aux
+    return loss, aux
