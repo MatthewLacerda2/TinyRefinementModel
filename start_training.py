@@ -20,9 +20,6 @@ if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
 CHECKPOINT_INTERVAL = 10
-
-# How many examples to buffer before sorting by difficulty score.
-# Larger = better global ordering but more RAM. 10k is a good balance.
 SORT_BUFFER_SIZE = 10_000
 
 
@@ -34,10 +31,6 @@ class TextDataGenerator:
         token = os.environ.get("HF_TOKEN")
         print(f"🚀 Preparing FineWeb-Edu (sorted by difficulty) (Auth: {'Yes' if token else 'No'})...")
 
-        # HuggingFaceFW/fineweb-edu contains an 'score' column (1-5, educational quality).
-        # We use it as a difficulty proxy: low score = simple/easy, high score = complex/hard.
-        # Streaming doesn't allow a global sort, so we do chunk-level curriculum sorting:
-        # buffer SORT_BUFFER_SIZE examples, sort ascending by score, then yield in order.
         ds = load_dataset(
             "HuggingFaceFW/fineweb-edu",
             name="default",
@@ -50,7 +43,6 @@ class TextDataGenerator:
         self.exhausted = False
 
     def _curriculum_iterator(self, ds):
-        """Buffer chunks of examples and yield them sorted by score (easy → hard)."""
         buffer = []
         for example in ds:
             buffer.append(example)
@@ -58,7 +50,6 @@ class TextDataGenerator:
                 buffer.sort(key=lambda x: x["score"])
                 yield from buffer
                 buffer = []
-        # Flush remaining
         if buffer:
             buffer.sort(key=lambda x: x["score"])
             yield from buffer
@@ -103,18 +94,15 @@ class LossMonitor:
 
         avg_ce = sum(self.ce_history) / len(self.ce_history)
 
-        # Condition 1: Check for actual learning (CE loss dropping)
         if avg_ce < (self.best_ce - 0.01):
             self.best_ce = avg_ce
             self.last_improvement_step = step
             return False
 
-        # Condition 2: Out of patience for CE improvement
         if (step - self.last_improvement_step) > self.patience:
             print(f"\n🛑 Plateau detected: No CE improvement > 0.01 for {self.patience} steps.")
             return True
 
-        # Condition 3: Saturation detected (Pondering maxed out)
         if avg_ponder >= self.max_ponder_limit:
             print(f"\n🛑 Saturation detected: Avg ponder steps maxed out at {avg_ponder:.2f}.")
             return False
@@ -169,28 +157,28 @@ if __name__ == "__main__":
     step = start_step
     while True:
         t0 = time.time()
-        step_loss, step_ce, step_p, step_t_cost = 0.0, 0.0, 0.0, 0.0
+        step_loss, step_ce, step_p, step_forget_cost = 0.0, 0.0, 0.0, 0.0
 
         for i in range(ACCUMULATION_STEPS):
             batch = data_gen.get_batch(BATCH_SIZE)
             if batch is None:
                 break
 
-            loss, (ce, p, t_cost) = train_step(model, optimizer, batch)
+            loss, (ce, p, forget_cost) = train_step(model, optimizer, batch, step * ACCUMULATION_STEPS + i)
 
             loss.block_until_ready()
 
             step_loss += float(loss)
             step_ce += float(ce)
             step_p += float(p)
-            step_t_cost += float(t_cost)
+            step_forget_cost += float(forget_cost)
 
         if batch is None:
             break
 
         step_ce /= ACCUMULATION_STEPS
         step_p /= ACCUMULATION_STEPS
-        step_t_cost /= ACCUMULATION_STEPS
+        step_forget_cost /= ACCUMULATION_STEPS
 
         t_total = time.time() - t0
 
@@ -216,12 +204,12 @@ if __name__ == "__main__":
             mngr.wait_until_finished()
 
             print(
-                f"Step {step:04d} | Agg Loss: {step_loss:.4f} | Avg Steps: {step_p:.2f} | T-Cost: {step_t_cost:.4f} | Time: {t_total:.2f}s"
+                f"Step {step:04d} | Agg Loss: {step_loss:.4f} | Avg Steps: {step_p:.2f} | Forget: {step_forget_cost:.4f} | Time: {t_total:.2f}s"
             )
 
             with open(history_file, "a", newline="") as f:
                 writer = csv.DictWriter(
-                    f, fieldnames=["step", "loss", "ce", "avg_ponder", "avg_t_cost", "t_total"]
+                    f, fieldnames=["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total"]
                 )
                 if f.tell() == 0:
                     writer.writeheader()
@@ -231,7 +219,7 @@ if __name__ == "__main__":
                         "loss": f"{step_loss:.4f}",
                         "ce": f"{step_ce:.4f}",
                         "avg_ponder": f"{step_p:.2f}",
-                        "avg_t_cost": f"{step_t_cost:.4f}",
+                        "avg_forget_cost": f"{step_forget_cost:.4f}",
                         "t_total": f"{t_total:.2f}",
                     }
                 )
