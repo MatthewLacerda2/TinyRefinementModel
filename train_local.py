@@ -123,10 +123,10 @@ class StandardReasoningBlock(nnx.Module):
 
 class BlockStack(nnx.Module):
     def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.blocks = [
+        self.blocks = nnx.List([
             StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
             for _ in range(num_blocks)
-        ]
+        ])
         self.num_blocks = num_blocks
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, hyper_mods_list=None):
