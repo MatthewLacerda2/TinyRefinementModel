@@ -14,7 +14,7 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA
 )
 
 load_dotenv()
@@ -189,7 +189,7 @@ if __name__ == "__main__":
                 break
 
             loss, (ce, p, forget_cost) = train_step(
-                model, optimizer, batch, step * ACCUMULATION_STEPS + i
+                model, optimizer, batch, step * ACCUMULATION_STEPS + i, FORGET_LAMBDA
             )
 
             # Accumulate without forcing device sync each iteration

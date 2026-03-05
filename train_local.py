@@ -91,6 +91,7 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
+            implementation="cudnn"  # If the code breaks, remove this
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -319,17 +320,11 @@ class UniversalReasoner(nnx.Module):
         def scan_step(carry, t_signal):
             curr_shared, p_remain_prev = carry
 
-            def full_compute(_):
-                m = nnx.merge(graphdef, state)
-                return m._core_reasoning_step(z_seq, curr_shared, t_signal, ctx)
+            m = nnx.merge(graphdef, state)
+            computed_new_shared, halt_prob, forget = m._core_reasoning_step(z_seq, curr_shared, t_signal, ctx)
 
-            def skip_compute(_):
-                return (curr_shared, jnp.ones_like(p_remain_prev), jnp.zeros_like(curr_shared))
-
-            should_run = jnp.any(p_remain_prev > AWAKE_PROB_THRESHOLD)
-            new_shared, halt_prob, forget = jax.lax.cond(
-                should_run, full_compute, skip_compute, operand=None
-            )
+            awake_mask = p_remain_prev[:, None, None]
+            new_shared = curr_shared + awake_mask * (computed_new_shared - curr_shared)
 
             step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2))
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
@@ -378,23 +373,19 @@ class UniversalReasoner(nnx.Module):
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
 
-ponder_lambda_schedule = optax.linear_schedule(init_value=0.0, end_value=1e-4, transition_steps=1000)
-forget_lambda_schedule = optax.linear_schedule(init_value=0.0, end_value=5e-5, transition_steps=1000)
-
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 1.5e-4, 200, 800, 5e-6)
+
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adafactor(learning_rate=schedule, multiply_by_parameter_scale=True),
 )
+
 optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
 optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step):
-    p_lambda = ponder_lambda_schedule(step // ACCUMULATION_STEPS)
-    f_lambda = forget_lambda_schedule(step // ACCUMULATION_STEPS)
-
+def train_step(model, opt, batch_tokens, p_lambda, f_lambda):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
