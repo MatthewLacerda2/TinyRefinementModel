@@ -92,7 +92,7 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
-            implementation="cudnn"  # If the code breaks, remove this
+            #implementation="cudnn"  # It broke on my hardware, try later
         )
         return self.o_proj(out.reshape(b, s, d))
 
