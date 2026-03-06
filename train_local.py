@@ -91,6 +91,7 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
+            #implementation="cudnn"  # It broke on my hardware, try later
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -115,7 +116,6 @@ class StandardReasoningBlock(nnx.Module):
         x = x + attn_out
 
         mlp_in = self.norm2(x)
-
         hidden = jax.nn.silu(self.gate_proj(mlp_in)) * self.up_proj(mlp_in)
         x = x + self.down_proj(hidden)
         return x
@@ -139,6 +139,7 @@ class BlockStack(nnx.Module):
         return x
 
 
+
 class UniversalReasoner(nnx.Module):
     def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32):
         self.latent_dim = latent_dim
@@ -153,11 +154,10 @@ class UniversalReasoner(nnx.Module):
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
-        self.num_blocks = num_blocks
         self.stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
-        # Halt head now strictly takes the latent_dim directly
-        self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
+        self.halt_pre = nnx.Linear(latent_dim, latent_dim // 4, rngs=rngs, dtype=dtype)
+        self.halt_head = nnx.Linear(latent_dim // 4, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), -2.0)
 
         self.forget_head = nnx.Linear(
@@ -234,10 +234,9 @@ class UniversalReasoner(nnx.Module):
         forget = jax.nn.sigmoid(self.forget_head(new_shared))
         new_shared = forget * new_shared + (1.0 - forget) * curr_shared
 
-        # Simplified halt features: just take the mean of the updated shared tokens
-        halt_features = jnp.mean(new_shared, axis=1)
-
-        halt_logits = self.halt_head(halt_features).squeeze(-1)
+        pooled = jnp.mean(new_shared, axis=1)               # (b, latent_dim)
+        pre = jax.nn.gelu(self.halt_pre(pooled))           # (b, latent_dim//4)
+        halt_logits = self.halt_head(pre).squeeze(-1)      # (b,)
         halt_prob = jax.nn.sigmoid(halt_logits / HALT_TEMP)
 
         return new_shared, halt_prob, forget
@@ -295,8 +294,6 @@ class UniversalReasoner(nnx.Module):
         step_weights = all_halts * p_remain
         step_weights = step_weights.at[-1].add(p_remain[-1] * (1.0 - all_halts[-1]))
 
-        final_state = all_shared[-1]
-        
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
