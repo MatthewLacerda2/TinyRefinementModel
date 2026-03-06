@@ -91,7 +91,6 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
-            #implementation="cudnn"  # It broke on my hardware, try later
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -111,14 +110,11 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, hyper_mods=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
         attn_out = self.attn(self.norm1(x), context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
-        if hyper_mods is not None:
-            gamma, beta = hyper_mods
-            mlp_in = mlp_in * (1.0 + jax.nn.tanh(gamma)) + beta
 
         hidden = jax.nn.silu(self.gate_proj(mlp_in)) * self.up_proj(mlp_in)
         x = x + self.down_proj(hidden)
@@ -137,34 +133,10 @@ class BlockStack(nnx.Module):
         for block in self.blocks:
             block.attn.cache.value = None
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, hyper_mods_list=None, use_cache=False):
-        if hyper_mods_list is None:
-            mods = [None] * self.num_blocks
-        elif isinstance(hyper_mods_list, tuple):
-            mods = [hyper_mods_list] * self.num_blocks
-        else:
-            mods = hyper_mods_list
-            assert len(mods) == self.num_blocks
-
-        for block, mod in zip(self.blocks, mods):
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, hyper_mods=mod, use_cache=use_cache)
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+        for block in self.blocks:
+            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
         return x
-
-
-class AttentionPooling(nnx.Module):
-    def __init__(self, latent_dim, rngs, dtype=jnp.float32):
-        self.attention_net = nnx.Sequential(
-            nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
-            jax.nn.tanh,
-            nnx.Linear(latent_dim // 2, 1, rngs=rngs, dtype=dtype),
-        )
-
-    def __call__(self, x, mask=None):
-        scores = self.attention_net(x)
-        if mask is not None:
-            scores = jnp.where(mask[..., None], scores, -1e9)
-        attn_weights = jax.nn.softmax(scores, axis=1)
-        return jnp.sum(attn_weights * x, axis=1)
 
 
 class UniversalReasoner(nnx.Module):
@@ -181,26 +153,11 @@ class UniversalReasoner(nnx.Module):
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
-        self.pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
-
-        self.hyper_net = nnx.Sequential(
-            nnx.Linear(latent_dim, latent_dim // 2, rngs=rngs, dtype=dtype),
-            jax.nn.gelu,
-            nnx.Linear(
-                latent_dim // 2,
-                latent_dim * 2 * num_blocks,
-                kernel_init=jax.nn.initializers.zeros,
-                bias_init=jax.nn.initializers.zeros,
-                rngs=rngs,
-                dtype=dtype,
-            ),
-        )
         self.num_blocks = num_blocks
-
         self.stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
-        self.halt_pooler = AttentionPooling(latent_dim, rngs=rngs, dtype=dtype)
-        self.halt_head = nnx.Linear(latent_dim + 1, 1, dtype=jnp.float32, rngs=rngs)
+        # Halt head now strictly takes the latent_dim directly
+        self.halt_head = nnx.Linear(latent_dim, 1, dtype=jnp.float32, rngs=rngs)
         self.halt_head.bias.value = jnp.full((1,), -2.0)
 
         self.forget_head = nnx.Linear(
@@ -213,12 +170,6 @@ class UniversalReasoner(nnx.Module):
         seq_pos = jnp.arange(seq_len)
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         return seq_pos, shared_pos
-
-    def _get_hyper_mods(self, z_seq, mask=None):
-        prompt_context = self.pooler(z_seq, mask=mask)
-        hyper_out = self.hyper_net(prompt_context)
-        chunks = jnp.split(hyper_out, 2 * self.num_blocks, axis=-1)
-        return [(chunks[2 * i][:, None, :], chunks[2 * i + 1][:, None, :]) for i in range(self.num_blocks)]
 
     def _prepare_reasoning_context(self, tokens, max_steps):
         batch_size, seq_len = tokens.shape
@@ -234,9 +185,7 @@ class UniversalReasoner(nnx.Module):
 
         z_seq = self.embed(tokens)
 
-        hyper_mods = self._get_hyper_mods(z_seq, mask=pad_mask)
-
-        z_seq = self.stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos, hyper_mods_list=hyper_mods)
+        z_seq = self.stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
         # Initialize shared memory from token context (one-time expensive step)
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
@@ -249,7 +198,6 @@ class UniversalReasoner(nnx.Module):
             mask=extended_ctx_mask,
             q_pos=shared_pos,
             kv_pos=shared_kv_pos,
-            hyper_mods_list=hyper_mods,
             use_cache=False,
         )
         
@@ -259,7 +207,6 @@ class UniversalReasoner(nnx.Module):
             'seq_pos': seq_pos, 'shared_pos': shared_pos,
             'seq_attn_mask': seq_attn_mask,
             'extended_ctx_mask': extended_ctx_mask,
-            'hyper_mods': hyper_mods,
             'batch_size': batch_size,
             'z_seq': z_seq,
         }
@@ -267,7 +214,6 @@ class UniversalReasoner(nnx.Module):
 
     def _core_reasoning_step(self, curr_seq, curr_shared, t_signal, ctx, awake_mask):
         scaled_t = t_signal[None, None, :] * 0.1
-        hyper_mods = ctx['hyper_mods']
 
         shared_ctx = jnp.concatenate([curr_seq, curr_shared], axis=1)
         shared_kv_pos = jnp.concatenate([ctx['seq_pos'], ctx['shared_pos']])
@@ -281,7 +227,6 @@ class UniversalReasoner(nnx.Module):
             mask=ctx['extended_ctx_mask'],
             q_pos=ctx['shared_pos'],
             kv_pos=shared_kv_pos,
-            hyper_mods_list=hyper_mods,
             use_cache=False,
         )
         new_shared = curr_shared + awake_mask * (new_shared_raw - curr_shared)
@@ -289,14 +234,8 @@ class UniversalReasoner(nnx.Module):
         forget = jax.nn.sigmoid(self.forget_head(new_shared))
         new_shared = forget * new_shared + (1.0 - forget) * curr_shared
 
-        latent_shift = jnp.mean(
-            jnp.abs(new_shared - curr_shared) /
-            (jnp.abs(curr_shared) + 1e-6),
-            axis=(1,2)
-        )
-
-        halt_pooled = self.halt_pooler(new_shared)
-        halt_features = jnp.concatenate([halt_pooled, latent_shift[:, None]], axis=-1)
+        # Simplified halt features: just take the mean of the updated shared tokens
+        halt_features = jnp.mean(new_shared, axis=1)
 
         halt_logits = self.halt_head(halt_features).squeeze(-1)
         halt_prob = jax.nn.sigmoid(halt_logits / HALT_TEMP)
@@ -357,8 +296,7 @@ class UniversalReasoner(nnx.Module):
         step_weights = step_weights.at[-1].add(p_remain[-1] * (1.0 - all_halts[-1]))
 
         final_state = all_shared[-1]
-        mse_per_step = jnp.mean((all_shared - final_state[None, ...]) ** 2, axis=(2, 3))
-
+        
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
@@ -377,7 +315,6 @@ class UniversalReasoner(nnx.Module):
             mask=extended_cross_mask,
             q_pos=ctx['seq_pos'],
             kv_pos=shared_kv_pos,
-            hyper_mods_list=ctx['hyper_mods'],
             use_cache=False,
         )
         z_out = self.seq_norm(z_out)
