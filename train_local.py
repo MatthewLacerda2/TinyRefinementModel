@@ -91,7 +91,6 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
-            #implementation="cudnn"  # It broke on my hardware, try later
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -116,6 +115,7 @@ class StandardReasoningBlock(nnx.Module):
         x = x + attn_out
 
         mlp_in = self.norm2(x)
+
         hidden = jax.nn.silu(self.gate_proj(mlp_in)) * self.up_proj(mlp_in)
         x = x + self.down_proj(hidden)
         return x
@@ -139,9 +139,8 @@ class BlockStack(nnx.Module):
         return x
 
 
-
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
         self.latent_dim = latent_dim
 
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
@@ -154,17 +153,26 @@ class UniversalReasoner(nnx.Module):
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
+        self.num_blocks = num_blocks
+
         self.stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
-        self.halt_pre = nnx.Linear(latent_dim, latent_dim // 4, rngs=rngs, dtype=dtype)
-        self.halt_head = nnx.Linear(latent_dim // 4, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -2.0)
-
-        self.forget_head = nnx.Linear(
-            latent_dim, latent_dim,
-            bias_init=jax.nn.initializers.constant(2.0),
-            rngs=rngs, dtype=dtype,
+        halt_pre_dim = latent_dim // 4
+        self.halt_pre = nnx.Linear(
+            latent_dim, halt_pre_dim, 
+            kernel_init=nnx.initializers.variance_scaling(0.02, mode="fan_in", distribution="normal"),
+            rngs=rngs, dtype=dtype
         )
+        self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
+        self.halt_head.bias.value = jnp.full((1,), -2.5)  # Slightly stronger negative bias for conservatism
+
+        self.use_forget = use_forget
+        if self.use_forget:
+            self.forget_head = nnx.Linear(
+                latent_dim, latent_dim,
+                bias_init=jax.nn.initializers.constant(2.0),
+                rngs=rngs, dtype=dtype,
+            )
 
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
@@ -231,12 +239,15 @@ class UniversalReasoner(nnx.Module):
         )
         new_shared = curr_shared + awake_mask * (new_shared_raw - curr_shared)
 
-        forget = jax.nn.sigmoid(self.forget_head(new_shared))
-        new_shared = forget * new_shared + (1.0 - forget) * curr_shared
+        if self.use_forget:
+            forget = jax.nn.sigmoid(self.forget_head(new_shared))
+            new_shared = forget * new_shared + (1.0 - forget) * curr_shared
+        else:
+            forget = jnp.ones_like(new_shared)  # No-op
 
-        pooled = jnp.mean(new_shared, axis=1)               # (b, latent_dim)
-        pre = jax.nn.gelu(self.halt_pre(pooled))           # (b, latent_dim//4)
-        halt_logits = self.halt_head(pre).squeeze(-1)      # (b,)
+        pooled = jnp.mean(new_shared, axis=1)
+        pre = jax.nn.gelu(self.halt_pre(pooled))
+        halt_logits = self.halt_head(pre).squeeze(-1)
         halt_prob = jax.nn.sigmoid(halt_logits / HALT_TEMP)
 
         return new_shared, halt_prob, forget
@@ -269,7 +280,7 @@ class UniversalReasoner(nnx.Module):
                 curr_shared
             )
 
-            step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2))
+            step_forget_l1 = jnp.mean(jnp.abs(forget), axis=(1, 2)) if self.use_forget else jnp.zeros((ctx['batch_size'],))
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
 
             rms = jnp.sqrt(jnp.mean(new_shared ** 2, axis=-1, keepdims=True) + 1e-6)
