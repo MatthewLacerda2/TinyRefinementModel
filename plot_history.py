@@ -19,6 +19,7 @@ def format_time(seconds):
     return f"{minutes}m {secs}s"
 
 def plot_training_history(log_path="training_history.csv"):
+    scale = 'log' # Hardcoded for filename consistency
     if not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
         return
@@ -55,6 +56,10 @@ def plot_training_history(log_path="training_history.csv"):
     plt.style.use('dark_background')
     fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
     
+    # Helper to apply log scale
+    def apply_scaling(ax):
+        ax.set_yscale('log')
+
     # Aggregate Loss
     ax1.plot(steps, losses, color='#00f2ff', linewidth=2.5, label='Agg Loss', marker='o', markersize=4)
     ax1.fill_between(steps, losses, color='#00f2ff', alpha=0.1)
@@ -88,11 +93,16 @@ def plot_training_history(log_path="training_history.csv"):
     ax4.set_title('Average Ponder Steps (Model Learning Depth)', fontsize=14, pad=10, color='white', fontweight='bold')
     ax4.grid(True, linestyle='--', alpha=0.3)
     ax4.legend(loc='upper left')
-    ax4.set_ylim([0, 16.5])
+    
+    for ax in [ax1, ax2, ax3, ax4]:
+        apply_scaling(ax)
+
+    ax4.set_ylim([0.9, 17.5])
 
     plt.tight_layout()
-    plt.savefig('training_plot.png', dpi=150, bbox_inches='tight')
-    print("✨ Training analytics updated: training_plot.png")
+    plot_fn = f'training_plot_{scale}.png'
+    plt.savefig(plot_fn, dpi=150, bbox_inches='tight')
+    print(f"✨ Training analytics updated: {plot_fn}")
     plt.close()
 
     # Perplexity Plot (more intuitive than CE loss)
@@ -108,34 +118,14 @@ def plot_training_history(log_path="training_history.csv"):
     ax_ppl.grid(True, linestyle='--', alpha=0.3)
     ax_ppl.legend(loc='upper right', fontsize=11)
     
-    plt.tight_layout()
-    plt.savefig('training_perplexity.png', dpi=150, bbox_inches='tight')
-    print("✨ Perplexity plot updated: training_perplexity.png")
-    plt.close()
-
-    # Log Scale Plot
-    fig_log, (ax_l1, ax_l2) = plt.subplots(2, 1, figsize=(12, 10))
-    
-    # CE Loss Log-Log
-    ax_l1.loglog(steps, ce_losses, color='#ff007b', linewidth=2.5, label='CE Loss', marker='o', markersize=4)
-    ax_l1.set_ylabel('CE Loss (Log)', color='#ff007b', fontweight='bold', fontsize=11)
-    ax_l1.set_title('CE Loss (Log-Log Scale) - Check if linear', fontsize=14, pad=10, color='white', fontweight='bold')
-    ax_l1.grid(True, which="both", ls="-", alpha=0.2)
-    ax_l1.legend(loc='upper right')
-
-    # Perplexity Log-Log
-    ax_l2.loglog(steps, ppl, color='#00ff88', linewidth=2.5, label='Perplexity', marker='o', markersize=4)
-    ax_l2.axhline(y=40, color='#ff6b6b', linestyle='--', alpha=0.5, linewidth=2, label='GPT-2 Target')
-    ax_l2.set_ylabel('Perplexity (Log)', color='#00ff88', fontweight='bold', fontsize=11)
-    ax_l2.set_xlabel('Training Step (Log)', fontweight='bold', fontsize=11)
-    ax_l2.set_title('Perplexity (Log-Log Scale)', fontsize=14, pad=10, color='white', fontweight='bold')
-    ax_l2.grid(True, which="both", ls="-", alpha=0.2)
-    ax_l2.legend(loc='upper right')
+    apply_scaling(ax_ppl)
 
     plt.tight_layout()
-    plt.savefig('training_plot_log.png', dpi=150, bbox_inches='tight')
+    ppl_fn = f'training_perplexity_{scale}.png'
+    plt.savefig(ppl_fn, dpi=150, bbox_inches='tight')
+    print(f"✨ Perplexity plot updated: {ppl_fn}")
     plt.close()
-    print("✨ Log analytics updated: training_plot_log.png")
+
 
     current_step = steps[-1]
     

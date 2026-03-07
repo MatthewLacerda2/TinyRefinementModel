@@ -13,14 +13,13 @@ NUM_BLOCKS = 4
 LATENT_DIM = 384
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
-MIN_STEPS = 4
+MIN_STEPS = 2
 MAX_STEPS_LIMIT = 16
 SHARED_SLOTS = 256
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
-HALT_TEMP = 0.5
-PONDER_LAMBDA = 3e-4
+PONDER_LAMBDA = 5e-5
 TEMP_LAMBDA = 1e-4
 FORGET_LAMBDA = 3e-5
 
@@ -162,7 +161,7 @@ class UniversalReasoner(nnx.Module):
             rngs=rngs, dtype=dtype
         )
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -2.0)
+        self.halt_head.bias.value = jnp.full((1,), -1.0)
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.use_forget = use_forget
@@ -194,7 +193,6 @@ class UniversalReasoner(nnx.Module):
 
         z_seq = self.enc_stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        # Initialize shared memory from token context (one-time expensive step)
         z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         init_ctx = jnp.concatenate([z_seq, z_shared], axis=1)
         shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
@@ -242,12 +240,12 @@ class UniversalReasoner(nnx.Module):
             forget = jax.nn.sigmoid(self.forget_head(new_shared))
             new_shared = forget * new_shared + (1.0 - forget) * curr_shared
         else:
-            forget = jnp.ones_like(new_shared)  # No-op
+            forget = jnp.ones_like(new_shared)
 
         pooled = jnp.mean(new_shared, axis=1)
         pre = jax.nn.gelu(self.halt_pre(pooled))
         halt_logits = self.halt_head(pre).squeeze(-1)
-        halt_prob = jax.nn.sigmoid(halt_logits / HALT_TEMP)
+        halt_prob = jax.nn.sigmoid(halt_logits)
 
         return new_shared, halt_prob, forget, halt_logits
 
@@ -314,6 +312,9 @@ class UniversalReasoner(nnx.Module):
         step_weights = all_halts * p_remain
         step_weights = step_weights.at[-1].add(p_remain[-1] * (1.0 - all_halts[-1]))
 
+        weights = step_weights[:, :, None, None]
+        expected_shared = jnp.sum(weights * all_shared, axis=0)
+
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
@@ -325,7 +326,7 @@ class UniversalReasoner(nnx.Module):
         )
         extended_cross_mask = jnp.concatenate([ctx['seq_attn_mask'], cross_mask], axis=-1)
 
-        final_ctx = jnp.concatenate([z_seq, final_shared], axis=1)
+        final_ctx = jnp.concatenate([z_seq, expected_shared], axis=1)
         z_out = self.enc_stack(
             z_seq,
             context=final_ctx,
