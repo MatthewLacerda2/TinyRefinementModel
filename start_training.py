@@ -176,6 +176,7 @@ if __name__ == "__main__":
         t0 = time.time()
         # Accumulate as JAX arrays — no float() sync inside the loop
         step_loss = step_ce = step_p = step_forget_cost = 0.0
+        step_diag = {k: 0.0 for k in ['logits_mean', 'logits_std', 'logits_min', 'logits_max', 'prob_mean', 'prob_std']}
         last_loss = None
         batch = None
 
@@ -184,9 +185,11 @@ if __name__ == "__main__":
             if batch is None:
                 break
 
-            loss, (ce, p, forget_cost) = train_step(
+            loss, (ce, p, forget_cost, halt_diag) = train_step(
                 model, optimizer, batch, PONDER_LAMBDA, FORGET_LAMBDA
             )
+            for k in step_diag:
+                step_diag[k] += halt_diag[k]
 
             # Accumulate without forcing device sync each iteration
             step_loss += loss
@@ -206,6 +209,7 @@ if __name__ == "__main__":
         step_ce = float(step_ce) / ACCUMULATION_STEPS
         step_p = float(step_p) / ACCUMULATION_STEPS
         step_forget_cost = float(step_forget_cost) / ACCUMULATION_STEPS
+        step_diag = {k: float(v) / ACCUMULATION_STEPS for k, v in step_diag.items()}
 
         t_total = time.time() - t0
 
@@ -233,6 +237,10 @@ if __name__ == "__main__":
             print(
                 f"Step {step:04d} | CE: {step_ce:.4f} | Agg Loss: {step_loss:.4f} | "
                 f"Avg Steps: {step_p:.2f} | Forget: {step_forget_cost:.4f} | Time: {t_total:.2f}s"
+            )
+            print(
+                f"      Logits [μ:{step_diag['logits_mean']:.2f}, σ:{step_diag['logits_std']:.2f}, min:{step_diag['logits_min']:.2f}, max:{step_diag['logits_max']:.2f}] | "
+                f"Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}]"
             )
 
             write_header = not os.path.exists(history_file) or os.path.getsize(history_file) == 0
