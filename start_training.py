@@ -186,7 +186,7 @@ if __name__ == "__main__":
                 break
 
             loss, (ce, p, forget_cost, halt_diag) = train_step(
-                model, optimizer, batch, PONDER_LAMBDA, FORGET_LAMBDA
+                model, optimizer, batch, step, FORGET_LAMBDA
             )
             for k in step_diag:
                 step_diag[k] += halt_diag[k]

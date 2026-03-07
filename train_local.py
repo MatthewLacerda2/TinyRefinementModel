@@ -10,7 +10,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 NUM_BLOCKS = 4
-LATENT_DIM = 512
+LATENT_DIM = 384
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 MIN_STEPS = 4
@@ -363,7 +363,7 @@ optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, p_lambda, f_lambda):
+def train_step(model, opt, batch_tokens, step, f_lambda):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -372,7 +372,7 @@ def train_step(model, opt, batch_tokens, p_lambda, f_lambda):
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
 
-        current_p_lambda = ponder_lambda_schedule(opt.step)
+        current_p_lambda = ponder_lambda_schedule(step)
         total_loss = (
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
