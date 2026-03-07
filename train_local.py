@@ -15,12 +15,12 @@ BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 MIN_STEPS = 4
 MAX_STEPS_LIMIT = 16
-SHARED_SLOTS = 512
+SHARED_SLOTS = 256
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 HALT_TEMP = 0.5
-PONDER_LAMBDA = 3e-5
+PONDER_LAMBDA = 3e-4
 TEMP_LAMBDA = 1e-4
 FORGET_LAMBDA = 3e-5
 
@@ -344,6 +344,15 @@ model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
 
 schedule = optax.warmup_cosine_decay_schedule(1e-6, 1.5e-4, 300, 600, 5e-6)
 
+ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value = 0.0,
+    peak_value = 5e-4,
+    warmup_steps = 200,
+    decay_steps = 500,
+    end_value = 1.5e-4,
+    exponent = 1.0,
+)
+
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adafactor(learning_rate=schedule, multiply_by_parameter_scale=True),
@@ -363,9 +372,10 @@ def train_step(model, opt, batch_tokens, p_lambda, f_lambda):
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
 
+        current_p_lambda = ponder_lambda_schedule(opt.step)
         total_loss = (
             token_loss
-            + p_lambda * jnp.mean(ponder_cost)
+            + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
         ) / ACCUMULATION_STEPS
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag)
