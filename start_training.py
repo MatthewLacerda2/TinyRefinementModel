@@ -14,7 +14,7 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA, PONDER_LAMBDA
 )
 
 load_dotenv()
@@ -163,10 +163,6 @@ if __name__ == "__main__":
         monitor.best_ce = m_state["best_ce"]
         monitor.last_improvement_step = m_state["last_improvement_step"]
 
-        # Reset halt head bias to nudge model away from collapsed early-halting.
-        # This only affects the halt decision, not the learned representations.
-        model.halt_head.bias.value = jnp.full((1,), -2.0)
-        print(f"🔧 Reset halt_head bias to -2.0 to recover ponder depth")
         print(f"✅ Resuming from step {start_step}")
     else:
         print("🆕 No checkpoint found, starting from scratch...")
@@ -189,7 +185,7 @@ if __name__ == "__main__":
                 break
 
             loss, (ce, p, forget_cost) = train_step(
-                model, optimizer, batch, step * ACCUMULATION_STEPS + i, FORGET_LAMBDA
+                model, optimizer, batch, PONDER_LAMBDA, FORGET_LAMBDA
             )
 
             # Accumulate without forcing device sync each iteration
