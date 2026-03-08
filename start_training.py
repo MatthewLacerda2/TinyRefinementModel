@@ -14,7 +14,7 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA, PONDER_LAMBDA
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA
 )
 
 load_dotenv()

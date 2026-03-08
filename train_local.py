@@ -227,13 +227,15 @@ class UniversalReasoner(nnx.Module):
             ent_loss = jnp.mean(slot_entropy)
             
             # Halt Logic
-            halt_prob = jax.nn.sigmoid(self.halt_head(jax.nn.gelu(self.halt_pre(jnp.mean(new_shared, axis=1))))).squeeze(-1)
+            pooled = jnp.mean(new_shared, axis=1)
+            halt_logits = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
+            halt_prob = jax.nn.sigmoid(halt_logits)
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
             
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
-            return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, lb_loss, ent_loss, jnp.sum(hard_mask, axis=-1))
+            return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, lb_loss, ent_loss, jnp.sum(hard_mask, axis=-1), halt_logits)
 
-        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_lb, all_ent, all_active) = jax.lax.scan(
+        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_lb, all_ent, all_active, all_logits) = jax.lax.scan(
             jax.checkpoint(scan_step), (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
         )
 
@@ -256,7 +258,12 @@ class UniversalReasoner(nnx.Module):
         mos_ent_loss = jnp.mean(all_ent)
         
         halt_diag = {
+            'logits_mean': jnp.mean(all_logits),
+            'logits_std': jnp.std(all_logits),
+            'logits_min': jnp.min(all_logits),
+            'logits_max': jnp.max(all_logits),
             'prob_mean': jnp.mean(all_halts),
+            'prob_std': jnp.std(all_halts),
             'mos_slots_active': jnp.mean(all_active),
             'mos_lb_loss': mos_lb_loss,
             'mos_ent_loss': mos_ent_loss,
