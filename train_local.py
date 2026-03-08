@@ -239,18 +239,27 @@ class UniversalReasoner(nnx.Module):
             jax.checkpoint(scan_step), (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
         )
 
-        # 3. Final Prediction
+        # --- 3. Final Prediction (Optimized & Shape-Fixed) ---
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
+        
+        # Ensure p_remain is (Steps, Batch)
         p_remain = jnp.concatenate(
             [jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0
         )
+        
+        # Weights for each step: (16, 8)
         step_weights = all_halts * p_remain
-        step_weights = step_weights.at[-1].add(p_remain[-1] * (1.0 - all_halts[-1]))
+        # Add the remaining probability to the last step
+        last_step_extra = p_remain[-1] * (1.0 - all_halts[-1])
+        step_weights = step_weights.at[-1].add(last_step_extra)
 
-        weights = step_weights[:, :, None, None]
-        expected_shared = jnp.sum(weights * all_shared, axis=0)
+        # For expected_shared: (16, 8, 128, 768)
+        weights_for_shared = step_weights[:, :, None, None]
+        expected_shared = jnp.sum(weights_for_shared * all_shared, axis=0)
 
+        # Shape fix for broadcasting (16, 1) against (16, 8)
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
+        
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
@@ -268,10 +277,16 @@ class UniversalReasoner(nnx.Module):
             'mos_lb_loss': mos_lb_loss,
             'mos_ent_loss': mos_ent_loss,
         }
-        
-        # FINAL DECODING Pass (Again using main_stack)
-        z_out = self.main_stack(z_seq, context=jnp.concatenate([z_seq, expected_shared], axis=1), 
-                               mask=extended_ctx_mask, q_pos=seq_pos, kv_pos=jnp.concatenate([seq_pos, shared_pos]))
+
+        # VRAM OPTIMIZATION: Removed concatenation of z_seq. 
+        # The model now attends purely to the "refined" shared memory.
+        z_out = self.main_stack(
+            z_seq, 
+            context=expected_shared, 
+            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
+            q_pos=seq_pos, 
+            kv_pos=shared_pos
+        )
         
         logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
         return logits, ponder_cost, forget_loss, halt_diag, mos_lb_loss, mos_ent_loss
