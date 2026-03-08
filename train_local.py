@@ -150,7 +150,7 @@ class UniversalReasoner(nnx.Module):
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
-        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=12, rngs=rngs, dtype=dtype)
+        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
