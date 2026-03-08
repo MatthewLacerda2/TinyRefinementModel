@@ -176,7 +176,7 @@ if __name__ == "__main__":
         t0 = time.time()
         # Accumulate as JAX arrays — no float() sync inside the loop
         step_loss = step_ce = step_p = step_forget_cost = 0.0
-        step_diag = {k: 0.0 for k in ['logits_mean', 'logits_std', 'logits_min', 'logits_max', 'prob_mean', 'prob_std']}
+        step_diag = {k: 0.0 for k in ['logits_mean', 'logits_std', 'logits_min', 'logits_max', 'prob_mean', 'prob_std', 'mos_slots_active']}
         last_loss = None
         batch = None
 
@@ -240,13 +240,13 @@ if __name__ == "__main__":
             )
             print(
                 f"      Logits [μ:{step_diag['logits_mean']:.2f}, σ:{step_diag['logits_std']:.2f}, min:{step_diag['logits_min']:.2f}, max:{step_diag['logits_max']:.2f}] | "
-                f"Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}]"
+                f"Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}] | Slots: {step_diag['mos_slots_active']:.1f}"
             )
 
             write_header = not os.path.exists(history_file) or os.path.getsize(history_file) == 0
             with open(history_file, "a", newline="") as f:
                 fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total",
-                          "logits_mean", "logits_std", "logits_min", "logits_max", "prob_mean", "prob_std"]
+                          "logits_mean", "logits_std", "logits_min", "logits_max", "prob_mean", "prob_std", "mos_slots_active"]
                 writer = csv.DictWriter(f, fieldnames=fields)
                 if write_header:
                     writer.writeheader()

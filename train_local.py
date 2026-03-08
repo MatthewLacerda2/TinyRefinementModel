@@ -269,7 +269,7 @@ class UniversalReasoner(nnx.Module):
             router_probs * jnp.log(router_probs + 1e-9) + 
             (1.0 - router_probs) * jnp.log(1.0 - router_probs + 1e-9)
         )
-        entropy_loss = jnp.mean(slot_entropy)
+        entropy_loss = -jnp.mean(slot_entropy)
 
         mos_aux = {
             'load_balance': load_balance_loss,
