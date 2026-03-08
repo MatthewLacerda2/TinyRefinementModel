@@ -15,7 +15,7 @@ BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 MIN_STEPS = 2
 MAX_STEPS_LIMIT = 16
-SHARED_SLOTS = 128
+SHARED_SLOTS = 256
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
@@ -23,9 +23,9 @@ PONDER_LAMBDA = 5e-5
 TEMP_LAMBDA = 1e-4
 FORGET_LAMBDA = 3e-5
 
-MOS_TOP_K = 32
+MOS_TOP_K = 64
 MOS_LB_LAMBDA = 1e-3
-MOS_ENT_LAMBDA = 1e-4
+MOS_ENT_LAMBDA = 1e-3
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -239,7 +239,10 @@ class UniversalReasoner(nnx.Module):
         )
 
         router_hidden = jax.nn.gelu(self.mos_router_pre(new_shared_raw))
+
         router_logits = self.mos_router_logit(router_hidden).squeeze(-1)
+        router_logits = router_logits / 2.0
+
         router_probs = jax.nn.sigmoid(router_logits)
 
         _, topk_indices = jax.lax.top_k(router_logits, k=MOS_TOP_K)
@@ -318,6 +321,9 @@ class UniversalReasoner(nnx.Module):
 
             rms = jnp.sqrt(jnp.mean(new_shared ** 2, axis=-1, keepdims=True) + 1e-6)
             new_shared = (new_shared / rms) * shared_norm_scale
+            # Hard NaN guard: if any NaN enters the carry, fall back to curr_shared
+            new_shared = jnp.where(jnp.isnan(new_shared), curr_shared, new_shared)
+            p_remain_next = jnp.where(jnp.isnan(p_remain_next), p_remain_prev, p_remain_next)
 
             return (new_shared, p_remain_next), (new_shared, halt_prob, step_forget_l1, halt_logits, mos_aux)
 
@@ -411,9 +417,11 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
         preds, ponder_cost, forget_cost, halt_diag, mos_lb, mos_ent = model(inputs, training=True)
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
-        token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
+        non_pad_mask = (targets != PAD_TOKEN_ID)
+        num_valid = jnp.sum(non_pad_mask).clip(min=1)  # guard against all-padding batch
+        token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
-        mos_lb_lambda = jnp.where(step < 500, 5e-3, 1e-3 * (1 - step / 1000))
+        mos_lb_lambda = jnp.where(step < 500, 5e-3, jnp.clip(1e-3 * (1 - step / 1000), 0.0, None))
         current_p_lambda = jnp.where(step < 300, 0.0, ponder_lambda_schedule(step))
 
         total_loss = (
@@ -423,6 +431,8 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
             + mos_lb_lambda * mos_lb
             + MOS_ENT_LAMBDA * mos_ent
         ) / ACCUMULATION_STEPS
+        # Prevent NaN/Inf from corrupting weights — skip bad batch by zeroing the loss
+        total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
