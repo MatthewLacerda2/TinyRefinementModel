@@ -15,13 +15,17 @@ BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 MIN_STEPS = 2
 MAX_STEPS_LIMIT = 16
-SHARED_SLOTS = 256
+SHARED_SLOTS = 128
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 PONDER_LAMBDA = 5e-5
 TEMP_LAMBDA = 1e-4
 FORGET_LAMBDA = 3e-5
+
+MOS_TOP_K = 32
+MOS_LB_LAMBDA = 1e-3
+MOS_ENT_LAMBDA = 1e-4
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -172,6 +176,10 @@ class UniversalReasoner(nnx.Module):
                 rngs=rngs, dtype=dtype,
             )
 
+        router_hidden = latent_dim // 4
+        self.mos_router_pre = nnx.Linear(latent_dim, router_hidden, rngs=rngs, dtype=jnp.float32)
+        self.mos_router_logit = nnx.Linear(router_hidden, 1, rngs=rngs, dtype=jnp.float32)
+
     def _get_positions(self, seq_len):
         seq_pos = jnp.arange(seq_len)
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
@@ -229,7 +237,23 @@ class UniversalReasoner(nnx.Module):
             kv_pos=shared_kv_pos,
             use_cache=False,
         )
-        new_shared = curr_shared + awake_mask * (new_shared_raw - curr_shared)
+
+        router_hidden = jax.nn.gelu(self.mos_router_pre(new_shared_raw))
+        router_logits = self.mos_router_logit(router_hidden).squeeze(-1)
+        router_probs = jax.nn.sigmoid(router_logits)
+
+        _, topk_indices = jax.lax.top_k(router_logits, k=MOS_TOP_K)
+        hard_mask = jax.nn.one_hot(topk_indices, SHARED_SLOTS, dtype=router_logits.dtype).sum(axis=1)
+
+        mos_gate = hard_mask + router_probs - jax.lax.stop_gradient(router_probs)
+
+        mos_gate_expanded = mos_gate[..., None]
+        new_shared = (
+            mos_gate_expanded * new_shared_raw
+            + (1.0 - mos_gate_expanded) * curr_shared
+        )
+
+        new_shared = curr_shared + awake_mask * (new_shared - curr_shared)
 
         if self.use_forget:
             forget = jax.nn.sigmoid(self.forget_head(new_shared))
@@ -237,12 +261,28 @@ class UniversalReasoner(nnx.Module):
         else:
             forget = jnp.ones_like(new_shared)
 
+        target_usage = MOS_TOP_K / SHARED_SLOTS
+        mean_slot_probs = jnp.mean(router_probs, axis=0)
+        load_balance_loss = jnp.mean((mean_slot_probs - target_usage) ** 2)
+
+        slot_entropy = - (
+            router_probs * jnp.log(router_probs + 1e-9) + 
+            (1.0 - router_probs) * jnp.log(1.0 - router_probs + 1e-9)
+        )
+        entropy_loss = jnp.mean(slot_entropy)
+
+        mos_aux = {
+            'load_balance': load_balance_loss,
+            'entropy': entropy_loss,
+            'mean_slots_active': jnp.mean(jnp.sum(hard_mask, axis=-1)),
+        }
+
         pooled = jnp.mean(new_shared, axis=1)
         pre = jax.nn.gelu(self.halt_pre(pooled))
         halt_logits = self.halt_head(pre).squeeze(-1)
         halt_prob = jax.nn.sigmoid(halt_logits)
 
-        return new_shared, halt_prob, forget, halt_logits
+        return new_shared, halt_prob, forget, halt_logits, mos_aux
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         self.enc_stack.reset_state()
@@ -261,7 +301,7 @@ class UniversalReasoner(nnx.Module):
             awake_mask = p_remain_prev[:, None, None]
 
             m = nnx.merge(graphdef, state)
-            computed_new_shared, halt_prob, forget, halt_logits = m._core_reasoning_step(z_seq, curr_shared, t_signal, ctx, awake_mask)
+            computed_new_shared, halt_prob, forget, halt_logits, mos_aux = m._core_reasoning_step(z_seq, curr_shared, t_signal, ctx, awake_mask)
 
             candidate_shared = computed_new_shared
 
@@ -279,17 +319,20 @@ class UniversalReasoner(nnx.Module):
             rms = jnp.sqrt(jnp.mean(new_shared ** 2, axis=-1, keepdims=True) + 1e-6)
             new_shared = (new_shared / rms) * shared_norm_scale
 
-            return (new_shared, p_remain_next), (new_shared, halt_prob, step_forget_l1, halt_logits)
+            return (new_shared, p_remain_next), (new_shared, halt_prob, step_forget_l1, halt_logits, mos_aux)
 
         p_remain0 = jnp.ones((ctx['batch_size'],), dtype=z_seq.dtype)
 
         step_ids = jnp.arange(max_steps)
 
-        (final_shared, _), (all_shared, all_halts_raw, all_forget_l1, all_logits) = jax.lax.scan(
+        (final_shared, _), (all_shared, all_halts_raw, all_forget_l1, all_logits, all_mos_aux) = jax.lax.scan(
             jax.checkpoint(scan_step),
             (z_shared, p_remain0),
             (all_time_embeds, step_ids),
         )
+
+        mos_lb_loss = jnp.mean(all_mos_aux['load_balance'])
+        mos_ent_loss = jnp.mean(all_mos_aux['entropy'])
 
         halt_diag = {
             'logits_mean': jnp.mean(all_logits),
@@ -298,6 +341,9 @@ class UniversalReasoner(nnx.Module):
             'logits_max': jnp.max(all_logits),
             'prob_mean': jnp.mean(all_halts_raw),
             'prob_std': jnp.std(all_halts_raw),
+            'mos_slots_active': jnp.mean(all_mos_aux['mean_slots_active']),
+            'mos_lb_loss': mos_lb_loss,
+            'mos_ent_loss': mos_ent_loss,
         }
 
         all_halts = jnp.clip(all_halts_raw, 0.0, 1.0 - 1e-7)
@@ -333,7 +379,7 @@ class UniversalReasoner(nnx.Module):
         z_out = self.seq_norm(z_out)
 
         logits = z_out @ self.embed.embedding.value.T
-        return logits, ponder_cost, forget_loss, halt_diag
+        return logits, ponder_cost, forget_loss, halt_diag, mos_lb_loss, mos_ent_loss
 
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
@@ -363,7 +409,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag = model(inputs, training=True)
+        preds, ponder_cost, forget_cost, halt_diag, mos_lb, mos_ent = model(inputs, training=True)
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         token_loss = jnp.mean(ce_loss, where=(targets != PAD_TOKEN_ID))
@@ -373,6 +419,8 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
+            + MOS_LB_LAMBDA * mos_lb
+            + MOS_ENT_LAMBDA * mos_ent
         ) / ACCUMULATION_STEPS
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag)
 
