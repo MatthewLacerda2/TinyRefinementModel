@@ -1,7 +1,7 @@
 import os
 
-#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.75"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 import jax
@@ -10,7 +10,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 NUM_BLOCKS = 4
-LATENT_DIM = 768
+LATENT_DIM = 512
 BATCH_SIZE = 8
 ACCUMULATION_STEPS = 32
 MIN_STEPS = 2
