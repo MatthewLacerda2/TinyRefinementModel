@@ -14,7 +14,7 @@ LATENT_DIM = 768
 BATCH_SIZE = 2
 ACCUMULATION_STEPS = 128 
 MIN_STEPS = 4
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 32
 SHARED_SLOTS = 64
 MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100277
@@ -263,13 +263,13 @@ class UniversalReasoner(nnx.Module):
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
 
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 300, 600, 5e-6)
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 500, 3000, 5e-6)
 
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value = 0.0,
     peak_value = 0.0,
-    warmup_steps = 1500,
-    decay_steps = 3500,
+    warmup_steps = 500,
+    decay_steps = 3000,
     end_value = 2e-4,
 )
 
