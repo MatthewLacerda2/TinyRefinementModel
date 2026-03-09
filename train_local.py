@@ -10,20 +10,18 @@ from flax import nnx
 import jax.numpy as jnp
 
 NUM_BLOCKS = 4
-LATENT_DIM = 512
-BATCH_SIZE = 8
-ACCUMULATION_STEPS = 32
-MIN_STEPS = 2
+LATENT_DIM = 768
+BATCH_SIZE = 2
+ACCUMULATION_STEPS = 128 
+MIN_STEPS = 4
 MAX_STEPS_LIMIT = 16
-SHARED_SLOTS = 128
-MOS_TOP_K = 64
+SHARED_SLOTS = 64
 MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 
 FORGET_LAMBDA = 1e-5
-MOS_LB_LAMBDA = 1e-3
-MOS_ENT_LAMBDA = 1e-4
+
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -148,14 +146,12 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.shared_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-
         self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), 3.0) 
+        self.halt_head.bias.value = jnp.full((1,), 5.0) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
@@ -163,9 +159,6 @@ class UniversalReasoner(nnx.Module):
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(3.0), rngs=rngs, dtype=dtype)
 
-        router_hidden = latent_dim // 4
-        self.mos_router_pre = nnx.Linear(latent_dim, router_hidden, rngs=rngs, dtype=jnp.float32)
-        self.mos_router_logit = nnx.Linear(router_hidden, 1, rngs=rngs, dtype=jnp.float32)
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
         self.main_stack.reset_state()
@@ -194,37 +187,19 @@ class UniversalReasoner(nnx.Module):
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
-            # Apply Time Signal
             stack_input = self.time_norm(curr_shared) + (t_signal[None, None, :] * 0.1)
             
-            # CORE RECURSION: Using the same main_stack
-            new_shared_raw = self.main_stack(
+            new_shared = self.main_stack(
                 stack_input, context=shared_ctx, mask=extended_ctx_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
-            # MoS Routing
-            router_logits = self.mos_router_logit(jax.nn.gelu(self.mos_router_pre(new_shared_raw))).squeeze(-1)
-            router_probs = jax.nn.sigmoid(router_logits / 2.0)
-            _, topk_indices = jax.lax.top_k(router_logits, k=MOS_TOP_K)
-            hard_mask = jax.nn.one_hot(topk_indices, SHARED_SLOTS, dtype=router_logits.dtype).sum(axis=1)
-            mos_gate = (hard_mask + router_probs - jax.lax.stop_gradient(router_probs))[..., None]
-            
-            new_shared = (mos_gate * new_shared_raw + (1.0 - mos_gate) * curr_shared)
-            
             if self.use_forget:
                 forget = jax.nn.sigmoid(self.forget_head(new_shared))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
                 forget_val = 0.0
-
-            # MoS Metrics for Return
-            target_usage = MOS_TOP_K / SHARED_SLOTS
-            mean_slot_probs = jnp.mean(router_probs, axis=0)
-            lb_loss = jnp.mean((mean_slot_probs - target_usage) ** 2)
-            slot_entropy = - (router_probs * jnp.log(router_probs + 1e-9) + (1.0 - router_probs) * jnp.log(1.0 - router_probs + 1e-9))
-            ent_loss = jnp.mean(slot_entropy)
             
             # Halt Logic
             pooled = jnp.mean(new_shared, axis=1)
@@ -233,11 +208,12 @@ class UniversalReasoner(nnx.Module):
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
             
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
-            return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, lb_loss, ent_loss, jnp.sum(hard_mask, axis=-1), halt_logits)
+            return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
-        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_lb, all_ent, all_active, all_logits) = jax.lax.scan(
+        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
             jax.checkpoint(scan_step), (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
         )
+
 
         # --- 3. Final Prediction (Optimized & Shape-Fixed) ---
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
@@ -263,9 +239,6 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
-        mos_lb_loss = jnp.mean(all_lb)
-        mos_ent_loss = jnp.mean(all_ent)
-        
         halt_diag = {
             'logits_mean': jnp.mean(all_logits),
             'logits_std': jnp.std(all_logits),
@@ -273,10 +246,11 @@ class UniversalReasoner(nnx.Module):
             'logits_max': jnp.max(all_logits),
             'prob_mean': jnp.mean(all_halts),
             'prob_std': jnp.std(all_halts),
-            'mos_slots_active': jnp.mean(all_active),
-            'mos_lb_loss': mos_lb_loss,
-            'mos_ent_loss': mos_ent_loss,
+            'mos_slots_active': 0.0,
+            'mos_lb_loss': 0.0,
+            'mos_ent_loss': 0.0,
         }
+
 
         # VRAM OPTIMIZATION: Removed concatenation of z_seq. 
         # The model now attends purely to the "refined" shared memory.
@@ -331,8 +305,6 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
-            + MOS_LB_LAMBDA * mos_lb
-            + MOS_ENT_LAMBDA * mos_ent
         ) / ACCUMULATION_STEPS
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
