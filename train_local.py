@@ -246,14 +246,8 @@ class UniversalReasoner(nnx.Module):
             'logits_max': jnp.max(all_logits),
             'prob_mean': jnp.mean(all_halts),
             'prob_std': jnp.std(all_halts),
-            'mos_slots_active': 0.0,
-            'mos_lb_loss': 0.0,
-            'mos_ent_loss': 0.0,
         }
 
-
-        # VRAM OPTIMIZATION: Removed concatenation of z_seq. 
-        # The model now attends purely to the "refined" shared memory.
         z_out = self.main_stack(
             z_seq, 
             context=expected_shared, 
@@ -263,7 +257,8 @@ class UniversalReasoner(nnx.Module):
         )
         
         logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
-        return logits, ponder_cost, forget_loss, halt_diag, mos_lb_loss, mos_ent_loss
+        return logits, ponder_cost, forget_loss, halt_diag
+
 
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
@@ -292,7 +287,8 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag, mos_lb, mos_ent = model(inputs, training=True)
+        preds, ponder_cost, forget_cost, halt_diag = model(inputs, training=True)
+
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
