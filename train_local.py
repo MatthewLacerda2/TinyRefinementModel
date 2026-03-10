@@ -151,7 +151,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -1.0) 
+        self.halt_head.bias.value = jnp.full((1,), -2.0) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
@@ -236,7 +236,7 @@ class UniversalReasoner(nnx.Module):
         # Shape fix for broadcasting (16, 1) against (16, 8)
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         
-        ponder_cost = jnp.sum(step_weights * step_indices, axis=0)
+        ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
         # Advanced Diagnostics
@@ -276,13 +276,13 @@ class UniversalReasoner(nnx.Module):
 
 model = UniversalReasoner(LATENT_DIM, rngs=nnx.Rngs(0), num_blocks=NUM_BLOCKS)
 
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 500, 3000, 5e-6)
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 600, 1200, 5e-6)
 
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value = 0.0,
     peak_value = 0.0,
-    warmup_steps = 500,
-    decay_steps = 3000,
+    warmup_steps = 600,
+    decay_steps = 1200,
     end_value = 2e-4,
 )
 

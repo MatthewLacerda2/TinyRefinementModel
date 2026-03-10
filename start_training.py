@@ -8,6 +8,7 @@ import tiktoken
 import os
 import threading
 import queue
+import multiprocessing as mp
 from dotenv import load_dotenv
 from datasets import load_dataset
 from train_local import (
@@ -24,7 +25,7 @@ if "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ:
 
 CHECKPOINT_INTERVAL = 10
 SORT_BUFFER_SIZE = 10_000
-PREFETCH_SIZE = 4
+PREFETCH_SIZE = 16
 
 
 def start_prefetch_worker(data_gen, batch_size, q):
@@ -59,6 +60,7 @@ class TextDataGenerator:
 
         self.iterator = self._curriculum_iterator(ds)
         self.exhausted = False
+        self.pool = mp.Pool(processes=4)
 
     def _curriculum_iterator(self, ds):
         buffer = []
@@ -72,26 +74,34 @@ class TextDataGenerator:
             buffer.sort(key=lambda x: x["score"])
             yield from buffer
 
+    def _tokenize_item(self, text):
+        tokens = self.enc.encode(text)
+        if len(tokens) < self.max_seq_len:
+            tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
+        else:
+            tokens = tokens[: self.max_seq_len]
+        return tokens
+
     def get_batch(self, batch_size):
         if self.exhausted:
             return None
-        batch_ids = []
-        while len(batch_ids) < batch_size:
+            
+        batch_texts = []
+        while len(batch_texts) < batch_size:
             try:
                 item = next(self.iterator)
-                tokens = self.enc.encode(item["text"])
-                if len(tokens) < self.max_seq_len:
-                    tokens = tokens + [PAD_TOKEN_ID] * (self.max_seq_len - len(tokens))
-                else:
-                    tokens = tokens[: self.max_seq_len]
-                batch_ids.append(tokens)
+                batch_texts.append(item["text"])
             except StopIteration:
                 self.exhausted = True
                 break
             except Exception:
                 continue
-        if not batch_ids:
+        
+        if not batch_texts:
             return None
+            
+        batch_ids = self.pool.map(self._tokenize_item, batch_texts)
+            
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 
@@ -174,7 +184,6 @@ if __name__ == "__main__":
     step = start_step
     while True:
         t0 = time.time()
-        # Accumulate as JAX arrays — no float() sync inside the loop
         step_loss = step_ce = step_p = step_forget_cost = 0.0
         step_diag = {k: 0.0 for k in [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
@@ -196,7 +205,6 @@ if __name__ == "__main__":
             for k in step_diag:
                 step_diag[k] += halt_diag[k]
 
-            # Accumulate without forcing device sync each iteration
             step_loss += loss
             step_ce += ce
             step_p += p
