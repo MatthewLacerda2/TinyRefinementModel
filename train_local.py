@@ -9,7 +9,7 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-NUM_BLOCKS = 4
+NUM_BLOCKS = 8
 LATENT_DIM = 1024
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 256
@@ -19,9 +19,8 @@ SHARED_SLOTS = 64
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
-
 FORGET_LAMBDA = 1e-5
-
+DIVERSITY_LAMBDA = 0.2
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -309,7 +308,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
-            + 0.01 * div_loss
+            + DIVERSITY_LAMBDA * div_loss
         ) / ACCUMULATION_STEPS
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
