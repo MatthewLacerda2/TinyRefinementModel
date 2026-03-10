@@ -10,13 +10,13 @@ from flax import nnx
 import jax.numpy as jnp
 
 NUM_BLOCKS = 4
-LATENT_DIM = 768
-BATCH_SIZE = 2
-ACCUMULATION_STEPS = 128 
-MIN_STEPS = 4
+LATENT_DIM = 1024
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 256
+MIN_STEPS = 8
 MAX_STEPS_LIMIT = 16
 SHARED_SLOTS = 64
-MAX_SEQ_LEN = 512
+MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 
@@ -226,7 +226,7 @@ class UniversalReasoner(nnx.Module):
 
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         
-        actual_ponder_val = jnp.sum(step_weights * step_indices, axis=0) 
+        actual_steps = jnp.sum(step_weights * step_indices, axis=0) 
 
         ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
@@ -244,13 +244,17 @@ class UniversalReasoner(nnx.Module):
             'logits_std': jnp.std(all_logits),
             'logits_min': jnp.min(all_logits),
             'logits_max': jnp.max(all_logits),
-            'prob_mean': jnp.mean(actual_ponder_val),
             'prob_std': jnp.std(all_halts),
             'saturation': saturation_score,
             'temporal_drift': drift,
             'forget_density': forget_density,
             'logit_spread': logit_spread,
         }
+
+        halt_diag.update({
+            'prob_mean': jnp.mean(actual_steps),
+            'actual_steps': jnp.mean(actual_steps) 
+        })
 
         z_out = self.main_stack(
             z_seq, 
