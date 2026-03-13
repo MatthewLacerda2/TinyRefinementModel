@@ -11,6 +11,8 @@ import queue
 import multiprocessing as mp
 from functools import partial
 from dotenv import load_dotenv
+import jax.lax as lax
+import numpy as np
 from datasets import load_dataset
 from train_local import (
     UniversalReasoner,
@@ -25,6 +27,14 @@ CHECKPOINT_INTERVAL = 10
 SORT_BUFFER_SIZE = 10_000
 PREFETCH_SIZE = 16
 
+GLOBAL_POOL = None
+
+def get_global_pool():
+    global GLOBAL_POOL
+    if GLOBAL_POOL is None:
+        GLOBAL_POOL = mp.Pool(processes=os.cpu_count() or 4)
+    return GLOBAL_POOL
+
 def global_tokenize_item(text, max_seq_len, enc_name):
     import tiktoken
     enc = tiktoken.get_encoding(enc_name)
@@ -36,44 +46,70 @@ def global_tokenize_item(text, max_seq_len, enc_name):
     return tokens
 
 class TextDataGenerator:
-    def __init__(self, max_seq_len=MAX_SEQ_LEN):
+    def __init__(self, dataset_name="HuggingFaceFW/fineweb-edu", max_seq_len=MAX_SEQ_LEN, config_name=None):
         self.max_seq_len = max_seq_len
+        self.dataset_name = dataset_name
+        self.config_name = config_name
         self.enc_name = "cl100k_base"
         
-        token = os.environ.get("HF_TOKEN")
-        print(f"🚀 Preparing FineWeb-Edu (sorted by difficulty)...")
+        self.iterator = None
+        self.exhausted = False
+        self.pool = get_global_pool()
 
-        ds = load_dataset(
-            "HuggingFaceFW/fineweb-edu",
-            name="default",
-            split="train",
-            streaming=True,
-            token=token,
-        ).select_columns(["text", "score"])
+    def _ensure_iterator(self):
+        if self.iterator is not None:
+            return
+
+        token = os.environ.get("HF_TOKEN")
+        print(f"🚀 Preparing {self.dataset_name}...")
+
+        ds_kwargs = {
+            "path": self.dataset_name,
+            "split": "train",
+            "streaming": True,
+            "token": token,
+        }
+
+        if self.config_name:
+            ds_kwargs["name"] = self.config_name
+        elif "fineweb" in self.dataset_name and "edu" not in self.dataset_name:
+            ds_kwargs["name"] = "default"
+        
+        ds = load_dataset(**ds_kwargs)
 
         self.iterator = self._curriculum_iterator(ds)
-        self.exhausted = False
-        self.pool = mp.Pool(processes=4)
 
     def _curriculum_iterator(self, ds):
         buffer = []
         for example in ds:
             buffer.append(example)
             if len(buffer) >= SORT_BUFFER_SIZE:
-                buffer.sort(key=lambda x: x["score"])
+                if "score" in buffer[0]:
+                    buffer.sort(key=lambda x: x["score"])
                 yield from buffer
                 buffer = []
         if buffer:
-            buffer.sort(key=lambda x: x["score"])
+            if "score" in buffer[0]:
+                buffer.sort(key=lambda x: x["score"])
             yield from buffer
 
     def get_batch(self, batch_size):
+        self._ensure_iterator()
         if self.exhausted: return None
+        
         batch_texts = []
+        text_column = None
+
         while len(batch_texts) < batch_size:
             try:
                 item = next(self.iterator)
-                batch_texts.append(item["text"])
+                
+                if text_column is None:
+                    text_column = next((col for col in ["text", "content"] if col in item), None)
+                    if text_column is None:
+                        text_column = next(k for k, v in item.items() if isinstance(v, str))
+
+                batch_texts.append(item[text_column])
             except StopIteration:
                 self.exhausted = True
                 break
@@ -86,6 +122,23 @@ class TextDataGenerator:
         
         batch_ids = self.pool.map(tokenize_func, batch_texts)
         return jnp.array(batch_ids, dtype=jnp.int32)
+
+class DataMixer:
+    def __init__(self, sources, weights):
+        self.sources = sources
+        self.weights = weights
+        
+    def get_batch(self, batch_size):
+        counts = np.random.multinomial(batch_size, self.weights)
+        batch_list = []
+        for source, count in zip(self.sources, counts):
+            if count > 0:
+                b = source.get_batch(count)
+                if b is not None:
+                    batch_list.append(b)
+        if not batch_list:
+            return None
+        return jnp.concatenate(batch_list, axis=0)
 
 def start_prefetch_worker(data_gen, batch_size, q):
     def worker():
@@ -127,7 +180,23 @@ if __name__ == "__main__":
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
-    data_gen = TextDataGenerator(MAX_SEQ_LEN)
+    print("🚀 Loading 2026 Foundation Pre-training Mixture...")
+    
+    fw_edu_gen = TextDataGenerator("HuggingFaceFW/fineweb-edu", MAX_SEQ_LEN)
+    
+    fw_gen = TextDataGenerator("HuggingFaceFW/fineweb", MAX_SEQ_LEN)
+    
+    code_gen = TextDataGenerator("HuggingFaceTB/cosmopedia-v2", MAX_SEQ_LEN, config_name="python-edu")
+    
+    math_gen = TextDataGenerator("HuggingFaceTB/finemath", MAX_SEQ_LEN, config_name="finemath-4plus") 
+
+    cosmo_gen = TextDataGenerator("HuggingFaceTB/cosmopedia-v2", MAX_SEQ_LEN, config_name="cosmopedia-v2")
+
+    sources = [fw_edu_gen, fw_gen, code_gen, math_gen, cosmo_gen]
+    weights = [0.50, 0.20, 0.15, 0.10, 0.05]
+    
+    data_gen = DataMixer(sources, weights)
+
     history_file = "training_history.csv"
     monitor = LossMonitor()
 

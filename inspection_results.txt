@@ -1,0 +1,27 @@
+
+==================== FineWeb-Edu ====================
+Path: HuggingFaceFW/fineweb-edu | Config: None
+✅ Fields found: ['text', 'id', 'dump', 'url', 'date', 'file_path', 'language', 'language_score', 'token_count', 'score', 'int_score']
+🎯 Logic selected column: 'text'
+📄 Preview: Bees are vital for pollination. You can buy leafcutter bee houses to attract the bees to your garden. The leaf-cutter bees are solitary and unlike honey bees do not swarm like honey bees so they are l...
+
+==================== FineWeb ====================
+Path: HuggingFaceFW/fineweb | Config: None
+✅ Fields found: ['text', 'id', 'dump', 'url', 'date', 'file_path', 'language', 'language_score', 'token_count']
+🎯 Logic selected column: 'text'
+📄 Preview: How AP reported in all formats from tornado-stricken regionsMarch 8, 2012 When the first serious bout of tornadoes of 2012 blew through middle America in the middle of the night, they touched down in ...
+
+==================== Python-Edu ====================
+Path: HuggingFaceTB/smollm-corpus | Config: python-edu
+✅ Fields found: ['blob_id', 'repo_name', 'path', 'length_bytes', 'score', 'int_score']
+🎯 Logic selected column: 'blob_id'
+📄 Preview: 865e8db4c54b14cfa8f9a4bb332938d240f471ea...
+
+==================== FineMath ====================
+Path: HuggingFaceTB/finemath | Config: finemath-4plus
+✅ Fields found: ['url', 'fetch_time', 'content_mime_type', 'warc_filename', 'warc_record_offset', 'warc_record_length', 'text', 'token_count', 'char_count', 'metadata', 'score', 'int_score', 'crawl', 'snapshot_type', 'language', 'language_score']
+🎯 Logic selected column: 'text'
+📄 Preview: # AI Math Handbook Calculator  Input: fourier(x)  Write: fourier(x)  Compute: $$fourier(x)$$  Output: $$fourier(x)== 2\ sin(x)+\frac {((\frac{-1}{2})\ \pi -\frac{1}{2}\ cos((-2)\ \pi )\ \pi )}{\pi }\ ...
+
+==================== Cosmopedia-v2 ====================
+Path: HuggingFaceTB/cosmopedia-v2 | Config: None
