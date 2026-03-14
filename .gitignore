@@ -218,3 +218,4 @@ training_history.csv
 *.pkl
 *.png
 orbax_checkpoints/
+*.txt
