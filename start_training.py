@@ -56,7 +56,6 @@ class TextDataGenerator:
         self.items_yielded = 0
         
         self.iterator = None
-        self.exhausted = False
         self.pool = get_global_pool()
 
     def _ensure_iterator(self):
@@ -103,7 +102,6 @@ class TextDataGenerator:
 
     def get_batch(self, batch_size):
         self._ensure_iterator()
-        if self.exhausted: return None
         
         batch_texts = []
         text_column = None
@@ -124,8 +122,12 @@ class TextDataGenerator:
 
                 batch_texts.append(item[text_column])
             except StopIteration:
-                self.exhausted = True
-                break
+                print(f"🔄 Dataset {self.dataset_name} exhausted (Epoch complete)! Restarting from beginning...")
+                self.skip_count = 0
+                self.items_yielded = 0
+                self.iterator = None
+                self._ensure_iterator()
+                continue
             except Exception as e:
                 print(f"⚠️ Stream error in {self.dataset_name}: {e}. Reconnecting...")
                 self.iterator = None
@@ -152,10 +154,11 @@ class DataMixer:
         for source, count in zip(self.sources, counts):
             if count > 0:
                 b = source.get_batch(count)
-                if b is not None:
+                if b is not None and b.shape[0] > 0:
                     batch_list.append(b)
         if not batch_list:
-            return None
+            # Fallback if datasets strangely completely fail
+            return self.sources[0].get_batch(batch_size) 
         return jnp.concatenate(batch_list, axis=0)
 
 def start_prefetch_worker(data_gen, batch_size, q):
