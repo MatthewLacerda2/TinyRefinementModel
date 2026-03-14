@@ -316,7 +316,7 @@ if __name__ == "__main__":
         step_ce = float(step_ce) / ACCUMULATION_STEPS
         step_p = float(step_p) / ACCUMULATION_STEPS
         step_forget_cost = float(step_forget_cost) / ACCUMULATION_STEPS
-        step_diag = {k: float(v) / ACCUMULATION_STEPS for k, v in step_diag.items()}
+        step_diag = {k: float(jnp.mean(v)) / ACCUMULATION_STEPS for k, v in step_diag.items()}
 
         t_total = time.time() - t0
 

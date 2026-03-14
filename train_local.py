@@ -267,7 +267,7 @@ class UniversalReasoner(nnx.Module):
 
         diff_sq = jnp.sum(jnp.square(all_shared[-1] - all_shared[0]), axis=-1)
         base_sq = jnp.sum(jnp.square(all_shared[0]), axis=-1)
-        drift = jnp.sqrt(diff_sq + 1e-8) / (jnp.sqrt(base_sq + 1e-8))
+        drift = jnp.mean(jnp.sqrt(diff_sq + 1e-8) / (jnp.sqrt(base_sq + 1e-8)))
 
         forget_density = jnp.mean(all_forget_l1)
         logit_spread = jnp.max(all_logits) - jnp.min(all_logits)
