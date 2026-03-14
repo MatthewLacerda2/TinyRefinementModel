@@ -11,32 +11,32 @@ from train_local import (
     LATENT_DIM, 
     MAX_SEQ_LEN, 
     PAD_TOKEN_ID,
-    MAX_STEPS_LIMIT
+    MAX_STEPS_LIMIT,
+    HUNCH_REFRESH_EVERY
 )
 from inference_core import run_model_inference
 
 CHECKPOINT_DIR = os.path.abspath("orbax_checkpoints")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-def generate_text(model, enc, prompt, max_new_tokens=128, threshold=0.5):
-    """Autoregressive generation using the refined model logic."""
+def generate_text(model, enc, prompt, max_new_tokens=128):
     tokens_list = enc.encode(prompt)
     
-    # Truncate if prompt is too long
     if len(tokens_list) > MAX_SEQ_LEN - max_new_tokens:
         tokens_list = tokens_list[-(MAX_SEQ_LEN - max_new_tokens):]
     
     @nnx.jit
-    def get_next_logits(m, tks):
-        logits = run_model_inference(m, tks, max_steps=MAX_STEPS_LIMIT, threshold=threshold)
+    def get_next_logits(m, tks, refresh):
+        logits = run_model_inference(m, tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
         return logits[:, -1, :]  # Return logits for the last token in sequence
 
     print("🤖 Assistant: ", end="", flush=True)
     
-    for _ in range(max_new_tokens):
+    for i in range(max_new_tokens):
         input_ids = jnp.array([tokens_list], dtype=jnp.int32)
+        should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
         
-        logits = get_next_logits(model, input_ids)
+        logits = get_next_logits(model, input_ids, should_refresh)
         next_token = int(jnp.argmax(logits, axis=-1)[0])
         
         if next_token == PAD_TOKEN_ID:

@@ -21,6 +21,7 @@ VOCAB_SIZE = 100277
 PAD_TOKEN_ID = 100257
 FORGET_LAMBDA = 1e-5
 DIVERSITY_LAMBDA = 0.6
+HUNCH_REFRESH_EVERY = 16
 
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
@@ -156,6 +157,13 @@ class UniversalReasoner(nnx.Module):
         self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
+        self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.hunch_gate = nnx.Linear(
+            latent_dim, latent_dim,
+            bias_init=jax.nn.initializers.constant(-2.0),
+            rngs=rngs, dtype=dtype,
+        )
+
         self.use_forget = use_forget
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(3.0), rngs=rngs, dtype=dtype)
@@ -163,10 +171,19 @@ class UniversalReasoner(nnx.Module):
         self.hunch_cache = nnx.Cache(None)
 
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
-        self.main_stack.reset_state()
-        
+    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True, prev_hunch=None):
         batch_size, seq_len = tokens.shape
+        
+        current_hunch = None
+        if training:
+            current_hunch = prev_hunch
+            self.main_stack.reset_state()
+        else:
+            if not should_refresh and self.hunch_cache.value is not None:
+                current_hunch = self.hunch_cache.value
+            else:
+                self.main_stack.reset_state()
+                
         seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         pad_mask = tokens != PAD_TOKEN_ID
         causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
@@ -175,7 +192,15 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.embed(tokens)
         z_seq = self.main_stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        z_shared = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+
+        if current_hunch is not None:
+            prev_hunch_sg = jax.lax.stop_gradient(current_hunch)
+            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(prev_hunch_sg)))
+            z_shared = gate * prev_hunch_sg + (1.0 - gate) * z_shared_base
+        else:
+            z_shared = z_shared_base
+
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
         extended_ctx_mask = jnp.concatenate([pad_mask[:, None, None, :], jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)], axis=-1)
@@ -302,13 +327,14 @@ def calculate_diversity_loss(expected_shared):
 
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, f_lambda):
+def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(inputs, training=True)
+        preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(
+            inputs, training=True, prev_hunch=prev_hunch
+        )
         div_loss = calculate_diversity_loss(expected_shared)
-
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
@@ -328,8 +354,9 @@ def train_step(model, opt, batch_tokens, step, f_lambda):
         
         halt_diag['diversity_loss'] = div_loss
         
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag)
+        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     opt.update(model, grads)
-    return loss, aux
+    *metrics, expected_shared = aux
+    return loss, tuple(metrics), expected_shared

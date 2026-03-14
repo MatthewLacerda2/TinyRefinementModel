@@ -19,7 +19,7 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA, HUNCH_REFRESH_EVERY
 )
 
 load_dotenv()
@@ -289,13 +289,17 @@ if __name__ == "__main__":
 
         last_loss = None
         current_batch = None
+        hunch = None
 
         for i in range(ACCUMULATION_STEPS):
             current_batch = batch_queue.get()
             if current_batch is None: break
+            
+            if i % HUNCH_REFRESH_EVERY == 0:
+                hunch = None
 
-            loss, (ce, p, forget_cost, halt_diag) = train_step(
-                model, optimizer, current_batch, step, FORGET_LAMBDA
+            loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
+                model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch
             )
             for k in step_diag: step_diag[k] += halt_diag[k]
 

@@ -2,53 +2,43 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from train_local import MAX_STEPS_LIMIT, UniversalReasoner
+from train_local import MAX_STEPS_LIMIT, UniversalReasoner, HUNCH_REFRESH_EVERY
 
 
 def run_model_inference(
     model: UniversalReasoner,
     tokens: jnp.ndarray,
     max_steps: int = MAX_STEPS_LIMIT,
-    threshold: float = 0.5,
+    should_refresh: bool = True,
 ) -> jnp.ndarray:
-    """Run the UniversalReasoner in inference mode, reusing its internal logic."""
-    z_seq, z_shared, z_output, all_time_embeds, ctx = model._prepare_reasoning_context(
-        tokens, max_steps
+    logits, ponder_cost, forget_loss, halt_diag, expected_shared = model(
+        tokens, max_steps=max_steps, training=False, should_refresh=should_refresh
     )
-
-    def scan_step(state, t_signal):
-        step, curr_seq, curr_shared, curr_output, halt_prob = state
-        has_halted = halt_prob >= threshold
-
-        def full_compute(_):
-            new_seq, new_shared, new_output, _, _, new_halt_prob, _ = model._core_reasoning_step(
-                curr_seq, curr_shared, curr_output, t_signal, ctx
-            )
-            return new_seq, new_shared, new_output, new_halt_prob
-
-        def skip_compute(_):
-            return curr_seq, curr_shared, curr_output, halt_prob
-
-        # Skip heavy compute once everything in the batch has halted.
-        should_run = jnp.any(~has_halted)
-        new_seq, new_shared, new_output, new_halt_prob = jax.lax.cond(
-            should_run, full_compute, skip_compute, operand=None
-        )
-
-        final_seq = jnp.where(has_halted[:, None, None], curr_seq, new_seq)
-        final_shared = jnp.where(has_halted[:, None, None], curr_shared, new_shared)
-        final_output = jnp.where(has_halted[:, None, None], curr_output, new_output)
-        final_halt_prob = jnp.where(has_halted, halt_prob, new_halt_prob)
-
-        final_seq = model.seq_norm(final_seq)
-        final_shared = model.shared_norm(final_shared)
-        final_output = model.output_norm(final_output)
-
-        return (step + 1, final_seq, final_shared, final_output, final_halt_prob), None
-
-    init_state = (0, z_seq, z_shared, z_output, jnp.zeros((ctx["batch_size"],)))
-    scan_fn = nnx.scan(nnx.remat(scan_step), in_axes=(nnx.Carry, 0))
-    (_, final_seq, _, _, _), _ = scan_fn(init_state, all_time_embeds)
-
-    logits = final_seq @ model.embed.embedding.value.T
     return logits
+
+
+def generate_text(
+    model: UniversalReasoner,
+    prompt_tokens: jnp.ndarray,
+    max_new_tokens: int,
+    rng: jax.Array,
+    max_steps: int = MAX_STEPS_LIMIT,
+    temperature: float = 1.0,
+) -> jnp.ndarray:
+    current_tokens = prompt_tokens
+    
+    for i in range(max_new_tokens):
+        should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
+        logits = run_model_inference(model, current_tokens, max_steps=max_steps, should_refresh=should_refresh)
+        next_token_logits = logits[:, -1, :]
+        
+        if temperature > 0.0:
+            rng, key = jax.random.split(rng)
+            next_token_logits = next_token_logits / temperature
+            next_token = jax.random.categorical(key, next_token_logits)[:, None]
+        else:
+            next_token = jnp.argmax(next_token_logits, axis=-1)[:, None]
+            
+        current_tokens = jnp.concatenate([current_tokens, next_token], axis=1)
+        
+    return current_tokens
