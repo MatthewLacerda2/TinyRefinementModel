@@ -9,7 +9,7 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-NUM_BLOCKS = 8
+NUM_BLOCKS = 4
 LATENT_DIM = 512
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 256
@@ -107,7 +107,8 @@ class StandardReasoningBlock(nnx.Module):
         )
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
-        attn_out = self.attn(self.norm1(x), context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+        normed_context = self.norm1(context) if context is not None else None
+        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
