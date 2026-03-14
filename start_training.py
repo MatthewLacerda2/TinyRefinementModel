@@ -9,6 +9,7 @@ import os
 import threading
 import queue
 import multiprocessing as mp
+import concurrent.futures
 from functools import partial
 from dotenv import load_dotenv
 import jax.lax as lax
@@ -32,7 +33,7 @@ GLOBAL_POOL = None
 def get_global_pool():
     global GLOBAL_POOL
     if GLOBAL_POOL is None:
-        GLOBAL_POOL = mp.Pool(processes=os.cpu_count() or 4)
+        GLOBAL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
     return GLOBAL_POOL
 
 def global_tokenize_item(text, max_seq_len, enc_name):
@@ -129,7 +130,7 @@ class TextDataGenerator:
                                  max_seq_len=self.max_seq_len, 
                                  enc_name=self.enc_name)
         
-        batch_ids = self.pool.map(tokenize_func, batch_texts)
+        batch_ids = list(self.pool.map(tokenize_func, batch_texts))
         return jnp.array(batch_ids, dtype=jnp.int32)
 
 class DataMixer:
