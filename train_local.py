@@ -179,10 +179,9 @@ class UniversalReasoner(nnx.Module):
             current_hunch = prev_hunch
             self.main_stack.reset_state()
         else:
+            self.main_stack.reset_state()
             if not should_refresh and self.hunch_cache.value is not None:
                 current_hunch = self.hunch_cache.value
-            else:
-                self.main_stack.reset_state()
                 
         seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         pad_mask = tokens != PAD_TOKEN_ID
