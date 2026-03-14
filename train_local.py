@@ -9,12 +9,12 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-NUM_BLOCKS = 4
+NUM_BLOCKS = 8
 LATENT_DIM = 768
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 256
 MIN_STEPS = 8
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 32
 SHARED_SLOTS = 64
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
@@ -150,7 +150,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -2.0) 
+        self.halt_head.bias.value = jnp.full((1,), -1.0) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -159,6 +159,8 @@ class UniversalReasoner(nnx.Module):
         self.use_forget = use_forget
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(3.0), rngs=rngs, dtype=dtype)
+
+        self.hunch_cache = nnx.Cache(None)
 
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False):
@@ -267,14 +269,18 @@ class UniversalReasoner(nnx.Module):
         )
         
         logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
+        
+        if not training:
+            self.hunch_cache.value = expected_shared
+            
         return logits, ponder_cost, forget_loss, halt_diag, expected_shared
 
 
 
-schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 600, 1200, 5e-6)
+schedule = optax.warmup_cosine_decay_schedule(1e-6, 4e-4, 400, 1000, 5e-6)
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value = 0.0, peak_value = 0.0, warmup_steps = 600, 
-    decay_steps = 1200, end_value = 2e-4
+    init_value = 0.0, peak_value = 0.0, warmup_steps = 400, 
+    decay_steps = 1000, end_value = 2e-4
 )
 base_optimizer = optax.chain(
     optax.clip_by_global_norm(1.0),

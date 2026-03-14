@@ -57,6 +57,7 @@ class TextDataGenerator:
         
         self.iterator = None
         self.pool = get_global_pool()
+        self.exhausted = False
 
     def _ensure_iterator(self):
         if self.iterator is not None:
@@ -101,6 +102,8 @@ class TextDataGenerator:
             yield from buffer
 
     def get_batch(self, batch_size):
+        if getattr(self, "exhausted", False):
+            return None
         self._ensure_iterator()
         
         batch_texts = []
@@ -122,12 +125,10 @@ class TextDataGenerator:
 
                 batch_texts.append(item[text_column])
             except StopIteration:
-                print(f"🔄 Dataset {self.dataset_name} exhausted (Epoch complete)! Restarting from beginning...")
-                self.skip_count = 0
-                self.items_yielded = 0
+                print(f"🔄 Dataset {self.dataset_name} exhausted! Stopping iteration for this dataset.")
+                self.exhausted = True
                 self.iterator = None
-                self._ensure_iterator()
-                continue
+                return None
             except Exception as e:
                 print(f"⚠️ Stream error in {self.dataset_name}: {e}. Reconnecting...")
                 self.iterator = None
@@ -145,21 +146,43 @@ class TextDataGenerator:
 
 class DataMixer:
     def __init__(self, sources, weights):
-        self.sources = sources
-        self.weights = weights
+        self.sources = list(sources)
+        self.weights = list(weights)
         
     def get_batch(self, batch_size):
-        counts = np.random.multinomial(batch_size, self.weights)
-        batch_list = []
-        for source, count in zip(self.sources, counts):
-            if count > 0:
-                b = source.get_batch(count)
-                if b is not None and b.shape[0] > 0:
-                    batch_list.append(b)
-        if not batch_list:
-            # Fallback if datasets strangely completely fail
-            return self.sources[0].get_batch(batch_size) 
-        return jnp.concatenate(batch_list, axis=0)
+        while len(self.sources) > 0:
+            counts = np.random.multinomial(batch_size, self.weights)
+            batch_list = []
+            exhausted_indices = []
+            
+            for i, (source, count) in enumerate(zip(self.sources, counts)):
+                if count > 0:
+                    b = source.get_batch(count)
+                    if getattr(source, "exhausted", False) or b is None:
+                        exhausted_indices.append(i)
+                    else:
+                        batch_list.append(b)
+            
+            if exhausted_indices:
+                new_sources = []
+                new_weights = []
+                for i in range(len(self.sources)):
+                    if i not in exhausted_indices:
+                        new_sources.append(self.sources[i])
+                        new_weights.append(self.weights[i])
+                
+                self.sources = new_sources
+                if len(self.sources) == 0:
+                    return None
+                    
+                total_w = sum(new_weights)
+                self.weights = [w / total_w for w in new_weights]
+                continue
+                
+            if batch_list:
+                return jnp.concatenate(batch_list, axis=0)
+                
+        return None
 
 def start_prefetch_worker(data_gen, batch_size, q):
     def worker():
