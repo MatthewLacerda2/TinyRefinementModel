@@ -53,100 +53,50 @@ def global_tokenize_item(text, max_seq_len, enc_name):
     return tokens
 
 class TextDataGenerator:
-    def __init__(self, dataset_name, max_seq_len=MAX_SEQ_LEN, config_name=None):
+    def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
-        self.dataset_name = dataset_name
-        self.config_name = config_name
-        self.enc_name = "cl100k_base"
-        self.skip_count = 0
-        self.items_yielded = 0
-        
-        self.iterator = None
-        self.pool = get_global_pool()
+        self.directory = directory
+        self.files = sorted([f for f in os.listdir(directory) if f.endswith('.npy')])
+        self.current_file_idx = 0
+        self.data = None
+        self.pointer = 0
         self.exhausted = False
+        self.skip_count = 0
 
-    def _ensure_iterator(self):
-        if self.iterator is not None:
-            return
-
-        token = os.environ.get("HF_TOKEN")
-        print(f"🚀 Preparing {self.dataset_name} (Config: {self.config_name})...")
-
-        ds_kwargs = {
-            "path": self.dataset_name,
-            "split": "train",
-            "streaming": True,
-            "token": token,
-        }
-
-        if self.config_name:
-            ds_kwargs["name"] = self.config_name
-        elif "fineweb" in self.dataset_name and "edu" not in self.dataset_name:
-            ds_kwargs["name"] = "default"
+    def _load_next_file(self):
+        if self.current_file_idx >= len(self.files):
+            self.exhausted = True
+            return False
         
-        ds = load_dataset(**ds_kwargs)
+        file_path = os.path.join(self.directory, self.files[self.current_file_idx])
+        print(f"📖 Streaming {file_path} into TPU memory...")
+        self.data = np.load(file_path)
+        self.pointer = 0
         
-        total_skip = self.skip_count + self.items_yielded
-        if total_skip > 0:
-            print(f"⏩ Fast-forwarding {total_skip} items in {self.dataset_name}...")
-            ds = ds.skip(total_skip)
-
-        self.iterator = self._curriculum_iterator(ds)
-
-    def _curriculum_iterator(self, ds):
-        buffer = []
-        for example in ds:
-            buffer.append(example)
-            if len(buffer) >= SORT_BUFFER_SIZE:
-                if "score" in buffer[0]:
-                    buffer.sort(key=lambda x: x.get("score", 0))
-                yield from buffer
-                buffer = []
-        if buffer:
-            if "score" in buffer[0]:
-                buffer.sort(key=lambda x: x.get("score", 0))
-            yield from buffer
+        if self.skip_count > 0:
+            # Handle resume-from-checkpoint skipping
+            tokens_to_skip = self.skip_count * self.max_seq_len
+            if tokens_to_skip < len(self.data):
+                self.pointer = tokens_to_skip
+                self.skip_count = 0
+            else:
+                self.skip_count -= (len(self.data) // self.max_seq_len)
+                self.current_file_idx += 1
+                return self._load_next_file()
+                
+        self.current_file_idx += 1
+        return True
 
     def get_batch(self, batch_size):
-        if getattr(self, "exhausted", False):
-            return None
-        self._ensure_iterator()
-        
-        batch_texts = []
-        text_column = None
-
-        while len(batch_texts) < batch_size:
-            try:
-                item = next(self.iterator)
-                self.items_yielded += 1
-                
-                if text_column is None:
-                    options = ["prompt", "text", "content", "code", "markdown"]
-                    text_column = next((col for col in options if col in item), None)
-                    if text_column is None:
-                        string_cols = [k for k, v in item.items() if isinstance(v, str)]
-                        text_column = next((k for k in string_cols if "id" not in k.lower()), string_cols[0])
-
-                batch_texts.append(item[text_column])
-            except StopIteration:
-                print(f"🔄 Dataset {self.dataset_name} exhausted! Stopping iteration for this dataset.")
-                self.exhausted = True
-                self.iterator = None
-                return None
-            except Exception as e:
-                print(f"⚠️ Stream error in {self.dataset_name}: {e}. Reconnecting...")
-                self.iterator = None
-                self._ensure_iterator()
-                continue
-        
-        if not batch_texts: return None
+        if self.exhausted: return None
+        if self.data is None or self.pointer + (batch_size * self.max_seq_len) > len(self.data):
+            if not self._load_next_file(): return None
             
-        tokenize_func = partial(global_tokenize_item, 
-                                 max_seq_len=self.max_seq_len, 
-                                 enc_name=self.enc_name)
-        
-        batch_ids = list(self.pool.map(tokenize_func, batch_texts))
-        return jnp.array(batch_ids, dtype=jnp.int32)
+        # Reshape the flat token stream into [batch, seq_len]
+        total_tokens = batch_size * self.max_seq_len
+        batch = self.data[self.pointer : self.pointer + total_tokens]
+        self.pointer += total_tokens
+        return jnp.array(batch.reshape(batch_size, self.max_seq_len), dtype=jnp.int32)
 
 class DataMixer:
     def __init__(self, sources, weights):
