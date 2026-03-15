@@ -1,7 +1,7 @@
 import os
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.8"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 
@@ -257,6 +257,8 @@ if __name__ == "__main__":
         monitor.best_ce = m_state["best_ce"]
         monitor.last_improvement_step = m_state["last_improvement_step"]
         print(f"✅ Resuming from step {start_step}")
+        del restored # Free up the temporary dictionary
+        import gc; gc.collect()
     else:
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
@@ -311,6 +313,10 @@ if __name__ == "__main__":
             step_p += float(p)
             step_forget_cost += float(forget_cost)
             last_loss = loss
+            
+            # Periodically block to prevent the JAX queue from exploding in memory
+            if i % 32 == 0 and i > 0:
+                loss.block_until_ready()
 
         if current_batch is None: break
         if last_loss is not None: last_loss.block_until_ready()
