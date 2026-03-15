@@ -17,7 +17,7 @@ from train_local import (
 from inference_core import run_model_inference
 
 CHECKPOINT_DIR = os.path.abspath("orbax_checkpoints")
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 def analyze_first_token_contenders(logits, enc, expected_token=None, top_k_count=20):
     probs = jax.nn.softmax(logits)

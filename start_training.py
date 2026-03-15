@@ -14,25 +14,34 @@ import csv
 import time
 import tiktoken
 import threading
-import queue
 import multiprocessing as mp
 import concurrent.futures
-from functools import partial
 from dotenv import load_dotenv
 import numpy as np
-from datasets import load_dataset
+import fsspec
 from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, FORGET_LAMBDA, HUNCH_REFRESH_EVERY
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, FORGET_LAMBDA
 )
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 50
+CHECKPOINT_INTERVAL = 100
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
+
+# Root paths for Data and Checkpoints (MUST be gs:// for Cloud TPU)
+DATA_ROOT = os.environ.get("DATA_ROOT", "")
+CHECKPOINT_ROOT = os.environ.get("CHECKPOINT_ROOT", "")
+
+if not DATA_ROOT.startswith("gs://") or not CHECKPOINT_ROOT.startswith("gs://"):
+    import sys
+    print(f"🛑 Error: DATA_ROOT and CHECKPOINT_ROOT must be GCS bucket links (starting with gs://).")
+    print(f"   Current DATA_ROOT: {DATA_ROOT}")
+    print(f"   Current CHECKPOINT_ROOT: {CHECKPOINT_ROOT}")
+    sys.exit(1)
 
 GLOBAL_POOL = None
 
@@ -56,7 +65,12 @@ class TextDataGenerator:
     def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
         self.directory = directory
-        self.files = sorted([f for f in os.listdir(directory) if f.endswith('.npy')])
+        
+        self.fs, self.path_prefix = fsspec.core.url_to_fs(directory)
+        
+        all_files = self.fs.ls(directory)
+        self.files = sorted([f for f in all_files if f.endswith('.npy')])
+        
         self.current_file_idx = 0
         self.data = None
         self.pointer = 0
@@ -68,9 +82,12 @@ class TextDataGenerator:
             self.exhausted = True
             return False
         
-        file_path = os.path.join(self.directory, self.files[self.current_file_idx])
+        file_path = self.files[self.current_file_idx]
         print(f"📖 Streaming {file_path} into TPU memory...")
-        self.data = np.load(file_path)
+        
+        with self.fs.open(file_path, 'rb') as f:
+            self.data = np.load(f)
+            
         self.pointer = 0
         
         if self.skip_count > 0:
@@ -193,7 +210,7 @@ if __name__ == "__main__":
     monitor = LossMonitor()
 
     mngr = ocp.CheckpointManager(
-        os.path.abspath("orbax_checkpoints"),
+        CHECKPOINT_ROOT,
         item_names=("model", "optimizer", "monitor_state", "step"),
         options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
     )
@@ -227,13 +244,13 @@ if __name__ == "__main__":
     print("🚀 Initializing Dynamic Data Phases...")
     
     pretrain_sources = [
-        TextDataGenerator("npy_dir/pretrain/fineweb-edu"),
-        TextDataGenerator("npy_dir/pretrain/code_instructions"),
-        TextDataGenerator("npy_dir/pretrain/finemath"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
     pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
 
-    chat_mixer = TextDataGenerator("npy_dir/chat/ultrachat")
+    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
 
     if start_step > 1:
         if start_step < 25000:
