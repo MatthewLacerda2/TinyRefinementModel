@@ -112,7 +112,14 @@ def plot_training_history(log_path="training_history.csv"):
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
     params = nnx.state(model, nnx.Param)
     param_count = sum(x.size for x in jax.tree_util.tree_leaves(params))
+    
+    reason_params = nnx.state(model.main_stack, nnx.Param)
+    num_reason_param = sum(x.size for x in jax.tree_util.tree_leaves(reason_params))
+    num_block = model.main_stack.num_blocks
+    encoder_params = param_count - num_reason_param
+    
     print(f"Model Parameters: {param_count:,}")
+    print(f"(encoder params: {encoder_params:,}\n Layers params: {num_reason_param:,} across {num_block} layers}})")
 
     print(f"Last CE change: {ce[-1] - ce[-2]}")
     print(f"Lowest CE so far: {min(ce)}")

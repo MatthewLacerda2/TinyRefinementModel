@@ -3,15 +3,18 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-NUM_BLOCKS = 4
+#Params
 LATENT_DIM = 768
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
-MIN_STEPS = 4
-MAX_STEPS_LIMIT = 16
+NUM_BLOCKS = 4
 SHARED_SLOTS = 64
-MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100277
+MAX_STEPS_LIMIT = 16
+
+#Training
+MAX_SEQ_LEN = 1024
+MIN_STEPS = 4
+ACCUMULATION_STEPS = 128
+BATCH_SIZE = 1
 PAD_TOKEN_ID = 100257
 FORGET_LAMBDA = 1e-5
 DIVERSITY_LAMBDA = 10.0
@@ -22,7 +25,7 @@ def rotate_half(x):
     return jnp.concatenate([-x2, x1], axis=-1)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.float32):
+    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.bfloat16):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -37,10 +40,10 @@ class RotaryAttention(nnx.Module):
 
         self.cache = nnx.Cache(None)
 
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
-        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
-        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
+        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
         b, s, d = x.shape
@@ -86,7 +89,7 @@ class RotaryAttention(nnx.Module):
 
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -113,7 +116,7 @@ class StandardReasoningBlock(nnx.Module):
 
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32):
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
         self.blocks = nnx.List([
             StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
             for _ in range(num_blocks)
@@ -131,13 +134,13 @@ class BlockStack(nnx.Module):
 
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.bfloat16, use_forget=True):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
 
         self.shared_token = nnx.Param(
-            jax.nn.initializers.orthogonal()(rngs(), (1, SHARED_SLOTS, latent_dim), jnp.float32)
+            jax.nn.initializers.orthogonal()(rngs(), (1, SHARED_SLOTS, latent_dim), dtype)
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -327,6 +330,7 @@ optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION
 
 
 def calculate_diversity_loss(expected_shared):
+    expected_shared = expected_shared.astype(jnp.float32)
     norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
     normalized_shared = expected_shared / norms
     
