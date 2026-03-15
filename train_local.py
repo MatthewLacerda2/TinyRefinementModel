@@ -13,8 +13,8 @@ MAX_STEPS_LIMIT = 16
 #Training
 MAX_SEQ_LEN = 1024
 MIN_STEPS = 4
-ACCUMULATION_STEPS = 128
-BATCH_SIZE = 1
+BATCH_SIZE = 128
+# ACCUMULATION_STEPS removed for TPU usage
 PAD_TOKEN_ID = 100257
 FORGET_LAMBDA = 1e-5
 DIVERSITY_LAMBDA = 10.0
@@ -322,11 +322,10 @@ ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value = 0.0, peak_value = 0.0, warmup_steps = 400, 
     decay_steps = 1000, end_value = 2e-4
 )
-base_optimizer = optax.chain(
+optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adamw(learning_rate=schedule),
 )
-optimizer_chain = optax.MultiSteps(base_optimizer, every_k_schedule=ACCUMULATION_STEPS)
 
 
 def calculate_diversity_loss(expected_shared):
@@ -362,7 +361,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
             + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
             + DIVERSITY_LAMBDA * div_loss
-        ) / ACCUMULATION_STEPS
+        )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         

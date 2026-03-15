@@ -23,12 +23,12 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA, HUNCH_REFRESH_EVERY
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, FORGET_LAMBDA, HUNCH_REFRESH_EVERY
 )
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 10
+CHECKPOINT_INTERVAL = 50
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
 
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     weights = [0.50, 0.15, 0.15, 0.15, 0.05]
     
     # Calculate skip counts for resume-safety
-    total_samples_seen = (start_step - 1) * BATCH_SIZE * ACCUMULATION_STEPS
+    total_samples_seen = (start_step - 1) * BATCH_SIZE
     if total_samples_seen > 0:
         for gen, weight in zip(sources, weights):
             gen.skip_count = int(total_samples_seen * weight)
@@ -297,35 +297,30 @@ if __name__ == "__main__":
         current_batch = None
         hunch = None
 
-        for i in range(ACCUMULATION_STEPS):
-            current_batch = batch_queue.get()
-            if current_batch is None: break
-            
-            should_truncate = (i % HUNCH_REFRESH_EVERY == 0 and i > 0)
-            loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-                model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
-                should_truncate=should_truncate
-            )
-            for k in step_diag: step_diag[k] += float(halt_diag[k])
-
-            step_loss += float(loss)
-            step_ce += float(ce)
-            step_p += float(p)
-            step_forget_cost += float(forget_cost)
-            last_loss = loss
-            
-            # Periodically block to prevent the JAX queue from exploding in memory
-            if i % 32 == 0 and i > 0:
-                loss.block_until_ready()
-
+        current_batch = batch_queue.get()
         if current_batch is None: break
+        
+        # We no longer use should_truncate within an accumulation loop.
+        # train_step handles refreshing every HUNCH_REFRESH_EVERY global steps.
+        loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
+            model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
+            should_truncate=False
+        )
+        for k in step_diag: step_diag[k] = float(halt_diag[k])
+
+        step_loss = float(loss)
+        step_ce = float(ce)
+        step_p = float(p)
+        step_forget_cost = float(forget_cost)
+        last_loss = loss
+        
         if last_loss is not None: last_loss.block_until_ready()
 
         step_loss = float(step_loss) 
-        step_ce = float(step_ce) / ACCUMULATION_STEPS
-        step_p = float(step_p) / ACCUMULATION_STEPS
-        step_forget_cost = float(step_forget_cost) / ACCUMULATION_STEPS
-        step_diag = {k: float(jnp.mean(v)) / ACCUMULATION_STEPS for k, v in step_diag.items()}
+        step_ce = float(step_ce)
+        step_p = float(step_p)
+        step_forget_cost = float(step_forget_cost)
+        step_diag = {k: float(jnp.mean(v)) for k, v in step_diag.items()}
 
         t_total = time.time() - t0
 
