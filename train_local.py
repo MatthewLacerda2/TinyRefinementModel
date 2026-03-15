@@ -203,7 +203,21 @@ class UniversalReasoner(nnx.Module):
 
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
-        extended_ctx_mask = jnp.concatenate([pad_mask[:, None, None, :], jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)], axis=-1)
+        # 1. Sequence part: all slots can see all valid sequence tokens
+        seq_mask = jnp.broadcast_to(
+            pad_mask[:, None, None, :], 
+            (batch_size, 1, SHARED_SLOTS, seq_len)
+        )
+        
+        # 2. Shared part: Causal mask so Slot N can only attend to Slots <= N
+        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+        shared_mask = jnp.broadcast_to(
+            causal_shared[None, None, :, :], 
+            (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS)
+        )
+        
+        # Merge them to create the final mask for the scratchpad
+        extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
 
         def scan_step(carry, inputs):
             curr_shared, p_remain_prev = carry
