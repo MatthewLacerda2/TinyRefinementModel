@@ -47,7 +47,7 @@ def tokenize_batch_parallel(text):
 def run_prefill():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Use 75% of cores to keep system responsive
-    num_workers = max(1, cpu_count-1)
+    num_workers = max(1, int(cpu_count() - 1))
     
     with Pool(num_workers) as pool:
         for ds_cfg in MIXTURE:
