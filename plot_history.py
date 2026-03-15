@@ -21,6 +21,20 @@ def calculate_tokens(step):
     total = step * BATCH_SIZE * MAX_SEQ_LEN
     return total
 
+def print_model_stats():
+    print("Calculating model parameters...")
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+    params = nnx.state(model, nnx.Param)
+    param_count = sum(x.size for x in jax.tree_util.tree_leaves(params))
+    
+    reason_params = nnx.state(model.main_stack, nnx.Param)
+    num_reason_param = sum(x.size for x in jax.tree_util.tree_leaves(reason_params))
+    num_block = model.main_stack.num_blocks
+    encoder_params = param_count - num_reason_param
+    
+    print(f"Model Parameters: {param_count:,}")
+    print(f"(encoder params: {encoder_params:,}\n Layers params: {num_reason_param:,} across {num_block} layers}})")
+
 def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
@@ -109,20 +123,12 @@ def plot_training_history(log_path="training_history.csv"):
     #make the tokens outputted with x.xxx.xxx so i can clearly see the millions and thousands
     print(f"Amount of tokens trained so far: {calculate_tokens(steps[-1]):,}")
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
-    params = nnx.state(model, nnx.Param)
-    param_count = sum(x.size for x in jax.tree_util.tree_leaves(params))
-    
-    reason_params = nnx.state(model.main_stack, nnx.Param)
-    num_reason_param = sum(x.size for x in jax.tree_util.tree_leaves(reason_params))
-    num_block = model.main_stack.num_blocks
-    encoder_params = param_count - num_reason_param
-    
-    print(f"Model Parameters: {param_count:,}")
-    print(f"(encoder params: {encoder_params:,}\n Layers params: {num_reason_param:,} across {num_block} layers}})")
-
     print(f"Last CE change: {ce[-1] - ce[-2]}")
     print(f"Lowest CE so far: {min(ce)}")
+
+    choice = input("Should I count the parameters? (type Y/N): ")
+    if choice.strip().upper() == 'Y':
+        print_model_stats()
 
     plt.close()
 
