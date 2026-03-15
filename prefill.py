@@ -9,10 +9,10 @@ OUTPUT_DIR = "./tpu_data"
 TOKENS_PER_FILE = 125_000_000 # 500MB per chunk
 
 MIXTURE = [
-    {"path": "HuggingFaceFW/fineweb-edu", "pct": 0.60},
-    {"path": "TokenBender/code_instructions_122k_alpaca_style", "pct": 0.20},
-    {"path": "HuggingFaceTB/finemath", "config": "finemath-4plus", "pct": 0.15},
-    {"path": "HuggingFaceH4/ultrachat_200k", "pct": 0.05}
+    {"path": "HuggingFaceFW/fineweb-edu", "pct": 0.60, "folder": "pretrain"},
+    {"path": "TokenBender/code_instructions_122k_alpaca_style", "pct": 0.25, "folder": "pretrain"},
+    {"path": "HuggingFaceTB/finemath", "config": "finemath-4plus", "pct": 0.15, "folder": "pretrain"},
+    {"path": "HuggingFaceH4/ultrachat_200k", "pct": 1.0, "folder": "chat"}
 ]
 
 def tokenize_batch(batch):

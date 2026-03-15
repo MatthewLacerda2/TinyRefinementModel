@@ -269,10 +269,9 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
-        flat_shared = expected_shared.reshape(-1, self.latent_dim)
-        norms = jnp.sqrt(jnp.sum(jnp.square(flat_shared), axis=-1, keepdims=True) + 1e-8)
-        normalized = flat_shared / norms
-        slot_corr = normalized @ normalized.T
+        norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
+        normalized = expected_shared / norms
+        slot_corr = jnp.einsum('bsd,btd->bst', normalized, normalized)
         saturation_score = jnp.mean(jnp.abs(slot_corr))
 
         diff_sq = jnp.sum(jnp.square(all_shared[-1] - all_shared[0]), axis=-1)
