@@ -4,17 +4,15 @@ import tiktoken
 from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
 
-# Setup
 ENC = tiktoken.get_encoding("cl100k_base")
 OUTPUT_DIR = "./tpu_data"
 TOKENS_PER_FILE = 125_000_000 # 500MB per chunk
 
-# IQ-Focused Mixture
 MIXTURE = [
     {"path": "HuggingFaceFW/fineweb-edu", "pct": 0.60},
     {"path": "TokenBender/code_instructions_122k_alpaca_style", "pct": 0.20},
     {"path": "HuggingFaceTB/finemath", "config": "finemath-4plus", "pct": 0.15},
-    {"path": "HuggingFaceH4/ultrachat_200k", "pct": 0.05} # Conversational tail
+    {"path": "HuggingFaceH4/ultrachat_200k", "pct": 0.05}
 ]
 
 def tokenize_batch(batch):
@@ -28,7 +26,7 @@ def run_prefill():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     for ds_cfg in MIXTURE:
         print(f"Reading {ds_cfg['path']}...")
-        # Streaming from HF to your local CPU
+
         ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split="train", streaming=True)
         
         buffer = []

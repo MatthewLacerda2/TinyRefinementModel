@@ -219,3 +219,6 @@ training_history.csv
 *.png
 orbax_checkpoints/
 *.txt
+tpu_data/
+npy_dir/
+*.npy

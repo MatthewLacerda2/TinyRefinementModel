@@ -121,11 +121,9 @@ class TextDataGenerator:
                 self.items_yielded += 1
                 
                 if text_column is None:
-                    # Find the best column for content, avoiding metadata/IDs
                     options = ["prompt", "text", "content", "code", "markdown"]
                     text_column = next((col for col in options if col in item), None)
                     if text_column is None:
-                        # Fallback: find the longest string column that isn't an ID
                         string_cols = [k for k, v in item.items() if isinstance(v, str)]
                         text_column = next((k for k in string_cols if "id" not in k.lower()), string_cols[0])
 
@@ -230,21 +228,16 @@ if __name__ == "__main__":
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
-    # --- TPU SHARDING SETUP ---
-    # 1. Create a 1D mesh out of your 8 TPU devices
     mesh = Mesh(jax.devices(), ('batch',))
 
-    # 2. Define the sharding specs
     # PartitionSpec('batch') tells JAX to slice the 0th dimension across cores
     data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
-    # PartitionSpec() tells JAX to copy the data identically to all cores
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
-    # 3. Replicate the initial weights and optimizer state to all 8 cores
+    # Replicate the initial weights and optimizer state to all 8 cores
     state = nnx.state((model, optimizer))
     state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), state)
     nnx.update((model, optimizer), state)
-    # --------------------------
 
     history_file = "training_history.csv"
     monitor = LossMonitor()
@@ -281,27 +274,30 @@ if __name__ == "__main__":
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
-    print("🚀 Preparing Data Mixture (Balanced Reasoning & STEM)...")
-    sources = [
-        TextDataGenerator("HuggingFaceFW/fineweb-edu"),                   # 50% Primary High-Quality
-        TextDataGenerator("HuggingFaceFW/fineweb"),                       # 15% General Web
-        TextDataGenerator("iamtarun/python_code_instructions_18k_alpaca"), # 15% Python Instructions
-        TextDataGenerator("HuggingFaceTB/finemath", config_name="finemath-4plus"), # 15% Math
-        TextDataGenerator("HuggingFaceTB/cosmopedia-v2", config_name="cosmopedia-v2"), # 5% Synthetic 
-    ]
-    weights = [0.50, 0.15, 0.15, 0.15, 0.05]
+    print("🚀 Initializing Dynamic Data Phases...")
     
-    # Calculate skip counts for resume-safety
-    total_samples_seen = (start_step - 1) * BATCH_SIZE
-    if total_samples_seen > 0:
-        for gen, weight in zip(sources, weights):
-            gen.skip_count = int(total_samples_seen * weight)
+    pretrain_sources = [
+        TextDataGenerator("npy_dir/pretrain/fineweb-edu"),
+        TextDataGenerator("npy_dir/pretrain/code_instructions"),
+        TextDataGenerator("npy_dir/pretrain/finemath"),
+    ]
+    pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
 
-    data_gen = DataMixer(sources, weights)
-    batch_queue = queue.Queue(maxsize=PREFETCH_SIZE)
-    start_prefetch_worker(data_gen, BATCH_SIZE, batch_queue)
+    chat_mixer = TextDataGenerator("npy_dir/chat/ultrachat")
+
+    if start_step > 1:
+        if start_step < 25000:
+            total_pretrain_seen = (start_step - 1) * BATCH_SIZE
+            weights = [0.60, 0.25, 0.15]
+            for gen, weight in zip(pretrain_sources, weights):
+                gen.skip_count = int(total_pretrain_seen * weight)
+        else:
+            total_chat_seen = (start_step - 25000) * BATCH_SIZE
+            chat_mixer.skip_count = total_chat_seen
+
 
     step = start_step
+    hunch = None
     while True:
         t0 = time.time()
         step_loss = step_ce = step_p = step_forget_cost = 0.0
@@ -313,34 +309,29 @@ if __name__ == "__main__":
         ]}
 
         last_loss = None
-        current_batch = None
-        hunch = None
-
         t_data_start = time.time()
-        current_batch = batch_queue.get()
+        if step < 25000:
+            current_batch = pretrain_mixer.get_batch(BATCH_SIZE)
+        else:
+            if step == 25000:
+                print("🚀 PHASE SHIFT: Transitioning to Ultrachat Fine-tuning...")
+            current_batch = chat_mixer.get_batch(BATCH_SIZE)
+            
         if current_batch is None: break
         
-        # --- APPLY DATA SHARDING ---
-        # Physically slice the batch of 128 into 8 chunks of 16 and send them to the cores
         current_batch = jax.device_put(current_batch, data_sharding)
         
-        # The 'hunch' carries over from the previous step. It is shape (batch, slots, dim).
-        # We must shard its 0th dimension to match the batch!
         if hunch is not None:
             hunch = jax.device_put(hunch, data_sharding)
-        # ---------------------------
         
         t_data_end = time.time()
         step_data_wait = t_data_end - t_data_start
         
-        # We no longer use should_truncate within an accumulation loop.
-        # train_step handles refreshing every HUNCH_REFRESH_EVERY global steps.
         loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
             model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
             should_truncate=False
         )
         
-        # Force JAX to execute so we get accurate compute time
         loss.block_until_ready()
         t_compute_end = time.time()
         step_compute_time = t_compute_end - t_data_end

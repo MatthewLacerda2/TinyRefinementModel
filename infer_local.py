@@ -20,7 +20,6 @@ CHECKPOINT_DIR = os.path.abspath("orbax_checkpoints")
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 def analyze_first_token_contenders(logits, enc, expected_token=None, top_k_count=20):
-    # Analysis of contenders for the first token
     probs = jax.nn.softmax(logits)
     top_indices = jnp.argsort(logits)[-top_k_count:][::-1]
     
@@ -36,13 +35,11 @@ def analyze_first_token_contenders(logits, enc, expected_token=None, top_k_count
         print(f"{marker} {rank+1}. Rank: {token_val:6} | Prob: {prob:6.2%} | Token: [{token_str}]")
     
     if expected_token and not found_expected:
-        # Find the expected token in the full vocabulary if not in top K
-        # This is a bit slow as it scans the whole vocab logits
         all_ranks = jnp.argsort(logits)[::-1]
         expected_ids = enc.encode(expected_token)
         if expected_ids:
             target_id = expected_ids[0]
-            # Find where this ID is in all_ranks
+
             actual_rank = int(jnp.where(all_ranks == target_id)[0][0]) + 1
             actual_prob = float(probs[target_id])
             actual_str = enc.decode([target_id]).replace("\n", "\\n")
