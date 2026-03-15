@@ -4,8 +4,6 @@ import os
 import numpy as np
 import sys
 from train_local import BATCH_SIZE, MAX_SEQ_LEN, UniversalReasoner, LATENT_DIM, NUM_BLOCKS, VOCAB_SIZE, SHARED_SLOTS, MAX_STEPS_LIMIT
-from flax import nnx
-import jax
 
 # Ensure UTF-8 encoding for console output
 if hasattr(sys.stdout, 'reconfigure'):

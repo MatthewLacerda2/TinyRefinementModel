@@ -4,15 +4,15 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 768
-NUM_BLOCKS = 4
-SHARED_SLOTS = 64
+LATENT_DIM = 1024
+NUM_BLOCKS = 12
+SHARED_SLOTS = 128
 VOCAB_SIZE = 100277
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 32
 
 #Training
-MAX_SEQ_LEN = 1024
-MIN_STEPS = 4
+MAX_SEQ_LEN = 2048
+MIN_STEPS = 8
 BATCH_SIZE = 128
 PAD_TOKEN_ID = 100257
 FORGET_LAMBDA = 1e-5
@@ -58,7 +58,7 @@ class RotaryAttention(nnx.Module):
             q_pos = jnp.arange(s)
         if kv_pos is None:
             kv_pos = jnp.arange(s_kv)
-
+#
         sin_q = self.sin_cached[q_pos, None, :]
         cos_q = self.cos_cached[q_pos, None, :]
         q = (q * cos_q) + (rotate_half(q) * sin_q)
