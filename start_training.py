@@ -5,7 +5,9 @@ import os
 #os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 
+import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from flax import nnx
 import orbax.checkpoint as ocp
 import csv
@@ -228,6 +230,22 @@ if __name__ == "__main__":
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
+    # --- TPU SHARDING SETUP ---
+    # 1. Create a 1D mesh out of your 8 TPU devices
+    mesh = Mesh(jax.devices(), ('batch',))
+
+    # 2. Define the sharding specs
+    # PartitionSpec('batch') tells JAX to slice the 0th dimension across cores
+    data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
+    # PartitionSpec() tells JAX to copy the data identically to all cores
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+
+    # 3. Replicate the initial weights and optimizer state to all 8 cores
+    state = nnx.state((model, optimizer))
+    state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), state)
+    nnx.update((model, optimizer), state)
+    # --------------------------
+
     history_file = "training_history.csv"
     monitor = LossMonitor()
 
@@ -287,6 +305,7 @@ if __name__ == "__main__":
     while True:
         t0 = time.time()
         step_loss = step_ce = step_p = step_forget_cost = 0.0
+        step_data_wait = step_compute_time = 0.0
         step_diag = {k: 0.0 for k in [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
             'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
@@ -297,8 +316,22 @@ if __name__ == "__main__":
         current_batch = None
         hunch = None
 
+        t_data_start = time.time()
         current_batch = batch_queue.get()
         if current_batch is None: break
+        
+        # --- APPLY DATA SHARDING ---
+        # Physically slice the batch of 128 into 8 chunks of 16 and send them to the cores
+        current_batch = jax.device_put(current_batch, data_sharding)
+        
+        # The 'hunch' carries over from the previous step. It is shape (batch, slots, dim).
+        # We must shard its 0th dimension to match the batch!
+        if hunch is not None:
+            hunch = jax.device_put(hunch, data_sharding)
+        # ---------------------------
+        
+        t_data_end = time.time()
+        step_data_wait = t_data_end - t_data_start
         
         # We no longer use should_truncate within an accumulation loop.
         # train_step handles refreshing every HUNCH_REFRESH_EVERY global steps.
@@ -306,6 +339,12 @@ if __name__ == "__main__":
             model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
             should_truncate=False
         )
+        
+        # Force JAX to execute so we get accurate compute time
+        loss.block_until_ready()
+        t_compute_end = time.time()
+        step_compute_time = t_compute_end - t_data_end
+
         for k in step_diag: step_diag[k] = float(halt_diag[k])
 
         step_loss = float(loss)
@@ -313,8 +352,6 @@ if __name__ == "__main__":
         step_p = float(p)
         step_forget_cost = float(forget_cost)
         last_loss = loss
-        
-        if last_loss is not None: last_loss.block_until_ready()
 
         step_loss = float(step_loss) 
         step_ce = float(step_ce)
@@ -347,13 +384,14 @@ if __name__ == "__main__":
             print(
                 f"Step {step:04d} | CE: {step_ce:.4f} | Agg Loss: {step_loss:.4f} | "
                 f"Avg Steps: {step_p:.2f} | Forget: {step_forget_cost:.4f} | Time: {t_total:.2f}s\n"
+                f"      Wait: {step_data_wait:.3f}s | Compute: {step_compute_time:.3f}s\n"
                 f"      Logits [μ:{step_diag['logits_mean']:.2f}, σ:{step_diag['logits_std']:.2f}, min:{step_diag['logits_min']:.2f}, max:{step_diag['logits_max']:.2f}] | Spread: {step_diag['logit_spread']:.2f}\n"
                 f"      Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}] | Sat: {step_diag['saturation']:.3f} | Drift: {step_diag['temporal_drift']:.3f} | Forget: {step_diag['forget_density']:.3f}\n"
             )
 
             write_header = not os.path.exists(history_file) or os.path.getsize(history_file) == 0
             with open(history_file, "a", newline="") as f:
-                fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total",
+                fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total", "data_wait", "compute_time",
                           "logits_mean", "logits_std", "logits_min", "logits_max", 
                           "prob_mean", "prob_std", "saturation", "temporal_drift", 
                           "forget_density", "logit_spread", "diversity_loss"]
@@ -363,6 +401,7 @@ if __name__ == "__main__":
                 row = {
                     "step": int(step), "loss": f"{step_loss:.4f}", "ce": f"{step_ce:.4f}",
                     "avg_ponder": f"{step_p:.2f}", "avg_forget_cost": f"{step_forget_cost:.4f}", "t_total": f"{t_total:.2f}",
+                    "data_wait": f"{step_data_wait:.4f}", "compute_time": f"{step_compute_time:.4f}",
                 }
                 row.update({k: f"{v:.4f}" for k, v in step_diag.items() if k in fields})
                 writer.writerow(row)

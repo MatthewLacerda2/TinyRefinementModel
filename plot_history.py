@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import sys
-from train_local import BATCH_SIZE, MAX_SEQ_LEN, ACCUMULATION_STEPS, UniversalReasoner, LATENT_DIM
+from train_local import BATCH_SIZE, MAX_SEQ_LEN, UniversalReasoner, LATENT_DIM
 from flax import nnx
 import jax
 
@@ -18,7 +18,7 @@ def format_time(seconds):
     return f"{hours}h {minutes}m {secs}s" if hours > 0 else f"{minutes}m {secs}s"
 
 def calculate_tokens(step):
-    total = step * ACCUMULATION_STEPS * BATCH_SIZE * MAX_SEQ_LEN
+    total = step * BATCH_SIZE * MAX_SEQ_LEN
     return total
 
 def plot_training_history(log_path="training_history.csv"):
