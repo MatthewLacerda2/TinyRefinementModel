@@ -14,6 +14,7 @@ import csv
 import time
 import tiktoken
 import threading
+import queue
 import multiprocessing as mp
 import concurrent.futures
 from dotenv import load_dotenv
@@ -196,12 +197,9 @@ if __name__ == "__main__":
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     mesh = Mesh(jax.devices(), ('batch',))
-
-    # PartitionSpec('batch') tells JAX to slice the 0th dimension across cores
     data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
-    # Replicate the initial weights and optimizer state to all 8 cores
     state = nnx.state((model, optimizer))
     state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), state)
     nnx.update((model, optimizer), state)
@@ -235,7 +233,7 @@ if __name__ == "__main__":
         monitor.best_ce = m_state["best_ce"]
         monitor.last_improvement_step = m_state["last_improvement_step"]
         print(f"✅ Resuming from step {start_step}")
-        del restored # Free up the temporary dictionary
+        del restored 
         import gc; gc.collect()
     else:
         print("🆕 No checkpoint found, starting from scratch...")
@@ -243,6 +241,7 @@ if __name__ == "__main__":
 
     print("🚀 Initializing Dynamic Data Phases...")
     
+    # Adjusted paths to match your GCS bucket structure
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
@@ -250,7 +249,7 @@ if __name__ == "__main__":
     ]
     pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
 
-    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
+    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat")
 
     if start_step > 1:
         if start_step < 25000:
@@ -262,32 +261,49 @@ if __name__ == "__main__":
             total_chat_seen = (start_step - 25000) * BATCH_SIZE
             chat_mixer.skip_count = total_chat_seen
 
+    # --- PREFETCH INTEGRATION ---
+    data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
+
+    def data_wrapper():
+        """Handles switching between mixers based on global step."""
+        current_step = start_step
+        while True:
+            if current_step < 25000:
+                batch = pretrain_mixer.get_batch(BATCH_SIZE)
+            else:
+                batch = chat_mixer.get_batch(BATCH_SIZE)
+            
+            if batch is None:
+                data_queue.put(None)
+                break
+            
+            data_queue.put(batch)
+            current_step += 1
+
+    threading.Thread(target=data_wrapper, daemon=True).start()
+    # ----------------------------
 
     step = start_step
     hunch = None
     while True:
         t0 = time.time()
-        step_loss = step_ce = step_p = step_forget_cost = 0.0
-        step_data_wait = step_compute_time = 0.0
         step_diag = {k: 0.0 for k in [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
             'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
             'forget_density', 'logit_spread', 'diversity_loss'
         ]}
-
-        last_loss = None
+        
         t_data_start = time.time()
-        if step < 25000:
-            current_batch = pretrain_mixer.get_batch(BATCH_SIZE)
-        else:
-            if step == 25000:
-                print("🚀 PHASE SHIFT: Transitioning to Ultrachat Fine-tuning...")
-            current_batch = chat_mixer.get_batch(BATCH_SIZE)
-            
-        if current_batch is None: break
+        # Fetch from the background queue
+        current_batch = data_queue.get() 
+        if current_batch is None: 
+            print("🏁 Data stream exhausted.")
+            break
         
+        if step == 25000:
+            print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
+
         current_batch = jax.device_put(current_batch, data_sharding)
-        
         if hunch is not None:
             hunch = jax.device_put(hunch, data_sharding)
         
@@ -309,12 +325,6 @@ if __name__ == "__main__":
         step_ce = float(ce)
         step_p = float(p)
         step_forget_cost = float(forget_cost)
-        last_loss = loss
-
-        step_loss = float(step_loss) 
-        step_ce = float(step_ce)
-        step_p = float(step_p)
-        step_forget_cost = float(step_forget_cost)
         step_diag = {k: float(jnp.mean(v)) for k, v in step_diag.items()}
 
         t_total = time.time() - t0

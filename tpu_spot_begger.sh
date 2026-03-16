@@ -37,13 +37,13 @@ while true; do
           
           # The "One-Shot" command string
           SETUP_CMD="
-            git clone https://github.com/MatthewLacerda2/TinyRefinementModel.git && cd TinyRefinementModel && \
-            pip install --upgrade pip && \
-            pip install -r requirements.txt && \
-            pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html && \
-            echo 'DATA_ROOT=gs://huggingface-tokenized/tpu_data' > .env && \
-            echo 'CHECKPOINT_ROOT=gs://huggingface-tokenized/checkpoints' >> .env && \
-            tmux new -d -s train 'python3 start_training.py'
+              git clone https://github.com/MatthewLacerda2/TinyRefinementModel.git && cd TinyRefinementModel && \
+              pip install --upgrade pip && \
+              pip install -r requirements.txt && \
+              pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html && \
+              echo 'DATA_ROOT=gs://huggingface-tokenized' > .env && \
+              echo 'CHECKPOINT_ROOT=gs://huggingface-tokenized/checkpoints' >> .env && \
+              tmux new -d -s train 'python3 start_training.py'
           "
 
           # Run it non-interactively
