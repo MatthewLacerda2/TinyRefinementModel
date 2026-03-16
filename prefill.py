@@ -35,6 +35,7 @@ MIXTURE = [
     },
     {
         "path": "HuggingFaceH4/ultrachat_200k",
+        "split": "train_sft",
         "target_tokens": 1_500_000_000,
         "folder": "chat",
         "alias": "ultrachat"
@@ -101,7 +102,8 @@ def run_prefill():
                 print(f"⏩ {name} already completed. Skipping.")
                 continue
 
-            ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split="train", streaming=True)
+            split_name = ds_cfg.get('split', 'train')
+            ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split=split_name, streaming=True)
             if items_processed > 0:
                 ds = ds.skip(items_processed)
             
@@ -111,6 +113,14 @@ def run_prefill():
             
             for item in ds:
                 txt = item.get("text") or item.get("content") or item.get("prompt")
+                
+                # Handle lists of strings (like UltraChat's 'data' field)
+                if not txt and "data" in item:
+                    if isinstance(item["data"], list):
+                        txt = "\n".join(str(x) for x in item["data"])
+                    else:
+                        txt = str(item["data"])
+
                 if txt: 
                     buffer.append(txt)
                 
