@@ -11,10 +11,12 @@ ZONES=("us-central1-a" "us-central1-b" "us-south1-a" "us-west1-c" "europe-west4-
 
 echo "🎯 Starting the hunt. Data bucket is in us-central1."
 
+ATTEMPT=0
 while true; do
   for ZONE in "${ZONES[@]}"; do
+    ((ATTEMPT++))
     QR_ID="req-$(date +%s)"
-    echo "🎲 Attempting $ZONE..."
+    echo "🎲 Attempt #$ATTEMPT: Trying $ZONE..."
 
     # We use Queued Resources to 'line up' for the spot capacity
     gcloud compute tpus queued-resources create $QR_ID \
@@ -33,7 +35,8 @@ while true; do
         STATE=$(gcloud compute tpus queued-resources describe $QR_ID --zone=$ZONE --format="value(state)")
         
         if [ "$STATE" == "ACTIVE" ]; then
-          echo "✅ TPU IS ALIVE in $ZONE! Starting auto-setup..."
+          echo "✅ TPU IS ALIVE in $ZONE! (Attempt #$ATTEMPT at $(date))"
+          echo "🛠️ Starting auto-setup..."
           
           # The "One-Shot" command string
           SETUP_CMD="
