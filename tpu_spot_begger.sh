@@ -6,8 +6,8 @@ TPU_NAME="reasoner-tpu"
 ACCELERATOR_TYPE="v5litepod-8"
 RUNTIME_VERSION="v2-alp1ha-tpuv5-lite" # Optimized for JAX on v5e
 
-# Prioritize us-central1 for higher chance of Spot grantace and 0-cost egress
-ZONES=("us-central1-a" "us-central1-b" "us-south1-a" "us-west1-c")
+# Prioritized: Home region first, then cheapest egress, then anywhere else
+ZONES=("us-central1-a" "us-central1-b" "us-south1-a" "us-west1-c" "europe-west4-b" "southamerica-west1-a")
 
 echo "🎯 Starting the hunt. Data bucket is in us-central1."
 
@@ -33,8 +33,25 @@ while true; do
         STATE=$(gcloud compute tpus queued-resources describe $QR_ID --zone=$ZONE --format="value(state)")
         
         if [ "$STATE" == "ACTIVE" ]; then
-          echo "✅ TPU IS ALIVE! Zone: $ZONE"
+          echo "✅ TPU IS ALIVE in $ZONE! Starting auto-setup..."
+          
+          # The "One-Shot" command string
+          SETUP_CMD="
+            git clone https://github.com/MatthewLacerda2/TinyRefinementModel.git && cd TinyRefinementModel && \
+            pip install --upgrade pip && \
+            pip install -r requirements.txt && \
+            pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html && \
+            echo 'DATA_ROOT=gs://huggingface-tokenized/tpu_data' > .env && \
+            echo 'CHECKPOINT_ROOT=gs://huggingface-tokenized/checkpoints' >> .env && \
+            tmux new -d -s train 'python3 start_training.py'
+          "
+
+          # Run it non-interactively
+          gcloud compute tpus tpu-vm ssh $TPU_NAME --zone=$ZONE --command="$SETUP_CMD"
+          
+          echo "🚀 Training started in a tmux session. You can now: gcloud compute tpus tpu-vm ssh $TPU_NAME --zone=$ZONE"
           exit 0
+
         elif [ "$STATE" == "FAILED" ]; then
           echo "❌ Stockout in $ZONE. Cleaning up request..."
           gcloud compute tpus queued-resources delete $QR_ID --zone=$ZONE --quiet --async
