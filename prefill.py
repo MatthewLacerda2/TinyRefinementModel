@@ -4,6 +4,8 @@ import tiktoken
 import sys
 from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
+import json
+import glob
 
 # Config
 ENC_NAME = "cl100k_base"
@@ -58,16 +60,61 @@ def run_prefill():
             
             print(f"\n🚀 Processing {name} | Target: {target/1e9:.2f}B tokens")
 
+            # Resume logic: Check if we already have progress
+            status_file = os.path.join(save_path, "status.json")
+            file_idx = 0
+            total_tokens_ds = 0
+            items_processed = 0
+
+            if os.path.exists(status_file):
+                with open(status_file, 'r') as f:
+                    status = json.load(f)
+                    file_idx = status.get("file_idx", 0)
+                    total_tokens_ds = status.get("total_tokens", 0)
+                    items_processed = status.get("items_processed", 0)
+                print(f"🔄 Resuming {name} from status.json: item {items_processed:,} (Tokens: {total_tokens_ds/1e6:.1f}M, Chunk: {file_idx})")
+            else:
+                # Recovery Mode: Scan for existing .npy files if status.json is missing
+                existing_chunks = glob.glob(os.path.join(save_path, "chunk_*.npy"))
+                if existing_chunks:
+                    try:
+                        # Extract indices and find max
+                        indices = [int(os.path.basename(f).split('_')[1].split('.')[0]) for f in existing_chunks]
+                        file_idx = max(indices) + 1
+                        
+                        # Calculate total tokens from file sizes (assuming int32 = 4 bytes)
+                        # More robust to just add them up
+                        total_tokens_ds = 0
+                        for f in existing_chunks:
+                            # We check shape without loading full data for speed
+                            data = np.load(f, mmap_mode='r')
+                            total_tokens_ds += len(data)
+                        
+                        print(f"🔎 Auto-discovered progress for {name}: {total_tokens_ds/1e6:.1f}M tokens in {len(existing_chunks)} chunks.")
+                        print(f"⚠️ Note: Starting stream from beginning as row count is unknown (Next chunk: {file_idx})")
+                    except Exception as e:
+                        print(f"⚠️ Could not recover progress for {name}: {e}")
+                        file_idx = 0
+                        total_tokens_ds = 0
+                
+            if total_tokens_ds >= target:
+                print(f"⏩ {name} already completed. Skipping.")
+                continue
+
             ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split="train", streaming=True)
+            if items_processed > 0:
+                ds = ds.skip(items_processed)
             
             buffer = []
-            file_idx = 0
             token_acc = []
-            total_tokens_ds = 0
+            current_batch_count = 0
             
             for item in ds:
                 txt = item.get("text") or item.get("content") or item.get("prompt")
-                if txt: buffer.append(txt)
+                if txt: 
+                    buffer.append(txt)
+                
+                current_batch_count += 1
                 
                 # Batch size for parallel processing
                 if len(buffer) >= 4000:
@@ -77,6 +124,7 @@ def run_prefill():
                     
                     token_acc.append(flat_batch)
                     total_tokens_ds += len(flat_batch)
+                    items_processed += len(buffer)
                     buffer = []
                     
                     # Live Progress Report
@@ -90,6 +138,14 @@ def run_prefill():
                         np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data)
                         file_idx += 1
                         token_acc = []
+                        
+                        # Save status after writing chunk
+                        with open(status_file, 'w') as f:
+                            json.dump({
+                                "file_idx": file_idx,
+                                "total_tokens": total_tokens_ds,
+                                "items_processed": items_processed
+                            }, f)
 
                     if total_tokens_ds >= target:
                         print(f"\n✅ {name} target reached.")
@@ -102,9 +158,19 @@ def run_prefill():
                     flat_batch = np.array([t for sub in token_lists for t in sub], dtype=np.int32)
                     token_acc.append(flat_batch)
                     total_tokens_ds += len(flat_batch)
+                    items_processed += len(buffer)
                 if token_acc:
                     chunk_data = np.concatenate(token_acc)
                     np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data)
+                    
+                    # Final status update
+                    with open(status_file, 'w') as f:
+                        json.dump({
+                            "file_idx": file_idx + 1,
+                            "total_tokens": total_tokens_ds,
+                            "items_processed": items_processed
+                        }, f)
+                    
                     print(f"\n🏁 Finished {name}. Total: {total_tokens_ds/1e9:.2f}B tokens")
 
 if __name__ == "__main__":
