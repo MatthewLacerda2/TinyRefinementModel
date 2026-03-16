@@ -354,6 +354,8 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
 
         current_p_lambda = ponder_lambda_schedule(step)
 
+        num_devices = jax.device_count()
+
         total_loss = (
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
@@ -362,6 +364,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
+        total_loss = total_loss / num_devices
         
         halt_diag['diversity_loss'] = div_loss
         
