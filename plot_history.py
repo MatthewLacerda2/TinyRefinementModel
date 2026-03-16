@@ -3,9 +3,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import sys
-from train_local import BATCH_SIZE, MAX_SEQ_LEN, ACCUMULATION_STEPS, UniversalReasoner, LATENT_DIM
-from flax import nnx
-import jax
+from train_local import BATCH_SIZE, MAX_SEQ_LEN, UniversalReasoner, LATENT_DIM, NUM_BLOCKS, VOCAB_SIZE, SHARED_SLOTS, MAX_STEPS_LIMIT
 
 # Ensure UTF-8 encoding for console output
 if hasattr(sys.stdout, 'reconfigure'):
@@ -18,8 +16,55 @@ def format_time(seconds):
     return f"{hours}h {minutes}m {secs}s" if hours > 0 else f"{minutes}m {secs}s"
 
 def calculate_tokens(step):
-    total = step * ACCUMULATION_STEPS * BATCH_SIZE * MAX_SEQ_LEN
+    total = step * BATCH_SIZE * MAX_SEQ_LEN
     return total
+
+def print_model_stats():
+    print("Calculating model parameters (mathematical estimation)...")
+    
+    # Architecture Constants
+    num_heads = 8
+    num_groups = 2 
+    head_dim = LATENT_DIM // num_heads
+    
+    # 1. Block Stack (Per Block)
+    q_params = LATENT_DIM * LATENT_DIM + LATENT_DIM
+    k_params = LATENT_DIM * (num_groups * head_dim) + (num_groups * head_dim)
+    v_params = LATENT_DIM * (num_groups * head_dim) + (num_groups * head_dim)
+    o_params = LATENT_DIM * LATENT_DIM + LATENT_DIM
+    attn_total = q_params + k_params + v_params + o_params
+    
+    hidden_dim = int(256 * ((LATENT_DIM * 8 / 3 + 255) // 256))
+    gate_params = LATENT_DIM * hidden_dim + hidden_dim
+    up_params = LATENT_DIM * hidden_dim + hidden_dim
+    down_params = hidden_dim * LATENT_DIM + LATENT_DIM
+    mlp_total = gate_params + up_params + down_params
+    
+    block_norms = LATENT_DIM * 2
+    params_per_block = attn_total + mlp_total + block_norms
+    num_reason_param = params_per_block * NUM_BLOCKS
+    
+    # 2. Universal Reasoner Extras
+    embed = VOCAB_SIZE * LATENT_DIM
+    time_embed = (MAX_STEPS_LIMIT + 1) * LATENT_DIM
+    shared_token = SHARED_SLOTS * LATENT_DIM
+    seq_norm = LATENT_DIM
+    
+    halt_pre_dim = LATENT_DIM // 4
+    halt_pre = LATENT_DIM * halt_pre_dim + halt_pre_dim
+    halt_head = halt_pre_dim * 1 + 1
+    
+    extra_norms = LATENT_DIM * 4 
+    hunch_gate = LATENT_DIM * LATENT_DIM + LATENT_DIM
+    forget_head = LATENT_DIM * LATENT_DIM + LATENT_DIM 
+    
+    encoder_params = (embed + time_embed + shared_token + seq_norm + 
+                      halt_pre + halt_head + extra_norms + hunch_gate + forget_head)
+    
+    param_count = num_reason_param + encoder_params
+    
+    print(f"Model Parameters: {param_count:,}")
+    print(f"(encoder params: {encoder_params:,}\n Layers params: {num_reason_param:,} across {NUM_BLOCKS} layers}})")
 
 def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
@@ -38,6 +83,7 @@ def plot_training_history(log_path="training_history.csv"):
                     'avg_ponder': float(row.get('avg_ponder', 0)),
                     'saturation': float(row.get('saturation', 0)),
                     'drift': float(row.get('temporal_drift', 0)),
+                    'forget': float(row.get('forget_density', 0)),
                     'spread': float(row.get('logit_spread', 0)),
                     'l_mean': float(row.get('logits_mean', 0)),
                     't_total': float(row.get('t_total', 0)),
@@ -52,12 +98,13 @@ def plot_training_history(log_path="training_history.csv"):
     ponder = np.array([e['avg_ponder'] for e in history])
     drift = np.array([e['drift'] for e in history])
     sat = np.array([e['saturation'] for e in history])
+    forget = np.array([e['forget'] for e in history])
     spread = np.array([e['spread'] for e in history])
     l_mean = np.array([e['l_mean'] for e in history])
 
     plt.style.use('dark_background')
-    fig, axes = plt.subplots(4, 1, figsize=(14, 20), sharex=True)
-    (ax1, ax2, ax3, ax4) = axes
+    fig, axes = plt.subplots(5, 1, figsize=(14, 24), sharex=True)
+    (ax1, ax2, ax3, ax4, ax5) = axes
 
     # --- 1. CONVERGENCE (Loss vs CE) ---
     ax1.plot(steps, losses, color='#00f2ff', alpha=0.4, label='Agg Loss (Penalty Included)')
@@ -103,19 +150,23 @@ def plot_training_history(log_path="training_history.csv"):
     ax4.set_xlabel('Training Step')
     ax4.legend(loc='lower right')
 
+    # --- 5. MEMORY MANAGEMENT (Forgetting) ---
+    ax5.plot(steps, forget, color='#00ff88', linewidth=2, label='Forget Density (Active Pruning)')
+    ax5.set_ylabel('Density', color='#00ff88')
+    ax5.set_title('Memory Management: Information Pruning Intensity', fontsize=14, fontweight='bold')
+    ax5.legend(loc='upper right')
+    ax5.grid(True, alpha=0.2)
+
     plt.tight_layout()
     plt.savefig('reasoning_analytics.png', dpi=150)
     print("✨ Analytics updated: reasoning_analytics.png")
     #make the tokens outputted with x.xxx.xxx so i can clearly see the millions and thousands
     print(f"Amount of tokens trained so far: {calculate_tokens(steps[-1]):,}")
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
-    params = nnx.state(model, nnx.Param)
-    param_count = sum(x.size for x in jax.tree_util.tree_leaves(params))
-    print(f"Model Parameters: {param_count:,}")
-
     print(f"Last CE change: {ce[-1] - ce[-2]}")
     print(f"Lowest CE so far: {min(ce)}")
+
+    print_model_stats()
 
     plt.close()
 

@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from train_local import UniversalReasoner, train_step, base_optimizer, optimizer_chain, PAD_TOKEN_ID, FORGET_LAMBDA
+from train_local import UniversalReasoner, train_step, optimizer_chain, PAD_TOKEN_ID, FORGET_LAMBDA
 
 print("Testing NaN * 0:", jnp.nan * 0)
 print("Testing NaN * False:", jnp.nan * False)

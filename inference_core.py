@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-from flax import nnx
 
 from train_local import MAX_STEPS_LIMIT, UniversalReasoner, HUNCH_REFRESH_EVERY
 

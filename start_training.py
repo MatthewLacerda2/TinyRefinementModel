@@ -1,11 +1,13 @@
 import os
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
+#os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 
+import jax
 import jax.numpy as jnp
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from flax import nnx
 import orbax.checkpoint as ocp
 import csv
@@ -15,22 +17,32 @@ import threading
 import queue
 import multiprocessing as mp
 import concurrent.futures
-from functools import partial
 from dotenv import load_dotenv
 import numpy as np
-from datasets import load_dataset
+import fsspec
 from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, FORGET_LAMBDA, HUNCH_REFRESH_EVERY
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, FORGET_LAMBDA
 )
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 10
+CHECKPOINT_INTERVAL = 100
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
+
+# Root paths for Data and Checkpoints (MUST be gs:// for Cloud TPU)
+DATA_ROOT = os.environ.get("DATA_ROOT", "")
+CHECKPOINT_ROOT = os.environ.get("CHECKPOINT_ROOT", "")
+
+if not DATA_ROOT.startswith("gs://") or not CHECKPOINT_ROOT.startswith("gs://"):
+    import sys
+    print(f"🛑 Error: DATA_ROOT and CHECKPOINT_ROOT must be GCS bucket links (starting with gs://).")
+    print(f"   Current DATA_ROOT: {DATA_ROOT}")
+    print(f"   Current CHECKPOINT_ROOT: {CHECKPOINT_ROOT}")
+    sys.exit(1)
 
 GLOBAL_POOL = None
 
@@ -51,102 +63,58 @@ def global_tokenize_item(text, max_seq_len, enc_name):
     return tokens
 
 class TextDataGenerator:
-    def __init__(self, dataset_name, max_seq_len=MAX_SEQ_LEN, config_name=None):
+    def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
         self.max_seq_len = max_seq_len
-        self.dataset_name = dataset_name
-        self.config_name = config_name
-        self.enc_name = "cl100k_base"
-        self.skip_count = 0
-        self.items_yielded = 0
+        self.directory = directory
         
-        self.iterator = None
-        self.pool = get_global_pool()
+        self.fs, self.path_prefix = fsspec.core.url_to_fs(directory)
+        
+        all_files = self.fs.ls(directory)
+        self.files = sorted([f for f in all_files if f.endswith('.npy')])
+        
+        self.current_file_idx = 0
+        self.data = None
+        self.pointer = 0
         self.exhausted = False
+        self.skip_count = 0
 
-    def _ensure_iterator(self):
-        if self.iterator is not None:
-            return
-
-        token = os.environ.get("HF_TOKEN")
-        print(f"🚀 Preparing {self.dataset_name} (Config: {self.config_name})...")
-
-        ds_kwargs = {
-            "path": self.dataset_name,
-            "split": "train",
-            "streaming": True,
-            "token": token,
-        }
-
-        if self.config_name:
-            ds_kwargs["name"] = self.config_name
-        elif "fineweb" in self.dataset_name and "edu" not in self.dataset_name:
-            ds_kwargs["name"] = "default"
+    def _load_next_file(self):
+        if self.current_file_idx >= len(self.files):
+            self.exhausted = True
+            return False
         
-        ds = load_dataset(**ds_kwargs)
+        file_path = self.files[self.current_file_idx]
+        print(f"📖 Streaming {file_path} into TPU memory...")
         
-        total_skip = self.skip_count + self.items_yielded
-        if total_skip > 0:
-            print(f"⏩ Fast-forwarding {total_skip} items in {self.dataset_name}...")
-            ds = ds.skip(total_skip)
-
-        self.iterator = self._curriculum_iterator(ds)
-
-    def _curriculum_iterator(self, ds):
-        buffer = []
-        for example in ds:
-            buffer.append(example)
-            if len(buffer) >= SORT_BUFFER_SIZE:
-                if "score" in buffer[0]:
-                    buffer.sort(key=lambda x: x.get("score", 0))
-                yield from buffer
-                buffer = []
-        if buffer:
-            if "score" in buffer[0]:
-                buffer.sort(key=lambda x: x.get("score", 0))
-            yield from buffer
+        with self.fs.open(file_path, 'rb') as f:
+            self.data = np.load(f)
+            
+        self.pointer = 0
+        
+        if self.skip_count > 0:
+            # Handle resume-from-checkpoint skipping
+            tokens_to_skip = self.skip_count * self.max_seq_len
+            if tokens_to_skip < len(self.data):
+                self.pointer = tokens_to_skip
+                self.skip_count = 0
+            else:
+                self.skip_count -= (len(self.data) // self.max_seq_len)
+                self.current_file_idx += 1
+                return self._load_next_file()
+                
+        self.current_file_idx += 1
+        return True
 
     def get_batch(self, batch_size):
-        if getattr(self, "exhausted", False):
-            return None
-        self._ensure_iterator()
-        
-        batch_texts = []
-        text_column = None
-
-        while len(batch_texts) < batch_size:
-            try:
-                item = next(self.iterator)
-                self.items_yielded += 1
-                
-                if text_column is None:
-                    # Find the best column for content, avoiding metadata/IDs
-                    options = ["prompt", "text", "content", "code", "markdown"]
-                    text_column = next((col for col in options if col in item), None)
-                    if text_column is None:
-                        # Fallback: find the longest string column that isn't an ID
-                        string_cols = [k for k, v in item.items() if isinstance(v, str)]
-                        text_column = next((k for k in string_cols if "id" not in k.lower()), string_cols[0])
-
-                batch_texts.append(item[text_column])
-            except StopIteration:
-                print(f"🔄 Dataset {self.dataset_name} exhausted! Stopping iteration for this dataset.")
-                self.exhausted = True
-                self.iterator = None
-                return None
-            except Exception as e:
-                print(f"⚠️ Stream error in {self.dataset_name}: {e}. Reconnecting...")
-                self.iterator = None
-                self._ensure_iterator()
-                continue
-        
-        if not batch_texts: return None
+        if self.exhausted: return None
+        if self.data is None or self.pointer + (batch_size * self.max_seq_len) > len(self.data):
+            if not self._load_next_file(): return None
             
-        tokenize_func = partial(global_tokenize_item, 
-                                 max_seq_len=self.max_seq_len, 
-                                 enc_name=self.enc_name)
-        
-        batch_ids = list(self.pool.map(tokenize_func, batch_texts))
-        return jnp.array(batch_ids, dtype=jnp.int32)
+        # Reshape the flat token stream into [batch, seq_len]
+        total_tokens = batch_size * self.max_seq_len
+        batch = self.data[self.pointer : self.pointer + total_tokens]
+        self.pointer += total_tokens
+        return jnp.array(batch.reshape(batch_size, self.max_seq_len), dtype=jnp.int32)
 
 class DataMixer:
     def __init__(self, sources, weights):
@@ -228,11 +196,19 @@ if __name__ == "__main__":
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
+    mesh = Mesh(jax.devices(), ('batch',))
+    data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
+    replicated_sharding = NamedSharding(mesh, PartitionSpec())
+
+    state = nnx.state((model, optimizer))
+    state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), state)
+    nnx.update((model, optimizer), state)
+
     history_file = "training_history.csv"
     monitor = LossMonitor()
 
     mngr = ocp.CheckpointManager(
-        os.path.abspath("orbax_checkpoints"),
+        CHECKPOINT_ROOT,
         item_names=("model", "optimizer", "monitor_state", "step"),
         options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
     )
@@ -257,75 +233,99 @@ if __name__ == "__main__":
         monitor.best_ce = m_state["best_ce"]
         monitor.last_improvement_step = m_state["last_improvement_step"]
         print(f"✅ Resuming from step {start_step}")
-        del restored # Free up the temporary dictionary
+        del restored 
         import gc; gc.collect()
     else:
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
-    print("🚀 Preparing Data Mixture (Balanced Reasoning & STEM)...")
-    sources = [
-        TextDataGenerator("HuggingFaceFW/fineweb-edu"),                   # 50% Primary High-Quality
-        TextDataGenerator("HuggingFaceFW/fineweb"),                       # 15% General Web
-        TextDataGenerator("iamtarun/python_code_instructions_18k_alpaca"), # 15% Python Instructions
-        TextDataGenerator("HuggingFaceTB/finemath", config_name="finemath-4plus"), # 15% Math
-        TextDataGenerator("HuggingFaceTB/cosmopedia-v2", config_name="cosmopedia-v2"), # 5% Synthetic 
-    ]
-    weights = [0.50, 0.15, 0.15, 0.15, 0.05]
+    print("🚀 Initializing Dynamic Data Phases...")
     
-    # Calculate skip counts for resume-safety
-    total_samples_seen = (start_step - 1) * BATCH_SIZE * ACCUMULATION_STEPS
-    if total_samples_seen > 0:
-        for gen, weight in zip(sources, weights):
-            gen.skip_count = int(total_samples_seen * weight)
+    # Adjusted paths to match your GCS bucket structure
+    pretrain_sources = [
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
+    ]
+    pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
 
-    data_gen = DataMixer(sources, weights)
-    batch_queue = queue.Queue(maxsize=PREFETCH_SIZE)
-    start_prefetch_worker(data_gen, BATCH_SIZE, batch_queue)
+    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat")
+
+    if start_step > 1:
+        if start_step < 25000:
+            total_pretrain_seen = (start_step - 1) * BATCH_SIZE
+            weights = [0.60, 0.25, 0.15]
+            for gen, weight in zip(pretrain_sources, weights):
+                gen.skip_count = int(total_pretrain_seen * weight)
+        else:
+            total_chat_seen = (start_step - 25000) * BATCH_SIZE
+            chat_mixer.skip_count = total_chat_seen
+
+    # --- PREFETCH INTEGRATION ---
+    data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
+
+    def data_wrapper():
+        """Handles switching between mixers based on global step."""
+        current_step = start_step
+        while True:
+            if current_step < 25000:
+                batch = pretrain_mixer.get_batch(BATCH_SIZE)
+            else:
+                batch = chat_mixer.get_batch(BATCH_SIZE)
+            
+            if batch is None:
+                data_queue.put(None)
+                break
+            
+            data_queue.put(batch)
+            current_step += 1
+
+    threading.Thread(target=data_wrapper, daemon=True).start()
+    # ----------------------------
 
     step = start_step
+    hunch = None
     while True:
         t0 = time.time()
-        step_loss = step_ce = step_p = step_forget_cost = 0.0
         step_diag = {k: 0.0 for k in [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
             'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
             'forget_density', 'logit_spread', 'diversity_loss'
         ]}
+        
+        t_data_start = time.time()
+        # Fetch from the background queue
+        current_batch = data_queue.get() 
+        if current_batch is None: 
+            print("🏁 Data stream exhausted.")
+            break
+        
+        if step == 25000:
+            print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
 
-        last_loss = None
-        current_batch = None
-        hunch = None
+        current_batch = jax.device_put(current_batch, data_sharding)
+        if hunch is not None:
+            hunch = jax.device_put(hunch, data_sharding)
+        
+        t_data_end = time.time()
+        step_data_wait = t_data_end - t_data_start
+        
+        loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
+            model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
+            should_truncate=False
+        )
+        
+        loss.block_until_ready()
+        t_compute_end = time.time()
+        step_compute_time = t_compute_end - t_data_end
 
-        for i in range(ACCUMULATION_STEPS):
-            current_batch = batch_queue.get()
-            if current_batch is None: break
-            
-            should_truncate = (i % HUNCH_REFRESH_EVERY == 0 and i > 0)
-            loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-                model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
-                should_truncate=should_truncate
-            )
-            for k in step_diag: step_diag[k] += float(halt_diag[k])
+        for k in step_diag: step_diag[k] = float(halt_diag[k])
 
-            step_loss += float(loss)
-            step_ce += float(ce)
-            step_p += float(p)
-            step_forget_cost += float(forget_cost)
-            last_loss = loss
-            
-            # Periodically block to prevent the JAX queue from exploding in memory
-            if i % 32 == 0 and i > 0:
-                loss.block_until_ready()
-
-        if current_batch is None: break
-        if last_loss is not None: last_loss.block_until_ready()
-
-        step_loss = float(step_loss) 
-        step_ce = float(step_ce) / ACCUMULATION_STEPS
-        step_p = float(step_p) / ACCUMULATION_STEPS
-        step_forget_cost = float(step_forget_cost) / ACCUMULATION_STEPS
-        step_diag = {k: float(jnp.mean(v)) / ACCUMULATION_STEPS for k, v in step_diag.items()}
+        step_loss = float(loss)
+        step_ce = float(ce)
+        step_p = float(p)
+        step_forget_cost = float(forget_cost)
+        step_diag = {k: float(jnp.mean(v)) for k, v in step_diag.items()}
 
         t_total = time.time() - t0
 
@@ -352,13 +352,14 @@ if __name__ == "__main__":
             print(
                 f"Step {step:04d} | CE: {step_ce:.4f} | Agg Loss: {step_loss:.4f} | "
                 f"Avg Steps: {step_p:.2f} | Forget: {step_forget_cost:.4f} | Time: {t_total:.2f}s\n"
+                f"      Wait: {step_data_wait:.3f}s | Compute: {step_compute_time:.3f}s\n"
                 f"      Logits [μ:{step_diag['logits_mean']:.2f}, σ:{step_diag['logits_std']:.2f}, min:{step_diag['logits_min']:.2f}, max:{step_diag['logits_max']:.2f}] | Spread: {step_diag['logit_spread']:.2f}\n"
                 f"      Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}] | Sat: {step_diag['saturation']:.3f} | Drift: {step_diag['temporal_drift']:.3f} | Forget: {step_diag['forget_density']:.3f}\n"
             )
 
             write_header = not os.path.exists(history_file) or os.path.getsize(history_file) == 0
             with open(history_file, "a", newline="") as f:
-                fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total",
+                fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total", "data_wait", "compute_time",
                           "logits_mean", "logits_std", "logits_min", "logits_max", 
                           "prob_mean", "prob_std", "saturation", "temporal_drift", 
                           "forget_density", "logit_spread", "diversity_loss"]
@@ -368,6 +369,7 @@ if __name__ == "__main__":
                 row = {
                     "step": int(step), "loss": f"{step_loss:.4f}", "ce": f"{step_ce:.4f}",
                     "avg_ponder": f"{step_p:.2f}", "avg_forget_cost": f"{step_forget_cost:.4f}", "t_total": f"{t_total:.2f}",
+                    "data_wait": f"{step_data_wait:.4f}", "compute_time": f"{step_compute_time:.4f}",
                 }
                 row.update({k: f"{v:.4f}" for k, v in step_diag.items() if k in fields})
                 writer.writerow(row)
