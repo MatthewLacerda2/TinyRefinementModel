@@ -203,11 +203,13 @@ if __name__ == "__main__":
     data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
     replicated_sharding = NamedSharding(mesh, PartitionSpec())
 
-    #When creating the model inside the TPU VM env, its parameters are already accessible to the accelerator
-    #By removing this "replicated update" step, you bypass the immutable state error entirely.
-    #state = nnx.state((model, optimizer))
-    #state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), state)
-    #nnx.update((model, optimizer), state)
+    # Ensure model and optimizer are correctly sharded (replicated) across the mesh.
+    # We use split/merge for the optimizer to avoid the immutable node error.
+    nnx.update(model, jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), nnx.state(model)))
+    
+    opt_graphdef, opt_state = nnx.split(optimizer)
+    opt_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), opt_state)
+    optimizer = nnx.merge(opt_graphdef, opt_state)
 
     # In start_training.py, find where history_file is defined:
     history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
@@ -232,14 +234,14 @@ if __name__ == "__main__":
             ),
         )
 
-        # Update model parameters
-        nnx.update(model, restored["model"])
+        # Update model parameters with sharded state
+        restored_model_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), restored["model"])
+        nnx.update(model, restored_model_state)
         
-        # Update optimizer state (this handles the Adam 'count' and moments)
-        # Using graph split/merge to bypass "Cannot set key on immutable node" error
-        # which occurs when trying to update Optax's ScaleByAdamState in-place.
+        # Update optimizer state with sharded state (using split/merge for immutables)
+        restored_opt_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), restored["optimizer"])
         graphdef, _ = nnx.split(optimizer)
-        optimizer = nnx.merge(graphdef, restored["optimizer"])
+        optimizer = nnx.merge(graphdef, restored_opt_state)
         
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
