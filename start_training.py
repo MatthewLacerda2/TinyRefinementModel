@@ -230,13 +230,16 @@ if __name__ == "__main__":
                 step=ocp.args.JsonRestore(),
             ),
         )
-        nnx.update(model, restored["model"])
-        nnx.update(optimizer, restored["optimizer"])
+
+        # CRITICAL FIX: Update both at once to preserve immutable node links
+        nnx.update((model, optimizer), (restored["model"], restored["optimizer"]))
+        
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
         monitor.ce_history = m_state["ce_history"]
         monitor.best_ce = m_state["best_ce"]
         monitor.last_improvement_step = m_state["last_improvement_step"]
+        
         print(f"✅ Resuming from step {start_step}")
         del restored 
         import gc; gc.collect()
