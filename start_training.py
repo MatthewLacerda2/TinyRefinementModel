@@ -32,7 +32,7 @@ load_dotenv()
 CHECKPOINT_INTERVAL = 100
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
-PHASE_STEP = 3000
+PHASE_STEP = 2000
 
 # Root paths for Data and Checkpoints
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
