@@ -171,7 +171,7 @@ def start_prefetch_worker(data_gen, batch_size, q):
     return t
 
 class LossMonitor:
-    def __init__(self, patience=500, window=500):
+    def __init__(self, patience=2000, window=1000):
         self.patience = patience
         self.window = window
         self.ce_history = []
