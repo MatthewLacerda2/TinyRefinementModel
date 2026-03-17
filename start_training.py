@@ -250,7 +250,7 @@ if __name__ == "__main__":
     ]
     pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
 
-    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat")
+    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
 
     if start_step > 1:
         if start_step < 25000:
