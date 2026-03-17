@@ -14,10 +14,10 @@ MAX_STEPS_LIMIT = 32
 #Training
 MAX_SEQ_LEN = 1024
 MIN_STEPS = 8
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 PAD_TOKEN_ID = 100257
-FORGET_LAMBDA = 1e-5
-DIVERSITY_LAMBDA = 1.0
+FORGET_LAMBDA = 1e-6
+DIVERSITY_LAMBDA = 0.5
 HUNCH_REFRESH_EVERY = 4
 
 def rotate_half(x):
@@ -164,7 +164,7 @@ class UniversalReasoner(nnx.Module):
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(3.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(0.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
@@ -318,10 +318,10 @@ class UniversalReasoner(nnx.Module):
 
 schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-6, 
-    peak_value=5.6e-4,  # Adjusted for larger batch
+    peak_value=2e-4,  # Slightly lower peak for stability
     warmup_steps=400, 
-    decay_steps=1000, 
-    end_value=5e-6
+    decay_steps=2000, 
+    end_value=1e-5
 )
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
