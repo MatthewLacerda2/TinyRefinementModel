@@ -5,7 +5,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 1024
+LATENT_DIM = 768
 NUM_BLOCKS = 8
 SHARED_SLOTS = 64
 VOCAB_SIZE = 100277
