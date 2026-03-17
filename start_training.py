@@ -171,7 +171,7 @@ def start_prefetch_worker(data_gen, batch_size, q):
     return t
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=1000):
+    def __init__(self, patience=50000, window=2000):
         self.patience = patience
         self.window = window
         self.ce_history = []
@@ -230,8 +230,9 @@ if __name__ == "__main__":
                 step=ocp.args.JsonRestore(),
             ),
         )
-        nnx.update(model, restored["model"])
-        nnx.update(optimizer, restored["optimizer"])
+        # Updating model and optimizer in a single call often resolves immutability issues
+        # with nested optax states during restoration.
+        nnx.update((model, optimizer), (restored["model"], restored["optimizer"]))
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
         monitor.ce_history = m_state["ce_history"]
