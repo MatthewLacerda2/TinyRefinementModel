@@ -25,9 +25,8 @@ CHECKPOINT_DIR = os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints")
 #os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 @partial(nnx.jit, static_argnames=['refresh'])
-def get_next_logits(model, padded_tks, valid_len, refresh):
-    logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
-    return logits[0, valid_len - 1, :]
+def get_all_logits(model, padded_tks, refresh):
+    return run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
 
 def generate_text(model, enc, prompt, max_new_tokens=128, temperature=0.8):
     seed = int(time.time() * 1000) % (2**31)
@@ -48,7 +47,11 @@ def generate_text(model, enc, prompt, max_new_tokens=128, temperature=0.8):
 
         should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
 
-        logits = get_next_logits(model, input_ids, valid_len, should_refresh)
+        # Call JIT function with the whole sequence
+        all_logits = get_all_logits(model, input_ids, refresh=should_refresh)
+        
+        # Slice the specific token we need OUTSIDE of JIT
+        logits = all_logits[0, valid_len - 1, :]
 
         rng, subkey = jax.random.split(rng)
 
