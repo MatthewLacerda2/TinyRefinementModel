@@ -380,7 +380,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    opt.update(model, grads)
+    opt.update(grads)
     
     *metrics, next_hunch = aux
     
