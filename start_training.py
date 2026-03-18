@@ -34,12 +34,9 @@ SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
 PHASE_STEP = 4000
 
-# Root paths for Data and Checkpoints
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 CHECKPOINT_ROOT = os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints")
 
-# Relaxing GCS enforcement: DATA_ROOT can be GCS or local. 
-# CHECKPOINT_ROOT is now allowed to be local.
 if not DATA_ROOT:
     print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
     
@@ -95,7 +92,6 @@ class TextDataGenerator:
         self.pointer = 0
         
         if self.skip_count > 0:
-            # Handle resume-from-checkpoint skipping
             tokens_to_skip = self.skip_count * self.max_seq_len
             if tokens_to_skip < len(self.data):
                 self.pointer = tokens_to_skip
@@ -113,7 +109,6 @@ class TextDataGenerator:
         if self.data is None or self.pointer + (batch_size * self.max_seq_len) > len(self.data):
             if not self._load_next_file(): return None
             
-        # Reshape the flat token stream into [batch, seq_len]
         total_tokens = batch_size * self.max_seq_len
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
@@ -201,17 +196,15 @@ if __name__ == "__main__":
 
     mesh = Mesh(jax.devices(), ('batch',))
     data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
-    replicated_sharding = NamedSharding(mesh, PartitionSpec())
-
-    # Ensure model and optimizer are correctly sharded (replicated) across the mesh.
-    # We use split/merge for the optimizer to avoid the immutable node error.
-    nnx.update(model, jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), nnx.state(model)))
     
+    fsdp_sharding = NamedSharding(mesh, PartitionSpec('batch'))
+
+    nnx.update(model, jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), nnx.state(model)))
+
     opt_graphdef, opt_state = nnx.split(optimizer)
-    opt_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), opt_state)
+    opt_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), opt_state)
     optimizer = nnx.merge(opt_graphdef, opt_state)
 
-    # In start_training.py, find where history_file is defined:
     history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
     monitor = LossMonitor()
 
@@ -234,12 +227,10 @@ if __name__ == "__main__":
             ),
         )
 
-        # Update model parameters with sharded state
-        restored_model_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), restored["model"])
+        restored_model_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), restored["model"])
         nnx.update(model, restored_model_state)
-        
-        # Update optimizer state with sharded state (using split/merge for immutables)
-        restored_opt_state = jax.tree.map(lambda x: jax.device_put(x, replicated_sharding), restored["optimizer"])
+
+        restored_opt_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), restored["optimizer"])
         graphdef, _ = nnx.split(optimizer)
         optimizer = nnx.merge(graphdef, restored_opt_state)
         
@@ -258,7 +249,6 @@ if __name__ == "__main__":
 
     print("🚀 Initializing Dynamic Data Phases...")
     
-    # Adjusted paths to match your GCS bucket structure
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
@@ -278,11 +268,9 @@ if __name__ == "__main__":
             total_chat_seen = (start_step - PHASE_STEP) * BATCH_SIZE
             chat_mixer.skip_count = total_chat_seen
 
-    # --- PREFETCH INTEGRATION ---
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
     def data_wrapper():
-        """Handles switching between mixers based on global step."""
         current_step = start_step
         while True:
             if current_step < PHASE_STEP:
@@ -298,7 +286,6 @@ if __name__ == "__main__":
             current_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
-    # ----------------------------
 
     step = start_step
     hunch = None
@@ -311,7 +298,7 @@ if __name__ == "__main__":
         ]}
         
         t_data_start = time.time()
-        # Fetch from the background queue
+        
         current_batch = data_queue.get() 
         if current_batch is None: 
             print("🏁 Data stream exhausted.")
@@ -381,7 +368,6 @@ if __name__ == "__main__":
                           "forget_density", "logit_spread", "diversity_loss"]
                 writer = csv.DictWriter(f, fieldnames=fields)
                 
-                # Check if file is empty to write header
                 if f.tell() == 0: 
                     writer.writeheader()
                 
