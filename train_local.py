@@ -5,19 +5,19 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 768
+LATENT_DIM = 1024
 NUM_BLOCKS = 8
 SHARED_SLOTS = 64
 VOCAB_SIZE = 100277
 MAX_STEPS_LIMIT = 32
 
 #Training
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
 MIN_STEPS = 8
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 PAD_TOKEN_ID = 100257
 FORGET_LAMBDA = 1e-6
-DIVERSITY_LAMBDA = 0.5
+DIVERSITY_LAMBDA = 0.25
 HUNCH_REFRESH_EVERY = 4
 
 def rotate_half(x):
@@ -318,17 +318,23 @@ class UniversalReasoner(nnx.Module):
 
 schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-6, 
-    peak_value=2e-4,  # Slightly lower peak for stability
-    warmup_steps=400, 
-    decay_steps=2000, 
+    peak_value=2e-4,
+    warmup_steps=1000, 
+    decay_steps=1000, 
     end_value=1e-5
 )
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=400, 
+    warmup_steps=1000, 
     decay_steps=1000, 
     end_value=2e-4
+)
+diversity_lambda_schedule = optax.linear_schedule(
+    init_value=0.0,
+    end_value=0.12,
+    transition_steps=1000,
+    transition_begin=1000,
 )
 optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
@@ -363,6 +369,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
         current_p_lambda = ponder_lambda_schedule(step)
+        current_div_lambda = diversity_lambda_schedule(step)
 
         num_devices = jax.device_count()
 
@@ -370,7 +377,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + f_lambda * jnp.mean(forget_cost)
-            + DIVERSITY_LAMBDA * div_loss
+            + current_div_lambda * div_loss
         )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
