@@ -45,7 +45,7 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
@@ -59,7 +59,7 @@ class RotaryAttention(nnx.Module):
             q_pos = jnp.arange(s)
         if kv_pos is None:
             kv_pos = jnp.arange(s_kv)
-#
+
         sin_q = self.sin_cached[q_pos, None, :]
         cos_q = self.cos_cached[q_pos, None, :]
         q = (q * cos_q) + (rotate_half(q) * sin_q)
@@ -76,14 +76,11 @@ class RotaryAttention(nnx.Module):
                 v = jnp.concatenate([prev_v, v], axis=1)
             self.cache.value = (k, v)
 
-        repeats = self.num_heads // self.num_groups
-        k_expanded = jnp.repeat(k, repeats, axis=2)
-        v_expanded = jnp.repeat(v, repeats, axis=2)
-
-        out = nn.attention.dot_product_attention(
-            q, k_expanded, v_expanded,
-            mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
-            if mask is not None else None,
+        # jax.nn.dot_product_attention is optimized (FlashAttention/Fused) and handles GQA internally.
+        out = jax.nn.dot_product_attention(
+            q, k, v,
+            mask=mask,
+            is_causal=is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -103,9 +100,9 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         normed_context = self.norm1(context) if context is not None else None
-        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
@@ -127,9 +124,9 @@ class BlockStack(nnx.Module):
         for block in self.blocks:
             block.attn.cache.value = None
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         for block in self.blocks:
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         return x
 
 
@@ -182,12 +179,9 @@ class UniversalReasoner(nnx.Module):
                 current_hunch = self.hunch_cache.value
                 
         seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
-        pad_mask = tokens != PAD_TOKEN_ID
-        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-        seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
-
         z_seq = self.embed(tokens)
-        z_seq = self.main_stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
+        # Use is_causal=True and only pass the pad_mask to take advantage of optimized kernels.
+        z_seq = self.main_stack(z_seq, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
 
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
