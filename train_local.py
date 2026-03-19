@@ -146,7 +146,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -1.0) 
+        self.halt_head.bias.value = jnp.full((1,), 1.0) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -154,20 +154,21 @@ class UniversalReasoner(nnx.Module):
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.hunch_gate = nnx.Linear(
-            latent_dim, latent_dim,
+            latent_dim * 2, 1,
             bias_init=jax.nn.initializers.constant(-2.0),
             rngs=rngs, dtype=dtype,
         )
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(0.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim, 1, bias_init=jax.nn.initializers.constant(2.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True, prev_hunch=None):
         batch_size, seq_len = tokens.shape
+        pad_mask = tokens != PAD_TOKEN_ID
         
         current_hunch = None
         if training:
@@ -186,7 +187,9 @@ class UniversalReasoner(nnx.Module):
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
-            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
+            seq_summary = jnp.mean(z_seq, axis=1, keepdims=True)
+            hunch_input = jnp.concatenate([self.hunch_norm(current_hunch), jnp.broadcast_to(seq_summary, current_hunch.shape)], axis=-1)
+            gate = jax.nn.sigmoid(self.hunch_gate(hunch_input))
             z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
         else:
             z_shared = z_shared_base
@@ -324,6 +327,13 @@ ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     decay_steps=1000, 
     end_value=2e-4
 )
+forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.0, 
+    warmup_steps=1000, 
+    decay_steps=1000, 
+    end_value=4e-3
+)
 diversity_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=0.12,
@@ -336,16 +346,17 @@ optimizer_chain = optax.chain(
 )
 
 
-def calculate_diversity_loss(expected_shared):
+def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
     norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
     normalized_shared = expected_shared / norms
     
     dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
+    mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
     
-    identity = jnp.eye(SHARED_SLOTS)[None, :, :]
+    violation = jnp.maximum(0.0, jnp.abs(dots) - margin)
     
-    return jnp.mean(jnp.square(dots - identity))
+    return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
 def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should_truncate=False):
@@ -355,7 +366,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(
             inputs, training=True, prev_hunch=prev_hunch
         )
-        div_loss = calculate_diversity_loss(expected_shared)
+        div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
@@ -363,6 +374,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
         current_p_lambda = ponder_lambda_schedule(step)
+        current_f_lambda = forget_lambda_schedule(step)
         current_div_lambda = diversity_lambda_schedule(step)
 
         num_devices = jax.device_count()
@@ -370,7 +382,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         total_loss = (
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
-            + f_lambda * jnp.mean(forget_cost)
+            + current_f_lambda * jnp.mean(forget_cost)
             + current_div_lambda * div_loss
         )
         
