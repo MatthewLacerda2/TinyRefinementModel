@@ -194,16 +194,23 @@ if __name__ == "__main__":
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
-    mesh = Mesh(jax.devices(), ('batch',))
-    data_sharding = NamedSharding(mesh, PartitionSpec('batch'))
+    devices = np.array(jax.devices())
+    mesh = Mesh(devices, ('fsdp',))
     
-    fsdp_sharding = NamedSharding(mesh, PartitionSpec('batch'))
+    def fsdp_shard_tensor(x):
+        if x.ndim >= 1 and x.shape[0] % len(devices) == 0:
+            sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
+        else:
+            sharding = NamedSharding(mesh, PartitionSpec()) 
+        return jax.device_put(x, sharding)
 
-    nnx.update(model, jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), nnx.state(model)))
+    data_sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
 
+    nnx.update(model, jax.tree.map(fsdp_shard_tensor, nnx.state(model)))
+    
     opt_graphdef, opt_state = nnx.split(optimizer)
-    opt_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), opt_state)
-    optimizer = nnx.merge(opt_graphdef, opt_state)
+    sharded_opt_state = jax.tree.map(fsdp_shard_tensor, opt_state)
+    optimizer = nnx.merge(opt_graphdef, sharded_opt_state)
 
     history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
     monitor = LossMonitor()
@@ -227,10 +234,10 @@ if __name__ == "__main__":
             ),
         )
 
-        restored_model_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), restored["model"])
+        restored_model_state = jax.tree.map(fsdp_shard_tensor, restored["model"])
         nnx.update(model, restored_model_state)
 
-        restored_opt_state = jax.tree.map(lambda x: jax.device_put(x, fsdp_sharding), restored["optimizer"])
+        restored_opt_state = jax.tree.map(fsdp_shard_tensor, restored["optimizer"])
         graphdef, _ = nnx.split(optimizer)
         optimizer = nnx.merge(graphdef, restored_opt_state)
         

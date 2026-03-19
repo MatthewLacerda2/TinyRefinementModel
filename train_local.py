@@ -5,7 +5,7 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 1024
+LATENT_DIM = 1536
 NUM_BLOCKS = 8
 SHARED_SLOTS = 64
 VOCAB_SIZE = 100277
@@ -375,7 +375,6 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
-        total_loss = total_loss / num_devices
         
         halt_diag['diversity_loss'] = div_loss
         
