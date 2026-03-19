@@ -149,7 +149,7 @@ class UniversalReasoner(nnx.Module):
         self.halt_head.bias.value = jnp.full((1,), 1.0) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -161,7 +161,7 @@ class UniversalReasoner(nnx.Module):
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, 1, bias_init=jax.nn.initializers.constant(2.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim * 2, 1, bias_init=jax.nn.initializers.constant(2.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
@@ -227,7 +227,8 @@ class UniversalReasoner(nnx.Module):
             )
 
             if self.use_forget:
-                forget_gate_input = self.forget_norm(new_shared)
+                gate_context = jnp.concatenate([curr_shared, new_shared], axis=-1)
+                forget_gate_input = self.forget_norm(gate_context)
                 forget = jax.nn.sigmoid(self.forget_head(forget_gate_input))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
