@@ -24,7 +24,7 @@ from train_local import (
     UniversalReasoner,
     train_step,
     optimizer_chain,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, FORGET_LAMBDA
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
 )
 
 load_dotenv()
@@ -322,7 +322,7 @@ if __name__ == "__main__":
         step_data_wait = t_data_end - t_data_start
         
         loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-            model, optimizer, current_batch, step, FORGET_LAMBDA, prev_hunch=hunch,
+            model, optimizer, current_batch, step, prev_hunch=hunch,
             should_truncate=False
         )
         

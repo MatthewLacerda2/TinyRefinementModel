@@ -16,8 +16,6 @@ MAX_SEQ_LEN = 2048
 MIN_STEPS = 8
 BATCH_SIZE = 16
 PAD_TOKEN_ID = 100257
-FORGET_LAMBDA = 1e-6
-DIVERSITY_LAMBDA = 0.25
 HUNCH_REFRESH_EVERY = 4
 
 def rotate_half(x):
@@ -360,7 +358,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -374,18 +372,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
         num_valid = jnp.sum(non_pad_mask).clip(min=1)
         token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
-        current_p_lambda = ponder_lambda_schedule(step)
-        current_f_lambda = forget_lambda_schedule(step)
-        current_div_lambda = diversity_lambda_schedule(step)
-
-        num_devices = jax.device_count()
-
-        total_loss = (
-            token_loss
-            + current_p_lambda * jnp.mean(ponder_cost)
-            + current_f_lambda * jnp.mean(forget_cost)
-            + current_div_lambda * div_loss
-        )
+        total_loss = token_loss
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
