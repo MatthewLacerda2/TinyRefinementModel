@@ -18,6 +18,11 @@ BATCH_SIZE = 16
 PAD_TOKEN_ID = 100257
 HUNCH_REFRESH_EVERY = 4
 
+# Soft label settings
+SOFT_LABEL_K = 64          # number of neighbors to soften over
+SOFT_LABEL_TEMP = 0.1     # temperature: lower = more peaked, higher = more spread
+
+
 def rotate_half(x):
     x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
     return jnp.concatenate([-x2, x1], axis=-1)
@@ -310,6 +315,40 @@ class UniversalReasoner(nnx.Module):
             
         return logits, ponder_cost, forget_loss, halt_diag, expected_shared
 
+#If using too much OOM, chunk over the batch×sequence dimension
+def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
+    # Work in float32 throughout — embedding similarity is sensitive to precision
+    embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
+    logits = logits.astype(jnp.float32)
+
+    norms = jnp.linalg.norm(embed_table, axis=-1, keepdims=True).clip(1e-8)
+    embed_normed = embed_table / norms
+
+    target_emb = embed_normed[targets]
+
+    all_sims = jnp.einsum('bld,vd->blv', target_emb, embed_normed)
+
+    topk_vals, topk_idx = jax.lax.top_k(all_sims, k)
+
+    B, L, V = all_sims.shape
+    sparse_sims = jnp.full((B, L, V), -jnp.inf)
+    sparse_sims = sparse_sims.at[
+        jnp.arange(B)[:, None, None],
+        jnp.arange(L)[None, :, None],
+        topk_idx
+    ].set(topk_vals)
+
+    soft_targets = jax.nn.softmax(sparse_sims / temperature, axis=-1)
+
+    flat_logits = logits.reshape(B * L, V)
+    flat_targets = soft_targets.reshape(B * L, V)
+    flat_mask = non_pad_mask.reshape(B * L)
+
+    per_token_loss = optax.softmax_cross_entropy(flat_logits, flat_targets)
+
+    num_valid = jnp.sum(flat_mask).clip(min=1)
+    loss = jnp.sum(per_token_loss * flat_mask) / num_valid
+    return loss
 
 
 schedule = optax.warmup_cosine_decay_schedule(
@@ -344,7 +383,7 @@ optimizer_chain = optax.chain(
     optax.adamw(learning_rate=schedule),
 )
 
-
+#We removed the diversity loss but still use it just for metrics
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
     norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
@@ -362,18 +401,20 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(
+        logits, ponder_cost, forget_cost, halt_diag, expected_shared = model(
             inputs, training=True, prev_hunch=prev_hunch
         )
         div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
 
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
-        num_valid = jnp.sum(non_pad_mask).clip(min=1)
-        token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
+
+        token_loss = soft_label_loss(
+            logits, targets,
+            embed_table=model.embed.embedding.value,
+            non_pad_mask=non_pad_mask,
+        )
 
         total_loss = token_loss
-        
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
         halt_diag['diversity_loss'] = div_loss
