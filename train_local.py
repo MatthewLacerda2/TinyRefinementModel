@@ -121,20 +121,23 @@ class StandardReasoningBlock(nnx.Module):
 
 class BlockStack(nnx.Module):
     def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
-        self.blocks = [
-            StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
-            for _ in range(num_blocks)
-        ]
+        @nnx.split_rngs(splits=num_blocks)
+        @nnx.vmap(in_axes=(0,), out_axes=0)
+        def create_block(rngs_in: nnx.Rngs):
+            return StandardReasoningBlock(latent_dim, num_heads, rngs=rngs_in, dtype=dtype)
+            
+        self.blocks = create_block(rngs)
         self.num_blocks = num_blocks
 
     def reset_state(self):
-        for block in self.blocks:
-            block.attn.cache.value = None
+        self.blocks.attn.cache.value = None
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
-        for block in self.blocks:
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
-        return x
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def forward(curr_x, block):
+            return block(curr_x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+            
+        return forward(x, self.blocks)
 
 
 class UniversalReasoner(nnx.Module):
