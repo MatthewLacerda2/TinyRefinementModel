@@ -5,11 +5,11 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 1536
-NUM_BLOCKS = 8
-SHARED_SLOTS = 64
+LATENT_DIM = 1024
+NUM_BLOCKS = 16
+SHARED_SLOTS = 128
 VOCAB_SIZE = 100277
-MAX_STEPS_LIMIT = 32
+MAX_STEPS_LIMIT = 64
 
 #Training
 MAX_SEQ_LEN = 2048
@@ -19,8 +19,10 @@ PAD_TOKEN_ID = 100257
 HUNCH_REFRESH_EVERY = 4
 
 # Soft label settings
-SOFT_LABEL_K = 64          # number of neighbors to soften over
-SOFT_LABEL_TEMP = 0.1     # temperature: lower = more peaked, higher = more spread
+SOFT_LABEL_K = 64
+SOFT_LABEL_TEMP = 0.1
+NUM_HEADS = 16
+NUM_GROUPS = NUM_HEADS // 4 # Ideal ratio is 4:1
 
 
 def rotate_half(x):
@@ -28,7 +30,7 @@ def rotate_half(x):
     return jnp.concatenate([-x2, x1], axis=-1)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.bfloat16):
+    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.bfloat16):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -90,7 +92,7 @@ class RotaryAttention(nnx.Module):
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=4, rngs=rngs, dtype=dtype)
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
@@ -144,12 +146,12 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=16, rngs=rngs, dtype=dtype)
+        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), 1.0) 
+        self.halt_head.bias.value = jnp.full((1,), 2.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
@@ -184,6 +186,7 @@ class UniversalReasoner(nnx.Module):
                 
         seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         z_seq = self.embed(tokens)
+
         # Use is_causal=True and only pass the pad_mask to take advantage of optimized kernels.
         z_seq = self.main_stack(z_seq, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
 
@@ -315,68 +318,68 @@ class UniversalReasoner(nnx.Module):
             
         return logits, ponder_cost, forget_loss, halt_diag, expected_shared
 
-#If using too much OOM, chunk over the batch×sequence dimension
 def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
-    # Work in float32 throughout — embedding similarity is sensitive to precision
+    B, L, V = logits.shape
+    
     embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
     logits = logits.astype(jnp.float32)
 
     norms = jnp.linalg.norm(embed_table, axis=-1, keepdims=True).clip(1e-8)
     embed_normed = embed_table / norms
 
-    target_emb = embed_normed[targets]
+    target_emb = embed_normed[targets] 
 
-    all_sims = jnp.einsum('bld,vd->blv', target_emb, embed_normed)
-
-    topk_vals, topk_idx = jax.lax.top_k(all_sims, k)
-
-    B, L, V = all_sims.shape
-    sparse_sims = jnp.full((B, L, V), -jnp.inf)
-    sparse_sims = sparse_sims.at[
-        jnp.arange(B)[:, None, None],
-        jnp.arange(L)[None, :, None],
-        topk_idx
-    ].set(topk_vals)
-
-    soft_targets = jax.nn.softmax(sparse_sims / temperature, axis=-1)
-
+    flat_targets = target_emb.reshape(B * L, -1)
     flat_logits = logits.reshape(B * L, V)
-    flat_targets = soft_targets.reshape(B * L, V)
     flat_mask = non_pad_mask.reshape(B * L)
 
-    per_token_loss = optax.softmax_cross_entropy(flat_logits, flat_targets)
+    def compute_single_token_loss(t_emb, l_logits):
+        sims = jnp.dot(embed_normed, t_emb)
+        
+        topk_vals, topk_idx = jax.lax.top_k(sims, k)
+        
+        soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
+        
+        lse = jax.scipy.special.logsumexp(l_logits, axis=-1)
+        topk_logits = jnp.take_along_axis(l_logits, topk_idx, axis=-1)
+        topk_log_probs = topk_logits - lse
+        
+        token_ce = -jnp.sum(soft_targets * topk_log_probs)
+        return token_ce
+
+    per_token_losses = jax.vmap(compute_single_token_loss)(flat_targets, flat_logits)
 
     num_valid = jnp.sum(flat_mask).clip(min=1)
-    loss = jnp.sum(per_token_loss * flat_mask) / num_valid
+    loss = jnp.sum(per_token_losses * flat_mask) / num_valid
+    
     return loss
-
 
 schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-6, 
     peak_value=2e-4,
-    warmup_steps=1000, 
-    decay_steps=1000, 
+    warmup_steps=4000, 
+    decay_steps=2000, 
     end_value=1e-5
 )
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=1000, 
-    decay_steps=1000, 
-    end_value=2e-4
+    warmup_steps=4000, 
+    decay_steps=2000, 
+    end_value=1e-4
 )
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=1000, 
-    decay_steps=1000, 
+    warmup_steps=4000, 
+    decay_steps=2000, 
     end_value=4e-3
 )
 diversity_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=0.12,
-    transition_steps=1000,
-    transition_begin=1000,
+    transition_steps=2000,
+    transition_begin=4000,
 )
 optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
