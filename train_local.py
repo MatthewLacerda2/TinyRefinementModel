@@ -8,14 +8,14 @@ import jax.numpy as jnp
 LATENT_DIM = 1024
 NUM_BLOCKS = 16
 SHARED_SLOTS = 128
-VOCAB_SIZE = 100277
+VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 64
 
 #Training
 MAX_SEQ_LEN = 2048
 MIN_STEPS = 8
 BATCH_SIZE = 16
-PAD_TOKEN_ID = 100257
+PAD_TOKEN_ID = 100351
 HUNCH_REFRESH_EVERY = 4
 
 # Soft label settings
@@ -209,11 +209,7 @@ class UniversalReasoner(nnx.Module):
         )
         
         # 2. Shared part: Causal mask so Slot N can only attend to Slots <= N
-        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
-        shared_mask = jnp.broadcast_to(
-            causal_shared[None, None, :, :], 
-            (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS)
-        )
+        shared_mask = jax.nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
         
         # Merge them to create the final mask for the scratchpad
         extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
@@ -274,8 +270,7 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
-        norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
-        normalized = expected_shared / norms
+        normalized = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
         slot_corr = jnp.einsum('bsd,btd->bst', normalized, normalized)
         saturation_score = jnp.mean(jnp.abs(slot_corr))
 
@@ -324,8 +319,7 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
     logits = logits.astype(jnp.float32)
 
-    norms = jnp.linalg.norm(embed_table, axis=-1, keepdims=True).clip(1e-8)
-    embed_normed = embed_table / norms
+    embed_normed = optax.l2_normalize(embed_table, axis=-1, eps=1e-8)
 
     target_emb = embed_normed[targets] 
 
@@ -333,21 +327,14 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     flat_logits = logits.reshape(B * L, V)
     flat_mask = non_pad_mask.reshape(B * L)
 
-    def compute_single_token_loss(t_emb, l_logits):
-        sims = jnp.dot(embed_normed, t_emb)
-        
-        topk_vals, topk_idx = jax.lax.top_k(sims, k)
-        
-        soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
-        
-        lse = jax.scipy.special.logsumexp(l_logits, axis=-1)
-        topk_logits = jnp.take_along_axis(l_logits, topk_idx, axis=-1)
-        topk_log_probs = topk_logits - lse
-        
-        token_ce = -jnp.sum(soft_targets * topk_log_probs)
-        return token_ce
-
-    per_token_losses = jax.vmap(compute_single_token_loss)(flat_targets, flat_logits)
+    sims = jnp.matmul(flat_targets, embed_normed.T)
+    topk_vals, topk_idx = jax.lax.top_k(sims, k)
+    soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
+    
+    log_probs = jax.nn.log_softmax(flat_logits, axis=-1)
+    topk_log_probs = jnp.take_along_axis(log_probs, topk_idx, axis=-1)
+    
+    per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
 
     num_valid = jnp.sum(flat_mask).clip(min=1)
     loss = jnp.sum(per_token_losses * flat_mask) / num_valid
@@ -358,8 +345,7 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
 #We removed the diversity loss but still use it just for metrics
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
-    norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
-    normalized_shared = expected_shared / norms
+    normalized_shared = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
     
     dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
     mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
@@ -404,7 +390,7 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
     
     next_hunch = jax.lax.cond(
         should_refresh,
-        lambda x: jax.lax.stop_gradient(x),
+        lambda x: jnp.zeros_like(x),
         lambda x: x,
         next_hunch
     )
