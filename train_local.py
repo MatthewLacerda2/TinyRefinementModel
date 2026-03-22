@@ -25,9 +25,15 @@ NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4 # Ideal ratio is 4:1
 
 
-def rotate_half(x):
-    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
-    return jnp.concatenate([-x2, x1], axis=-1)
+def apply_rope(x, freqs_complex):
+    d = x.shape[-1]
+    x_complex = jax.lax.complex(
+        x[..., :d // 2].astype(jnp.float32), 
+        x[..., d // 2:].astype(jnp.float32)
+    )
+    x_rotated = x_complex * freqs_complex
+    x_out = jnp.concatenate([jnp.real(x_rotated), jnp.imag(x_rotated)], axis=-1)
+    return x_out.astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.bfloat16):
@@ -39,9 +45,7 @@ class RotaryAttention(nnx.Module):
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS)
         freqs = jnp.outer(t, inv_freq)
-        freqs = jnp.concatenate([freqs, freqs], axis=-1)
-        self.sin_cached = jnp.sin(freqs).astype(dtype)
-        self.cos_cached = jnp.cos(freqs).astype(dtype)
+        self.freqs_complex = jnp.exp(1j * freqs).astype(jnp.complex64)
 
         self.cache = nnx.Cache(None)
 
@@ -65,14 +69,12 @@ class RotaryAttention(nnx.Module):
         if kv_pos is None:
             kv_pos = jnp.arange(s_kv)
 
-        sin_q = self.sin_cached[q_pos, None, :]
-        cos_q = self.cos_cached[q_pos, None, :]
-        q = (q * cos_q) + (rotate_half(q) * sin_q)
+        freqs_q = self.freqs_complex[q_pos, None, :]
+        q = apply_rope(q, freqs_q)
         q = q * self.scale
 
-        sin_kv = self.sin_cached[kv_pos, None, :]
-        cos_kv = self.cos_cached[kv_pos, None, :]
-        k = (k * cos_kv) + (rotate_half(k) * sin_kv)
+        freqs_kv = self.freqs_complex[kv_pos, None, :]
+        k = apply_rope(k, freqs_kv)
 
         if use_cache:
             if self.cache.value is not None:
