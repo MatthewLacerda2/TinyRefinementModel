@@ -23,9 +23,9 @@ import fsspec
 from train_local import (
     UniversalReasoner,
     train_step,
-    optimizer_chain,
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
 )
+from schedulers import optimizer_chain
 
 load_dotenv()
 
