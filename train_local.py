@@ -354,13 +354,6 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     
     return loss
 
-from schedulers import (
-    learning_schedule,
-    ponder_lambda_schedule,
-    forget_lambda_schedule,
-    diversity_lambda_schedule,
-    optimizer_chain,
-)
 
 #We removed the diversity loss but still use it just for metrics
 def calculate_diversity_loss_margin(expected_shared, margin):

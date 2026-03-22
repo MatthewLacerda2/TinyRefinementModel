@@ -12,11 +12,9 @@ from flax import nnx
 import orbax.checkpoint as ocp
 import csv
 import time
-import tiktoken
 import threading
 import queue
 import multiprocessing as mp
-import concurrent.futures
 from dotenv import load_dotenv
 import numpy as np
 import fsspec
@@ -44,23 +42,6 @@ print(f"📁 Checkpoints will be saved to: {CHECKPOINT_ROOT}")
 if not CHECKPOINT_ROOT.startswith("gs://"):
     print(f"ℹ️ Note: Saving locally. You will need to manually sync to GCS using: gsutil -m cp -r {CHECKPOINT_ROOT} gs://YOUR_BUCKET/")
 
-GLOBAL_POOL = None
-
-def get_global_pool():
-    global GLOBAL_POOL
-    if GLOBAL_POOL is None:
-        GLOBAL_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
-    return GLOBAL_POOL
-
-def global_tokenize_item(text, max_seq_len, enc_name):
-    import tiktoken
-    enc = tiktoken.get_encoding(enc_name)
-    tokens = enc.encode(text)
-    if len(tokens) < max_seq_len:
-        tokens = tokens + [PAD_TOKEN_ID] * (max_seq_len - len(tokens))
-    else:
-        tokens = tokens[: max_seq_len]
-    return tokens
 
 class TextDataGenerator:
     def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
@@ -154,17 +135,6 @@ class DataMixer:
                 
         return None
 
-def start_prefetch_worker(data_gen, batch_size, q):
-    def worker():
-        while True:
-            batch = data_gen.get_batch(batch_size)
-            if batch is None:
-                q.put(None)
-                return
-            q.put(batch)
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    return t
 
 class LossMonitor:
     def __init__(self, patience=2000, window=1000):
