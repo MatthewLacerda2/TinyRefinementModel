@@ -214,7 +214,7 @@ class UniversalReasoner(nnx.Module):
         )
         
         # 2. Shared part: Causal mask so Slot N can only attend to Slots <= N
-        shared_mask = jax.nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
+        shared_mask = nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
         
         # Merge them to create the final mask for the scratchpad
         extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
