@@ -250,9 +250,11 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
-        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
-            jax.checkpoint(scan_step), (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
-        )
+        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = nnx.scan(
+            nnx.remat(scan_step),
+            in_axes=(nnx.Carry, 0),
+            out_axes=(nnx.Carry, 0)
+        )((z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps)))
 
 
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
