@@ -10,7 +10,6 @@ import jax.numpy as jnp
 from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from flax import nnx
 import orbax.checkpoint as ocp
-import csv
 import time
 import threading
 import queue
@@ -24,6 +23,7 @@ from train_local import (
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
 )
 from schedulers import optimizer_chain
+from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
@@ -136,36 +136,11 @@ class DataMixer:
         return None
 
 
-class LossMonitor:
-    def __init__(self, patience=2000, window=1000):
-        self.patience = patience
-        self.window = window
-        self.ce_history = []
-        self.best_ce = float("inf")
-        self.last_improvement_step = 0
+# LossMonitor moved to metrics_logger.py
 
-    def push(self, step, ce_loss):
-        self.ce_history.append(ce_loss)
-        if len(self.ce_history) > self.window: self.ce_history.pop(0)
-        avg_ce = sum(self.ce_history) / len(self.ce_history)
-        if avg_ce < (self.best_ce - 0.01):
-            self.best_ce = avg_ce
-            self.last_improvement_step = step
-            return False
-        return (step - self.last_improvement_step) > self.patience
-
-if __name__ == "__main__":
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass
-
-    print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
-
-    devices = np.array(jax.devices())
+def setup_sharding(devices):
     mesh = Mesh(devices, ('fsdp',))
+    data_sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
     
     def fsdp_shard_tensor(x):
         if x.ndim >= 1 and x.shape[0] % len(devices) == 0:
@@ -173,18 +148,24 @@ if __name__ == "__main__":
         else:
             sharding = NamedSharding(mesh, PartitionSpec()) 
         return jax.device_put(x, sharding)
+        
+    return mesh, data_sharding, fsdp_shard_tensor
 
-    data_sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
+def init_model_and_optimizer(fsdp_shard_tensor):
+    print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     nnx.update(model, jax.tree.map(fsdp_shard_tensor, nnx.state(model)))
     
     opt_graphdef, opt_state = nnx.split(optimizer)
     sharded_opt_state = jax.tree.map(fsdp_shard_tensor, opt_state)
     optimizer = nnx.merge(opt_graphdef, sharded_opt_state)
+    
+    return model, optimizer
 
-    history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
+def load_or_create_checkpoint(model, optimizer, fsdp_shard_tensor):
     monitor = LossMonitor()
-
     mngr = ocp.CheckpointManager(
         CHECKPOINT_ROOT,
         item_names=("model", "optimizer", "monitor_state", "step"),
@@ -224,15 +205,16 @@ if __name__ == "__main__":
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
+    return mngr, monitor, start_step
+
+def setup_data_pipeline(start_step):
     print("🚀 Initializing Dynamic Data Phases...")
-    
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
     pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
-
     chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
 
     if start_step > 1:
@@ -263,17 +245,16 @@ if __name__ == "__main__":
             current_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
+    return data_queue
 
+def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sharding):
+    history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
+    logger = MetricsLogger(history_file)
     step = start_step
     hunch = None
+    
     while True:
         t0 = time.time()
-        step_diag = {k: 0.0 for k in [
-            'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
-            'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
-            'forget_density', 'logit_spread', 'diversity_loss'
-        ]}
-        
         t_data_start = time.time()
         
         current_batch = data_queue.get() 
@@ -300,13 +281,11 @@ if __name__ == "__main__":
         t_compute_end = time.time()
         step_compute_time = t_compute_end - t_data_end
 
-        for k in step_diag: step_diag[k] = float(halt_diag[k])
-
+        step_diag = logger.extract_diags(halt_diag, jnp.mean)
         step_loss = float(loss)
         step_ce = float(ce)
         step_p = float(p)
         step_forget_cost = float(forget_cost)
-        step_diag = {k: float(jnp.mean(v)) for k, v in step_diag.items()}
 
         t_total = time.time() - t0
 
@@ -329,31 +308,23 @@ if __name__ == "__main__":
                 ),
             )
             mngr.wait_until_finished()
-
-            print(
-                f"Step {step:04d} | CE: {step_ce:.4f} | Agg Loss: {step_loss:.4f} | "
-                f"Avg Steps: {step_p:.2f} | Forget: {step_forget_cost:.4f} | Time: {t_total:.2f}s\n"
-                f"      Wait: {step_data_wait:.3f}s | Compute: {step_compute_time:.3f}s\n"
-                f"      Logits [μ:{step_diag['logits_mean']:.2f}, σ:{step_diag['logits_std']:.2f}, min:{step_diag['logits_min']:.2f}, max:{step_diag['logits_max']:.2f}] | Spread: {step_diag['logit_spread']:.2f}\n"
-                f"      Prob [μ:{step_diag['prob_mean']:.3f}, σ:{step_diag['prob_std']:.3f}] | Sat: {step_diag['saturation']:.3f} | Drift: {step_diag['temporal_drift']:.3f} | Forget: {step_diag['forget_density']:.3f}\n"
-            )
-
-            with fsspec.open(history_file, "a", newline="") as f:
-                fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", "t_total", "data_wait", "compute_time",
-                          "logits_mean", "logits_std", "logits_min", "logits_max", 
-                          "prob_mean", "prob_std", "saturation", "temporal_drift", 
-                          "forget_density", "logit_spread", "diversity_loss"]
-                writer = csv.DictWriter(f, fieldnames=fields)
-                
-                if f.tell() == 0: 
-                    writer.writeheader()
-                
-                row = {
-                    "step": int(step), "loss": f"{step_loss:.4f}", "ce": f"{step_ce:.4f}",
-                    "avg_ponder": f"{step_p:.2f}", "avg_forget_cost": f"{step_forget_cost:.4f}", "t_total": f"{t_total:.2f}",
-                    "data_wait": f"{step_data_wait:.4f}", "compute_time": f"{step_compute_time:.4f}",
-                }
-                row.update({k: f"{v:.4f}" for k, v in step_diag.items() if k in fields})
-                writer.writerow(row)
-
+            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag)
         step += 1
+
+if __name__ == "__main__":
+    try:
+        mp.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass
+
+    devices = np.array(jax.devices())
+    mesh, data_sharding, fsdp_shard_fn = setup_sharding(devices)
+
+    with mesh:
+        model, optimizer = init_model_and_optimizer(fsdp_shard_fn)
+        
+        mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer, fsdp_shard_fn)
+        
+        data_queue = setup_data_pipeline(start_step)
+        
+        train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sharding)
