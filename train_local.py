@@ -47,7 +47,7 @@ class RotaryAttention(nnx.Module):
         freqs = jnp.outer(t, inv_freq)
         self.freqs_complex = jnp.exp(1j * freqs).astype(jnp.complex64)
 
-        self.cache = nnx.Cache(None)
+        # Removed self.cache = nnx.Cache(None) to prevent unlifted trace leak in untouched inner scans
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
@@ -77,6 +77,8 @@ class RotaryAttention(nnx.Module):
         k = apply_rope(k, freqs_kv)
 
         if use_cache:
+            if not hasattr(self, 'cache'):
+                self.cache = nnx.Cache(None)
             if self.cache.value is not None:
                 prev_k, prev_v = self.cache.value
                 k = jnp.concatenate([prev_k, k], axis=1)
