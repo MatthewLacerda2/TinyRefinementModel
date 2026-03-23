@@ -5,27 +5,38 @@ from flax import nnx
 import jax.numpy as jnp
 
 #Params
-LATENT_DIM = 768
-NUM_BLOCKS = 8
+LATENT_DIM = 1024
+NUM_BLOCKS = 16
 SHARED_SLOTS = 64
-VOCAB_SIZE = 100277
+VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 32
 
 #Training
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
 MIN_STEPS = 8
-BATCH_SIZE = 32
-PAD_TOKEN_ID = 100257
-FORGET_LAMBDA = 1e-6
-DIVERSITY_LAMBDA = 0.5
+BATCH_SIZE = 16
+PAD_TOKEN_ID = 100351
 HUNCH_REFRESH_EVERY = 4
 
-def rotate_half(x):
-    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
-    return jnp.concatenate([-x2, x1], axis=-1)
+# Soft label settings
+SOFT_LABEL_K = 64
+SOFT_LABEL_TEMP = 0.1
+NUM_HEADS = 16
+NUM_GROUPS = NUM_HEADS // 4 # Ideal ratio is 4:1
+
+
+def apply_rope(x, freqs_complex):
+    d = x.shape[-1]
+    x_complex = jax.lax.complex(
+        x[..., :d // 2].astype(jnp.float32), 
+        x[..., d // 2:].astype(jnp.float32)
+    )
+    x_rotated = x_complex * freqs_complex
+    x_out = jnp.concatenate([jnp.real(x_rotated), jnp.imag(x_rotated)], axis=-1)
+    return x_out.astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.bfloat16):
+    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.bfloat16):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -34,9 +45,7 @@ class RotaryAttention(nnx.Module):
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS)
         freqs = jnp.outer(t, inv_freq)
-        freqs = jnp.concatenate([freqs, freqs], axis=-1)
-        self.sin_cached = jnp.sin(freqs).astype(dtype)
-        self.cos_cached = jnp.cos(freqs).astype(dtype)
+        self.freqs_complex = jnp.exp(1j * freqs).astype(jnp.complex64)
 
         self.cache = nnx.Cache(None)
 
@@ -45,7 +54,7 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
@@ -59,15 +68,13 @@ class RotaryAttention(nnx.Module):
             q_pos = jnp.arange(s)
         if kv_pos is None:
             kv_pos = jnp.arange(s_kv)
-#
-        sin_q = self.sin_cached[q_pos, None, :]
-        cos_q = self.cos_cached[q_pos, None, :]
-        q = (q * cos_q) + (rotate_half(q) * sin_q)
+
+        freqs_q = self.freqs_complex[q_pos, None, :]
+        q = apply_rope(q, freqs_q)
         q = q * self.scale
 
-        sin_kv = self.sin_cached[kv_pos, None, :]
-        cos_kv = self.cos_cached[kv_pos, None, :]
-        k = (k * cos_kv) + (rotate_half(k) * sin_kv)
+        freqs_kv = self.freqs_complex[kv_pos, None, :]
+        k = apply_rope(k, freqs_kv)
 
         if use_cache:
             if self.cache.value is not None:
@@ -76,21 +83,18 @@ class RotaryAttention(nnx.Module):
                 v = jnp.concatenate([prev_v, v], axis=1)
             self.cache.value = (k, v)
 
-        repeats = self.num_heads // self.num_groups
-        k_expanded = jnp.repeat(k, repeats, axis=2)
-        v_expanded = jnp.repeat(v, repeats, axis=2)
-
-        out = nn.attention.dot_product_attention(
-            q, k_expanded, v_expanded,
-            mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
-            if mask is not None else None,
+        # jax.nn.dot_product_attention is optimized (FlashAttention/Fused) and handles GQA internally.
+        out = jax.nn.dot_product_attention(
+            q, k, v,
+            mask=mask,
+            is_causal=is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
 
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=4, rngs=rngs, dtype=dtype)
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
@@ -103,9 +107,9 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         normed_context = self.norm1(context) if context is not None else None
-        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
@@ -117,20 +121,23 @@ class StandardReasoningBlock(nnx.Module):
 
 class BlockStack(nnx.Module):
     def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
-        self.blocks = [
-            StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
-            for _ in range(num_blocks)
-        ]
+        @nnx.split_rngs(splits=num_blocks)
+        @nnx.vmap(in_axes=(0,), out_axes=0)
+        def create_block(rngs_in: nnx.Rngs):
+            return StandardReasoningBlock(latent_dim, num_heads, rngs=rngs_in, dtype=dtype)
+            
+        self.blocks = create_block(rngs)
         self.num_blocks = num_blocks
 
     def reset_state(self):
-        for block in self.blocks:
-            block.attn.cache.value = None
+        self.blocks.attn.cache.value = None
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
-        for block in self.blocks:
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
-        return x
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+        def forward(curr_x, block):
+            return block(curr_x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+            
+        return forward(x, self.blocks)
 
 
 class UniversalReasoner(nnx.Module):
@@ -144,33 +151,34 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=16, rngs=rngs, dtype=dtype)
+        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -1.0) 
+        self.halt_head.bias.value = jnp.full((1,), 2.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.hunch_gate = nnx.Linear(
-            latent_dim, latent_dim,
+            latent_dim * 2, 1,
             bias_init=jax.nn.initializers.constant(-2.0),
             rngs=rngs, dtype=dtype,
         )
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(0.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim * 2, 1, bias_init=jax.nn.initializers.constant(2.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True, prev_hunch=None):
         batch_size, seq_len = tokens.shape
+        pad_mask = tokens != PAD_TOKEN_ID
         
         current_hunch = None
         if training:
@@ -182,17 +190,17 @@ class UniversalReasoner(nnx.Module):
                 current_hunch = self.hunch_cache.value
                 
         seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
-        pad_mask = tokens != PAD_TOKEN_ID
-        causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-        seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
-
         z_seq = self.embed(tokens)
-        z_seq = self.main_stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
+
+        # Use is_causal=True and only pass the pad_mask to take advantage of optimized kernels.
+        z_seq = self.main_stack(z_seq, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
 
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
-            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
+            seq_summary = jnp.mean(z_seq, axis=1, keepdims=True)
+            hunch_input = jnp.concatenate([self.hunch_norm(current_hunch), jnp.broadcast_to(seq_summary, current_hunch.shape)], axis=-1)
+            gate = jax.nn.sigmoid(self.hunch_gate(hunch_input))
             z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
         else:
             z_shared = z_shared_base
@@ -206,11 +214,7 @@ class UniversalReasoner(nnx.Module):
         )
         
         # 2. Shared part: Causal mask so Slot N can only attend to Slots <= N
-        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
-        shared_mask = jnp.broadcast_to(
-            causal_shared[None, None, :, :], 
-            (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS)
-        )
+        shared_mask = jax.nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
         
         # Merge them to create the final mask for the scratchpad
         extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
@@ -230,7 +234,8 @@ class UniversalReasoner(nnx.Module):
             )
 
             if self.use_forget:
-                forget_gate_input = self.forget_norm(new_shared)
+                gate_context = jnp.concatenate([curr_shared, new_shared], axis=-1)
+                forget_gate_input = self.forget_norm(gate_context)
                 forget = jax.nn.sigmoid(self.forget_head(forget_gate_input))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
@@ -270,8 +275,7 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
-        norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
-        normalized = expected_shared / norms
+        normalized = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
         slot_corr = jnp.einsum('bsd,btd->bst', normalized, normalized)
         saturation_score = jnp.mean(jnp.abs(slot_corr))
 
@@ -314,67 +318,68 @@ class UniversalReasoner(nnx.Module):
             
         return logits, ponder_cost, forget_loss, halt_diag, expected_shared
 
+def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
+    B, L, V = logits.shape
+    
+    embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
+    logits = logits.astype(jnp.float32)
+
+    embed_normed = optax.l2_normalize(embed_table, axis=-1, eps=1e-8)
+
+    target_emb = embed_normed[targets] 
+
+    flat_targets = target_emb.reshape(B * L, -1)
+    flat_logits = logits.reshape(B * L, V)
+    flat_mask = non_pad_mask.reshape(B * L)
+
+    sims = jnp.matmul(flat_targets, embed_normed.T)
+    topk_vals, topk_idx = jax.lax.top_k(sims, k)
+    soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
+    
+    lse = jax.nn.logsumexp(flat_logits, axis=-1, keepdims=True)
+    topk_logits = jnp.take_along_axis(flat_logits, topk_idx, axis=-1)
+    topk_log_probs = topk_logits - lse
+    
+    per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
+
+    num_valid = jnp.sum(flat_mask).clip(min=1)
+    loss = jnp.sum(per_token_losses * flat_mask) / num_valid
+    
+    return loss
 
 
-schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-6, 
-    peak_value=2e-4,  # Slightly lower peak for stability
-    warmup_steps=400, 
-    decay_steps=2000, 
-    end_value=1e-5
-)
-ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0, 
-    peak_value=0.0, 
-    warmup_steps=400, 
-    decay_steps=1000, 
-    end_value=2e-4
-)
-optimizer_chain = optax.chain(
-    optax.clip_by_global_norm(1.0),
-    optax.adamw(learning_rate=schedule),
-)
-
-
-def calculate_diversity_loss(expected_shared):
+#We removed the diversity loss but still use it just for metrics
+def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
-    norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
-    normalized_shared = expected_shared / norms
+    normalized_shared = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
     
     dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
+    mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
     
-    identity = jnp.eye(SHARED_SLOTS)[None, :, :]
+    violation = jnp.maximum(0.0, jnp.abs(dots) - margin)
     
-    return jnp.mean(jnp.square(dots - identity))
+    return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(
+        logits, ponder_cost, forget_cost, halt_diag, expected_shared = model(
             inputs, training=True, prev_hunch=prev_hunch
         )
-        div_loss = calculate_diversity_loss(expected_shared)
+        div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
 
-        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
-        num_valid = jnp.sum(non_pad_mask).clip(min=1)
-        token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
-        current_p_lambda = ponder_lambda_schedule(step)
-
-        num_devices = jax.device_count()
-
-        total_loss = (
-            token_loss
-            + current_p_lambda * jnp.mean(ponder_cost)
-            + f_lambda * jnp.mean(forget_cost)
-            + DIVERSITY_LAMBDA * div_loss
+        token_loss = soft_label_loss(
+            logits, targets,
+            embed_table=model.embed.embedding.value,
+            non_pad_mask=non_pad_mask,
         )
-        
+
+        total_loss = token_loss
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
-        total_loss = total_loss / num_devices
         
         halt_diag['diversity_loss'] = div_loss
         
@@ -391,7 +396,7 @@ def train_step(model, opt, batch_tokens, step, f_lambda, prev_hunch=None, should
     
     next_hunch = jax.lax.cond(
         should_refresh,
-        lambda x: jax.lax.stop_gradient(x),
+        lambda x: jnp.zeros_like(x),
         lambda x: x,
         next_hunch
     )

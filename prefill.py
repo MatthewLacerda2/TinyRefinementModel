@@ -7,6 +7,10 @@ from multiprocessing import Pool, cpu_count
 import json
 import glob
 
+#train on fineweb and densefinelist and truthfulqa and python-edu
+#than openmath and proofwriter and believemenot
+#than ultrachat
+
 # Config
 ENC_NAME = "cl100k_base"
 OUTPUT_DIR = "./tpu_data"
