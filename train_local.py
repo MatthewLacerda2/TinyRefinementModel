@@ -7,7 +7,7 @@ import jax.numpy as jnp
 #Params
 LATENT_DIM = 1024
 NUM_BLOCKS = 16
-SHARED_SLOTS = 128
+SHARED_SLOTS = 64
 VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 32
 
@@ -336,8 +336,9 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     topk_vals, topk_idx = jax.lax.top_k(sims, k)
     soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
     
-    log_probs = jax.nn.log_softmax(flat_logits, axis=-1)
-    topk_log_probs = jnp.take_along_axis(log_probs, topk_idx, axis=-1)
+    lse = jax.nn.logsumexp(flat_logits, axis=-1, keepdims=True)
+    topk_logits = jnp.take_along_axis(flat_logits, topk_idx, axis=-1)
+    topk_log_probs = topk_logits - lse
     
     per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
 
