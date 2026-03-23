@@ -130,7 +130,8 @@ class BlockStack(nnx.Module):
         self.num_blocks = num_blocks
 
     def reset_state(self):
-        self.blocks.attn.cache.value = None
+        pass # Cache is unused and manually setting .value to None breaks nnx.vmap/nnx.scan trace boundaries
+
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
