@@ -14,7 +14,8 @@ MAX_STEPS_LIMIT = 16
 #Training
 MAX_SEQ_LEN = 1024
 MIN_STEPS = 4
-BATCH_SIZE = 1
+BATCH_SIZE = 128 # Effective batch size
+GRAD_ACCUM_STEPS = 128 # Number of micro-batches to accumulate
 PAD_TOKEN_ID = 100351
 HUNCH_REFRESH_EVERY = 4
 
@@ -364,49 +365,89 @@ def calculate_diversity_loss_margin(expected_shared, margin):
 
 @nnx.jit
 def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, semantic_alpha, prev_hunch=None, should_truncate=False):
-    def loss_fn(model):
-        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
+    # batch_tokens shape: (BATCH_SIZE, SEQ_LEN)
+    # We split this into GRAD_ACCUM_STEPS micro-batches
+    micro_batch_size = BATCH_SIZE // GRAD_ACCUM_STEPS
+    micro_tokens = batch_tokens.reshape(GRAD_ACCUM_STEPS, micro_batch_size, -1)
+    
+    if prev_hunch is None:
+        prev_hunch = jnp.zeros((micro_batch_size, SHARED_SLOTS, LATENT_DIM), dtype=jnp.float16)
 
-        logits, ponder_cost, forget_cost, halt_diag, expected_shared = model(
-            inputs, training=True, prev_hunch=prev_hunch
+    def micro_step(carry, micro_batch):
+        hunch, current_step = carry
+        
+        def loss_fn(model):
+            inputs, targets = micro_batch[:, :-1], micro_batch[:, 1:]
+
+            logits, ponder_cost, forget_cost, halt_diag, expected_shared = model(
+                inputs, training=True, prev_hunch=hunch
+            )
+            div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
+
+            non_pad_mask = (targets != PAD_TOKEN_ID)
+
+            soft_loss = soft_label_loss(
+                logits, targets,
+                embed_table=model.embed.embedding.value,
+                non_pad_mask=non_pad_mask,
+            )
+            
+            # Hard label loss provides an anchor for random embeddings early on
+            hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
+            hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+
+            token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
+
+            total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
+            total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
+            
+            halt_diag['diversity_loss'] = div_loss
+            
+            return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+
+        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+        
+        *metrics, next_hunch = aux
+        
+        # Hunch refresh logic
+        should_refresh = should_truncate | (current_step % HUNCH_REFRESH_EVERY == 0)
+        
+        next_hunch = jax.lax.cond(
+            should_refresh,
+            lambda x: jnp.zeros_like(x),
+            lambda x: x,
+            next_hunch
         )
-        div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
-
-        non_pad_mask = (targets != PAD_TOKEN_ID)
-
-        soft_loss = soft_label_loss(
-            logits, targets,
-            embed_table=model.embed.embedding.value,
-            non_pad_mask=non_pad_mask,
-        )
         
-        # Hard label loss provides an anchor for random embeddings early on
-        hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
-        hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+        return (next_hunch, current_step + 1), (grads, loss, metrics)
 
-        token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
-
-        total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
-        total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
+    # Initial state for scan
+    # We use jax.lax.scan to iterate over micro-batches and accumulate gradients.
+    # To save memory, we could accumulate gradients in the carry, but JAX is usually efficient with scan.
+    # However, with 128 steps, unrolling gradients might be heavy, so we should accumulate in carry.
+    
+    params_state = nnx.state(model, nnx.Param)
+    initial_grads = jax.tree_map(jnp.zeros_like, params_state)
+    
+    def micro_step_accum(carry, micro_batch):
+        (hunch, current_step, accum_grads), _ = carry
+        (next_hunch, next_step), (grads, loss, metrics) = micro_step((hunch, current_step), micro_batch)
         
-        halt_diag['diversity_loss'] = div_loss
-        
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+        new_accum_grads = jax.tree_map(lambda x, y: x + y, accum_grads, grads)
+        return (next_hunch, next_step, new_accum_grads), (loss, metrics)
 
-    (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    opt.update(grads, model)
-    
-    *metrics, next_hunch = aux
-    
-    # If should_truncate is True, we break the gradient chain here.
-    # Also, we break it if the global step says so.
-    should_refresh = should_truncate | (step % HUNCH_REFRESH_EVERY == 0)
-    
-    next_hunch = jax.lax.cond(
-        should_refresh,
-        lambda x: jnp.zeros_like(x),
-        lambda x: x,
-        next_hunch
+    (final_hunch, _, total_grads), (losses, all_metrics) = jax.lax.scan(
+        micro_step_accum, 
+        (prev_hunch, step * GRAD_ACCUM_STEPS, initial_grads), 
+        micro_tokens
     )
     
-    return loss, tuple(metrics), next_hunch
+    # Average gradients and update
+    avg_grads = jax.tree_map(lambda x: x / GRAD_ACCUM_STEPS, total_grads)
+    opt.update(avg_grads, model)
+    
+    # Average metrics for reporting
+    avg_loss = jnp.mean(losses)
+    avg_metrics = jax.tree_map(lambda x: jnp.mean(x, axis=0), all_metrics)
+    
+    return avg_loss, tuple(avg_metrics), final_hunch
