@@ -154,7 +154,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), 2.0)
+        self.halt_head.bias.value = jnp.full((1,), -3.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
@@ -363,7 +363,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -380,7 +380,7 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
             non_pad_mask=non_pad_mask,
         )
 
-        total_loss = token_loss
+        total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
         halt_diag['diversity_loss'] = div_loss
