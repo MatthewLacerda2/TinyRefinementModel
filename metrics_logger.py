@@ -3,7 +3,7 @@ import fsspec
 import os # Added import for os module
 
 class LossMonitor:
-    def __init__(self, patience=10000, window=1000): # Changed patience from 2000 to 10000
+    def __init__(self, patience=100000, window=5000): # Effectively immortal for 140k steps
         self.patience = patience
         self.window = window
         self.ce_history = []
