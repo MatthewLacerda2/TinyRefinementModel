@@ -30,6 +30,8 @@ from schedulers import (
     semantic_alpha_schedule
 )
 
+from metrics_logger import LossMonitor, MetricsLogger
+
 load_dotenv()
 
 CHECKPOINT_INTERVAL = 1000
