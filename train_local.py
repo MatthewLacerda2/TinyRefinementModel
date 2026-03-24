@@ -427,13 +427,13 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     # However, with 128 steps, unrolling gradients might be heavy, so we should accumulate in carry.
     
     params_state = nnx.state(model, nnx.Param)
-    initial_grads = jax.tree_map(jnp.zeros_like, params_state)
+    initial_grads = jax.tree_util.tree_map(jnp.zeros_like, params_state)
     
     def micro_step_accum(carry, micro_batch):
         (hunch, current_step, accum_grads), _ = carry
         (next_hunch, next_step), (grads, loss, metrics) = micro_step((hunch, current_step), micro_batch)
         
-        new_accum_grads = jax.tree_map(lambda x, y: x + y, accum_grads, grads)
+        new_accum_grads = jax.tree_util.tree_map(lambda x, y: x + y, accum_grads, grads)
         return (next_hunch, next_step, new_accum_grads), (loss, metrics)
 
     (final_hunch, _, total_grads), (losses, all_metrics) = jax.lax.scan(
@@ -443,11 +443,11 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     )
     
     # Average gradients and update
-    avg_grads = jax.tree_map(lambda x: x / GRAD_ACCUM_STEPS, total_grads)
+    avg_grads = jax.tree_util.tree_map(lambda x: x / GRAD_ACCUM_STEPS, total_grads)
     opt.update(avg_grads, model)
     
     # Average metrics for reporting
     avg_loss = jnp.mean(losses)
-    avg_metrics = jax.tree_map(lambda x: jnp.mean(x, axis=0), all_metrics)
+    avg_metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), all_metrics)
     
     return avg_loss, tuple(avg_metrics), final_hunch
