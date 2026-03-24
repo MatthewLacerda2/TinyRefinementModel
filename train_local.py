@@ -430,7 +430,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     initial_grads = jax.tree_util.tree_map(jnp.zeros_like, params_state)
     
     def micro_step_accum(carry, micro_batch):
-        (hunch, current_step, accum_grads), _ = carry
+        hunch, current_step, accum_grads = carry
         (next_hunch, next_step), (grads, loss, metrics) = micro_step((hunch, current_step), micro_batch)
         
         new_accum_grads = jax.tree_util.tree_map(lambda x, y: x + y, accum_grads, grads)
