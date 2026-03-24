@@ -275,7 +275,8 @@ class UniversalReasoner(nnx.Module):
         ponder_cost = jnp.sum(step_weights * jnp.maximum(0, step_indices - MIN_STEPS), axis=0)
         forget_loss = jnp.sum(step_weights * all_forget_l1, axis=0)
         
-        normalized = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
+        norm = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
+        normalized = expected_shared / norm
         slot_corr = jnp.einsum('bsd,btd->bst', normalized, normalized)
         saturation_score = jnp.mean(jnp.abs(slot_corr))
 
@@ -350,8 +351,8 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
 
 #We removed the diversity loss but still use it just for metrics
 def calculate_diversity_loss_margin(expected_shared, margin):
-    expected_shared = expected_shared.astype(jnp.float32)
-    normalized_shared = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
+    norm_shared = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
+    normalized_shared = expected_shared / norm_shared
     
     dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
     mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
