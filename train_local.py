@@ -371,7 +371,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     micro_tokens = batch_tokens.reshape(GRAD_ACCUM_STEPS, micro_batch_size, -1)
     
     if prev_hunch is None:
-        prev_hunch = jnp.zeros((micro_batch_size, SHARED_SLOTS, LATENT_DIM), dtype=jnp.float16)
+        prev_hunch = jnp.zeros((micro_batch_size, SHARED_SLOTS, LATENT_DIM), dtype=jnp.float32)
 
     graphdef, state = nnx.split(model)
     initial_grads = jax.tree_util.tree_map(jnp.zeros_like, state)
