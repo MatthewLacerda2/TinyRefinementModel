@@ -66,7 +66,7 @@ def print_model_stats():
     print(f"Model Parameters: {param_count:,}")
     print(f"(encoder params: {encoder_params:,}\n Layers params: {num_reason_param:,} across {NUM_BLOCKS} layers}})")
 
-def plot_training_history(log_path="training_history.csv"):
+def plot_training_history(log_path="training_history_2.csv"):
     if not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
         return

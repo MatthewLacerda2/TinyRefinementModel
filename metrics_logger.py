@@ -1,8 +1,9 @@
 import csv
 import fsspec
+import os # Added import for os module
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=1000):
+    def __init__(self, patience=10000, window=1000): # Changed patience from 2000 to 10000
         self.patience = patience
         self.window = window
         self.ce_history = []
@@ -21,8 +22,8 @@ class LossMonitor:
 
 
 class MetricsLogger:
-    def __init__(self, history_file):
-        self.history_file = history_file
+    def __init__(self, filename): # Changed history_file to filename
+        self.filename = filename # Changed history_file to filename
         self.diag_keys = [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
             'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
@@ -30,6 +31,12 @@ class MetricsLogger:
         ]
         self.fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", 
                        "t_total", "data_wait", "compute_time"] + self.diag_keys
+
+        # Only write header if file doesn't exist or is empty
+        if not os.path.exists(self.filename) or os.path.getsize(self.filename) == 0:
+            with fsspec.open(self.filename, 'w', newline="") as f: # Use fsspec.open for consistency
+                writer = csv.DictWriter(f, fieldnames=self.fields)
+                writer.writeheader()
 
     def extract_diags(self, halt_diag, jnp_mean_fn):
         """Extracts and formats diagnostics from the model step using a provided mean function."""
