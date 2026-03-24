@@ -31,7 +31,7 @@ class MetricsLogger:
         ]
         self.fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", 
                        "t_total", "data_wait", "compute_time",
-                       "ponder_lambda", "forget_lambda", "diversity_lambda"] + self.diag_keys
+                       "ponder_lambda", "forget_lambda", "diversity_lambda", "semantic_alpha"] + self.diag_keys
 
         # Only write header if file doesn't exist or is empty
         if not os.path.exists(self.filename) or os.path.getsize(self.filename) == 0:
@@ -43,7 +43,7 @@ class MetricsLogger:
         """Extracts and formats diagnostics from the model step using a provided mean function."""
         return {k: float(jnp_mean_fn(halt_diag.get(k, 0))) for k in self.diag_keys}
 
-    def log(self, step, loss, ce, p_cost, f_cost, t_total, d_wait, c_time, diags, p_lambda, f_lambda, d_lambda):
+    def log(self, step, loss, ce, p_cost, f_cost, t_total, d_wait, c_time, diags, p_lambda, f_lambda, d_lambda, s_alpha):
         print(
             f"Step {step:04d} | CE: {ce:.4f} | Agg Loss: {loss:.4f} | "
             f"Avg Steps: {p_cost:.2f} | Forget: {f_cost:.4f} | Time: {t_total:.2f}s\n"
@@ -56,6 +56,7 @@ class MetricsLogger:
             "avg_ponder": p_cost, "avg_forget_cost": f_cost,
             "t_total": t_total, "data_wait": d_wait, "compute_time": c_time,
             "ponder_lambda": p_lambda, "forget_lambda": f_lambda, "diversity_lambda": d_lambda,
+            "semantic_alpha": s_alpha,
             **diags
         }
         with fsspec.open(self.filename, "a", newline="") as f:

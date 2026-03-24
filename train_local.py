@@ -7,7 +7,7 @@ import jax.numpy as jnp
 #Params
 LATENT_DIM = 512
 NUM_BLOCKS = 8
-SHARED_SLOTS = 64
+SHARED_SLOTS = 32
 VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 16
 
@@ -363,7 +363,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, semantic_alpha, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -374,11 +374,17 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
 
         non_pad_mask = (targets != PAD_TOKEN_ID)
 
-        token_loss = soft_label_loss(
+        soft_loss = soft_label_loss(
             logits, targets,
             embed_table=model.embed.embedding.value,
             non_pad_mask=non_pad_mask,
         )
+        
+        # Hard label loss provides an anchor for random embeddings early on
+        hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
+        hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+
+        token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
 
         total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)

@@ -22,8 +22,13 @@ from train_local import (
     train_step,
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
 )
-from schedulers import optimizer_chain, ponder_lambda_schedule, forget_lambda_schedule, diversity_lambda_schedule
-from metrics_logger import LossMonitor, MetricsLogger
+from schedulers import (
+    optimizer_chain, 
+    ponder_lambda_schedule, 
+    forget_lambda_schedule, 
+    diversity_lambda_schedule, 
+    semantic_alpha_schedule
+)
 
 load_dotenv()
 
@@ -256,10 +261,11 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         p_lambda = ponder_lambda_schedule(step)
         f_lambda = forget_lambda_schedule(step)
         d_lambda = diversity_lambda_schedule(step)
+        s_alpha = semantic_alpha_schedule(step)
         
         loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
             model, optimizer, current_batch, step, 
-            ponder_lambda=p_lambda, forget_lambda=f_lambda, diversity_lambda=d_lambda,
+            ponder_lambda=p_lambda, forget_lambda=f_lambda, diversity_lambda=d_lambda, semantic_alpha=s_alpha,
             prev_hunch=hunch,
             should_truncate=False
         )
@@ -295,7 +301,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
                 ),
             )
             mngr.wait_until_finished()
-            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag, float(p_lambda), float(f_lambda), float(d_lambda))
+            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag, float(p_lambda), float(f_lambda), float(d_lambda), float(s_alpha))
         step += 1
 
 if __name__ == "__main__":
