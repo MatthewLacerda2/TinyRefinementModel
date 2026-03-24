@@ -325,7 +325,8 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
     logits = logits.astype(jnp.float32)
 
-    embed_normed = optax.l2_normalize(embed_table, axis=-1, eps=1e-8)
+    embed_norm = jnp.sqrt(jnp.sum(jnp.square(embed_table), axis=-1, keepdims=True) + 1e-8)
+    embed_normed = embed_table / embed_norm
 
     target_emb = embed_normed[targets] 
 
