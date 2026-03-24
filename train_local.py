@@ -377,7 +377,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     initial_grads = jax.tree_util.tree_map(jnp.zeros_like, state)
 
     def micro_step_accum(carry, micro_batch):
-        hunch, current_step, accum_grads = carry
+        hunch, current_step, accum_grads, static_state = carry
         
         def loss_fn(state, hunch):
             m = nnx.merge(graphdef, state)
@@ -407,7 +407,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
             
             return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
-        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state, hunch)
+        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(static_state, hunch)
         
         *metrics, next_hunch = aux
         
@@ -422,11 +422,11 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
         )
         
         new_accum_grads = jax.tree_util.tree_map(lambda x, y: x + y, accum_grads, grads)
-        return (next_hunch, current_step + 1, new_accum_grads), (loss, metrics)
+        return (next_hunch, current_step + 1, new_accum_grads, static_state), (loss, metrics)
 
-    (final_hunch, _, total_grads), (losses, all_metrics) = jax.lax.scan(
+    (final_hunch, _, total_grads, _), (losses, all_metrics) = jax.lax.scan(
         micro_step_accum, 
-        (prev_hunch, step * GRAD_ACCUM_STEPS, initial_grads), 
+        (prev_hunch, step * GRAD_ACCUM_STEPS, initial_grads, state), 
         micro_tokens
     )
     
