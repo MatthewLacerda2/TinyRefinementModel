@@ -241,7 +241,7 @@ class UniversalReasoner(nnx.Module):
             else:
                 forget_val = 0.0
             
-            pooled = jnp.mean(new_shared, axis=1)
+            pooled = jnp.max(new_shared, axis=1)
             halt_logits = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
             halt_prob = jax.nn.sigmoid(halt_logits)
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
