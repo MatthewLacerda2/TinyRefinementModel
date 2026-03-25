@@ -197,8 +197,22 @@ class UniversalReasoner(nnx.Module):
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
-            seq_summary = jnp.mean(z_seq, axis=1, keepdims=True)
-            hunch_input = jnp.concatenate([self.hunch_norm(current_hunch), jnp.broadcast_to(seq_summary, current_hunch.shape)], axis=-1)
+            # 1. Calculate the length of each sequence (number of True values in the mask)
+            valid_lengths = jnp.sum(pad_mask, axis=1)
+            
+            # 2. Get the index of the last valid token (subtract 1, and clip at 0 to be safe)
+            last_token_idx = jnp.maximum(0, valid_lengths - 1)
+            
+            # 3. Extract the exact token representation for each item in the batch
+            batch_indices = jnp.arange(batch_size)
+            seq_summary = z_seq[batch_indices, last_token_idx][:, None, :] # Shape: (B, 1, D)
+
+            # The rest of your gate logic remains exactly the same!
+            hunch_input = jnp.concatenate([
+                self.hunch_norm(current_hunch), 
+                jnp.broadcast_to(seq_summary, current_hunch.shape)
+            ], axis=-1)
+            
             gate = jax.nn.sigmoid(self.hunch_gate(hunch_input))
             z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
         else:
@@ -305,12 +319,21 @@ class UniversalReasoner(nnx.Module):
             'actual_steps': jnp.mean(actual_steps) 
         })
 
+        # Final output projection: sequence attends to itself (causally) + the full reasoning scratchpad
+        full_context = jnp.concatenate([z_seq, expected_shared], axis=1)
+        full_kv_pos = jnp.concatenate([seq_pos, shared_pos])
+        
+        seq_to_seq_mask = nn.make_causal_mask(jnp.ones((batch_size, seq_len)), dtype=jnp.bool_)
+        seq_to_seq_mask = seq_to_seq_mask & pad_mask[:, None, None, :]
+        seq_to_shared_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        final_out_mask = jnp.concatenate([seq_to_seq_mask, seq_to_shared_mask], axis=-1)
+
         z_out = self.main_stack(
             z_seq, 
-            context=expected_shared, 
-            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
+            context=full_context, 
+            mask=final_out_mask, 
             q_pos=seq_pos, 
-            kv_pos=shared_pos
+            kv_pos=full_kv_pos
         )
         
         logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
@@ -438,4 +461,4 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     avg_loss = jnp.mean(losses)
     avg_metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), all_metrics)
     
-    return avg_loss, tuple(avg_metrics), final_hunch
+    return avg_loss, tuple(avg_metrics), final_hunch
