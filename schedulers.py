@@ -3,7 +3,7 @@ from train_local import BATCH_SIZE, MAX_SEQ_LEN
 
 def calc_sched():
     tokens_per_step = BATCH_SIZE * MAX_SEQ_LEN
-    TARGET_TOKENS = 6000000
+    TARGET_TOKENS = 6000000000
     total_steps = TARGET_TOKENS // tokens_per_step
     return total_steps
 
