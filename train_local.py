@@ -37,7 +37,7 @@ def apply_rope(x, freqs_complex):
     return x_out.astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.float):
+    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.float32):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
