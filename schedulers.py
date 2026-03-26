@@ -7,8 +7,8 @@ from train_local import BATCH_SIZE, MAX_SEQ_LEN
 #     total_steps = TARGET_TOKENS // tokens_per_step
 #     return total_steps
 
-WARMUP = 1000
-DECAY = 10000
+WARMUP = 500
+DECAY = 2000
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-6, 
@@ -22,25 +22,19 @@ learning_schedule = optax.warmup_cosine_decay_schedule(
 ponder_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=1e-4,
-    transition_steps=1000,
+    transition_steps=500,
 )
 
 forget_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=4e-3,
-    transition_steps=1000,
+    transition_steps=500,
 )
 
 diversity_lambda_schedule = optax.linear_schedule(
-    init_value=0.0,
-    end_value=0.15,
-    transition_steps=1000,
-)
-
-semantic_alpha_schedule = optax.linear_schedule(
-    init_value=0.1,
-    end_value=0.5,
-    transition_steps=1000,
+    init_value=0.5,
+    end_value=1.0,
+    transition_steps=500,
 )
 
 optimizer_chain = optax.chain(
