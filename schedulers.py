@@ -21,7 +21,7 @@ learning_schedule = optax.warmup_cosine_decay_schedule(
 # Penalties and alphas stabilize at 1000 steps
 ponder_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
-    end_value=1e-4,
+    end_value=1e-3,
     transition_steps=500,
 )
 
@@ -32,8 +32,8 @@ forget_lambda_schedule = optax.linear_schedule(
 )
 
 diversity_lambda_schedule = optax.linear_schedule(
-    init_value=0.5,
-    end_value=1.0,
+    init_value=2.5,
+    end_value=10.0,
     transition_steps=500,
 )
 

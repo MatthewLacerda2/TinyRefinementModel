@@ -37,7 +37,7 @@ def apply_rope(x, freqs_complex):
     return x_out.astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.float16):
+    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.float):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -96,7 +96,7 @@ class RotaryAttention(nnx.Module):
 
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float16):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -123,7 +123,7 @@ class StandardReasoningBlock(nnx.Module):
 
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float16):
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.blocks = nnx.List([
             StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
             for _ in range(num_blocks)
@@ -140,7 +140,7 @@ class BlockStack(nnx.Module):
 
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float16, use_forget=True):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
