@@ -48,8 +48,6 @@ class RotaryAttention(nnx.Module):
         freqs = jnp.outer(t, inv_freq)
         self.freqs_complex = jnp.exp(1j * freqs).astype(jnp.complex64)
 
-        # Removed self.cache = nnx.Cache(None) to prevent unlifted trace leak in untouched inner scans
-
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
@@ -86,7 +84,6 @@ class RotaryAttention(nnx.Module):
                 v = jnp.concatenate([prev_v, v], axis=1)
             self.cache.value = (k, v)
 
-        # jax.nn.dot_product_attention is optimized (FlashAttention/Fused) and handles GQA internally.
         out = jax.nn.dot_product_attention(
             q, k, v,
             mask=mask,
@@ -196,11 +193,10 @@ class UniversalReasoner(nnx.Module):
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
-            # Source sequence summary from initial embeddings to guide initial hunch
             valid_lengths = jnp.sum(pad_mask, axis=1)
             last_token_idx = jnp.maximum(0, valid_lengths - 1)
             batch_indices = jnp.arange(batch_size)
-            seq_summary = z_seq[batch_indices, last_token_idx][:, None, :] # Shape: (B, 1, D)
+            seq_summary = z_seq[batch_indices, last_token_idx][:, None, :]
 
             hunch_input = jnp.concatenate([
                 self.hunch_norm(current_hunch), 
@@ -214,8 +210,6 @@ class UniversalReasoner(nnx.Module):
 
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
-        # Build unified mask for [sequence; scratchpad]
-        # Sequence part: causal + pad masking
         seq_self_mask = nn.make_causal_mask(jnp.ones((batch_size, seq_len)), dtype=jnp.bool_)
         seq_self_mask = seq_self_mask & pad_mask[:, None, None, :]
         
@@ -236,15 +230,12 @@ class UniversalReasoner(nnx.Module):
             curr_seq, curr_shared, p_remain_prev = carry
             t_signal, step_id = inputs
             
-            # Concatenate into unified stream
             x = jnp.concatenate([curr_seq, curr_shared], axis=1)
             
-            # Inject time signal into the scratchpad part of the stream
             x_shared = x[:, seq_len:, :]
             x_shared = self.time_norm(x_shared) + self.time_signal_norm(t_signal[None, None, :])
             x = jnp.concatenate([x[:, :seq_len, :], x_shared], axis=1)
             
-            # Process entire stream through stack: evolve together layer-by-layer
             x_new = self.main_stack(
                 x, context=None, mask=unified_mask,
                 q_pos=full_pos, kv_pos=full_pos
@@ -286,7 +277,7 @@ class UniversalReasoner(nnx.Module):
         step_weights = step_weights.at[-1].add(last_step_extra)
 
         weights_for_stream = step_weights[:, :, None, None]
-        # Average both sequence tokens and shared slots based on halting weights
+
         expected_seq = jnp.sum(weights_for_stream * all_seq, axis=0)
         expected_shared = jnp.sum(weights_for_stream * all_shared, axis=0)
 
@@ -321,7 +312,6 @@ class UniversalReasoner(nnx.Module):
             'actual_steps': jnp.mean(actual_steps) 
         }
 
-        # Project logits from the weighted expectation of the evolved sequence tokens
         logits = self.seq_norm(expected_seq) @ self.embed.embedding.value.T
         
         if not training:
@@ -379,69 +369,57 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     if prev_hunch is None:
         prev_hunch = jnp.zeros((micro_batch_size, SHARED_SLOTS, LATENT_DIM), dtype=jnp.float32)
 
-    # Split model to get functional state and graph structure
-    graphdef, state = nnx.split(model)
-    initial_grads = jax.tree_util.tree_map(jnp.zeros_like, state)
-
-    def loss_fn(model_state, tokens, hunch):
-        # Merge state into a temporary model for the forward pass
-        m = nnx.merge(graphdef, model_state)
-        inputs, targets = tokens[:, :-1], tokens[:, 1:]
-
-        logits, ponder_cost, forget_cost, halt_diag, expected_shared = m(
-            inputs, training=True, prev_hunch=hunch
-        )
-        div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
-        non_pad_mask = (targets != PAD_TOKEN_ID)
-
-        soft_loss = soft_label_loss(
-            logits, targets,
-            embed_table=m.embed.embedding.value,
-            non_pad_mask=non_pad_mask,
-        )
-        
-        hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
-        hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
-
-        token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
-
-        total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
-        total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
-        
-        halt_diag['diversity_loss'] = div_loss
-        
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+    initial_grads = jax.tree_util.tree_map(jnp.zeros_like, nnx.state(model, nnx.Param))
 
     def micro_step_accum(carry, micro_batch):
         hunch, accum_grads, current_step = carry
         
-        # Calculate gradients for the current micro-batch
-        # Note: we differentiate with respect to the initial 'state' passed to scan
-        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(state, micro_batch, hunch)
+        def loss_fn(m, tokens, h):
+            inputs, targets = tokens[:, :-1], tokens[:, 1:]
+            
+            logits, ponder_cost, forget_cost, halt_diag, expected_shared = m(
+                inputs, training=True, prev_hunch=h
+            )
+            div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
+            non_pad_mask = (targets != PAD_TOKEN_ID)
+
+            soft_loss = soft_label_loss(
+                logits, targets,
+                embed_table=m.embed.embedding.value,
+                non_pad_mask=non_pad_mask,
+            )
+            
+            hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
+            hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+
+            token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
+            total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
+            total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
+            
+            halt_diag['diversity_loss'] = div_loss
+            
+            return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+
+        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model, micro_batch, hunch)
         
-        token_loss, ponder_cost_val, forget_cost_val, halt_diag, next_hunch = aux
+        token_loss_val, p_cost, f_cost, halt_diag, next_hunch = aux
         
-        # Determine if hunch should be refreshed
         should_refresh = should_truncate | (current_step % HUNCH_REFRESH_EVERY == 0)
         next_hunch = jax.lax.cond(should_refresh, lambda x: jnp.zeros_like(x), lambda x: x, next_hunch)
         
-        # Accumulate gradients
-        new_accum_grads = jax.tree_util.tree_map(lambda x, y: x + y, accum_grads, grads)
+        new_accum_grads = jax.tree_util.tree_map(jnp.add, accum_grads, grads)
         
-        return (next_hunch, new_accum_grads, current_step + 1), (loss, (token_loss, ponder_cost_val, forget_cost_val, halt_diag))
+        return (next_hunch, new_accum_grads, current_step + 1), (loss, (token_loss_val, p_cost, f_cost, halt_diag))
 
-    # Scan over micro-batches to accumulate gradients
     (final_hunch, total_grads, _), (losses, metrics_history) = jax.lax.scan(
         micro_step_accum, 
         (prev_hunch, initial_grads, step * GRAD_ACCUM_STEPS), 
         micro_tokens
     )
     
-    # Average gradients and update the optimizer (and through it, the model)
     avg_grads = jax.tree_util.tree_map(lambda x: x / GRAD_ACCUM_STEPS, total_grads)
     opt.update(avg_grads)
     
-    # Average metrics for reporting
     avg_loss = jnp.mean(losses)
     avg_metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), metrics_history)
     
