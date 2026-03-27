@@ -371,7 +371,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
 
     initial_grads = jax.tree_util.tree_map(jnp.zeros_like, nnx.state(model, nnx.Param))
 
-    graphdef, params, rest_state = nnx.split(model, nnx.Param)
+    graphdef, params, rest_state = nnx.split(model, nnx.Param, ...)
 
     def micro_step_accum(carry, micro_batch):
         hunch, accum_grads, current_step = carry
@@ -422,7 +422,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
     )
     
     avg_grads = jax.tree_util.tree_map(lambda x: x / GRAD_ACCUM_STEPS, total_grads)
-    opt.update(avg_grads)
+    opt.update(avg_grads, model)
     
     avg_loss = jnp.mean(losses)
     avg_metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), metrics_history)
