@@ -371,10 +371,13 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
 
     initial_grads = jax.tree_util.tree_map(jnp.zeros_like, nnx.state(model, nnx.Param))
 
+    graphdef, state = nnx.split(model)
+
     def micro_step_accum(carry, micro_batch):
         hunch, accum_grads, current_step = carry
         
-        def loss_fn(m, tokens, h):
+        def loss_fn(state_inner, tokens, h):
+            m = nnx.merge(graphdef, state_inner)
             inputs, targets = tokens[:, :-1], tokens[:, 1:]
             
             logits, ponder_cost, forget_cost, halt_diag, expected_shared = m(
@@ -400,7 +403,7 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
             
             return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
-        (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model, micro_batch, hunch)
+        (loss, aux), grads = nnx.value_and_grad(loss_fn, wrt=nnx.Param, has_aux=True)(state, micro_batch, hunch)
         
         token_loss_val, p_cost, f_cost, halt_diag, next_hunch = aux
         
