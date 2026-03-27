@@ -159,6 +159,7 @@ class UniversalReasoner(nnx.Module):
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.hunch_to_seq = nnx.Linear(latent_dim, latent_dim, rngs=rngs, dtype=dtype)
         self.hunch_gate = nnx.Linear(
             latent_dim * 2, 1,
             bias_init=jax.nn.initializers.constant(-2.0),
@@ -193,14 +194,12 @@ class UniversalReasoner(nnx.Module):
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
-            valid_lengths = jnp.sum(pad_mask, axis=1)
-            last_token_idx = jnp.maximum(0, valid_lengths - 1)
-            batch_indices = jnp.arange(batch_size)
-            seq_summary = z_seq[batch_indices, last_token_idx][:, None, :]
+            pooled_hunch = jnp.mean(self.hunch_norm(current_hunch), axis=1, keepdims=True)
+            z_seq = z_seq + self.hunch_to_seq(pooled_hunch)
 
             hunch_input = jnp.concatenate([
                 self.hunch_norm(current_hunch), 
-                jnp.broadcast_to(seq_summary, current_hunch.shape)
+                z_shared_base
             ], axis=-1)
             
             gate = jax.nn.sigmoid(self.hunch_gate(hunch_input))
@@ -213,13 +212,10 @@ class UniversalReasoner(nnx.Module):
         seq_self_mask = nn.make_causal_mask(jnp.ones((batch_size, seq_len)), dtype=jnp.bool_)
         seq_self_mask = seq_self_mask & pad_mask[:, None, None, :]
         
-        # Sequence tokens see all scratchpad slots
-        seq_shared_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        seq_shared_mask = jnp.zeros((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
         
-        # Scratchpad slots see all valid sequence tokens
         shared_seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
         
-        # Scratchpad slots see themselves causally
         shared_shared_mask = nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
         
         mask_row1 = jnp.concatenate([seq_self_mask, seq_shared_mask], axis=-1)
