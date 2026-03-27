@@ -329,6 +329,35 @@ class UniversalReasoner(nnx.Module):
             
         return logits, ponder_cost, forget_loss, halt_diag, expected_shared
 
+def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
+    B, L, V = logits.shape
+    
+    embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
+    logits = logits.astype(jnp.float32)
+
+    embed_norm = jnp.sqrt(jnp.sum(jnp.square(embed_table), axis=-1, keepdims=True) + 1e-8)
+    embed_normed = embed_table / embed_norm
+
+    target_emb = embed_normed[targets] 
+
+    flat_targets = target_emb.reshape(B * L, -1)
+    flat_logits = logits.reshape(B * L, V)
+    flat_mask = non_pad_mask.reshape(B * L)
+
+    sims = jnp.matmul(flat_targets, embed_normed.T)
+    topk_vals, topk_idx = jax.lax.top_k(sims, k)
+    soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
+    
+    lse = jax.nn.logsumexp(flat_logits, axis=-1, keepdims=True)
+    topk_logits = jnp.take_along_axis(flat_logits, topk_idx, axis=-1)
+    topk_log_probs = topk_logits - lse
+    
+    per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
+
+    num_valid = jnp.sum(flat_mask).clip(min=1)
+    loss = jnp.sum(per_token_losses * flat_mask) / num_valid
+    
+    return loss
 
 def calculate_diversity_loss_margin(expected_shared, margin):
     norm_shared = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
@@ -342,7 +371,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, diversity_lambda, semantic_alpha, prev_hunch=None, should_truncate=False):
     # Split tokens into micro-batches for gradient accumulation
     micro_batch_size = BATCH_SIZE // GRAD_ACCUM_STEPS
     micro_tokens = batch_tokens.reshape(GRAD_ACCUM_STEPS, micro_batch_size, -1)
@@ -365,8 +394,16 @@ def train_step(model, opt, batch_tokens, step, ponder_lambda, forget_lambda, div
         div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.3)
         non_pad_mask = (targets != PAD_TOKEN_ID)
 
-        token_loss_all = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
-        token_loss = jnp.sum(token_loss_all * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+        soft_loss = soft_label_loss(
+            logits, targets,
+            embed_table=m.embed.embedding.value,
+            non_pad_mask=non_pad_mask,
+        )
+        
+        hard_loss = optax.softmax_cross_entropy_with_integer_labels(logits, targets)
+        hard_loss = jnp.sum(hard_loss * non_pad_mask) / jnp.sum(non_pad_mask).clip(min=1)
+
+        token_loss = (1.0 - semantic_alpha) * hard_loss + semantic_alpha * soft_loss
 
         total_loss = token_loss + (ponder_lambda * jnp.mean(ponder_cost)) + (forget_lambda * jnp.mean(forget_cost)) + (diversity_lambda * div_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)

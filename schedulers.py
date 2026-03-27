@@ -37,6 +37,12 @@ diversity_lambda_schedule = optax.linear_schedule(
     transition_steps=500,
 )
 
+semantic_alpha_schedule = optax.linear_schedule(
+    init_value=0.1,
+    end_value=0.5,
+    transition_steps=500,
+)
+
 optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adamw(learning_rate=learning_schedule),
