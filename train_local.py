@@ -152,9 +152,10 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -3.0)
+        self.halt_head.bias.value = jnp.full((1,), -2.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
+        self.seq_time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
@@ -212,9 +213,9 @@ class UniversalReasoner(nnx.Module):
         seq_self_mask = nn.make_causal_mask(jnp.ones((batch_size, seq_len)), dtype=jnp.bool_)
         seq_self_mask = seq_self_mask & pad_mask[:, None, None, :]
         
-        seq_shared_mask = jnp.zeros((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        seq_shared_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
         
-        shared_seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
+        shared_seq_mask = jnp.zeros((batch_size, 1, SHARED_SLOTS, seq_len), dtype=jnp.bool_)
         
         shared_shared_mask = nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
         
@@ -226,11 +227,9 @@ class UniversalReasoner(nnx.Module):
             curr_seq, curr_shared, p_remain_prev = carry
             t_signal, step_id = inputs
             
-            x = jnp.concatenate([curr_seq, curr_shared], axis=1)
-            
-            x_shared = x[:, seq_len:, :]
-            x_shared = self.time_norm(x_shared) + self.time_signal_norm(t_signal[None, None, :])
-            x = jnp.concatenate([x[:, :seq_len, :], x_shared], axis=1)
+            x_seq = self.seq_time_norm(curr_seq) + self.time_signal_norm(t_signal[None, None, :])
+            x_shared = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+            x = jnp.concatenate([x_seq, x_shared], axis=1)
             
             x_new = self.main_stack(
                 x, context=None, mask=unified_mask,
