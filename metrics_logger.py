@@ -26,7 +26,8 @@ class MetricsLogger:
         self.diag_keys = [
             'logits_mean', 'logits_std', 'logits_min', 'logits_max', 
             'prob_mean', 'prob_std', 'saturation', 'temporal_drift', 
-            'forget_density', 'logit_spread', 'diversity_loss'
+            'forget_density', 'logit_spread', 'diversity_loss',
+            'p_lambda', 'f_lambda', 'd_lambda'
         ]
         self.fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", 
                        "t_total", "data_wait", "compute_time"] + self.diag_keys
@@ -41,7 +42,8 @@ class MetricsLogger:
             f"Avg Steps: {p:.2f} | Forget: {forget_cost:.4f} | Time: {t_total:.2f}s\n"
             f"      Wait: {wait:.3f}s | Compute: {compute:.3f}s\n"
             f"      Logits [μ:{diag_dict.get('logits_mean',0):.2f}, σ:{diag_dict.get('logits_std',0):.2f}, min:{diag_dict.get('logits_min',0):.2f}, max:{diag_dict.get('logits_max',0):.2f}] | Spread: {diag_dict.get('logit_spread',0):.2f}\n"
-            f"      Prob [μ:{diag_dict.get('prob_mean',0):.3f}, σ:{diag_dict.get('prob_std',0):.3f}] | Sat: {diag_dict.get('saturation',0):.3f} | Drift: {diag_dict.get('temporal_drift',0):.3f} | Forget: {diag_dict.get('forget_density',0):.3f}"
+            f"      Prob [μ:{diag_dict.get('prob_mean',0):.3f}, σ:{diag_dict.get('prob_std',0):.3f}] | Sat:{diag_dict.get('saturation',0):.3f}| Drift:{diag_dict.get('temporal_drift',0):.3f}| Density:{diag_dict.get('forget_density',0):.3f}\n"
+            f"      Scheds [P_λ:{diag_dict.get('p_lambda',0):.1e}, F_λ:{diag_dict.get('f_lambda',0):.1e}, D_λ:{diag_dict.get('d_lambda',0):.1e}] | Diversity: {diag_dict.get('diversity_loss',0):.3f}"
         )
 
         with fsspec.open(self.history_file, "a", newline="") as f:

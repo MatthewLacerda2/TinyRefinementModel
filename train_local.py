@@ -3,6 +3,11 @@ import jax
 import optax
 from flax import nnx
 import jax.numpy as jnp
+from schedulers import (
+    ponder_lambda_schedule, 
+    forget_lambda_schedule, 
+    diversity_lambda_schedule
+)
 
 #Params
 LATENT_DIM = 1024
@@ -348,7 +353,7 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     return loss
 
 
-#We removed the diversity loss but still use it just for metrics
+
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
     normalized_shared = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
@@ -372,16 +377,26 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
 
         non_pad_mask = (targets != PAD_TOKEN_ID)
 
+        p_lambda = ponder_lambda_schedule(step)
+        f_lambda = forget_lambda_schedule(step)
+        d_lambda = diversity_lambda_schedule(step)
+
         token_loss = soft_label_loss(
             logits, targets,
             embed_table=model.embed.embedding.value,
             non_pad_mask=non_pad_mask,
         )
 
-        total_loss = token_loss
+        total_loss = token_loss + (p_lambda * jnp.mean(ponder_cost)) + \
+                     (f_lambda * jnp.mean(forget_cost)) + (d_lambda * div_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
-        halt_diag['diversity_loss'] = div_loss
+        halt_diag.update({
+            'diversity_loss': div_loss,
+            'p_lambda': p_lambda,
+            'f_lambda': f_lambda,
+            'd_lambda': d_lambda
+        })
         
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
