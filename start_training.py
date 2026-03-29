@@ -20,7 +20,7 @@ import fsspec
 from train_local import (
     UniversalReasoner,
     train_step,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, SHARED_SLOTS
 )
 from schedulers import optimizer_chain
 from metrics_logger import LossMonitor, MetricsLogger
@@ -251,7 +251,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
     history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
     logger = MetricsLogger(history_file)
     step = start_step
-    hunch = None
+    hunch = jnp.zeros((BATCH_SIZE, SHARED_SLOTS, LATENT_DIM))
     
     while True:
         t0 = time.time()
@@ -273,7 +273,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
         step_data_wait = t_data_end - t_data_start
         
         loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-            model, optimizer, current_batch, step, prev_hunch=hunch,
+            model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
             should_truncate=False
         )
         
