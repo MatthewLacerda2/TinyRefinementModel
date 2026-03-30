@@ -11,8 +11,8 @@ from schedulers import (
 
 #Params
 LATENT_DIM = 512
-NUM_BLOCKS = 16
-SHARED_SLOTS = 64
+NUM_BLOCKS = 8
+SHARED_SLOTS = 32
 VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 16
 
@@ -409,7 +409,7 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    opt.update(grads)
+    opt.update(grads, model)
     
     *metrics, next_hunch = aux
     
