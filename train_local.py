@@ -197,7 +197,7 @@ class UniversalReasoner(nnx.Module):
 
         z_seq = self.main_stack(z_seq_raw, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
 
-        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+        z_shared_base = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
 
         if current_hunch is not None:
             #We use the previous hidden state (hunch) to seed the current thinking process
@@ -308,27 +308,27 @@ class UniversalReasoner(nnx.Module):
 def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
     B, L, V = logits.shape
     
-    embed_table = jax.lax.stop_gradient(embed_table.astype(jnp.float32))
-    logits = logits.astype(jnp.float32)
-
-    embed_normed = optax.l2_normalize(embed_table, axis=-1, eps=1e-8)
-
+    
+    embed_table_gradless = jax.lax.stop_gradient(embed_table)
+    embed_normed = optax.l2_normalize(embed_table_gradless, axis=-1, eps=1e-8)
     target_emb = embed_normed[targets] 
 
     flat_targets = target_emb.reshape(B * L, -1)
-    flat_logits = logits.reshape(B * L, V)
-    flat_mask = non_pad_mask.reshape(B * L)
-
+    
     sims = jnp.matmul(flat_targets, embed_normed.T)
     topk_vals, topk_idx = jax.lax.top_k(sims, k)
+    
+    topk_vals = topk_vals.astype(jnp.float32)
     soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
     
-    lse = jax.nn.logsumexp(flat_logits, axis=-1, keepdims=True)
-    topk_logits = jnp.take_along_axis(flat_logits, topk_idx, axis=-1)
+    logits_fp32 = logits.astype(jnp.float32).reshape(B * L, V)
+    lse = jax.nn.logsumexp(logits_fp32, axis=-1, keepdims=True)
+    topk_logits = jnp.take_along_axis(logits_fp32, topk_idx, axis=-1)
     topk_log_probs = topk_logits - lse
     
     per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
 
+    flat_mask = non_pad_mask.reshape(B * L)
     num_valid = jnp.sum(flat_mask).clip(min=1)
     loss = jnp.sum(per_token_losses * flat_mask) / num_valid
     
