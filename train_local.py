@@ -255,9 +255,14 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
-        # Execute reasoning scan
-        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
-            jax.checkpoint(scan_step), (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
+        # Execute reasoning scan (using nnx.scan to manage Module state correctly)
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(nnx.Carry, 0))
+        @jax.checkpoint
+        def thinking_loop(carry, inputs):
+            return scan_step(carry, inputs)
+
+        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = thinking_loop(
+            (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
         )
 
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
