@@ -29,7 +29,7 @@ load_dotenv()
 CHECKPOINT_INTERVAL = 100
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
-PHASE_STEP = 4000
+PHASE_STEP = 2000
 
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 CHECKPOINT_ROOT = os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints")
