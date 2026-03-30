@@ -215,7 +215,7 @@ class UniversalReasoner(nnx.Module):
         
         c_steps = max_steps // 2
 
-        def scan_step(carry, inputs):
+        def scan_step_fn(m, carry, inputs):
             curr_shared, p_remain_prev = carry
             t_signal, step_id = inputs
             
@@ -229,24 +229,24 @@ class UniversalReasoner(nnx.Module):
             phase_seq_mask = jnp.where(is_observation, seq_mask, jnp.bool_(False))
             phase_extended_mask = jnp.concatenate([phase_seq_mask, shared_mask], axis=-1)
 
-            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+            stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
             
-            new_shared = self.main_stack(
+            new_shared = m.main_stack(
                 stack_input, context=shared_ctx, mask=phase_extended_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
-            if self.use_forget:
+            if m.use_forget:
                 gate_context = jnp.concatenate([curr_shared, new_shared], axis=-1)
-                forget_gate_input = self.forget_norm(gate_context)
-                forget = jax.nn.sigmoid(self.forget_head(forget_gate_input))
+                forget_gate_input = m.forget_norm(gate_context)
+                forget = jax.nn.sigmoid(m.forget_head(forget_gate_input))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
                 forget_val = 0.0
             
             pooled = jnp.mean(new_shared, axis=1)
-            halt_logits = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
+            halt_logits = m.halt_head(jax.nn.gelu(m.halt_pre(pooled))).squeeze(-1)
             halt_prob = jax.nn.sigmoid(halt_logits)
             
             # No halting during contemplation; must observe sequence before deciding to stop
@@ -256,18 +256,30 @@ class UniversalReasoner(nnx.Module):
             return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
         # Execute reasoning loop
-        # We use a standard for-loop here to avoid complex "trace level" errors that can 
-        # occur with nested scans. 16 steps is efficient for JIT and avoids the transform boundary.
+        # We functionalize the model state here to safely pass it through the checkpoint boundary.
+        # This resolves the "trace level" error with stateful nodes like Cache.
+        graphdef, state = nnx.split(self)
+        
+        @jax.checkpoint
+        def pure_step(carry, inputs, state):
+            m = nnx.merge(graphdef, state)
+            res_carry, res_out = scan_step_fn(m, carry, inputs)
+            _, next_state = nnx.split(m)
+            return res_carry, res_out, next_state
+
         curr_carry = (z_shared, jnp.ones((batch_size,)))
+        curr_state = state
         step_outputs = []
         
         for t in range(max_steps):
-            t_inputs = (all_time_embeds[t], jnp.array(t, dtype=jnp.int16))
-            # We checkpoint each step to keep memory usage equivalent to a scan
-            curr_carry, out = jax.checkpoint(scan_step)(curr_carry, t_inputs)
+            t_inputs = (all_time_embeds[t], jnp.array(t, dtype=jnp.int32))
+            curr_carry, out, curr_state = pure_step(curr_carry, t_inputs, curr_state)
             step_outputs.append(out)
 
+        # Update the model with the final state from the loop
+        nnx.update(self, curr_state)
         final_shared, _ = curr_carry
+        
         # Reconstruct scanned outputs by stacking the list of results
         all_shared, all_halts, all_forget_l1, all_logits = jax.tree.map(lambda *xs: jnp.stack(xs), *step_outputs)
 
