@@ -334,7 +334,8 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
     
     
     embed_table_gradless = jax.lax.stop_gradient(embed_table)
-    embed_normed = optax.l2_normalize(embed_table_gradless, axis=-1, eps=1e-8)
+    norm = jnp.linalg.norm(embed_table_gradless, axis=-1, keepdims=True)
+    embed_normed = embed_table_gradless / (norm + 1e-8)
     target_emb = embed_normed[targets] 
 
     flat_targets = target_emb.reshape(B * L, -1)
@@ -362,7 +363,8 @@ def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, 
 
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
-    normalized_shared = optax.l2_normalize(expected_shared, axis=-1, eps=1e-8)
+    norm = jnp.linalg.norm(expected_shared, axis=-1, keepdims=True)
+    normalized_shared = expected_shared / (norm + 1e-8)
     
     dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
     mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
