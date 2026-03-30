@@ -7,7 +7,6 @@ import os
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from flax import nnx
 import orbax.checkpoint as ocp
 import time
@@ -138,33 +137,15 @@ class DataMixer:
 
 # LossMonitor moved to metrics_logger.py
 
-def setup_sharding(devices):
-    mesh = Mesh(devices, ('fsdp',))
-    data_sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
-    
-    def fsdp_shard_tensor(x):
-        if x.ndim >= 1 and x.shape[0] % len(devices) == 0:
-            sharding = NamedSharding(mesh, PartitionSpec('fsdp'))
-        else:
-            sharding = NamedSharding(mesh, PartitionSpec()) 
-        return jax.device_put(x, sharding)
-        
-    return mesh, data_sharding, fsdp_shard_tensor
 
-def init_model_and_optimizer(fsdp_shard_tensor):
+def init_model_and_optimizer():
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
-
-    nnx.update(model, jax.tree.map(fsdp_shard_tensor, nnx.state(model)))
-    
-    opt_graphdef, opt_state = nnx.split(optimizer)
-    sharded_opt_state = jax.tree.map(fsdp_shard_tensor, opt_state)
-    optimizer = nnx.merge(opt_graphdef, sharded_opt_state)
     
     return model, optimizer
 
-def load_or_create_checkpoint(model, optimizer, fsdp_shard_tensor):
+def load_or_create_checkpoint(model, optimizer):
     monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
         CHECKPOINT_ROOT,
@@ -185,12 +166,9 @@ def load_or_create_checkpoint(model, optimizer, fsdp_shard_tensor):
             ),
         )
 
-        restored_model_state = jax.tree.map(fsdp_shard_tensor, restored["model"])
-        nnx.update(model, restored_model_state)
-
-        restored_opt_state = jax.tree.map(fsdp_shard_tensor, restored["optimizer"])
+        nnx.update(model, restored["model"])
         graphdef, _ = nnx.split(optimizer)
-        optimizer = nnx.merge(graphdef, restored_opt_state)
+        optimizer = nnx.merge(graphdef, restored["optimizer"])
         
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
@@ -247,7 +225,7 @@ def setup_data_pipeline(start_step):
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sharding):
+def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
     history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
     logger = MetricsLogger(history_file)
     step = start_step
@@ -264,12 +242,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
         
         if step == PHASE_STEP:
             print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
-
-        current_batch = jax.device_put(current_batch, data_sharding)
-        reset_mask = jax.device_put(reset_mask, data_sharding)
-        
-        if hunch is not None:
-            hunch = jax.device_put(hunch, data_sharding)
         
         t_data_end = time.time()
         step_data_wait = t_data_end - t_data_start
@@ -319,14 +291,10 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
-    devices = np.array(jax.devices())
-    mesh, data_sharding, fsdp_shard_fn = setup_sharding(devices)
-
-    with mesh:
-        model, optimizer = init_model_and_optimizer(fsdp_shard_fn)
-        
-        mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer, fsdp_shard_fn)
-        
-        data_queue = setup_data_pipeline(start_step)
-        
-        train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sharding)
+    model, optimizer = init_model_and_optimizer()
+    
+    mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer)
+    
+    data_queue = setup_data_pipeline(start_step)
+    
+    train_loop(model, optimizer, data_queue, mngr, monitor, start_step)

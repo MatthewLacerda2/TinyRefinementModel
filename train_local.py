@@ -10,16 +10,16 @@ from schedulers import (
 )
 
 #Params
-LATENT_DIM = 1024
+LATENT_DIM = 512
 NUM_BLOCKS = 16
 SHARED_SLOTS = 64
 VOCAB_SIZE = 100352
-MAX_STEPS_LIMIT = 32
+MAX_STEPS_LIMIT = 16
 
 #Training
-MAX_SEQ_LEN = 2048
-MIN_STEPS = 8
-BATCH_SIZE = 16
+MAX_SEQ_LEN = 1024
+MIN_STEPS = 4
+BATCH_SIZE = 1
 PAD_TOKEN_ID = 100351
 
 #Soft label settings
@@ -40,7 +40,7 @@ def apply_rope(x, freqs_complex):
     return x_out.astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.bfloat16):
+    def __init__(self, num_heads, in_features, num_groups=NUM_GROUPS, rngs=None, dtype=jnp.float32):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -96,7 +96,7 @@ class RotaryAttention(nnx.Module):
 
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -123,7 +123,7 @@ class StandardReasoningBlock(nnx.Module):
 
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32):
         @nnx.split_rngs(splits=num_blocks)
         @nnx.vmap(in_axes=(0,), out_axes=0)
         def create_block(rngs_in: nnx.Rngs):
@@ -144,7 +144,7 @@ class BlockStack(nnx.Module):
 
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.bfloat16, use_forget=True):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
