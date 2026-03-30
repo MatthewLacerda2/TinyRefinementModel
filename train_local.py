@@ -21,7 +21,6 @@ MAX_SEQ_LEN = 2048
 MIN_STEPS = 8
 BATCH_SIZE = 16
 PAD_TOKEN_ID = 100351
-HUNCH_REFRESH_EVERY = 4
 
 #Soft label settings
 SOFT_LABEL_K = 64
@@ -390,13 +389,8 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
     
     # If should_truncate is True, we break the gradient chain here.
     # Also, we break it if the global step says so.
-    should_refresh = should_truncate | (step % HUNCH_REFRESH_EVERY == 0)
-    
-    next_hunch = jax.lax.cond(
-        should_refresh,
-        lambda x: jnp.zeros_like(x),
-        lambda x: x,
-        next_hunch
+    next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
+        should_truncate, next_hunch
     )
     
     return loss, tuple(metrics), next_hunch

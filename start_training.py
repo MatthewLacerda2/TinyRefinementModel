@@ -58,6 +58,7 @@ class TextDataGenerator:
         self.pointer = 0
         self.exhausted = False
         self.skip_count = 0
+        self.is_new_file = False
 
     def _load_next_file(self):
         if self.current_file_idx >= len(self.files):
@@ -83,17 +84,21 @@ class TextDataGenerator:
                 return self._load_next_file()
                 
         self.current_file_idx += 1
+        self.is_new_file = True
         return True
 
     def get_batch(self, batch_size):
         if self.exhausted: return None
-        if self.data is None or self.pointer + (batch_size * self.max_seq_len) > len(self.data):
-            if not self._load_next_file(): return None
-            
         total_tokens = batch_size * self.max_seq_len
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
-        return jnp.array(batch.reshape(batch_size, self.max_seq_len), dtype=jnp.int32)
+        
+        reset_mask = np.zeros((batch_size,), dtype=bool)
+        if self.is_new_file:
+            reset_mask[:] = True
+            self.is_new_file = False
+            
+        return jnp.array(batch.reshape(batch_size, self.max_seq_len), dtype=jnp.int32), jnp.array(reset_mask)
 
 class DataMixer:
     def __init__(self, sources, weights):
@@ -108,32 +113,27 @@ class DataMixer:
             
             for i, (source, count) in enumerate(zip(self.sources, counts)):
                 if count > 0:
-                    b = source.get_batch(count)
-                    if getattr(source, "exhausted", False) or b is None:
+                    res = source.get_batch(count)
+                    if res is None or getattr(source, "exhausted", False):
                         exhausted_indices.append(i)
                     else:
-                        batch_list.append(b)
+                        batch_list.append(res)
             
             if exhausted_indices:
-                new_sources = []
-                new_weights = []
-                for i in range(len(self.sources)):
+                new_sources, new_weights = [], []
+                for i, (s, w) in enumerate(zip(self.sources, self.weights)):
                     if i not in exhausted_indices:
-                        new_sources.append(self.sources[i])
-                        new_weights.append(self.weights[i])
-                
+                        new_sources.append(s); new_weights.append(w)
                 self.sources = new_sources
-                if len(self.sources) == 0:
-                    return None
-                    
+                if not self.sources: return None, None
                 total_w = sum(new_weights)
                 self.weights = [w / total_w for w in new_weights]
                 continue
                 
             if batch_list:
-                return jnp.concatenate(batch_list, axis=0)
-                
-        return None
+                batches, masks = zip(*batch_list)
+                return jnp.concatenate(batches, axis=0), jnp.concatenate(masks, axis=0)
+        return None, None
 
 
 # LossMonitor moved to metrics_logger.py
@@ -233,15 +233,15 @@ def setup_data_pipeline(start_step):
         current_step = start_step
         while True:
             if current_step < PHASE_STEP:
-                batch = pretrain_mixer.get_batch(BATCH_SIZE)
+                res = pretrain_mixer.get_batch(BATCH_SIZE)
             else:
-                batch = chat_mixer.get_batch(BATCH_SIZE)
+                res = chat_mixer.get_batch(BATCH_SIZE)
             
-            if batch is None:
-                data_queue.put(None)
+            if res[0] is None:
+                data_queue.put((None, None))
                 break
             
-            data_queue.put(batch)
+            data_queue.put(res)
             current_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
@@ -257,7 +257,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
         t0 = time.time()
         t_data_start = time.time()
         
-        current_batch = data_queue.get() 
+        current_batch, reset_mask = data_queue.get() 
         if current_batch is None: 
             print("🏁 Data stream exhausted.")
             break
@@ -266,6 +266,8 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
             print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
 
         current_batch = jax.device_put(current_batch, data_sharding)
+        reset_mask = jax.device_put(reset_mask, data_sharding)
+        
         if hunch is not None:
             hunch = jax.device_put(hunch, data_sharding)
         
@@ -274,7 +276,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, data_sha
         
         loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
             model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
-            should_truncate=False
+            should_truncate=reset_mask
         )
         
         loss.block_until_ready()
