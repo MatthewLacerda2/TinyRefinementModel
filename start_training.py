@@ -87,8 +87,16 @@ class TextDataGenerator:
         return True
 
     def get_batch(self, batch_size):
-        if self.exhausted: return None
+        if self.exhausted: return None, None
         total_tokens = batch_size * self.max_seq_len
+        
+        if self.data is None or self.pointer + total_tokens > len(self.data):
+            if not self._load_next_file():
+                return None, None
+            # If the new file is also exhausted or too small, retry
+            if self.exhausted or self.pointer + total_tokens > len(self.data):
+                return self.get_batch(batch_size)
+
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
         
