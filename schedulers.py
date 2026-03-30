@@ -3,8 +3,8 @@ import optax
 learning_schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-6, 
     peak_value=2e-4,
-    warmup_steps=1000, 
-    decay_steps=3000, 
+    warmup_steps=300, 
+    decay_steps=1000, 
     end_value=1e-5
 )
 
