@@ -210,7 +210,8 @@ class UniversalReasoner(nnx.Module):
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
         seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
-        shared_mask = jax.nn.make_causal_mask(jnp.ones((batch_size, SHARED_SLOTS)), dtype=jnp.bool_)
+        shared_mask = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+        shared_mask = jnp.broadcast_to(shared_mask[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
         
         c_steps = max_steps // 2
 
