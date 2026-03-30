@@ -255,15 +255,21 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
-        # Execute reasoning scan (using nnx.scan to manage Module state correctly)
-        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(nnx.Carry, 0))
-        @jax.checkpoint
-        def thinking_loop(carry, inputs):
-            return scan_step(carry, inputs)
+        # Execute reasoning loop
+        # We use a standard for-loop here to avoid complex "trace level" errors that can 
+        # occur with nested scans. 16 steps is efficient for JIT and avoids the transform boundary.
+        curr_carry = (z_shared, jnp.ones((batch_size,)))
+        step_outputs = []
+        
+        for t in range(max_steps):
+            t_inputs = (all_time_embeds[t], jnp.array(t, dtype=jnp.int16))
+            # We checkpoint each step to keep memory usage equivalent to a scan
+            curr_carry, out = jax.checkpoint(scan_step)(curr_carry, t_inputs)
+            step_outputs.append(out)
 
-        (final_shared, _), (all_shared, all_halts, all_forget_l1, all_logits) = thinking_loop(
-            (z_shared, jnp.ones((batch_size,))), (all_time_embeds, jnp.arange(max_steps))
-        )
+        final_shared, _ = curr_carry
+        # Reconstruct scanned outputs by stacking the list of results
+        all_shared, all_halts, all_forget_l1, all_logits = jax.tree.map(lambda *xs: jnp.stack(xs), *step_outputs)
 
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
