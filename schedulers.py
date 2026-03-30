@@ -11,15 +11,15 @@ learning_schedule = optax.warmup_cosine_decay_schedule(
 ponder_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=1e-4,
-    transition_steps=2000,
-    transition_begin=1000,
+    transition_steps=1000,
+    transition_begin=2000,
 )
 
 forget_lambda_schedule = optax.linear_schedule(
     init_value=0.0,
     end_value=4e-3,
-    transition_steps=2000,
-    transition_begin=1000,
+    transition_steps=1000,
+    transition_begin=2000,
 )
 
 diversity_lambda_schedule = optax.linear_schedule(
