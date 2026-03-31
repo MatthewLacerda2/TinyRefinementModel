@@ -11,7 +11,7 @@ from schedulers import (
 
 #Params
 LATENT_DIM = 512
-NUM_BLOCKS = 8
+NUM_BLOCKS = 4
 SHARED_SLOTS = 32
 VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 16
@@ -375,7 +375,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
+def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -413,12 +413,13 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
     
     grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, grads)
     
-    opt.update(grads, model)
-    
     *metrics, next_hunch = aux
-    
     next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
         should_truncate, next_hunch
     )
     
-    return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch
+    return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch, grads
+
+@nnx.jit
+def apply_grads(model, opt, accumulated_grads):
+    opt.update(accumulated_grads, model)

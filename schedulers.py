@@ -36,5 +36,4 @@ diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
 optimizer_chain = optax.chain(
     optax.clip_by_global_norm(1.0),
     optax.adamw(learning_rate=learning_schedule),
-    optax.apply_every(128),
 )

@@ -18,7 +18,8 @@ import numpy as np
 import fsspec
 from train_local import (
     UniversalReasoner,
-    train_step,
+    compute_grad_step,
+    apply_grads,
     LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, SHARED_SLOTS
 )
 from schedulers import optimizer_chain
@@ -253,6 +254,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
 
         # Accumulation loop
+        accumulated_grads = None
         for micro_step in range(ACCUMULATION_STEPS):
             t_data_start = time.time()
             current_batch, reset_mask = data_queue.get() 
@@ -261,16 +263,26 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             
             step_data_wait += (time.time() - t_data_start)
             
-            loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-                model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
+            loss, (ce, p, forget_cost, halt_diag), hunch, grads = compute_grad_step(
+                model, current_batch, jnp.array(step), prev_hunch=hunch,
                 should_truncate=reset_mask
             )
             
+            if accumulated_grads is None:
+                accumulated_grads = grads
+            else:
+                accumulated_grads = jax.tree.map(
+                    lambda acc, g: acc + g, accumulated_grads, grads
+                )
+
             accum_loss += float(loss)
             accum_ce += float(ce) / ACCUMULATION_STEPS
             accum_p += float(p) / ACCUMULATION_STEPS
             accum_forget_cost += float(forget_cost) / ACCUMULATION_STEPS
             last_halt_diag = halt_diag
+            
+        if accumulated_grads is not None:
+            apply_grads(model, optimizer, accumulated_grads)
             
         if current_batch is None:
             print("🏁 Data stream exhausted.")
