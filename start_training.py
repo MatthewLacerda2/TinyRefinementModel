@@ -247,7 +247,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         accum_ce = 0.0
         accum_p = 0.0
         accum_forget_cost = 0.0
-        accum_grads = None
         last_halt_diag = None
         
         if step == PHASE_STEP:
@@ -262,11 +261,9 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             
             step_data_wait += (time.time() - t_data_start)
             
-            is_last = (micro_step == ACCUMULATION_STEPS - 1)
-            
-            loss, (ce, p, forget_cost, halt_diag), hunch, accum_grads = train_step(
+            loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
                 model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
-                should_truncate=reset_mask, update=is_last, accum_grads=accum_grads
+                should_truncate=reset_mask
             )
             
             accum_loss += float(loss)

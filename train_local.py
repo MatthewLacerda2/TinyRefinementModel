@@ -375,7 +375,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False, update=True, accum_grads=None):
+def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -411,22 +411,14 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    # Scale loss and grads by accumulation steps
-    loss = loss / ACCUMULATION_STEPS
     grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, grads)
     
-    if accum_grads is not None:
-        grads = jax.tree.map(lambda a, g: a + g, accum_grads, grads)
-        
-    if update:
-        opt.update(grads, model)
-        grads = None # Reset for next accumulation cycle
+    opt.update(grads, model)
     
     *metrics, next_hunch = aux
     
-    # If should_truncate is True, we break the gradient chain here.
     next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
         should_truncate, next_hunch
     )
     
-    return loss, tuple(metrics), next_hunch, grads
+    return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch
