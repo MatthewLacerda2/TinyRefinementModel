@@ -19,7 +19,7 @@ import fsspec
 from train_local import (
     UniversalReasoner,
     train_step,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, PAD_TOKEN_ID, SHARED_SLOTS
+    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, SHARED_SLOTS
 )
 from schedulers import optimizer_chain
 from metrics_logger import LossMonitor, MetricsLogger
@@ -241,33 +241,54 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
     
     while True:
         t0 = time.time()
-        t_data_start = time.time()
+        step_data_wait = 0.0
         
-        current_batch, reset_mask = data_queue.get() 
-        if current_batch is None: 
-            print("🏁 Data stream exhausted.")
-            break
+        accum_loss = 0.0
+        accum_ce = 0.0
+        accum_p = 0.0
+        accum_forget_cost = 0.0
+        accum_grads = None
+        last_halt_diag = None
         
         if step == PHASE_STEP:
             print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
-        
-        t_data_end = time.time()
-        step_data_wait = t_data_end - t_data_start
-        
-        loss, (ce, p, forget_cost, halt_diag), hunch = train_step(
-            model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
-            should_truncate=reset_mask
-        )
-        
-        loss.block_until_ready()
-        t_compute_end = time.time()
-        step_compute_time = t_compute_end - t_data_end
 
-        step_diag = logger.extract_diags(halt_diag, jnp.mean)
-        step_loss = float(loss)
-        step_ce = float(ce)
-        step_p = float(p)
-        step_forget_cost = float(forget_cost)
+        # Accumulation loop
+        for micro_step in range(ACCUMULATION_STEPS):
+            t_data_start = time.time()
+            current_batch, reset_mask = data_queue.get() 
+            if current_batch is None: 
+                break
+            
+            step_data_wait += (time.time() - t_data_start)
+            
+            is_last = (micro_step == ACCUMULATION_STEPS - 1)
+            
+            loss, (ce, p, forget_cost, halt_diag), hunch, accum_grads = train_step(
+                model, optimizer, current_batch, jnp.array(step), prev_hunch=hunch,
+                should_truncate=reset_mask, update=is_last, accum_grads=accum_grads
+            )
+            
+            accum_loss += float(loss)
+            accum_ce += float(ce) / ACCUMULATION_STEPS
+            accum_p += float(p) / ACCUMULATION_STEPS
+            accum_forget_cost += float(forget_cost) / ACCUMULATION_STEPS
+            last_halt_diag = halt_diag
+            
+        if current_batch is None:
+            print("🏁 Data stream exhausted.")
+            break
+            
+        loss_val = accum_loss # train_step already divided loss by ACCUMULATION_STEPS
+        
+        t_compute_end = time.time()
+        step_compute_time = t_compute_end - t0 - step_data_wait
+
+        step_diag = logger.extract_diags(last_halt_diag, jnp.mean)
+        step_loss = float(loss_val)
+        step_ce = float(accum_ce)
+        step_p = float(accum_p)
+        step_forget_cost = float(accum_forget_cost)
 
         t_total = time.time() - t0
 

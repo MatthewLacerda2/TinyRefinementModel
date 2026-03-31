@@ -20,6 +20,7 @@ MAX_STEPS_LIMIT = 16
 MAX_SEQ_LEN = 512
 MIN_STEPS = 4
 BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100351
 
 #Soft label settings
@@ -210,7 +211,7 @@ class UniversalReasoner(nnx.Module):
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
         seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
-        shared_mask = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+        shared_mask = jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_)
         shared_mask = jnp.broadcast_to(shared_mask[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
         
         c_steps = max_steps // 2
@@ -374,7 +375,7 @@ def calculate_diversity_loss_margin(expected_shared, margin):
     return jnp.mean(jnp.square(violation * mask))
 
 @nnx.jit
-def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False):
+def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=False, update=True, accum_grads=None):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
@@ -409,14 +410,23 @@ def train_step(model, opt, batch_tokens, step, prev_hunch=None, should_truncate=
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    opt.update(grads, model)
+    
+    # Scale loss and grads by accumulation steps
+    loss = loss / ACCUMULATION_STEPS
+    grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, grads)
+    
+    if accum_grads is not None:
+        grads = jax.tree.map(lambda a, g: a + g, accum_grads, grads)
+        
+    if update:
+        opt.update(grads, model)
+        grads = None # Reset for next accumulation cycle
     
     *metrics, next_hunch = aux
     
     # If should_truncate is True, we break the gradient chain here.
-    # Also, we break it if the global step says so.
     next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
         should_truncate, next_hunch
     )
     
-    return loss, tuple(metrics), next_hunch
+    return loss, tuple(metrics), next_hunch, grads
