@@ -1,8 +1,8 @@
 import os
 
-#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-#os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
-#os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 
 import jax
