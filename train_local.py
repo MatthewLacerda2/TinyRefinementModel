@@ -57,7 +57,15 @@ class RotaryAttention(nnx.Module):
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
+        
+        self.o_proj = nnx.Linear(
+            in_features, in_features, 
+            kernel_init=jax.nn.initializers.zeros, 
+            rngs=rngs, dtype=dtype
+        )
+
+        self.q_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=dtype)
+        self.k_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=dtype)
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
@@ -68,6 +76,9 @@ class RotaryAttention(nnx.Module):
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
         v = self.v_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         if q_pos is None:
             q_pos = jnp.arange(s)
@@ -247,7 +258,8 @@ class UniversalReasoner(nnx.Module):
                 forget_val = 0.0
             
             pooled = jnp.mean(new_shared, axis=1)
-            halt_logits = m.halt_head(jax.nn.gelu(m.halt_pre(pooled))).squeeze(-1)
+            halt_logits_raw = m.halt_head(jax.nn.gelu(m.halt_pre(pooled))).squeeze(-1)
+            halt_logits = 15.0 * jnp.tanh(halt_logits_raw / 15.0)
             halt_prob = jax.nn.sigmoid(halt_logits)
             
             # No halting during contemplation; must observe sequence before deciding to stop
@@ -323,7 +335,8 @@ class UniversalReasoner(nnx.Module):
             kv_pos=shared_pos
         )
         
-        logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
+        logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
+        logits = 30.0 * jnp.tanh(logits_raw / 30.0)
         
         if not training:
             self.hunch_cache.value = expected_shared
