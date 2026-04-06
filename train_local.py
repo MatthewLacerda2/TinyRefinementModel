@@ -331,7 +331,8 @@ class UniversalReasoner(nnx.Module):
             'prob_mean': jnp.mean(all_halts[c_steps:]),
             'actual_steps': jnp.mean(actual_steps),
             'forget_density': jnp.mean(all_forget_l1[c_steps:]),
-            'saturation': jnp.mean(jnp.abs(all_halts[c_steps:] - 0.5) * 2.0)
+            'saturation': jnp.mean(jnp.abs(all_halts[c_steps:] - 0.5) * 2.0),
+            'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1]))
         }
 
         # Predict sequence tokens using JOINT attention (Causal Self + Thoughts)
