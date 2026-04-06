@@ -71,7 +71,11 @@ class RotaryAttention(nnx.Module):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
-        kv_input = context if context is not None else x
+        kv_input = x
+        if context is not None:
+            # Joint attention: Attend to tokens AND the provided context
+            kv_input = jnp.concatenate([x, context], axis=1)
+
         s_kv = kv_input.shape[1]
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
@@ -234,17 +238,17 @@ class UniversalReasoner(nnx.Module):
             # Phase check: Are we allowed to see the current batch yet?
             is_observation = (step_id >= c_steps)
             
-            shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
-            shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-
             # During contemplation, the sequence is masked out (causality)
             phase_seq_mask = jnp.where(is_observation, seq_mask, jnp.bool_(False))
-            phase_extended_mask = jnp.concatenate([phase_seq_mask, shared_mask], axis=-1)
+            # Joint attention (Slots attend to Slots AND Tokens)
+            # Order must match [x, context] in RotaryAttention -> [Slots, Tokens]
+            shared_kv_pos = jnp.concatenate([shared_pos, seq_pos])
+            phase_extended_mask = jnp.concatenate([shared_mask, phase_seq_mask], axis=-1)
 
             stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
             
             new_shared = m.main_stack(
-                stack_input, context=shared_ctx, mask=phase_extended_mask,
+                stack_input, context=z_seq, mask=phase_extended_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
@@ -320,19 +324,29 @@ class UniversalReasoner(nnx.Module):
         halt_diag = {
             'logits_mean': jnp.mean(obs_logits),
             'logits_std': jnp.std(obs_logits),
+            'logits_min': jnp.min(obs_logits),
+            'logits_max': jnp.max(obs_logits),
+            'logit_spread': jnp.max(obs_logits) - jnp.min(obs_logits),
             'prob_std': jnp.std(all_halts[c_steps:]),
+            'prob_mean': jnp.mean(all_halts[c_steps:]),
             'actual_steps': jnp.mean(actual_steps),
-            'prob_mean': jnp.mean(actual_steps),
-            'forget_density': jnp.mean(all_forget_l1[c_steps:])
+            'forget_density': jnp.mean(all_forget_l1[c_steps:]),
+            'saturation': jnp.mean(jnp.abs(all_halts[c_steps:] - 0.5) * 2.0)
         }
 
-        # Predict sequence tokens using ONLY the past_wisdom context (CAUSAL)
+        # Predict sequence tokens using JOINT attention (Causal Self + Thoughts)
+        # We concatenate the thoughts to the KV stream so tokens can see their past AND the slots.
+        seq_logits_mask = pad_mask[:, None, None, :]
+        thoughts_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        joint_kv_mask = jnp.concatenate([seq_logits_mask, thoughts_mask], axis=-1)
+
         z_out = self.main_stack(
             z_seq, 
             context=past_wisdom, 
-            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
+            mask=joint_kv_mask, 
             q_pos=seq_pos, 
-            kv_pos=shared_pos
+            kv_pos=jnp.concatenate([seq_pos, shared_pos]),
+            is_causal=True # Keep causal for the seq part
         )
         
         logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
@@ -424,8 +438,6 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    grads = jax.tree.map(lambda g: g / ACCUMULATION_STEPS, grads)
-    
     *metrics, next_hunch = aux
     next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
         should_truncate, next_hunch
@@ -434,5 +446,5 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch, grads
 
 @nnx.jit
-def apply_grads(model, opt, accumulated_grads):
-    opt.update(accumulated_grads, model)
+def apply_grads(optimizer, grads):
+    optimizer.update(grads)
