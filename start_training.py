@@ -27,7 +27,7 @@ from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 100
+CHECKPOINT_INTERVAL = 20
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
 PHASE_STEP = 2000
