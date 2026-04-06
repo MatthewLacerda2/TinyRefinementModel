@@ -73,7 +73,6 @@ class RotaryAttention(nnx.Module):
 
         kv_input = x
         if context is not None:
-            # Joint attention: Attend to tokens AND the provided context
             kv_input = jnp.concatenate([x, context], axis=1)
 
         s_kv = kv_input.shape[1]
@@ -235,13 +234,10 @@ class UniversalReasoner(nnx.Module):
             curr_shared, p_remain_prev = carry
             t_signal, step_id = inputs
             
-            # Phase check: Are we allowed to see the current batch yet?
             is_observation = (step_id >= c_steps)
             
-            # During contemplation, the sequence is masked out (causality)
             phase_seq_mask = jnp.where(is_observation, seq_mask, jnp.bool_(False))
-            # Joint attention (Slots attend to Slots AND Tokens)
-            # Order must match [x, context] in RotaryAttention -> [Slots, Tokens]
+
             shared_kv_pos = jnp.concatenate([shared_pos, seq_pos])
             phase_extended_mask = jnp.concatenate([shared_mask, phase_seq_mask], axis=-1)
 
@@ -266,15 +262,11 @@ class UniversalReasoner(nnx.Module):
             halt_logits = 15.0 * jnp.tanh(halt_logits_raw / 15.0)
             halt_prob = jax.nn.sigmoid(halt_logits)
             
-            # No halting during contemplation; must observe sequence before deciding to stop
             halt_prob = jnp.where((step_id < MIN_STEPS) | (~is_observation), 0.0, halt_prob)
             
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             return (new_shared, p_remain_next), (new_shared, halt_prob, forget_val, halt_logits)
 
-        # Execute reasoning loop
-        # We functionalize the model state here to safely pass it through the checkpoint boundary.
-        # This resolves the "trace level" error with stateful nodes like Cache.
         graphdef, state = nnx.split(self)
         
         @jax.checkpoint
@@ -293,11 +285,9 @@ class UniversalReasoner(nnx.Module):
             curr_carry, out, curr_state = pure_step(curr_carry, t_inputs, curr_state)
             step_outputs.append(out)
 
-        # Update the model with the final state from the loop
         nnx.update(self, curr_state)
         final_shared, _ = curr_carry
         
-        # Reconstruct scanned outputs by stacking the list of results
         all_shared, all_halts, all_forget_l1, all_logits = jax.tree.map(lambda *xs: jnp.stack(xs), *step_outputs)
 
         all_halts = jnp.clip(all_halts, 0.0, 1.0 - 1e-7)
@@ -307,12 +297,8 @@ class UniversalReasoner(nnx.Module):
         last_step_extra = p_remain[-1] * (1.0 - all_halts[-1])
         step_weights = step_weights.at[-1].add(last_step_extra)
 
-        # past_wisdom: The "Pure" thoughts from contemplation (only sees history/hunch)
-        # This is CAUSAL for the current sequence predictions.
         past_wisdom = all_shared[c_steps - 1]
 
-        # expected_shared: The "Updated Summary" after observing current tokens
-        # This is used as the hunch for the NEXT chunk.
         weights_for_shared = step_weights[:, :, None, None]
         expected_shared = jnp.sum(weights_for_shared * all_shared, axis=0)
 
@@ -335,11 +321,16 @@ class UniversalReasoner(nnx.Module):
             'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1]))
         }
 
-        # Predict sequence tokens using JOINT attention (Causal Self + Thoughts)
-        # We concatenate the thoughts to the KV stream so tokens can see their past AND the slots.
-        seq_logits_mask = pad_mask[:, None, None, :]
-        thoughts_mask = jnp.ones((batch_size, 1, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        q_idx = jnp.arange(seq_len)
+        causal_mask = q_idx[:, None] >= q_idx[None, :]
+        
+        seq_logits_mask = causal_mask[None, :, :] & pad_mask[:, None, :]
+        
+        thoughts_mask = jnp.ones((batch_size, seq_len, SHARED_SLOTS), dtype=jnp.bool_)
+        
         joint_kv_mask = jnp.concatenate([seq_logits_mask, thoughts_mask], axis=-1)
+        
+        joint_kv_mask = joint_kv_mask[:, None, :, :]
 
         z_out = self.main_stack(
             z_seq, 
@@ -347,7 +338,7 @@ class UniversalReasoner(nnx.Module):
             mask=joint_kv_mask, 
             q_pos=seq_pos, 
             kv_pos=jnp.concatenate([seq_pos, shared_pos]),
-            is_causal=True # Keep causal for the seq part
+            is_causal=False
         )
         
         logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
@@ -360,7 +351,6 @@ class UniversalReasoner(nnx.Module):
 
 def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
     B, L, V = logits.shape
-    
     
     embed_table_gradless = jax.lax.stop_gradient(embed_table)
     norm = jnp.linalg.norm(embed_table_gradless, axis=-1, keepdims=True)
