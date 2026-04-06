@@ -206,20 +206,23 @@ def setup_data_pipeline(start_step):
 
     if start_step > 1:
         if start_step < PHASE_STEP:
-            total_pretrain_seen = (start_step - 1) * BATCH_SIZE
+            total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS * BATCH_SIZE
             weights = [0.60, 0.25, 0.15]
             for gen, weight in zip(pretrain_sources, weights):
                 gen.skip_count = int(total_pretrain_seen * weight)
         else:
-            total_chat_seen = (start_step - PHASE_STEP) * BATCH_SIZE
+            total_chat_seen = (start_step - PHASE_STEP) * ACCUMULATION_STEPS * BATCH_SIZE
             chat_mixer.skip_count = total_chat_seen
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
     def data_wrapper():
-        current_step = start_step
+        macro_step = start_step
+        micro_counter = 0
+        
         while True:
-            if current_step < PHASE_STEP:
+            # Switch phases based on the MACRO step
+            if macro_step < PHASE_STEP:
                 res = pretrain_mixer.get_batch(BATCH_SIZE)
             else:
                 res = chat_mixer.get_batch(BATCH_SIZE)
@@ -229,7 +232,11 @@ def setup_data_pipeline(start_step):
                 break
             
             data_queue.put(res)
-            current_step += 1
+            
+            # Only increment the macro_step when a full accumulated batch is assembled
+            micro_counter += 1
+            if micro_counter % ACCUMULATION_STEPS == 0:
+                macro_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
