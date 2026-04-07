@@ -275,13 +275,14 @@ class UniversalReasoner(nnx.Module):
             return (new_shared, p_remain_next, weighted_shared_acc, ponder_acc), (new_shared, halt_prob, forget_val, halt_logits)
 
         graphdef, state = nnx.split(self)
-        
+
         @jax.checkpoint
-        def pure_scan_step(carry, inputs, state):
+        def pure_scan_step(carry_and_state, inputs):
+            carry, state = carry_and_state
             m = nnx.merge(graphdef, state)
             res_carry, res_out = scan_step_fn(m, carry, inputs)
             _, next_state = nnx.split(m)
-            return res_carry, res_out, next_state
+            return (res_carry, next_state), res_out
 
         init_weighted_shared = jnp.zeros((batch_size, SHARED_SLOTS, self.latent_dim))
         init_ponder = jnp.zeros((batch_size,))
@@ -289,29 +290,14 @@ class UniversalReasoner(nnx.Module):
 
         scan_inputs = (all_time_embeds, jnp.arange(max_steps, dtype=jnp.int32))
 
-        def lax_body(t, loop_state):
-            carry, curr_state, all_shared, all_halts, all_forget, all_logits = loop_state
-            t_inputs = (scan_inputs[0][t], scan_inputs[1][t])
-            new_carry, out, new_state = pure_scan_step(carry, t_inputs, curr_state)
-            s_shared, s_halt, s_forget, s_logit = out
-            all_shared = all_shared.at[t].set(s_shared)
-            all_halts = all_halts.at[t].set(s_halt)
-            all_forget = all_forget.at[t].set(s_forget)
-            all_logits = all_logits.at[t].set(s_logit)
-            return (new_carry, new_state, all_shared, all_halts, all_forget, all_logits)
-
-        init_all_shared = jnp.zeros((max_steps, batch_size, SHARED_SLOTS, self.latent_dim))
-        init_all_halts = jnp.zeros((max_steps, batch_size))
-        init_all_forget = jnp.zeros((max_steps, batch_size))
-        init_all_logits = jnp.zeros((max_steps, batch_size))
-
-        final_carry, final_state, all_shared, all_halts, all_forget_l1, all_logits = jax.lax.fori_loop(
-            0, max_steps,
-            lax_body,
-            (init_carry, state, init_all_shared, init_all_halts, init_all_forget, init_all_logits)
+        (final_carry, final_state), (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
+            pure_scan_step,
+            (init_carry, state),
+            scan_inputs,
         )
 
         nnx.update(self, final_state)
+
         final_shared, p_remain_final, weighted_shared_acc, ponder_cost_acc = final_carry
         
         last_step_weight = p_remain_final
