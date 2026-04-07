@@ -445,7 +445,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
-    jax.debug.print("🔢 [JIT runtime] step={s}", s=step)
+    #jax.debug.print("🔢 [JIT runtime] step={s}", s=step)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
 
