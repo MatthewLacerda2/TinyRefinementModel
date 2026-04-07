@@ -38,9 +38,9 @@ CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_check
 if not DATA_ROOT:
     print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
     
-print(f"📁 Checkpoints will be saved to: {CHECKPOINT_ROOT}")
-if not CHECKPOINT_ROOT.startswith("gs://"):
-    print(f"ℹ️ Note: Saving locally. You will need to manually sync to GCS using: gsutil -m cp -r {CHECKPOINT_ROOT} gs://YOUR_BUCKET/")
+#print(f"📁 Checkpoints will be saved to: {CHECKPOINT_ROOT}")
+#if not CHECKPOINT_ROOT.startswith("gs://"):
+#    print(f"ℹ️ Note: Saving locally. You will need to manually sync to GCS using: gsutil -m cp -r {CHECKPOINT_ROOT} gs://YOUR_BUCKET/")
 
 
 class TextDataGenerator:
@@ -275,7 +275,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
                 should_truncate=reset_mask
             )
             
-            apply_grads(optimizer, grads)
+            apply_grads(optimizer, grads, model)
 
             accum_loss += float(loss)
             accum_ce += float(ce) / ACCUMULATION_STEPS

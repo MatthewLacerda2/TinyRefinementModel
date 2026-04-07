@@ -437,5 +437,5 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch, grads
 
 @nnx.jit
-def apply_grads(optimizer, grads):
-    optimizer.update(grads)
+def apply_grads(optimizer, grads, model):
+    optimizer.update(grads, model)
