@@ -30,13 +30,24 @@ class MetricsLogger:
             'p_lambda', 'f_lambda', 'd_lambda'
         ]
         self.fields = ["step", "loss", "ce", "avg_ponder", "avg_forget_cost", 
-                       "t_total", "data_wait", "compute_time"] + self.diag_keys
+                       "t_total", "data_wait", "compute_time",
+                       "grad_norm_avg", "grad_norm_min", "grad_norm_max",
+                       "logit_drift_intra", "first_ce"] + self.diag_keys
 
     def extract_diags(self, halt_diag, jnp_mean_fn):
         """Extracts and formats diagnostics from the model step using a provided mean function."""
         return {k: float(jnp_mean_fn(halt_diag.get(k, 0))) for k in self.diag_keys}
 
-    def log(self, step, loss, ce, p, forget_cost, t_total, wait, compute, diag_dict):
+    def log(self, step, loss, ce, p, forget_cost, t_total, wait, compute, diag_dict,
+            grad_norm_avg=None, grad_norm_min=None, grad_norm_max=None,
+            logit_drift=None, first_ce=None):
+        grad_line = ""
+        if grad_norm_avg is not None:
+            grad_line = (
+                f"\n      GradNorm [avg:{grad_norm_avg:.4f}, min:{grad_norm_min:.4f}, max:{grad_norm_max:.4f}]"
+                f" | IntraStep Logit Δ: {logit_drift:.5f}"
+                f" | CE μ→micro[0]:{first_ce:.4f}"
+            )
         print(
             f"Step {step:04d} | CE: {ce:.4f} | Agg Loss: {loss:.4f} | "
             f"Avg Steps: {p:.2f} | Forget: {forget_cost:.4f} | Time: {t_total:.2f}s\n"
@@ -44,6 +55,7 @@ class MetricsLogger:
             f"      Logits [μ:{diag_dict.get('logits_mean',0):.2f}, σ:{diag_dict.get('logits_std',0):.2f}, min:{diag_dict.get('logits_min',0):.2f}, max:{diag_dict.get('logits_max',0):.2f}] | Spread: {diag_dict.get('logit_spread',0):.2f}\n"
             f"      Prob [μ:{diag_dict.get('prob_mean',0):.3f}, σ:{diag_dict.get('prob_std',0):.3f}] | Sat:{diag_dict.get('saturation',0):.3f}| Drift:{diag_dict.get('temporal_drift',0):.3f}| Density:{diag_dict.get('forget_density',0):.3f}\n"
             f"      Scheds [P_λ:{diag_dict.get('p_lambda',0):.1e}, F_λ:{diag_dict.get('f_lambda',0):.1e}, D_λ:{diag_dict.get('d_lambda',0):.1e}] | Diversity: {diag_dict.get('diversity_loss',0):.3f}"
+            + grad_line
         )
 
         with fsspec.open(self.history_file, "a", newline="") as f:
@@ -54,7 +66,12 @@ class MetricsLogger:
             row = {
                 "step": int(step), "loss": f"{loss:.4f}", "ce": f"{ce:.4f}",
                 "avg_ponder": f"{p:.2f}", "avg_forget_cost": f"{forget_cost:.4f}", 
-                "t_total": f"{t_total:.2f}", "data_wait": f"{wait:.4f}", "compute_time": f"{compute:.4f}"
+                "t_total": f"{t_total:.2f}", "data_wait": f"{wait:.4f}", "compute_time": f"{compute:.4f}",
+                "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
+                "grad_norm_min": f"{grad_norm_min:.4f}" if grad_norm_min is not None else "",
+                "grad_norm_max": f"{grad_norm_max:.4f}" if grad_norm_max is not None else "",
+                "logit_drift_intra": f"{logit_drift:.5f}" if logit_drift is not None else "",
+                "first_ce": f"{first_ce:.4f}" if first_ce is not None else "",
             }
             row.update({k: f"{v:.4f}" for k, v in diag_dict.items() if k in self.fields})
             writer.writerow(row)

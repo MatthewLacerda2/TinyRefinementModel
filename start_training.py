@@ -27,7 +27,7 @@ from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 20
+CHECKPOINT_INTERVAL = 5
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
 PHASE_STEP = 2000
@@ -256,6 +256,13 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         accum_p = 0.0
         accum_forget_cost = 0.0
         last_halt_diag = None
+        first_halt_diag = None
+        first_ce = None
+
+        # Grad norm tracking across accumulation window
+        grad_norm_min = float('inf')
+        grad_norm_max = float('-inf')
+        grad_norm_sum = 0.0
         
         if step == PHASE_STEP:
             print("🚀 PHASE SHIFT: Transitioning to Chat Fine-tuning...")
@@ -270,18 +277,27 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             step_data_wait += (time.time() - t_data_start)
             
             # The optax.apply_every(128) in schedulers.py will handle the accumulation
-            loss, (ce, p, forget_cost, halt_diag), hunch, grads = compute_grad_step(
+            loss, (ce, p, forget_cost, halt_diag), hunch, grads, grad_norm = compute_grad_step(
                 model, current_batch, jnp.array(step), prev_hunch=hunch,
                 should_truncate=reset_mask
             )
             
             apply_grads(optimizer, grads, model)
 
+            gn = float(grad_norm)
+            grad_norm_min = min(grad_norm_min, gn)
+            grad_norm_max = max(grad_norm_max, gn)
+            grad_norm_sum += gn
+
             accum_loss += float(loss)
             accum_ce += float(ce) / ACCUMULATION_STEPS
             accum_p += float(p) / ACCUMULATION_STEPS
             accum_forget_cost += float(forget_cost) / ACCUMULATION_STEPS
             last_halt_diag = halt_diag
+
+            if micro_step == 0:
+                first_halt_diag = halt_diag
+                first_ce = float(ce)
             
         if current_batch is None:
             print("🏁 Data stream exhausted.")
@@ -297,6 +313,14 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         step_ce = float(accum_ce)
         step_p = float(accum_p)
         step_forget_cost = float(accum_forget_cost)
+
+        grad_norm_avg = grad_norm_sum / ACCUMULATION_STEPS
+        last_ce = float(last_halt_diag.get('ce', ce)) if isinstance(last_halt_diag, dict) else float(ce) * ACCUMULATION_STEPS
+
+        # Detect frozen metrics: compare first vs last micro-step halt logit mean
+        first_logit_mu = float(jnp.mean(jnp.array(first_halt_diag['logits_mean']))) if first_halt_diag else float('nan')
+        last_logit_mu  = float(jnp.mean(jnp.array(last_halt_diag['logits_mean']))) if last_halt_diag else float('nan')
+        logit_drift = abs(last_logit_mu - first_logit_mu)
 
         t_total = time.time() - t0
 
@@ -319,7 +343,9 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
                 ),
             )
             mngr.wait_until_finished()
-            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag)
+            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag,
+                       grad_norm_avg=grad_norm_avg, grad_norm_min=grad_norm_min, grad_norm_max=grad_norm_max,
+                       logit_drift=logit_drift, first_ce=first_ce)
         step += 1
 
 if __name__ == "__main__":
