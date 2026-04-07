@@ -314,7 +314,6 @@ class UniversalReasoner(nnx.Module):
         nnx.update(self, final_state)
         final_shared, p_remain_final, weighted_shared_acc, ponder_cost_acc = final_carry
         
-        # Finalize halt weights: redistribute remaining probability to last step
         last_step_weight = p_remain_final
         weighted_shared_acc = weighted_shared_acc + last_step_weight[:, None, None] * all_shared[-1]
         expected_shared = weighted_shared_acc
@@ -322,7 +321,6 @@ class UniversalReasoner(nnx.Module):
         last_step_idx = jnp.float32(max_steps)
         ponder_cost = ponder_cost_acc + p_remain_final * jnp.maximum(0.0, last_step_idx - MIN_STEPS)
 
-        # Recompute step_weights for diagnostics
         p_remain = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain
         step_weights = step_weights.at[-1].add(p_remain[-1] * (1.0 - all_halts[-1]))
@@ -347,15 +345,7 @@ class UniversalReasoner(nnx.Module):
             'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1]))
         }
 
-        # Prefix-style attention: context (thoughts) BEFORE sequence
-        # This lets us use is_causal=True because the prefix is always visible
-        # and the sequence part remains causal among itself
         prefix_kv_pos = jnp.concatenate([shared_pos, seq_pos])
-        
-        # Build prefix mask: all queries can see all prefix (thoughts) tokens,
-        # and the causal part among sequence tokens is handled by is_causal=True
-        # We only need to mask out padding in the sequence portion of KV
-        # prefix_mask shape: (batch, 1, 1, SHARED_SLOTS + seq_len)
         prefix_pad = jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)
         full_kv_pad = jnp.concatenate([prefix_pad, pad_mask], axis=-1)
         prefix_mask = full_kv_pad[:, None, None, :]
