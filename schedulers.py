@@ -45,13 +45,11 @@ weight_decay_schedule = optax.warmup_cosine_decay_schedule(
     end_value=1e-2
 )
 
-optimizer_chain = optax.MultiSteps(
-    optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(
-            learning_rate=learning_schedule,
-            weight_decay=weight_decay_schedule,
-            mask=weight_decay_mask,
-        ),
+optimizer_chain = optax.chain(
+    optax.clip_by_global_norm(1.0),
+    optax.adamw(
+        learning_rate=learning_schedule,
+        weight_decay=weight_decay_schedule,
+        mask=weight_decay_mask,
     ),
 )
