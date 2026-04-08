@@ -5,7 +5,6 @@ os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
 
-import jax
 import jax.numpy as jnp
 from flax import nnx
 import orbax.checkpoint as ocp
@@ -15,7 +14,6 @@ import queue
 import multiprocessing as mp
 from dotenv import load_dotenv
 import numpy as np
-import fsspec
 from train_local import (
     UniversalReasoner,
     compute_grad_step,

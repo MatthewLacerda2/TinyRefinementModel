@@ -17,15 +17,13 @@ VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 16
 
 #Training
-MAX_SEQ_LEN = 512
+MAX_SEQ_LEN = 1024
 MIN_STEPS = 4
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100351
 
-#Soft label settings
-SOFT_LABEL_K = 64
-SOFT_LABEL_TEMP = 0.1
+# Standard Next-Token Prediction Settings
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4 #Ideal ratio is 4:1
 
@@ -359,34 +357,7 @@ class UniversalReasoner(nnx.Module):
             
         return logits, ponder_cost, jnp.sum(step_weights * all_forget_l1, axis=0), halt_diag, expected_shared
 
-def soft_label_loss(logits, targets, embed_table, non_pad_mask, k=SOFT_LABEL_K, temperature=SOFT_LABEL_TEMP):
-    B, L, V = logits.shape
-    
-    embed_table_gradless = jax.lax.stop_gradient(embed_table)
-    norm = jnp.linalg.norm(embed_table_gradless, axis=-1, keepdims=True)
-    embed_normed = embed_table_gradless / (norm + 1e-8)
-    target_emb = embed_normed[targets] 
 
-    flat_targets = target_emb.reshape(B * L, -1)
-    
-    sims = jnp.matmul(flat_targets, embed_normed.T)
-    topk_vals, topk_idx = jax.lax.top_k(sims, k)
-    
-    topk_vals = topk_vals.astype(jnp.float32)
-    soft_targets = jax.nn.softmax(topk_vals / temperature, axis=-1)
-    
-    logits_fp32 = logits.astype(jnp.float32).reshape(B * L, V)
-    lse = jax.nn.logsumexp(logits_fp32, axis=-1, keepdims=True)
-    topk_logits = jnp.take_along_axis(logits_fp32, topk_idx, axis=-1)
-    topk_log_probs = topk_logits - lse
-    
-    per_token_losses = -jnp.sum(soft_targets * topk_log_probs, axis=-1)
-
-    flat_mask = non_pad_mask.reshape(B * L)
-    num_valid = jnp.sum(flat_mask).clip(min=1)
-    loss = jnp.sum(per_token_losses * flat_mask) / num_valid
-    
-    return loss
 
 
 
@@ -418,11 +389,13 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         f_lambda = forget_lambda_schedule(step)
         d_lambda = diversity_lambda_schedule(step)
 
-        token_loss = soft_label_loss(
-            logits, targets,
-            embed_table=model.embed.embedding.value,
-            non_pad_mask=non_pad_mask,
+        logits_fp32 = logits.astype(jnp.float32)
+        per_token_losses = optax.softmax_cross_entropy_with_integer_labels(
+            logits=logits_fp32, 
+            labels=targets
         )
+        num_valid = jnp.sum(non_pad_mask).clip(min=1)
+        token_loss = jnp.sum(per_token_losses * non_pad_mask) / num_valid
 
         total_loss = token_loss + (p_lambda * jnp.mean(ponder_cost)) + \
                      (f_lambda * jnp.mean(forget_cost)) + (d_lambda * div_loss)
