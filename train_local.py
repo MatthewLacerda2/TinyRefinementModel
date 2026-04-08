@@ -147,8 +147,8 @@ class BlockStack(nnx.Module):
     def reset_state(self):
         self.blocks.attn.cache.value = None
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
-        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry)
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False, reverse=False):
+        @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry, reverse=reverse)
         def forward(curr_x, block):
             return block(curr_x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
             
@@ -166,9 +166,10 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.encoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
-        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
-        self.decoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
+        self.stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
+        self.encoder_stack = self.stack
+        self.reasoning_stack = self.stack
+        self.decoder_stack = self.stack
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
@@ -345,7 +346,8 @@ class UniversalReasoner(nnx.Module):
             mask=prefix_mask, 
             q_pos=seq_pos, 
             kv_pos=prefix_kv_pos,
-            is_causal=True
+            is_causal=True,
+            reverse=True
         )
         
         logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
