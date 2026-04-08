@@ -229,8 +229,10 @@ class UniversalReasoner(nnx.Module):
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
         seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
-        shared_mask = jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_)
-        shared_mask = jnp.broadcast_to(shared_mask[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
+        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+        shared_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
+        extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
+        shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
         
         c_steps = max_steps // 2
 
@@ -238,17 +240,10 @@ class UniversalReasoner(nnx.Module):
             curr_shared, p_remain_prev, weighted_shared_acc, ponder_acc = carry
             t_signal, step_id = inputs
             
-            is_observation = (step_id >= c_steps)
-            
-            phase_seq_mask = jnp.where(is_observation, seq_mask, jnp.bool_(False))
-
-            shared_kv_pos = jnp.concatenate([shared_pos, seq_pos])
-            phase_extended_mask = jnp.concatenate([shared_mask, phase_seq_mask], axis=-1)
-
             stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
             
             new_shared = m.reasoning_stack(
-                stack_input, context=z_seq, mask=phase_extended_mask,
+                stack_input, context=z_seq, mask=extended_ctx_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
@@ -266,7 +261,7 @@ class UniversalReasoner(nnx.Module):
             halt_logits = 15.0 * jnp.tanh(halt_logits_raw / 15.0)
             halt_prob = jax.nn.sigmoid(halt_logits)
             
-            halt_prob = jnp.where((step_id < MIN_STEPS) | (~is_observation), 0.0, halt_prob)
+            halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
             halt_prob = jnp.clip(halt_prob, 0.0, 1.0 - 1e-7)
             
             step_weight = halt_prob * p_remain_prev
@@ -388,16 +383,11 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         p_lambda = ponder_lambda_schedule(step)
         f_lambda = forget_lambda_schedule(step)
         d_lambda = diversity_lambda_schedule(step)
-
-        logits_fp32 = logits.astype(jnp.float32)
         
-        # Sparse Memory-Efficient CE (avoiding optax's dense one-hot array)
-        lse = jax.nn.logsumexp(logits_fp32, axis=-1)
-        target_logits = jnp.take_along_axis(logits_fp32, targets[..., None], axis=-1)[..., 0]
-        per_token_losses = lse - target_logits
-        
+        ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
+        non_pad_mask = (targets != PAD_TOKEN_ID)
         num_valid = jnp.sum(non_pad_mask).clip(min=1)
-        token_loss = jnp.sum(per_token_losses * non_pad_mask) / num_valid
+        token_loss = jnp.sum(ce_loss * non_pad_mask) / num_valid
 
         total_loss = token_loss + (p_lambda * jnp.mean(ponder_cost)) + \
                      (f_lambda * jnp.mean(forget_cost)) + (d_lambda * div_loss)
@@ -410,11 +400,9 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
             'd_lambda': d_lambda
         })
         
-        scaled_loss = total_loss / ACCUMULATION_STEPS
-        
-        return scaled_loss, (total_loss, token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+        return total_loss, (total_loss, token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
-    (scaled_loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
 
     grad_norm = optax.global_norm(grads)
 

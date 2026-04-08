@@ -3,7 +3,7 @@ import optax
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
     init_value=1e-4, 
-    peak_value=1e-3,
+    peak_value=3e-4,
     warmup_steps=500, 
     decay_steps=2000, 
     end_value=1e-4
@@ -45,11 +45,15 @@ weight_decay_schedule = optax.warmup_cosine_decay_schedule(
     end_value=1e-2
 )
 
-optimizer_chain = optax.chain(
-    optax.clip_by_global_norm(1.0),
-    optax.adamw(
-        learning_rate=learning_schedule,
-        weight_decay=weight_decay_schedule,
-        mask=weight_decay_mask,
+optimizer_chain = optax.MultiSteps(
+    optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(
+            learning_rate=learning_schedule,
+            weight_decay=weight_decay_schedule,
+            mask=weight_decay_mask,
+        ),
     ),
+    every_k_schedule=128,
+    use_grad_mean=True
 )
