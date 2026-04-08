@@ -169,7 +169,9 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
+        self.encoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
+        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
+        self.decoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
@@ -201,9 +203,13 @@ class UniversalReasoner(nnx.Module):
         current_hunch = None
         if training:
             current_hunch = prev_hunch
-            self.main_stack.reset_state()
+            self.encoder_stack.reset_state()
+            self.reasoning_stack.reset_state()
+            self.decoder_stack.reset_state()
         else:
-            self.main_stack.reset_state()
+            self.encoder_stack.reset_state()
+            self.reasoning_stack.reset_state()
+            self.decoder_stack.reset_state()
             if not should_refresh and self.hunch_cache.value is not None:
                 current_hunch = self.hunch_cache.value
                 
@@ -211,7 +217,7 @@ class UniversalReasoner(nnx.Module):
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         z_seq_raw = self.embed(tokens)
 
-        z_seq = self.main_stack(z_seq_raw, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
+        z_seq = self.encoder_stack(z_seq_raw, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
 
         z_shared_base = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
 
@@ -243,7 +249,7 @@ class UniversalReasoner(nnx.Module):
 
             stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
             
-            new_shared = m.main_stack(
+            new_shared = m.reasoning_stack(
                 stack_input, context=z_seq, mask=phase_extended_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
@@ -336,7 +342,7 @@ class UniversalReasoner(nnx.Module):
         full_kv_pad = jnp.concatenate([prefix_pad, pad_mask], axis=-1)
         prefix_mask = full_kv_pad[:, None, None, :]
 
-        z_out = self.main_stack(
+        z_out = self.decoder_stack(
             z_seq, 
             context=past_wisdom, 
             mask=prefix_mask, 
