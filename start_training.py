@@ -80,9 +80,11 @@ def load_or_create_checkpoint(model, optimizer):
         
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
-        monitor.ce_history = m_state["ce_history"]
-        monitor.best_ce = m_state["best_ce"]
-        monitor.last_improvement_step = m_state["last_improvement_step"]
+        monitor.ce_history = m_state.get("ce_history", [])
+        monitor.best_ce = m_state.get("best_ce", float("inf"))
+        monitor.best_loss = m_state.get("best_loss", float("inf"))
+        monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
+        monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         
         print(f"✅ Resuming from step {start_step}")
         del restored 
@@ -223,11 +225,12 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
 
         t_total = time.time() - t0
 
-        if monitor.push(step, step_ce): 
+        if monitor.push(step, step_ce, step_loss): 
             print("🛑 Training halted: No improvement in CE.")
             break
 
-        if step % CHECKPOINT_INTERVAL == 0:
+        # Only update model weights if we hit a new record (lowest loss or lowest CE)
+        if monitor.is_new_best:
             mngr.save(
                 step,
                 args=ocp.args.Composite(
@@ -236,12 +239,17 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
                     monitor_state=ocp.args.JsonSave({
                         "ce_history": monitor.ce_history,
                         "best_ce": monitor.best_ce,
+                        "best_loss": monitor.best_loss,
+                        "best_avg_ce": monitor.best_avg_ce,
                         "last_improvement_step": monitor.last_improvement_step,
                     }),
                     step=ocp.args.JsonSave(step),
                 ),
             )
             mngr.wait_until_finished()
+
+        # CSV logging continues on the fixed interval
+        if step % CHECKPOINT_INTERVAL == 0:
             logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag,
                        grad_norm_avg=grad_norm_avg, grad_norm_min=grad_norm_min, grad_norm_max=grad_norm_max,
                        logit_drift=logit_drift, first_ce=first_ce)
