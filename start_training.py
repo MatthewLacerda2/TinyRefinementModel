@@ -13,7 +13,6 @@ import threading
 import queue
 import multiprocessing as mp
 from dotenv import load_dotenv
-import numpy as np
 from train_local import (
     UniversalReasoner,
     compute_grad_step,

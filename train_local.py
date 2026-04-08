@@ -1,4 +1,3 @@
-from flax import linen as nn
 import jax
 import optax
 from flax import nnx
@@ -17,7 +16,7 @@ VOCAB_SIZE = 100352
 MAX_STEPS_LIMIT = 16
 
 #Training
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 512
 MIN_STEPS = 4
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
