@@ -395,9 +395,6 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         
         halt_diag.update({
             'diversity_loss': div_loss,
-            'p_lambda': p_lambda,
-            'f_lambda': f_lambda,
-            'd_lambda': d_lambda
         })
         
         return total_loss, (total_loss, token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)

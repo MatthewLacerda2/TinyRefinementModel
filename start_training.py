@@ -250,9 +250,8 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
 
         # CSV logging continues on the fixed interval
         if step % CHECKPOINT_INTERVAL == 0:
-            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_data_wait, step_compute_time, step_diag,
-                       grad_norm_avg=grad_norm_avg, grad_norm_min=grad_norm_min, grad_norm_max=grad_norm_max,
-                       logit_drift=logit_drift, first_ce=first_ce)
+            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_compute_time, step_diag,
+                       grad_norm_avg=grad_norm_avg, logit_drift=logit_drift, first_ce=first_ce)
         step += 1
 
 if __name__ == "__main__":
