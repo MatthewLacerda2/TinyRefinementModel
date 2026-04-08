@@ -390,10 +390,12 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         d_lambda = diversity_lambda_schedule(step)
 
         logits_fp32 = logits.astype(jnp.float32)
-        per_token_losses = optax.softmax_cross_entropy_with_integer_labels(
-            logits=logits_fp32, 
-            labels=targets
-        )
+        
+        # Sparse Memory-Efficient CE (avoiding optax's dense one-hot array)
+        lse = jax.nn.logsumexp(logits_fp32, axis=-1)
+        target_logits = jnp.take_along_axis(logits_fp32, targets[..., None], axis=-1)[..., 0]
+        per_token_losses = lse - target_logits
+        
         num_valid = jnp.sum(non_pad_mask).clip(min=1)
         token_loss = jnp.sum(per_token_losses * non_pad_mask) / num_valid
 
