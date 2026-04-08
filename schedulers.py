@@ -1,38 +1,38 @@
 import jax
 import optax
 
+# Target: ~1440 steps (12-hour overnight run at 30s/step)
+WARMUP_STEPS = 250
+DECAY_STEPS = 850
+
 learning_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-4, 
-    peak_value=3e-4,
-    warmup_steps=500, 
-    decay_steps=2000, 
-    end_value=1e-4
+    init_value=1e-5,    # Slightly lower start since warmup is shorter
+    peak_value=3e-4,    # Fast enough to escape local minima
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=5e-5      # Lower floor to help it settle deeply at the end
 )
 
+# Ponder and Forget start at 0 during warmup (free exploration)
+# Then they "reverse decay" (ramp up) over the next 850 steps
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=500, 
-    decay_steps=2000, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
     end_value=2e-4
 )
 
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=500, 
-    decay_steps=2000, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
     end_value=4e-3
 )
 
-#TODO: use a raw lambda or rather make the model figure it out
-diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.5, 
-    peak_value=0.5, 
-    warmup_steps=500, 
-    decay_steps=2000, 
-    end_value=0.5
-)
+# Flat 0.5 margin for the diversity loss
+diversity_lambda_schedule = optax.constant_schedule(0.5)
 
 def weight_decay_mask(params):
     return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
@@ -40,8 +40,8 @@ def weight_decay_mask(params):
 weight_decay_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=0.0, 
-    warmup_steps=500, 
-    decay_steps=2000, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
     end_value=1e-2
 )
 
