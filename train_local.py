@@ -346,8 +346,7 @@ class UniversalReasoner(nnx.Module):
             mask=prefix_mask, 
             q_pos=seq_pos, 
             kv_pos=prefix_kv_pos,
-            is_causal=True,
-            reverse=True
+            is_causal=True
         )
         
         logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
