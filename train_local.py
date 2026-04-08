@@ -8,11 +8,13 @@ from schedulers import (
     diversity_lambda_schedule
 )
 
+#Keep (most) values powers of 2 if you know what's good for you
+
 #Params
-LATENT_DIM = 512
-NUM_BLOCKS = 4
+LATENT_DIM = 512    #Must be multiple of 128
+NUM_BLOCKS = 42
 SHARED_SLOTS = 32
-VOCAB_SIZE = 100352
+VOCAB_SIZE = 100352 #Must be multiple of 128
 MAX_STEPS_LIMIT = 16
 
 #Training
@@ -25,7 +27,6 @@ PAD_TOKEN_ID = 100351
 # Standard Next-Token Prediction Settings
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4 #Ideal ratio is 4:1
-
 
 def apply_rope(x, sin_table, cos_table):
     x1 = x[..., ::2]
@@ -117,7 +118,7 @@ class StandardReasoningBlock(nnx.Module):
         self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
         self.down_proj = nnx.Linear(
             hidden_dim, latent_dim,
-            kernel_init=jax.nn.initializers.zeros,
+            #kernel_init=jax.nn.initializers.zeros,
             rngs=rngs, dtype=dtype,
         )
 
