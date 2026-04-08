@@ -55,7 +55,6 @@ class RotaryAttention(nnx.Module):
         
         self.o_proj = nnx.Linear(
             in_features, in_features, 
-            kernel_init=jax.nn.initializers.zeros, 
             rngs=rngs, dtype=dtype
         )
 
@@ -174,7 +173,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), 2.0)
+        self.halt_head.bias.value = jnp.full((1,), 1.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)

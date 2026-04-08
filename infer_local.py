@@ -12,58 +12,74 @@ from train_local import (
     LATENT_DIM,
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
-    MAX_STEPS_LIMIT,
-    HUNCH_REFRESH_EVERY
+    MAX_STEPS_LIMIT
 )
-from inference_core import run_model_inference
 
 from dotenv import load_dotenv
-
 load_dotenv()
 
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints")
-#os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+HUNCH_REFRESH_EVERY = 4
+
+def run_model_inference(
+    model: UniversalReasoner,
+    tokens: jnp.ndarray,
+    max_steps: int = MAX_STEPS_LIMIT,
+    should_refresh: bool = True,
+) -> jnp.ndarray:
+    logits, ponder_cost, forget_loss, halt_diag, expected_shared = model(
+        tokens, max_steps=max_steps, training=False, should_refresh=should_refresh
+    )
+    return logits
 
 @partial(nnx.jit, static_argnames=['refresh'])
-def get_all_logits(model, padded_tks, refresh):
-    return run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
+def get_logits_for_token(model, padded_tks, token_idx, refresh):
+    all_logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
+    return all_logits[0, token_idx, :]
 
 def generate_text(model, enc, prompt, max_new_tokens=128, temperature=0.8):
     seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 
     tokens_list = enc.encode(prompt)
+    valid_len = len(tokens_list)
+
+    if valid_len >= MAX_SEQ_LEN:
+        tokens_list = tokens_list[:MAX_SEQ_LEN]
+        valid_len = MAX_SEQ_LEN
+
+    padded_array = tokens_list + [PAD_TOKEN_ID] * (MAX_SEQ_LEN - valid_len)
+    # Initialize tensor ONCE
+    input_ids = jnp.array([padded_array], dtype=jnp.int32)
 
     print("🤖 Assistant: ", end="", flush=True)
 
     for i in range(max_new_tokens):
-        valid_len = len(tokens_list)
-
         if valid_len >= MAX_SEQ_LEN:
             break
 
-        padded_array = tokens_list + [PAD_TOKEN_ID] * (MAX_SEQ_LEN - valid_len)
-        input_ids = jnp.array([padded_array], dtype=jnp.int32)
-
         should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
 
-        # Call JIT function with the whole sequence
-        all_logits = get_all_logits(model, input_ids, refresh=should_refresh)
-        
-        # Slice the specific token we need OUTSIDE of JIT
-        logits = all_logits[0, valid_len - 1, :]
+        # Call JIT function handling slicing directly on device to save VRAM load
+        logits = get_logits_for_token(model, input_ids, valid_len - 1, refresh=should_refresh)
 
         rng, subkey = jax.random.split(rng)
 
-        scaled_logits = logits / temperature
-
-        next_token = int(jax.random.categorical(subkey, scaled_logits))
+        if temperature > 0.0:
+            scaled_logits = logits / temperature
+            next_token = int(jax.random.categorical(subkey, scaled_logits))
+        else:
+            next_token = int(jnp.argmax(logits))
 
         if next_token == PAD_TOKEN_ID:
             break
 
         tokens_list.append(next_token)
         print(enc.decode([next_token]), end="", flush=True)
+
+        # Update sequence inline on device to avoid H2D host-device transfers
+        input_ids = input_ids.at[0, valid_len].set(next_token)
+        valid_len += 1
 
     print()
     return tokens_list
