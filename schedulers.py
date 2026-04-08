@@ -2,11 +2,11 @@ import jax
 import optax
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-6, 
-    peak_value=3e-4,
+    init_value=1e-4, 
+    peak_value=1e-3,
     warmup_steps=500, 
     decay_steps=2000, 
-    end_value=1e-5
+    end_value=1e-4
 )
 
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(

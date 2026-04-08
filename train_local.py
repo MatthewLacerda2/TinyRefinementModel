@@ -410,20 +410,20 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
             'd_lambda': d_lambda
         })
         
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+        scaled_loss = total_loss / ACCUMULATION_STEPS
+        
+        return scaled_loss, (total_loss, token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 
-    #jax.debug.print("🔢 [JIT runtime] step={s}", s=step)
-
-    (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    (scaled_loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
 
     grad_norm = optax.global_norm(grads)
 
-    *metrics, next_hunch = aux
+    unscaled_loss, *metrics, next_hunch = aux
     next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
         should_truncate, next_hunch
     )
     
-    return loss / ACCUMULATION_STEPS, tuple(metrics), next_hunch, grads, grad_norm
+    return unscaled_loss, tuple(metrics), next_hunch, grads, grad_norm
 
 @nnx.jit
 def apply_grads(optimizer, grads, model):
