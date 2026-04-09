@@ -122,19 +122,20 @@ class RotaryAttention(nnx.Module):
             v = self.v_cache.value
 
         repeats = self.num_heads // self.num_groups
-        
-        q_gqa = q.reshape(b, s, self.num_groups, repeats, self.head_dim).transpose(0, 2, 1, 3, 4)
-        k_gqa = k.reshape(b, s_kv, self.num_groups, 1, self.head_dim).transpose(0, 2, 1, 3, 4)
-        v_gqa = v.reshape(b, s_kv, self.num_groups, 1, self.head_dim).transpose(0, 2, 1, 3, 4)
+        k_expanded = jnp.repeat(k, repeats, axis=2)
+        v_expanded = jnp.repeat(v, repeats, axis=2)
 
-        mask_gqa = mask[:, None] if mask is not None else None
+        if mask is not None:
+             mask_expanded = jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
+        else:
+             mask_expanded = None
 
         out = jax.nn.dot_product_attention(
-            q_gqa, k_gqa, v_gqa,
-            mask=mask_gqa,
+            q, k_expanded, v_expanded,
+            mask=mask_expanded,
             is_causal=is_causal,
         )
-        return self.o_proj(out.transpose(0, 2, 1, 3, 4).reshape(b, s, d))
+        return self.o_proj(out.reshape(b, s, d))
 
 
 class StandardReasoningBlock(nnx.Module):
@@ -379,9 +380,6 @@ class UniversalReasoner(nnx.Module):
             self.hunch_cache.value = expected_shared
             
         return logits, ponder_cost, jnp.sum(step_weights * all_forget_l1, axis=0), halt_diag, expected_shared
-
-
-
 
 
 def calculate_diversity_loss_margin(expected_shared, margin):
