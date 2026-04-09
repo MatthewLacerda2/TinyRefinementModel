@@ -149,7 +149,7 @@ class StandardReasoningBlock(nnx.Module):
         self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
         self.down_proj = nnx.Linear(
             hidden_dim, latent_dim,
-            #kernel_init=jax.nn.initializers.zeros,
+            kernel_init=jax.nn.initializers.zeros,
             rngs=rngs, dtype=dtype,
         )
 
@@ -259,7 +259,14 @@ class UniversalReasoner(nnx.Module):
 
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
-        seq_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
+        block_size = MAX_SEQ_LEN // SHARED_SLOTS
+        slot_idx_col = jnp.arange(SHARED_SLOTS)[:, None]
+        token_idx_row = jnp.arange(seq_len)[None, :]
+        causal_slot_seq = token_idx_row < (slot_idx_col + 1) * block_size
+        
+        seq_mask_base = pad_mask[:, None, :] & causal_slot_seq[None, :, :]
+        seq_mask = jnp.broadcast_to(seq_mask_base[:, None, :, :], (batch_size, 1, SHARED_SLOTS, seq_len))
+        
         causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
         shared_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
         extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
@@ -360,17 +367,25 @@ class UniversalReasoner(nnx.Module):
         }
 
         prefix_kv_pos = jnp.concatenate([shared_pos, seq_pos])
-        prefix_pad = jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)
-        full_kv_pad = jnp.concatenate([prefix_pad, pad_mask], axis=-1)
-        prefix_mask = full_kv_pad[:, None, None, :]
+        
+        seq_idx_col = jnp.arange(seq_len)[:, None]
+        slot_idx_row = jnp.arange(SHARED_SLOTS)[None, :]
+        causal_seq_slot = (slot_idx_row + 1) * block_size <= seq_idx_col
+        seq_slot_mask_base = jnp.broadcast_to(causal_seq_slot[None, :, :], (batch_size, seq_len, SHARED_SLOTS))
+        
+        causal_seq_seq = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        seq_seq_mask = pad_mask[:, None, :] & causal_seq_seq[None, :, :]
+        
+        decoder_mask_base = jnp.concatenate([seq_slot_mask_base, seq_seq_mask], axis=-1)
+        decoder_mask = decoder_mask_base[:, None, :, :]
 
         z_out = self.decoder_stack(
             z_seq, 
             context=expected_shared, 
-            mask=prefix_mask, 
+            mask=decoder_mask, 
             q_pos=seq_pos, 
             kv_pos=prefix_kv_pos,
-            is_causal=True
+            is_causal=False
         )
         
         logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
