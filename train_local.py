@@ -12,7 +12,7 @@ from schedulers import (
 
 #Params
 LATENT_DIM = 512    #Must be multiple of 128
-NUM_BLOCKS = 42
+NUM_BLOCKS = 4
 SHARED_SLOTS = 32
 VOCAB_SIZE = 100352 #Must be multiple of 128
 MAX_STEPS_LIMIT = 16
