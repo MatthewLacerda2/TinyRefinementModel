@@ -73,10 +73,7 @@ class RotaryAttention(nnx.Module):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
-        kv_input = x
-        if context is not None:
-            kv_input = jnp.concatenate([context, x], axis=1)
-
+        kv_input = context if context is not None else x
         s_kv = kv_input.shape[1]
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
@@ -275,8 +272,9 @@ class UniversalReasoner(nnx.Module):
             
             stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
             
+            shared_ctx = jnp.concatenate([z_seq, stack_input], axis=1)
             new_shared = m.reasoning_stack(
-                stack_input, context=z_seq, mask=extended_ctx_mask,
+                stack_input, context=shared_ctx, mask=extended_ctx_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
@@ -362,23 +360,14 @@ class UniversalReasoner(nnx.Module):
 
         prefix_kv_pos = jnp.concatenate([shared_pos, seq_pos])
         
-        seq_idx_col = jnp.arange(seq_len)[:, None]
-        slot_idx_row = jnp.arange(SHARED_SLOTS)[None, :]
-        causal_seq_slot = (slot_idx_row + 1) * block_size <= seq_idx_col
-        seq_slot_mask_base = jnp.broadcast_to(causal_seq_slot[None, :, :], (batch_size, seq_len, SHARED_SLOTS))
-        
-        causal_seq_seq = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
-        seq_seq_mask = pad_mask[:, None, :] & causal_seq_seq[None, :, :]
-        
-        decoder_mask_base = jnp.concatenate([seq_slot_mask_base, seq_seq_mask], axis=-1)
-        decoder_mask = decoder_mask_base[:, None, :, :]
+        decoder_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
 
         z_out = self.decoder_stack(
             z_seq, 
             context=expected_shared, 
             mask=decoder_mask, 
             q_pos=seq_pos, 
-            kv_pos=prefix_kv_pos,
+            kv_pos=shared_pos,
             is_causal=False
         )
         
