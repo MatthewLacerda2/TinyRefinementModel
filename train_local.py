@@ -313,8 +313,6 @@ class UniversalReasoner(nnx.Module):
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         actual_steps = jnp.sum(step_weights * step_indices, axis=0) 
 
-        past_wisdom = all_shared[c_steps - 1]
-
         obs_logits = all_logits[c_steps:]
         halt_diag = {
             'logits_mean': jnp.mean(obs_logits),
@@ -337,7 +335,7 @@ class UniversalReasoner(nnx.Module):
 
         z_out = self.decoder_stack(
             z_seq, 
-            context=past_wisdom, 
+            context=expected_shared, 
             mask=prefix_mask, 
             q_pos=seq_pos, 
             kv_pos=prefix_kv_pos,
