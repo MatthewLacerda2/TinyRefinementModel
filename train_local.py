@@ -121,12 +121,20 @@ class RotaryAttention(nnx.Module):
             k = self.k_cache.value
             v = self.v_cache.value
 
+        repeats = self.num_heads // self.num_groups
+        
+        q_gqa = q.reshape(b, s, self.num_groups, repeats, self.head_dim).transpose(0, 2, 1, 3, 4)
+        k_gqa = k.reshape(b, s_kv, self.num_groups, 1, self.head_dim).transpose(0, 2, 1, 3, 4)
+        v_gqa = v.reshape(b, s_kv, self.num_groups, 1, self.head_dim).transpose(0, 2, 1, 3, 4)
+
+        mask_gqa = mask[:, None] if mask is not None else None
+
         out = jax.nn.dot_product_attention(
-            q, k, v,
-            mask=mask,
+            q_gqa, k_gqa, v_gqa,
+            mask=mask_gqa,
             is_causal=is_causal,
         )
-        return self.o_proj(out.reshape(b, s, d))
+        return self.o_proj(out.transpose(0, 2, 1, 3, 4).reshape(b, s, d))
 
 
 class StandardReasoningBlock(nnx.Module):
@@ -196,7 +204,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), 1.0)
+        self.halt_head.bias.value = jnp.full((1,), -2.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
@@ -237,7 +245,7 @@ class UniversalReasoner(nnx.Module):
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         z_seq_raw = self.embed(tokens)
 
-        z_seq = self.encoder_stack(z_seq_raw, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
+        z_seq = self.encoder_stack(z_seq_raw, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=False)
 
         z_shared_base = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
 
