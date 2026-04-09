@@ -212,11 +212,7 @@ class UniversalReasoner(nnx.Module):
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.hunch_gate = nnx.Linear(
-            latent_dim * 2, 1,
-            bias_init=jax.nn.initializers.constant(-2.0),
-            rngs=rngs, dtype=dtype,
-        )
+        self.hunch_gate = nnx.Linear(latent_dim, latent_dim, rngs=rngs, dtype=dtype)
 
         self.use_forget = use_forget
         if self.use_forget:
@@ -251,8 +247,7 @@ class UniversalReasoner(nnx.Module):
         z_shared_base = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
 
         if current_hunch is not None:
-            hunch_input = jnp.concatenate([self.hunch_norm(current_hunch), jnp.broadcast_to(self.hunch_norm(z_shared_base), current_hunch.shape)], axis=-1)
-            gate = jax.nn.sigmoid(self.hunch_gate(hunch_input))
+            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
             z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
         else:
             z_shared = z_shared_base
@@ -274,29 +269,28 @@ class UniversalReasoner(nnx.Module):
         
         c_steps = max_steps // 2
 
-        def scan_step_fn(m, carry, inputs):
+        def scan_step(carry, inputs):
             curr_shared, p_remain_prev, weighted_shared_acc, ponder_acc = carry
             t_signal, step_id = inputs
             
-            stack_input = m.time_norm(curr_shared) + m.time_signal_norm(t_signal[None, None, :])
+            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
             
-            new_shared = m.reasoning_stack(
+            new_shared = self.reasoning_stack(
                 stack_input, context=z_seq, mask=extended_ctx_mask,
                 q_pos=shared_pos, kv_pos=shared_kv_pos
             )
 
-            if m.use_forget:
+            if self.use_forget:
                 gate_context = jnp.concatenate([curr_shared, new_shared], axis=-1)
-                forget_gate_input = m.forget_norm(gate_context)
-                forget = jax.nn.sigmoid(m.forget_head(forget_gate_input))
+                forget_gate_input = self.forget_norm(gate_context)
+                forget = jax.nn.sigmoid(self.forget_head(forget_gate_input))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
                 forget_val = jnp.zeros((batch_size,))
             
             pooled = jnp.mean(new_shared, axis=1)
-            halt_logits_raw = m.halt_head(jax.nn.gelu(m.halt_pre(pooled))).squeeze(-1)
-            halt_logits = 15.0 * jnp.tanh(halt_logits_raw / 15.0)
+            halt_logits = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
             halt_prob = jax.nn.sigmoid(halt_logits)
             
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
@@ -311,29 +305,17 @@ class UniversalReasoner(nnx.Module):
             
             return (new_shared, p_remain_next, weighted_shared_acc, ponder_acc), (new_shared, halt_prob, forget_val, halt_logits)
 
-        graphdef, state = nnx.split(self)
-
-        @jax.checkpoint
-        def pure_scan_step(carry_and_state, inputs):
-            carry, state = carry_and_state
-            m = nnx.merge(graphdef, state)
-            res_carry, res_out = scan_step_fn(m, carry, inputs)
-            _, next_state = nnx.split(m)
-            return (res_carry, next_state), res_out
-
         init_weighted_shared = jnp.zeros((batch_size, SHARED_SLOTS, self.latent_dim))
         init_ponder = jnp.zeros((batch_size,))
         init_carry = (z_shared, jnp.ones((batch_size,)), init_weighted_shared, init_ponder)
 
         scan_inputs = (all_time_embeds, jnp.arange(max_steps, dtype=jnp.int32))
 
-        (final_carry, final_state), (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
-            pure_scan_step,
-            (init_carry, state),
+        final_carry, (all_shared, all_halts, all_forget_l1, all_logits) = jax.lax.scan(
+            jax.checkpoint(scan_step),
+            init_carry,
             scan_inputs,
         )
-
-        nnx.update(self, final_state)
 
         final_shared, p_remain_final, weighted_shared_acc, ponder_cost_acc = final_carry
         
@@ -388,8 +370,7 @@ class UniversalReasoner(nnx.Module):
             is_causal=False
         )
         
-        logits_raw = self.seq_norm(z_out) @ self.embed.embedding.value.T
-        logits = 30.0 * jnp.tanh(logits_raw / 30.0)
+        logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
         
         if not training:
             self.hunch_cache.value = expected_shared
