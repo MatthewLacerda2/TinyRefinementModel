@@ -358,8 +358,6 @@ class UniversalReasoner(nnx.Module):
             'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1]))
         }
 
-        prefix_kv_pos = jnp.concatenate([shared_pos, seq_pos])
-        
         decoder_mask = jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_)
 
         z_out = self.decoder_stack(
