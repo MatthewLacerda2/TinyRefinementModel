@@ -50,7 +50,7 @@ class RotaryAttention(nnx.Module):
 
         self.k_cache = nnx.Cache(None)
         self.v_cache = nnx.Cache(None)
-        self.cache_index = nnx.Variable(jnp.array(0, dtype=jnp.int32))
+        self.cache_index = nnx.Cache(jnp.array(0, dtype=jnp.int32))
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
@@ -67,7 +67,7 @@ class RotaryAttention(nnx.Module):
     def reset_state(self):
         self.k_cache.value = None
         self.v_cache.value = None
-        self.cache_index.value = jnp.array(0, dtype=jnp.int32)
+        self.cache_index.value = jnp.zeros_like(self.cache_index.value)
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
