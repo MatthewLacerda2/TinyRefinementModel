@@ -2,11 +2,11 @@ import jax
 import optax
 
 # Target: ~1440 steps (12-hour overnight run at 30s/step)
-WARMUP_STEPS = 250
-DECAY_STEPS = 850
+WARMUP_STEPS = 100
+DECAY_STEPS = 500
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-5,    # Slightly lower start since warmup is shorter
+    init_value=5e-5,    # Slightly lower start since warmup is shorter
     peak_value=3e-4,    # Fast enough to escape local minima
     warmup_steps=WARMUP_STEPS, 
     decay_steps=DECAY_STEPS, 

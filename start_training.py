@@ -204,7 +204,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             print("🏁 Data stream exhausted.")
             break
             
-        loss_val = accum_loss # train_step already divided loss by ACCUMULATION_STEPS
+        loss_val = accum_loss / ACCUMULATION_STEPS
         
         t_compute_end = time.time()
         step_compute_time = t_compute_end - t0 - step_data_wait
