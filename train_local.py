@@ -48,7 +48,9 @@ class RotaryAttention(nnx.Module):
         self.sin_table = jnp.sin(freqs).astype(jnp.float32)
         self.cos_table = jnp.cos(freqs).astype(jnp.float32)
 
-        self.cache = nnx.Cache(None)
+        self.k_cache = nnx.Cache(None)
+        self.v_cache = nnx.Cache(None)
+        self.cache_index = nnx.Variable(jnp.array(0, dtype=jnp.int32))
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=dtype)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=dtype)
@@ -61,6 +63,11 @@ class RotaryAttention(nnx.Module):
 
         self.q_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=dtype)
         self.k_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=dtype)
+
+    def reset_state(self):
+        self.k_cache.value = None
+        self.v_cache.value = None
+        self.cache_index.value = jnp.array(0, dtype=jnp.int32)
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
@@ -93,11 +100,26 @@ class RotaryAttention(nnx.Module):
         k = apply_rope(k, sin_kv, cos_kv)
 
         if use_cache:
-            if self.cache.value is not None:
-                prev_k, prev_v = self.cache.value
-                k = jnp.concatenate([prev_k, k], axis=1)
-                v = jnp.concatenate([prev_v, v], axis=1)
-            self.cache.value = (k, v)
+            if self.k_cache.value is None:
+                # Pre-allocate cache to maximum possible length
+                cache_shape = (b, MAX_SEQ_LEN + SHARED_SLOTS, self.num_groups, self.head_dim)
+                self.k_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
+                self.v_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
+                self.cache_index.value = jnp.array(0, dtype=jnp.int32)
+            
+            # Start position for current update
+            curr_idx = self.cache_index.value
+            
+            # Update cache using dynamic_update_slice (O(1) in XLA)
+            self.k_cache.value = jax.lax.dynamic_update_slice(self.k_cache.value, k, (0, curr_idx, 0, 0))
+            self.v_cache.value = jax.lax.dynamic_update_slice(self.v_cache.value, v, (0, curr_idx, 0, 0))
+            
+            # Advance the pointer
+            self.cache_index.value = curr_idx + s_kv
+            
+            # Use the full pre-allocated buffer for attention 
+            k = self.k_cache.value
+            v = self.v_cache.value
 
         out = jax.nn.dot_product_attention(
             q, k, v,
@@ -145,7 +167,7 @@ class BlockStack(nnx.Module):
         self.num_blocks = num_blocks
 
     def reset_state(self):
-        self.blocks.attn.cache.value = None
+        self.blocks.attn.reset_state()
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False, reverse=False):
         @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=nnx.Carry, reverse=reverse)
