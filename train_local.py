@@ -407,7 +407,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     
     # If should_truncate is True, we break the gradient chain here.
     # Also, we break it if the global step says so.
-    should_refresh = should_truncate | (step % HUNCH_REFRESH_EVERY == 0)
+    should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0))
     
     next_hunch = jax.lax.cond(
         should_refresh,
