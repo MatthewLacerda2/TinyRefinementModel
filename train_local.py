@@ -415,13 +415,14 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     grad_norm = optax.global_norm(grads)
 
     unscaled_loss, *metrics, next_hunch = aux
+    is_truncate = jnp.any(should_truncate) 
     next_hunch = jax.lax.cond(
-        should_truncate,
+        is_truncate,
         lambda h: jax.lax.stop_gradient(h),
         lambda h: h,
         next_hunch,
     )
-    
+
     return unscaled_loss, tuple(metrics), next_hunch, grads, grad_norm
 
 @nnx.jit
