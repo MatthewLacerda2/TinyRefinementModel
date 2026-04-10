@@ -203,7 +203,7 @@ class UniversalReasoner(nnx.Module):
         self.halt_head.bias.value = jnp.full((1,), -1.0)
         
         self.time_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.forget_norm = nnx.RMSNorm(latent_dim * 2, rngs=rngs, dtype=dtype)
+        self.forget_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
