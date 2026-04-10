@@ -90,7 +90,6 @@ class RotaryAttention(nnx.Module):
         sin_q = self.sin_table[q_pos, None, :]
         cos_q = self.cos_table[q_pos, None, :]
         q = apply_rope(q, sin_q, cos_q)
-        q = q * self.scale
 
         sin_kv = self.sin_table[kv_pos, None, :]
         cos_kv = self.cos_table[kv_pos, None, :]
@@ -417,7 +416,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     unscaled_loss, *metrics, next_hunch = aux
     next_hunch = jax.lax.cond(
         should_truncate,
-        lambda h: jax.lax.stop_gradient(h),
+        lambda h: jnp.zeros_like(h),
         lambda h: h,
         next_hunch,
     )
