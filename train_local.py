@@ -22,7 +22,7 @@ MAX_SEQ_LEN = 512
 MIN_STEPS = 4
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
-PAD_TOKEN_ID = 100351
+PAD_TOKEN_ID = 100257
 
 # Standard Next-Token Prediction Settings
 NUM_HEADS = 16
@@ -244,7 +244,7 @@ class UniversalReasoner(nnx.Module):
         seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
         z_seq = self.encoder_stack(z_seq_raw, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        z_shared_base = jnp.broadcast_to(self.shared_token.value, (batch_size, SHARED_SLOTS, self.latent_dim))
+        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
 
         if current_hunch is not None:
             gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
@@ -302,7 +302,9 @@ class UniversalReasoner(nnx.Module):
             
             return (new_shared, p_remain_next, weighted_shared_acc, ponder_acc), (new_shared, halt_prob, forget_val, halt_logits)
 
-        init_weighted_shared = jnp.zeros((batch_size, SHARED_SLOTS, self.latent_dim))
+        # Seed with z_shared so the decoder always receives a non-zero context,
+        # even at init when halt probs are very low and weighted_shared_acc accumulates slowly.
+        init_weighted_shared = jnp.zeros_like(z_shared)
         init_ponder = jnp.zeros((batch_size,))
         init_carry = (z_shared, jnp.ones((batch_size,)), init_weighted_shared, init_ponder)
 
@@ -400,6 +402,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
         total_loss = token_loss + (p_lambda * jnp.mean(ponder_cost)) + \
                      (f_lambda * jnp.mean(forget_cost)) + (d_lambda * div_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
+        total_loss = total_loss / ACCUMULATION_STEPS
         
         halt_diag.update({
             'diversity_loss': div_loss,
@@ -412,8 +415,11 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     grad_norm = optax.global_norm(grads)
 
     unscaled_loss, *metrics, next_hunch = aux
-    next_hunch = jax.vmap(lambda m, h: jnp.where(m, jnp.zeros_like(h), h))(
-        should_truncate, next_hunch
+    next_hunch = jax.lax.cond(
+        should_truncate,
+        lambda h: jax.lax.stop_gradient(h),
+        lambda h: h,
+        next_hunch,
     )
     
     return unscaled_loss, tuple(metrics), next_hunch, grads, grad_norm
