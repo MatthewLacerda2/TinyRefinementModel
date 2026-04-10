@@ -415,7 +415,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     grad_norm = optax.global_norm(grads)
 
     unscaled_loss, *metrics, next_hunch = aux
-    is_truncate = jnp.any(should_truncate) 
+    is_truncate = jnp.any(should_truncate)
     next_hunch = jax.lax.cond(
         is_truncate,
         lambda h: jax.lax.stop_gradient(h),
