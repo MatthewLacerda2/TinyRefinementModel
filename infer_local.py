@@ -18,7 +18,7 @@ from train_local import (
 from dotenv import load_dotenv
 load_dotenv()
 
-CHECKPOINT_DIR = os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints")
+CHECKPOINT_DIR = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 HUNCH_REFRESH_EVERY = 4
 
 def run_model_inference(

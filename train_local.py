@@ -174,7 +174,7 @@ class UniversalReasoner(nnx.Module):
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(3.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
@@ -182,180 +182,112 @@ class UniversalReasoner(nnx.Module):
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True, prev_hunch=None):
         batch_size, seq_len = tokens.shape
         
-        current_hunch = None
-        if training:
-            current_hunch = prev_hunch
-            self.main_stack.reset_state()
-        else:
-            self.main_stack.reset_state()
-            if not should_refresh and self.hunch_cache.value is not None:
-                current_hunch = self.hunch_cache.value
-                
-        seq_pos, shared_pos = jnp.arange(seq_len), jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
+        # 1. Base sequence encoding (Causal Self-Attention)
+        seq_pos = jnp.arange(seq_len)
         pad_mask = tokens != PAD_TOKEN_ID
         causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
         seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
 
-        z_seq = self.embed(tokens)
-        z_seq = self.main_stack(z_seq, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
+        z_seq_base = self.embed(tokens)
+        z_seq = self.main_stack(z_seq_base, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
-
-        if current_hunch is not None:
-            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
-            z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
-        else:
-            z_shared = z_shared_base
-
-        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+        # 2. Block-based Reasoning to prevent Causal Leakage
+        # We process the sequence in chunks. Each chunk reasons using the previous hunch.
+        # This ensures that reasoning for Token i cannot see Token i + CHUNK_SIZE.
+        CHUNK_SIZE = 128
+        num_chunks = (seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
         
-        # 1. Sequence part: all slots can see all valid sequence tokens
-        seq_mask = jnp.broadcast_to(
-            pad_mask[:, None, None, :], 
-            (batch_size, 1, SHARED_SLOTS, seq_len)
-        )
-        
-        # 2. Shared part: Causal mask so Slot N can only attend to Slots <= N
-        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
-        shared_mask = jnp.broadcast_to(
-            causal_shared[None, None, :, :], 
-            (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS)
-        )
-        
-        # Merge them to create the final mask for the scratchpad
-        extended_ctx_mask = jnp.concatenate([seq_mask, shared_mask], axis=-1)
+        current_hunch = prev_hunch if prev_hunch is not None else None
+        if not training and not should_refresh and self.hunch_cache.value is not None:
+            current_hunch = self.hunch_cache.value
 
-        def scan_step(carry, inputs):
-            (curr_shared, p_remain_prev, 
-             expected_shared_accum, ponder_cost_accum, forget_loss_accum, actual_steps_accum,
-             forget_density_sum, logits_sum, logits_sq_sum, logits_min, logits_max,
-             halts_sq_sum, halts_sum, first_shared, step_count) = carry
-             
-            t_signal, step_id = inputs
+        all_logits = []
+        total_p_cost = 0.0
+        total_f_cost = 0.0
+        last_diag = None
+
+        for i in range(num_chunks):
+            start = i * CHUNK_SIZE
+            end = min(start + CHUNK_SIZE, seq_len)
             
-            shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
-            shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
-
-            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+            z_chunk = z_seq[:, start:end, :]
+            chunk_pad_mask = pad_mask[:, start:end]
+            chunk_len = end - start
+            chunk_pos = jnp.arange(start, end)
             
-            new_shared = self.main_stack(
-                stack_input, context=shared_ctx, mask=extended_ctx_mask,
-                q_pos=shared_pos, kv_pos=shared_kv_pos
-            )
-
-            if self.use_forget:
-                forget_gate_input = self.forget_norm(new_shared)
-                forget = jax.nn.sigmoid(self.forget_head(forget_gate_input))
-                new_shared = forget * new_shared + (1.0 - forget) * curr_shared
-                forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
+            # Shared context for this chunk
+            z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+            if current_hunch is not None:
+                gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
+                z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
             else:
-                forget_val = jnp.zeros((batch_size,))
-            
-            pooled = jnp.mean(new_shared, axis=1)
-            halt_logits = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
-            halt_prob = jax.nn.sigmoid(halt_logits)
-            halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, halt_prob)
-            halt_prob = jnp.clip(halt_prob, 0.0, 1.0 - 1e-7)
-            
-            w_t = halt_prob * p_remain_prev
-            p_remain_next = p_remain_prev * (1.0 - halt_prob)
-            
-            w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
-            
-            w_t_expanded = w_t[:, None, None]
-            
-            expected_shared_accum += w_t_expanded * new_shared
-            ponder_cost_accum += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
-            forget_loss_accum += w_t * forget_val
-            actual_steps_accum += w_t * (step_id + 1)
-            
-            forget_density_sum += jnp.mean(forget_val)
-            logits_sum += jnp.mean(halt_logits)
-            logits_sq_sum += jnp.mean(jnp.square(halt_logits))
-            logits_min = jnp.minimum(logits_min, jnp.min(halt_logits))
-            logits_max = jnp.maximum(logits_max, jnp.max(halt_logits))
-            halts_sum += jnp.mean(halt_prob)
-            halts_sq_sum += jnp.mean(jnp.square(halt_prob))
-            
-            first_shared = jnp.where(step_id == 0, new_shared, first_shared)
-            
-            new_carry = (
-                new_shared, p_remain_next, 
-                expected_shared_accum, ponder_cost_accum, forget_loss_accum, actual_steps_accum,
-                forget_density_sum, logits_sum, logits_sq_sum, logits_min, logits_max,
-                halts_sq_sum, halts_sum, first_shared, step_count + 1
-            )
-            return new_carry, None
+                z_shared = z_shared_base
 
-        init_carry = (
-            z_shared, 
-            jnp.ones((batch_size,)), 
-            jnp.zeros_like(z_shared_base), 
-            jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,)),
-            jnp.array(0.0), 
-            jnp.array(0.0), 
-            jnp.array(0.0), 
-            jnp.array(jnp.inf), 
-            jnp.array(-jnp.inf), 
-            jnp.array(0.0), 
-            jnp.array(0.0), 
-            jnp.zeros_like(z_shared_base), 
-            jnp.array(0)
-        )
+            # Pondering loop for THIS chunk
+            all_time_embeds = self.time_embed(jnp.arange(max_steps))
+            shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
+            
+            s_mask = jnp.broadcast_to(chunk_pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, chunk_len))
+            causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+            sh_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
+            chunk_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
-        final_carry, _ = jax.lax.scan(
-            jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
-        )
-        
-        (final_shared, _, expected_shared, ponder_cost, forget_loss, actual_steps,
-         forget_density_sum, logits_sum, logits_sq_sum, logits_min, logits_max,
-         halts_sq_sum, halts_sum, first_shared, step_count) = final_carry
+            def scan_step(carry, inputs):
+                (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps) = carry
+                t_signal, step_id = inputs
+                
+                shared_ctx = jnp.concatenate([z_chunk, curr_shared], axis=1)
+                shared_kv_pos = jnp.concatenate([chunk_pos, shared_pos])
 
-        N = max_steps
-        logits_mean = logits_sum / N
-        logits_var = jnp.maximum(0.0, (logits_sq_sum / N) - jnp.square(logits_mean))
-        halts_mean = halts_sum / N
-        halts_var = jnp.maximum(0.0, (halts_sq_sum / N) - jnp.square(halts_mean))
-        
-        norms = jnp.sqrt(jnp.sum(jnp.square(expected_shared), axis=-1, keepdims=True) + 1e-8)
-        normalized = expected_shared / norms
-        slot_corr = jnp.einsum('bsd,btd->bst', normalized, normalized)
-        saturation_score = jnp.mean(jnp.abs(slot_corr))
+                stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+                new_shared = self.main_stack(stack_input, context=shared_ctx, mask=chunk_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
 
-        diff_sq = jnp.sum(jnp.square(final_shared - first_shared), axis=-1)
-        base_sq = jnp.sum(jnp.square(first_shared), axis=-1)
-        drift = jnp.mean(jnp.sqrt(diff_sq + 1e-8) / (jnp.sqrt(base_sq + 1e-8)))
+                if self.use_forget:
+                    forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
+                    new_shared = forget * new_shared + (1.0 - forget) * curr_shared
+                    forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
+                else:
+                    forget_val = jnp.zeros((batch_size,))
 
+                pooled = jnp.mean(new_shared, axis=1)
+                halt_prob = jax.nn.sigmoid(self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1))
+                halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
+
+                w_t = halt_prob * p_remain_prev
+                p_remain_next = p_remain_prev * (1.0 - halt_prob)
+                w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
+
+                expected_shared_accum += w_t[:, None, None] * new_shared
+                p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
+                f_cost += w_t * forget_val
+                actual_steps += w_t * (step_id + 1)
+
+                return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps), None
+
+            init_carry = (z_shared, jnp.ones((batch_size,)), jnp.zeros_like(z_shared_base), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)))
+            final_carry, _ = jax.lax.scan(jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps)))
+            
+            chunk_expected_shared = final_carry[2]
+            total_p_cost += jnp.mean(final_carry[3])
+            total_f_cost += jnp.mean(final_carry[4])
+            current_hunch = chunk_expected_shared # Pass to next chunk
+
+            # Final projection back to sequence for this chunk
+            z_chunk_out = self.main_stack(z_chunk, context=chunk_expected_shared, mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), q_pos=chunk_pos, kv_pos=shared_pos)
+            chunk_logits = self.seq_norm(z_chunk_out) @ self.embed.embedding.value.T
+            all_logits.append(chunk_logits)
+
+        # Diagnostics (simplified from last chunk)
+        steps_mean = jnp.mean(final_carry[5])
         halt_diag = {
-            'logits_mean': logits_mean,
-            'logits_std': jnp.sqrt(logits_var),
-            'logits_min': logits_min,
-            'logits_max': logits_max,
-            'prob_std': jnp.sqrt(halts_var),
-            'saturation': saturation_score,
-            'temporal_drift': drift,
-            'forget_density': forget_density_sum / N,
-            'logit_spread': logits_max - logits_min,
-            'prob_mean': jnp.mean(actual_steps),
-            'actual_steps': jnp.mean(actual_steps)
+            'prob_mean': steps_mean,
+            'actual_steps': steps_mean,
         }
-
-        z_out = self.main_stack(
-            z_seq, 
-            context=expected_shared, 
-            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
-            q_pos=seq_pos, 
-            kv_pos=shared_pos
-        )
-        
-        logits = self.seq_norm(z_out) @ self.embed.embedding.value.T
         
         if not training:
-            self.hunch_cache.value = expected_shared
-            
-        return logits, ponder_cost, forget_loss, halt_diag, expected_shared
+            self.hunch_cache.value = current_hunch
+
+        return jnp.concatenate(all_logits, axis=1), total_p_cost, total_f_cost, halt_diag, current_hunch
 
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)

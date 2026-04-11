@@ -30,7 +30,7 @@ PREFETCH_SIZE = 16
 PHASE_STEP = 2000
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
-CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
+CHECKPOINT_DIR = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 
 if not DATA_ROOT:
     print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
@@ -184,6 +184,9 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             )
             
             apply_grads(optimizer, grads, model)
+
+            # If any batch was truncated (file boundary), we must zero out the values, not just stop gradients
+            hunch = jnp.where(reset_mask[:, None, None], jnp.zeros_like(hunch), hunch)
 
             gn = float(grad_norm)
             grad_norm_min = min(grad_norm_min, gn)

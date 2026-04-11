@@ -3,7 +3,7 @@ import optax
 
 # Target: ~1440 steps (12-hour overnight run at 30s/step)
 WARMUP_STEPS = 100
-DECAY_STEPS = 500
+DECAY_STEPS = 600
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
     init_value=5e-5,    # Slightly lower start since warmup is shorter
@@ -20,7 +20,7 @@ ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     peak_value=0.0, 
     warmup_steps=WARMUP_STEPS, 
     decay_steps=DECAY_STEPS, 
-    end_value=2e-4
+    end_value=5e-5
 )
 
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
