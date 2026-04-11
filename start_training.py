@@ -222,8 +222,8 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         grad_norm_avg = grad_norm_sum / ACCUMULATION_STEPS
 
         # Detect frozen metrics: compare first vs last micro-step halt logit mean
-        first_logit_mu = float(jnp.mean(jnp.array(first_halt_diag['logits_mean']))) if first_halt_diag else float('nan')
-        last_logit_mu  = float(jnp.mean(jnp.array(last_halt_diag['logits_mean']))) if last_halt_diag else float('nan')
+        first_logit_mu = float(jnp.mean(jnp.array(first_halt_diag.get('logits_mean', 0.0)))) if first_halt_diag else float('nan')
+        last_logit_mu  = float(jnp.mean(jnp.array(last_halt_diag.get('logits_mean', 0.0)))) if last_halt_diag else float('nan')
         logit_drift = abs(last_logit_mu - first_logit_mu)
 
         t_total = time.time() - t0

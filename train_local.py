@@ -233,7 +233,7 @@ class UniversalReasoner(nnx.Module):
             chunk_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
             def scan_step(carry, inputs):
-                (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps) = carry
+                (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum) = carry
                 t_signal, step_id = inputs
                 
                 shared_ctx = jnp.concatenate([z_chunk, curr_shared], axis=1)
@@ -250,7 +250,8 @@ class UniversalReasoner(nnx.Module):
                     forget_val = jnp.zeros((batch_size,))
 
                 pooled = jnp.mean(new_shared, axis=1)
-                halt_prob = jax.nn.sigmoid(self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1))
+                halt_logit = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
+                halt_prob = jax.nn.sigmoid(halt_logit)
                 halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
 
                 w_t = halt_prob * p_remain_prev
@@ -261,10 +262,11 @@ class UniversalReasoner(nnx.Module):
                 p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
                 f_cost += w_t * forget_val
                 actual_steps += w_t * (step_id + 1)
+                logit_accum += w_t * halt_logit
 
-                return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps), None
+                return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), None
 
-            init_carry = (z_shared, jnp.ones((batch_size,)), jnp.zeros_like(z_shared_base), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)))
+            init_carry = (z_shared, jnp.ones((batch_size,)), jnp.zeros_like(z_shared_base), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)))
             final_carry, _ = jax.lax.scan(jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps)))
             
             chunk_expected_shared = final_carry[2]
@@ -282,6 +284,7 @@ class UniversalReasoner(nnx.Module):
         halt_diag = {
             'prob_mean': steps_mean,
             'actual_steps': steps_mean,
+            'logits_mean': jnp.mean(final_carry[6]),
         }
         
         if not training:
