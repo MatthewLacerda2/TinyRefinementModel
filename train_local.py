@@ -293,7 +293,7 @@ class UniversalReasoner(nnx.Module):
             actual_steps += w_t * (step_id + 1)
             logit_accum += w_t * halt_logit
 
-            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), None
+            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), (new_shared, halt_prob, forget_val, halt_logit)
 
         init_carry = (
             z_shared, 
@@ -305,7 +305,9 @@ class UniversalReasoner(nnx.Module):
             jnp.zeros((batch_size,))
         )
         
-        final_carry, _ = jax.lax.scan(jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps)))
+        final_carry, (all_shared, all_halts, all_forget_l1, all_halt_logits) = jax.lax.scan(
+            jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
+        )
         
         expected_shared = final_carry[2]
         total_p_cost = jnp.mean(final_carry[3])
@@ -322,12 +324,21 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
-        # Diagnostics
-        steps_mean = jnp.mean(final_carry[5])
+        # Diagnostics: Capture stats across the reasoning steps
+        c_steps = max_steps // 2
+        obs_logits = all_halt_logits[c_steps:]
         halt_diag = {
-            'prob_mean': steps_mean,
-            'actual_steps': steps_mean,
-            'logits_mean': jnp.mean(final_carry[6]),
+            'logits_mean': jnp.mean(obs_logits),
+            'logits_std': jnp.std(obs_logits),
+            'logits_min': jnp.min(obs_logits),
+            'logits_max': jnp.max(obs_logits),
+            'logit_spread': jnp.max(obs_logits) - jnp.min(obs_logits),
+            'prob_std': jnp.std(all_halts[c_steps:]),
+            'prob_mean': jnp.mean(all_halts[c_steps:]),
+            'actual_steps': jnp.mean(final_carry[5]),
+            'forget_density': jnp.mean(all_forget_l1[c_steps:]),
+            'saturation': jnp.mean(jnp.abs(all_halts[c_steps:] - 0.5) * 2.0),
+            'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1])),
         }
         
         if not training:
