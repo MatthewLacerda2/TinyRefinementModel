@@ -33,7 +33,7 @@ ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     peak_value=0.0, 
     warmup_steps=WARMUP_STEPS, 
     decay_steps=DECAY_STEPS, 
-    end_value=5e-5
+    end_value=1e-5
 )
 
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
@@ -99,7 +99,12 @@ class RotaryAttention(nnx.Module):
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def reset_state(self):
+        self.k_cache.value = None
+        self.v_cache.value = None
+        self.cache_index.value = jnp.zeros_like(self.cache_index.value)
+
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
@@ -146,6 +151,7 @@ class RotaryAttention(nnx.Module):
             q, k_expanded, v_expanded,
             mask=jnp.broadcast_to(mask, (mask.shape[0], self.num_heads, q.shape[1], k_expanded.shape[1]))
             if mask is not None else None,
+            is_causal=is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -165,9 +171,9 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         normed_context = self.norm1(context) if context is not None else None
-        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
@@ -187,11 +193,11 @@ class BlockStack(nnx.Module):
 
     def reset_state(self):
         for block in self.blocks:
-            block.attn.cache_index.value = jnp.array(0, dtype=jnp.int32)
+            block.attn.reset_state()
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
         for block in self.blocks:
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache)
+            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         return x
 
 
@@ -206,7 +212,10 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.main_stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.encoder_stack = self.stack
+        self.reasoning_stack = self.stack
+        self.decoder_stack = self.stack
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
@@ -233,6 +242,9 @@ class UniversalReasoner(nnx.Module):
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True, prev_hunch=None):
         batch_size, seq_len = tokens.shape
+        self.encoder_stack.reset_state()
+        self.reasoning_stack.reset_state()
+        self.decoder_stack.reset_state()
         
         # 1. Base sequence encoding (Causal Self-Attention)
         seq_pos = jnp.arange(seq_len)
@@ -241,7 +253,7 @@ class UniversalReasoner(nnx.Module):
         seq_attn_mask = pad_mask[:, None, None, :] & causal_mask[None, None, :, :]
 
         z_seq_base = self.embed(tokens)
-        z_seq = self.main_stack(z_seq_base, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
+        z_seq = self.encoder_stack(z_seq_base, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
         # 2. Vectorized Reasoning Loop
         # Initialize shared slots from base token or previous hunch
@@ -274,7 +286,7 @@ class UniversalReasoner(nnx.Module):
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
             stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
-            new_shared = self.main_stack(stack_input, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            new_shared = self.reasoning_stack(stack_input, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
 
             if self.use_forget:
                 forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
@@ -320,12 +332,13 @@ class UniversalReasoner(nnx.Module):
 
         # 3. Final Projection back to Sequence
         # Inject the global reasoning state into every token position
-        z_seq_out = self.main_stack(
+        z_seq_out = self.decoder_stack(
             z_seq, 
             context=expected_shared, 
             mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
             q_pos=seq_pos, 
-            kv_pos=shared_pos
+            kv_pos=shared_pos,
+            is_causal=False
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
