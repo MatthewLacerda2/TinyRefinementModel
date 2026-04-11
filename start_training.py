@@ -24,7 +24,8 @@ from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
-CHECKPOINT_INTERVAL = 5
+LOG_INTERVAL = 5
+CHECKPOINT_INTERVAL = 20
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 16
 PHASE_STEP = 2000
@@ -231,8 +232,8 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             print("🛑 Training halted: No improvement in CE.")
             break
 
-        # Only update model weights if we hit a new record (lowest loss or lowest CE)
-        if monitor.is_new_best:
+        # Save if we hit a new record or every CHECKPOINT_INTERVAL steps
+        if monitor.is_new_best or (step % CHECKPOINT_INTERVAL == 0):
             mngr.save(
                 step,
                 args=ocp.args.Composite(
@@ -251,7 +252,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             mngr.wait_until_finished()
 
         # CSV logging continues on the fixed interval
-        if step % CHECKPOINT_INTERVAL == 0:
+        if step % LOG_INTERVAL == 0:
             logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_compute_time, step_diag,
                        grad_norm_avg=grad_norm_avg, logit_drift=logit_drift, first_ce=first_ce)
         step += 1
