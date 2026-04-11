@@ -90,8 +90,8 @@ class RotaryAttention(nnx.Module):
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
 
-        self.k_cache = nnx.Cache(jnp.zeros((BATCH_SIZE, MAX_SEQ_LEN + SHARED_SLOTS, self.num_groups, self.head_dim), dtype=dtype))
-        self.v_cache = nnx.Cache(jnp.zeros((BATCH_SIZE, MAX_SEQ_LEN + SHARED_SLOTS, self.num_groups, self.head_dim), dtype=dtype))
+        self.k_cache = nnx.Cache(None)
+        self.v_cache = nnx.Cache(None)
         self.cache_index = nnx.Cache(jnp.array(0, dtype=jnp.int32))
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
@@ -124,6 +124,11 @@ class RotaryAttention(nnx.Module):
         k = apply_rope(k, sin_kv, cos_kv)
 
         if use_cache:
+            if self.k_cache.value is None:
+                cache_shape = (b, MAX_SEQ_LEN + SHARED_SLOTS, self.num_groups, self.head_dim)
+                self.k_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
+                self.v_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
+            
             idx = self.cache_index.value
             k_cache = jax.lax.dynamic_update_slice(self.k_cache.value, k, (0, idx, 0, 0))
             v_cache = jax.lax.dynamic_update_slice(self.v_cache.value, v, (0, idx, 0, 0))
