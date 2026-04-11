@@ -17,9 +17,10 @@ from train_local import (
     UniversalReasoner,
     compute_grad_step,
     apply_grads,
-    LATENT_DIM, MAX_SEQ_LEN, BATCH_SIZE, ACCUMULATION_STEPS, PAD_TOKEN_ID, SHARED_SLOTS
+    LATENT_DIM, BATCH_SIZE, ACCUMULATION_STEPS, SHARED_SLOTS,
+    optimizer_chain
 )
-from schedulers import optimizer_chain
+
 from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
@@ -27,8 +28,8 @@ load_dotenv()
 LOG_INTERVAL = 5
 CHECKPOINT_INTERVAL = 20
 SORT_BUFFER_SIZE = 1000
-PREFETCH_SIZE = 16
-PHASE_STEP = 2000
+PREFETCH_SIZE = 128
+PHASE_STEP = 1000
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
 CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
@@ -40,12 +41,7 @@ if not DATA_ROOT:
 #if not CHECKPOINT_ROOT.startswith("gs://"):
 #    print(f"ℹ️ Note: Saving locally. You will need to manually sync to GCS using: gsutil -m cp -r {CHECKPOINT_ROOT} gs://YOUR_BUCKET/")
 
-
 from data_loaders import TextDataGenerator, DataMixer
-
-
-# LossMonitor moved to metrics_logger.py
-
 
 def init_model_and_optimizer():
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")

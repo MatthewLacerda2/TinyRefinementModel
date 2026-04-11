@@ -37,7 +37,7 @@ def get_logits_for_token(model, padded_tks, token_idx, refresh):
     all_logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
     return all_logits[0, token_idx, :]
 
-def generate_text(model, enc, prompt, max_new_tokens=128, temperature=0.8):
+def generate_text(model, enc, prompt, max_new_tokens=512, temperature=0.5):
     seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 

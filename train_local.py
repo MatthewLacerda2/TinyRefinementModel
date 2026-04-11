@@ -2,11 +2,6 @@ import jax
 import optax
 from flax import nnx
 import jax.numpy as jnp
-from schedulers import (
-    ponder_lambda_schedule,
-    forget_lambda_schedule,
-    diversity_lambda_schedule
-)
 
 NUM_BLOCKS = 4
 LATENT_DIM = 512
@@ -22,6 +17,58 @@ HUNCH_REFRESH_EVERY = 4
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4
 
+WARMUP_STEPS = 100
+DECAY_STEPS = 600
+
+learning_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=5e-5,
+    peak_value=3e-4,
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=5e-5
+)
+
+ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.0, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=5e-5
+)
+
+forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.0, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=4e-3
+)
+
+diversity_lambda_schedule = optax.constant_schedule(0.5)
+
+def weight_decay_mask(params):
+    return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
+
+weight_decay_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.0, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=1e-2
+)
+
+optimizer_chain = optax.MultiSteps(
+    optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adamw(
+            learning_rate=learning_schedule,
+            weight_decay=weight_decay_schedule,
+            mask=weight_decay_mask,
+        ),
+    ),
+    every_k_schedule=128,
+    use_grad_mean=True
+)
 
 def apply_rope(x, sin_table, cos_table):
     x1 = x[..., ::2]
@@ -191,95 +238,91 @@ class UniversalReasoner(nnx.Module):
         z_seq_base = self.embed(tokens)
         z_seq = self.main_stack(z_seq_base, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        # 2. Block-based Reasoning to prevent Causal Leakage
-        # We process the sequence in chunks. Each chunk reasons using the previous hunch.
-        # This ensures that reasoning for Token i cannot see Token i + CHUNK_SIZE.
-        CHUNK_SIZE = 128
-        num_chunks = (seq_len + CHUNK_SIZE - 1) // CHUNK_SIZE
-        
+        # 2. Vectorized Reasoning Loop
+        # Initialize shared slots from base token or previous hunch
         current_hunch = prev_hunch if prev_hunch is not None else None
         if not training and not should_refresh and self.hunch_cache.value is not None:
             current_hunch = self.hunch_cache.value
 
-        all_logits = []
-        total_p_cost = 0.0
-        total_f_cost = 0.0
-        last_diag = None
+        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+        if current_hunch is not None:
+            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
+            z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
+        else:
+            z_shared = z_shared_base
 
-        for i in range(num_chunks):
-            start = i * CHUNK_SIZE
-            end = min(start + CHUNK_SIZE, seq_len)
+        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+        shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
+        
+        # Extended Context Mask: Sequence (padding) + Shared Slots (causal)
+        s_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
+        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
+        sh_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
+        extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
+
+        def scan_step(carry, inputs):
+            (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum) = carry
+            t_signal, step_id = inputs
             
-            z_chunk = z_seq[:, start:end, :]
-            chunk_pad_mask = pad_mask[:, start:end]
-            chunk_len = end - start
-            chunk_pos = jnp.arange(start, end)
-            
-            # Shared context for this chunk
-            z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
-            if current_hunch is not None:
-                gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
-                z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
+            # Shared slots attend to full sequence and themselves
+            shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
+            shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
+
+            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+            new_shared = self.main_stack(stack_input, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
+
+            if self.use_forget:
+                forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
+                new_shared = forget * new_shared + (1.0 - forget) * curr_shared
+                forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
-                z_shared = z_shared_base
+                forget_val = jnp.zeros((batch_size,))
 
-            # Pondering loop for THIS chunk
-            all_time_embeds = self.time_embed(jnp.arange(max_steps))
-            shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
-            
-            s_mask = jnp.broadcast_to(chunk_pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, chunk_len))
-            causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
-            sh_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
-            chunk_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
+            pooled = jnp.mean(new_shared, axis=1)
+            halt_logit = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
+            halt_prob = jax.nn.sigmoid(halt_logit)
+            halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
 
-            def scan_step(carry, inputs):
-                (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum) = carry
-                t_signal, step_id = inputs
-                
-                shared_ctx = jnp.concatenate([z_chunk, curr_shared], axis=1)
-                shared_kv_pos = jnp.concatenate([chunk_pos, shared_pos])
+            w_t = halt_prob * p_remain_prev
+            p_remain_next = p_remain_prev * (1.0 - halt_prob)
+            w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
 
-                stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
-                new_shared = self.main_stack(stack_input, context=shared_ctx, mask=chunk_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            expected_shared_accum += w_t[:, None, None] * new_shared
+            p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
+            f_cost += w_t * forget_val
+            actual_steps += w_t * (step_id + 1)
+            logit_accum += w_t * halt_logit
 
-                if self.use_forget:
-                    forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
-                    new_shared = forget * new_shared + (1.0 - forget) * curr_shared
-                    forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
-                else:
-                    forget_val = jnp.zeros((batch_size,))
+            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), None
 
-                pooled = jnp.mean(new_shared, axis=1)
-                halt_logit = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
-                halt_prob = jax.nn.sigmoid(halt_logit)
-                halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
+        init_carry = (
+            z_shared, 
+            jnp.ones((batch_size,)), 
+            jnp.zeros_like(z_shared_base), 
+            jnp.zeros((batch_size,)), 
+            jnp.zeros((batch_size,)), 
+            jnp.zeros((batch_size,)), 
+            jnp.zeros((batch_size,))
+        )
+        
+        final_carry, _ = jax.lax.scan(jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps)))
+        
+        expected_shared = final_carry[2]
+        total_p_cost = jnp.mean(final_carry[3])
+        total_f_cost = jnp.mean(final_carry[4])
 
-                w_t = halt_prob * p_remain_prev
-                p_remain_next = p_remain_prev * (1.0 - halt_prob)
-                w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
+        # 3. Final Projection back to Sequence
+        # Inject the global reasoning state into every token position
+        z_seq_out = self.main_stack(
+            z_seq, 
+            context=expected_shared, 
+            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
+            q_pos=seq_pos, 
+            kv_pos=shared_pos
+        )
+        logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
-                expected_shared_accum += w_t[:, None, None] * new_shared
-                p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
-                f_cost += w_t * forget_val
-                actual_steps += w_t * (step_id + 1)
-                logit_accum += w_t * halt_logit
-
-                return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), None
-
-            init_carry = (z_shared, jnp.ones((batch_size,)), jnp.zeros_like(z_shared_base), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)), jnp.zeros((batch_size,)))
-            final_carry, _ = jax.lax.scan(jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps)))
-            
-            chunk_expected_shared = final_carry[2]
-            total_p_cost += jnp.mean(final_carry[3])
-            total_f_cost += jnp.mean(final_carry[4])
-            current_hunch = chunk_expected_shared # Pass to next chunk
-
-            # Final projection back to sequence for this chunk
-            z_chunk_out = self.main_stack(z_chunk, context=chunk_expected_shared, mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), q_pos=chunk_pos, kv_pos=shared_pos)
-            chunk_logits = self.seq_norm(z_chunk_out) @ self.embed.embedding.value.T
-            all_logits.append(chunk_logits)
-
-        # Diagnostics (simplified from last chunk)
+        # Diagnostics
         steps_mean = jnp.mean(final_carry[5])
         halt_diag = {
             'prob_mean': steps_mean,
@@ -288,9 +331,9 @@ class UniversalReasoner(nnx.Module):
         }
         
         if not training:
-            self.hunch_cache.value = current_hunch
+            self.hunch_cache.value = expected_shared
 
-        return jnp.concatenate(all_logits, axis=1), total_p_cost, total_f_cost, halt_diag, current_hunch
+        return logits, total_p_cost, total_f_cost, halt_diag, expected_shared
 
 def calculate_diversity_loss_margin(expected_shared, margin):
     expected_shared = expected_shared.astype(jnp.float32)
@@ -328,7 +371,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
             + current_p_lambda * jnp.mean(ponder_cost)
             + current_f_lambda * jnp.mean(forget_cost)
             + current_d_lambda * div_loss
-        ) / ACCUMULATION_STEPS
+        )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
