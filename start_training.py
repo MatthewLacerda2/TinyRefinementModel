@@ -216,7 +216,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         step_forget_cost = float(accum_forget_cost)
 
         grad_norm_avg = grad_norm_sum / ACCUMULATION_STEPS
-        last_ce = float(last_halt_diag.get('ce', ce)) if isinstance(last_halt_diag, dict) else float(ce) * ACCUMULATION_STEPS
 
         # Detect frozen metrics: compare first vs last micro-step halt logit mean
         first_logit_mu = float(jnp.mean(jnp.array(first_halt_diag['logits_mean']))) if first_halt_diag else float('nan')
