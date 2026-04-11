@@ -152,7 +152,7 @@ class RotaryAttention(nnx.Module):
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=2, rngs=rngs, dtype=dtype)
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
 
