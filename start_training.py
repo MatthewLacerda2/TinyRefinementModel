@@ -31,7 +31,7 @@ PREFETCH_SIZE = 16
 PHASE_STEP = 2000
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
-CHECKPOINT_DIR = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
+CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 
 if not DATA_ROOT:
     print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
