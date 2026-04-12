@@ -44,7 +44,13 @@ forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     end_value=4e-3
 )
 
-diversity_lambda_schedule = optax.constant_schedule(0.5)
+diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.1, 
+    warmup_steps=WARMUP_STEPS * 2, 
+    decay_steps=DECAY_STEPS, 
+    end_value=1e-1
+)
 
 def weight_decay_mask(params):
     return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
@@ -278,7 +284,7 @@ class UniversalReasoner(nnx.Module):
         extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
         def scan_step(carry, inputs):
-            (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum) = carry
+            (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum, div_accum) = carry
             t_signal, step_id = inputs
             
             # Shared slots attend to full sequence and themselves
@@ -304,13 +310,16 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
 
+            step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
+            div_accum += jax.lax.stop_gradient(w_t) * step_div
+
             expected_shared_accum += w_t[:, None, None] * new_shared
             p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
             f_cost += w_t * forget_val
             actual_steps += w_t * (step_id + 1)
             logit_accum += w_t * halt_logit
 
-            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum), (new_shared, halt_prob, forget_val, halt_logit)
+            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum, div_accum), (new_shared, halt_prob, forget_val, halt_logit)
 
         init_carry = (
             z_shared, 
@@ -319,6 +328,7 @@ class UniversalReasoner(nnx.Module):
             jnp.zeros((batch_size,)), 
             jnp.zeros((batch_size,)), 
             jnp.zeros((batch_size,)), 
+            jnp.zeros((batch_size,)),
             jnp.zeros((batch_size,))
         )
         
@@ -329,6 +339,7 @@ class UniversalReasoner(nnx.Module):
         expected_shared = final_carry[2]
         total_p_cost = jnp.mean(final_carry[3])
         total_f_cost = jnp.mean(final_carry[4])
+        total_div_cost = jnp.mean(final_carry[7])
 
         # 3. Final Projection back to Sequence
         # Inject the global reasoning state into every token position
@@ -362,29 +373,28 @@ class UniversalReasoner(nnx.Module):
         if not training:
             self.hunch_cache.value = expected_shared
 
-        return logits, total_p_cost, total_f_cost, halt_diag, expected_shared
+        return logits, total_p_cost, total_f_cost, total_div_cost, halt_diag, expected_shared
 
-def calculate_diversity_loss_margin(expected_shared, margin):
-    expected_shared = expected_shared.astype(jnp.float32)
-    norm = jnp.linalg.norm(expected_shared, axis=-1, keepdims=True)
-    normalized_shared = expected_shared / (norm + 1e-8)
+def calculate_diversity_loss_per_batch(shared_state, margin):
+    shared_state = shared_state.astype(jnp.float32)
+    norm = jnp.linalg.norm(shared_state, axis=-1, keepdims=True)
+    normalized = shared_state / (norm + 1e-8)
     
-    dots = jnp.einsum('bsd,btd->bst', normalized_shared, normalized_shared)
+    dots = jnp.einsum('bsd,btd->bst', normalized, normalized)
     mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
     
     violation = jnp.maximum(0.0, jnp.abs(dots) - margin)
     
-    return jnp.mean(jnp.square(violation * mask))
+    return jnp.mean(jnp.square(violation * mask), axis=(1, 2))
 
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncate=False):
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, halt_diag, expected_shared = model(
+        preds, ponder_cost, forget_cost, div_loss, halt_diag, expected_shared = model(
             inputs, training=True, prev_hunch=prev_hunch
         )
-        div_loss = calculate_diversity_loss_margin(expected_shared, margin=0.5)
 
         ce_loss = optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets)
         non_pad_mask = (targets != PAD_TOKEN_ID)
