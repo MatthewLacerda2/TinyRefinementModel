@@ -3,16 +3,22 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-NUM_BLOCKS = 4
+#Keep (most) values powers of 2 if you know what's good for you
+
+#Params
 LATENT_DIM = 512
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
-MIN_STEPS = 4
-MAX_STEPS_LIMIT = 16
+NUM_BLOCKS = 4
 SHARED_SLOTS = 32
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100352
+
+#Training
+MAX_STEPS_LIMIT = 16
+MIN_STEPS = 4
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
+
 HUNCH_REFRESH_EVERY = 4
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4
@@ -118,7 +124,6 @@ class RotaryAttention(nnx.Module):
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
         v = self.v_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
 
-        # Apply QK-Norm
         q = self.q_norm(q)
         k = self.k_norm(k)
 
@@ -254,7 +259,6 @@ class UniversalReasoner(nnx.Module):
         self.reasoning_stack.reset_state()
         self.decoder_stack.reset_state()
         
-        # 1. Base sequence encoding (Causal Self-Attention)
         seq_pos = jnp.arange(seq_len)
         pad_mask = tokens != PAD_TOKEN_ID
         causal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
@@ -263,8 +267,6 @@ class UniversalReasoner(nnx.Module):
         z_seq_base = self.embed(tokens)
         z_seq = self.encoder_stack(z_seq_base, mask=seq_attn_mask, q_pos=seq_pos, kv_pos=seq_pos)
 
-        # 2. Vectorized Reasoning Loop
-        # Initialize shared slots from base token or previous hunch
         current_hunch = prev_hunch if prev_hunch is not None else None
         if not training and not should_refresh and self.hunch_cache.value is not None:
             current_hunch = self.hunch_cache.value
@@ -279,17 +281,15 @@ class UniversalReasoner(nnx.Module):
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         
-        # Extended Context Mask: Sequence (padding) + Shared Slots (causal)
         s_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, seq_len))
         causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
         sh_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
         extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
         def scan_step(carry, inputs):
-            (curr_shared, p_remain_prev, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum, div_accum) = carry
+            (curr_shared, p_remain_prev, weighted_shared_accum, p_cost_acc, div_acc) = carry
             t_signal, step_id = inputs
             
-            # Shared slots attend to full sequence and themselves
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
@@ -310,27 +310,20 @@ class UniversalReasoner(nnx.Module):
 
             w_t = halt_prob * p_remain_prev
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
-            w_t = jnp.where(step_id == max_steps - 1, w_t + p_remain_next, w_t)
 
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
-            div_accum += jax.lax.stop_gradient(w_t) * step_div
+            div_acc += jax.lax.stop_gradient(w_t) * step_div
 
-            expected_shared_accum += w_t[:, None, None] * new_shared
-            p_cost += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
-            f_cost += w_t * forget_val
-            actual_steps += w_t * (step_id + 1)
-            logit_accum += w_t * halt_logit
+            weighted_shared_accum += w_t[:, None, None] * new_shared
+            p_cost_acc += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
 
-            return (new_shared, p_remain_next, expected_shared_accum, p_cost, f_cost, actual_steps, logit_accum, div_accum), (new_shared, halt_prob, forget_val, halt_logit)
+            return (new_shared, p_remain_next, weighted_shared_accum, p_cost_acc, div_acc), (new_shared, halt_prob, forget_val, halt_logit)
 
         init_carry = (
             z_shared, 
             jnp.ones((batch_size,)), 
             jnp.zeros_like(z_shared_base), 
             jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,)),
             jnp.zeros((batch_size,))
         )
         
@@ -338,13 +331,25 @@ class UniversalReasoner(nnx.Module):
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
         
-        expected_shared = final_carry[2]
-        total_p_cost = jnp.mean(final_carry[3])
-        total_f_cost = jnp.mean(final_carry[4])
-        total_div_cost = jnp.mean(final_carry[7])
+        final_shared, p_remain_final, weighted_shared_acc, p_cost_acc, div_acc = final_carry
 
-        # 3. Final Projection back to Sequence
-        # Inject the global reasoning state into every token position
+        weighted_shared_acc = weighted_shared_acc + p_remain_final[:, None, None] * all_shared[-1]
+        expected_shared = weighted_shared_acc
+
+        last_step_idx = jnp.float32(max_steps)
+        total_p_cost = jnp.mean(p_cost_acc + p_remain_final * jnp.maximum(0.0, last_step_idx - MIN_STEPS))
+        
+        p_remain_arr = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
+        step_weights = all_halts * p_remain_arr
+        step_weights = step_weights.at[-1].add(p_remain_arr[-1] * (1.0 - all_halts[-1]))
+
+        total_f_cost = jnp.mean(jnp.sum(step_weights * all_forget_l1, axis=0))
+        
+        final_step_div = calculate_diversity_loss_per_batch(all_shared[-1], margin=0.5)
+        total_div_cost = jnp.mean(div_acc + jax.lax.stop_gradient(p_remain_final) * final_step_div)
+        
+        actual_steps = jnp.sum(step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
+
         z_seq_out = self.decoder_stack(
             z_seq, 
             context=expected_shared, 
@@ -355,7 +360,6 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
-        # Diagnostics: Capture stats across the reasoning steps
         c_steps = max_steps // 2
         obs_logits = all_halt_logits[c_steps:]
         halt_diag = {
@@ -366,7 +370,7 @@ class UniversalReasoner(nnx.Module):
             'logit_spread': jnp.max(obs_logits) - jnp.min(obs_logits),
             'prob_std': jnp.std(all_halts[c_steps:]),
             'prob_mean': jnp.mean(all_halts[c_steps:]),
-            'actual_steps': jnp.mean(final_carry[5]),
+            'actual_steps': jnp.mean(actual_steps),
             'forget_density': jnp.mean(all_forget_l1[c_steps:]),
             'saturation': jnp.mean(jnp.abs(all_halts[c_steps:] - 0.5) * 2.0),
             'temporal_drift': jnp.mean(jnp.abs(all_halts[c_steps+1:] - all_halts[c_steps:-1])),
@@ -422,8 +426,6 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     
     *metrics, next_hunch = aux
     
-    # If should_truncate is True, we break the gradient chain here.
-    # Also, we break it if the global step says so.
     should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0)).squeeze()
     
     next_hunch = jax.lax.cond(
