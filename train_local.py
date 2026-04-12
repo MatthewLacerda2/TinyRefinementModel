@@ -287,7 +287,7 @@ class UniversalReasoner(nnx.Module):
         extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
         def scan_step(carry, inputs):
-            (curr_shared,) = carry
+            curr_shared, p_remain_prev, weighted_shared_acc = carry
             t_signal, step_id = inputs
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
@@ -308,21 +308,25 @@ class UniversalReasoner(nnx.Module):
             halt_prob = jax.nn.sigmoid(halt_logit)
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
 
+            step_weight = halt_prob * p_remain_prev
+            p_remain_next = p_remain_prev * (1.0 - halt_prob)
+            weighted_shared_acc = weighted_shared_acc + step_weight[:, None, None] * new_shared
+
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
 
-            return (new_shared,), (new_shared, halt_prob, forget_val, halt_logit, step_div)
+            return (new_shared, p_remain_next, weighted_shared_acc), (halt_prob, forget_val, halt_logit, step_div, step_weight)
 
-        init_carry = (z_shared,)
+        init_weighted_shared = jnp.zeros_like(z_shared)
+        init_carry = (z_shared, jnp.ones((batch_size,)), init_weighted_shared)
         
-        _, (all_shared, all_halts, all_forget_l1, all_halt_logits, all_divs) = jax.lax.scan(
+        final_carry, (all_halts, all_forget_l1, all_halt_logits, all_divs, all_step_weights) = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
+        final_shared, p_remain_final, weighted_shared_acc = final_carry
         
-        p_remain_arr = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
-        step_weights = all_halts * p_remain_arr
-        step_weights = step_weights.at[-1].add(p_remain_arr[-1] * (1.0 - all_halts[-1]))
-
-        expected_shared = jnp.sum(step_weights[:, :, None, None] * all_shared, axis=0)
+        expected_shared = weighted_shared_acc + p_remain_final[:, None, None] * final_shared
+        
+        step_weights = all_step_weights.at[-1].add(p_remain_final)
         
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
         total_p_cost = jnp.mean(jnp.sum(step_weights * jnp.maximum(0, step_ids - MIN_STEPS), axis=0))
