@@ -218,7 +218,7 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.stack = BlockStack(num_blocks, latent_dim, num_heads=8, rngs=rngs, dtype=dtype)
+        self.stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
         self.encoder_stack = self.stack
         self.reasoning_stack = self.stack
         self.decoder_stack = self.stack
