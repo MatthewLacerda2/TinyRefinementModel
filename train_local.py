@@ -44,13 +44,7 @@ forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     end_value=4e-3
 )
 
-diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0, 
-    peak_value=0.1, 
-    warmup_steps=WARMUP_STEPS * 2, 
-    decay_steps=DECAY_STEPS, 
-    end_value=1e-1
-)
+
 
 def weight_decay_mask(params):
     return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
@@ -103,6 +97,10 @@ class RotaryAttention(nnx.Module):
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
+
+        self.q_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=jnp.float32)
+        self.k_norm = nnx.RMSNorm(self.head_dim, rngs=rngs, dtype=jnp.float32)
+
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
 
     def reset_state(self):
@@ -119,6 +117,10 @@ class RotaryAttention(nnx.Module):
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
         v = self.v_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
+
+        # Apply QK-Norm
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         if q_pos is None:
             q_pos = jnp.arange(s)
@@ -241,7 +243,7 @@ class UniversalReasoner(nnx.Module):
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(2.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Cache(None)
 
@@ -403,18 +405,16 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
 
         current_p_lambda = ponder_lambda_schedule(step)
         current_f_lambda = forget_lambda_schedule(step)
-        current_d_lambda = diversity_lambda_schedule(step)
 
         total_loss = (
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + current_f_lambda * jnp.mean(forget_cost)
-            + current_d_lambda * div_loss
         )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
-        halt_diag['diversity_loss'] = div_loss
+        halt_diag['diversity_loss'] = jax.lax.stop_gradient(div_loss)
         
         return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
 

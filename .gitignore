@@ -222,4 +222,3 @@ tpu_data/
 npy_dir/
 *.npy
 old_train_local.py
-new_train_local.py
