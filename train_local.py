@@ -287,7 +287,7 @@ class UniversalReasoner(nnx.Module):
         extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
         def scan_step(carry, inputs):
-            (curr_shared, p_remain_prev, weighted_shared_accum, p_cost_acc, div_acc) = carry
+            (curr_shared,) = carry
             t_signal, step_id = inputs
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
@@ -308,47 +308,28 @@ class UniversalReasoner(nnx.Module):
             halt_prob = jax.nn.sigmoid(halt_logit)
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
 
-            w_t = halt_prob * p_remain_prev
-            p_remain_next = p_remain_prev * (1.0 - halt_prob)
-
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
-            div_acc += jax.lax.stop_gradient(w_t) * step_div
 
-            weighted_shared_accum += w_t[:, None, None] * new_shared
-            p_cost_acc += w_t * jnp.maximum(0, step_id + 1 - MIN_STEPS)
+            return (new_shared,), (new_shared, halt_prob, forget_val, halt_logit, step_div)
 
-            return (new_shared, p_remain_next, weighted_shared_accum, p_cost_acc, div_acc), (new_shared, halt_prob, forget_val, halt_logit)
-
-        init_carry = (
-            z_shared, 
-            jnp.ones((batch_size,)), 
-            jnp.zeros_like(z_shared_base), 
-            jnp.zeros((batch_size,)), 
-            jnp.zeros((batch_size,))
-        )
+        init_carry = (z_shared,)
         
-        final_carry, (all_shared, all_halts, all_forget_l1, all_halt_logits) = jax.lax.scan(
+        _, (all_shared, all_halts, all_forget_l1, all_halt_logits, all_divs) = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
-        
-        final_shared, p_remain_final, weighted_shared_acc, p_cost_acc, div_acc = final_carry
-
-        weighted_shared_acc = weighted_shared_acc + p_remain_final[:, None, None] * all_shared[-1]
-        expected_shared = weighted_shared_acc
-
-        last_step_idx = jnp.float32(max_steps)
-        total_p_cost = jnp.mean(p_cost_acc + p_remain_final * jnp.maximum(0.0, last_step_idx - MIN_STEPS))
         
         p_remain_arr = jnp.concatenate([jnp.ones((1, batch_size)), jnp.cumprod(1.0 - all_halts, axis=0)[:-1]], axis=0)
         step_weights = all_halts * p_remain_arr
         step_weights = step_weights.at[-1].add(p_remain_arr[-1] * (1.0 - all_halts[-1]))
 
+        expected_shared = jnp.sum(step_weights[:, :, None, None] * all_shared, axis=0)
+        
+        step_ids = jnp.arange(1, max_steps + 1)[:, None]
+        total_p_cost = jnp.mean(jnp.sum(step_weights * jnp.maximum(0, step_ids - MIN_STEPS), axis=0))
         total_f_cost = jnp.mean(jnp.sum(step_weights * all_forget_l1, axis=0))
+        total_div_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(step_weights) * all_divs, axis=0))
         
-        final_step_div = calculate_diversity_loss_per_batch(all_shared[-1], margin=0.5)
-        total_div_cost = jnp.mean(div_acc + jax.lax.stop_gradient(p_remain_final) * final_step_div)
-        
-        actual_steps = jnp.sum(step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
+        actual_steps = jnp.sum(step_weights * step_ids, axis=0)
 
         z_seq_out = self.decoder_stack(
             z_seq, 
