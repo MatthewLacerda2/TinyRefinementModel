@@ -339,7 +339,7 @@ class UniversalReasoner(nnx.Module):
         z_first_out = self.decoder_stack(
             z_seq,
             context=all_outputs.shared_state[0],
-            mask=jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, z_seq.shape[1], 1)), 
+            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_),
             q_pos=seq_pos, 
             kv_pos=shared_pos,
             is_causal=False
