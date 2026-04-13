@@ -354,20 +354,13 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
-        c_steps = max_steps // 2
-        obs_logits = all_outputs.halt_logit[c_steps:]
+        step_indices = jnp.arange(1, max_steps + 1)[:, None]
+        expected_steps = jnp.sum(all_outputs.halt_prob * step_indices, axis=0)
+        
         halt_diag = {
-            'logits_mean': jnp.mean(obs_logits),
-            'logits_std': jnp.std(obs_logits),
-            'logits_min': jnp.min(obs_logits),
-            'logits_max': jnp.max(obs_logits),
-            'logit_spread': jnp.max(obs_logits) - jnp.min(obs_logits),
-            'prob_std': jnp.std(all_outputs.halt_prob[c_steps:]),
-            'prob_mean': jnp.mean(all_outputs.halt_prob[c_steps:]),
-            'actual_steps': jnp.mean(actual_steps),
-            'forget_density': jnp.mean(all_outputs.forget_val[c_steps:]),
-            'saturation': jnp.mean(jnp.abs(all_outputs.halt_prob[c_steps:] - 0.5) * 2.0),
-            'temporal_drift': jnp.mean(jnp.abs(all_outputs.halt_prob[c_steps+1:] - all_outputs.halt_prob[c_steps:-1])),
+            'ponder_kl': total_p_cost,
+            'saturation': jnp.mean(jnp.sum(all_outputs.halt_prob, axis=0)),
+            'avg_steps': jnp.mean(expected_steps),
             'first_logits': first_logits,
         }
         
