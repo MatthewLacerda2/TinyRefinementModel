@@ -10,7 +10,7 @@ from typing import Dict, Any
 LATENT_DIM = 512
 NUM_BLOCKS = 4
 SHARED_SLOTS = 32
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
 VOCAB_SIZE = 100352
 
 #Training

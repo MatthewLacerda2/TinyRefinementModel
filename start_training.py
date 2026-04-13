@@ -18,11 +18,7 @@ from dotenv import load_dotenv
 from train_local import (
     UniversalReasoner,
     LATENT_DIM,
-    MAX_STEPS_LIMIT,
-    PAD_TOKEN_ID,
     ACCUMULATION_STEPS,
-    HUNCH_REFRESH_EVERY,
-    SHARED_SLOTS,
     BATCH_SIZE,
     compute_grad_step,
     apply_grads,
@@ -30,20 +26,17 @@ from train_local import (
 from schedules import (
     learning_schedule,
     weight_decay_schedule,
-    ponder_lambda_schedule,
-    forget_lambda_schedule,
-    storage_lambda_schedule
 )
 
 from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
-LOG_EVERY = 10
-CHECKPOINT_INTERVAL = 20
+LOG_EVERY = 100
+CHECKPOINT_INTERVAL = 200
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 128
-PHASE_STEP = 1000
+PHASE_STEP = 10000
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
 CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
