@@ -308,7 +308,9 @@ class UniversalReasoner(nnx.Module):
         
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens)
 
-        # Pro Way: Use the internal stateful cache for the hunch
+        if should_refresh:
+            self.hunch_cache.value = None
+
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
         current_hunch = self.hunch_cache.value
         
