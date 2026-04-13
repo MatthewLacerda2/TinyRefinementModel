@@ -153,6 +153,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         accum_ce = 0.0
         accum_p = 0.0
         accum_forget_cost = 0.0
+        accum_storage_cost = 0.0
         last_halt_diag = None
         first_halt_diag = None
         first_ce = None
@@ -175,7 +176,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             step_data_wait += (time.time() - t_data_start)
             
             # The optax.apply_every(128) in schedulers.py will handle the accumulation
-            loss, (ce, p, forget_cost, halt_diag), hunch, grads, grad_norm = compute_grad_step(
+            loss, (ce, p, forget_cost, storage_cost, halt_diag), hunch, grads, grad_norm = compute_grad_step(
                 model, current_batch, jnp.array(step), prev_hunch=hunch,
                 should_truncate=reset_mask
             )
@@ -194,6 +195,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             accum_ce += float(ce) / ACCUMULATION_STEPS
             accum_p += float(p) / ACCUMULATION_STEPS
             accum_forget_cost += float(forget_cost) / ACCUMULATION_STEPS
+            accum_storage_cost += float(storage_cost) / ACCUMULATION_STEPS
             last_halt_diag = halt_diag
 
             if micro_step == 0:
@@ -214,6 +216,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         step_ce = float(accum_ce)
         step_p = float(accum_p)
         step_forget_cost = float(accum_forget_cost)
+        step_storage_cost = float(accum_storage_cost)
 
         grad_norm_avg = grad_norm_sum / ACCUMULATION_STEPS
 
@@ -249,7 +252,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
 
         # CSV logging continues on the fixed interval
         if step % LOG_INTERVAL == 0:
-            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, t_total, step_compute_time, step_diag,
+            logger.log(step, step_loss, step_ce, step_p, step_forget_cost, step_storage_cost, t_total, step_compute_time, step_diag,
                        grad_norm_avg=grad_norm_avg, logit_drift=logit_drift, first_ce=first_ce)
         step += 1
 

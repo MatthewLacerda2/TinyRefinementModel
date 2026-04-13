@@ -27,7 +27,7 @@ def run_model_inference(
     max_steps: int = MAX_STEPS_LIMIT,
     should_refresh: bool = True,
 ) -> jnp.ndarray:
-    logits, ponder_cost, forget_loss, halt_diag, expected_shared = model(
+    logits, ponder_cost, forget_loss, storage_cost, div_cost, halt_diag, expected_shared = model(
         tokens, max_steps=max_steps, training=False, should_refresh=should_refresh
     )
     return logits
@@ -60,7 +60,6 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
 
         should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
 
-        # Call JIT function handling slicing directly on device to save VRAM load
         logits = get_logits_for_token(model, input_ids, valid_len - 1, refresh=should_refresh)
 
         rng, subkey = jax.random.split(rng)
@@ -77,7 +76,6 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
         tokens_list.append(next_token)
         print(enc.decode([next_token]), end="", flush=True)
 
-        # Update sequence inline on device to avoid H2D host-device transfers
         input_ids = input_ids.at[0, valid_len].set(next_token)
         valid_len += 1
 

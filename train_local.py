@@ -36,7 +36,7 @@ learning_schedule = optax.warmup_cosine_decay_schedule(
 
 ponder_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
-    peak_value=0.0, 
+    peak_value=1e-4, 
     warmup_steps=WARMUP_STEPS, 
     decay_steps=DECAY_STEPS, 
     end_value=1e-5
@@ -48,6 +48,14 @@ forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     warmup_steps=WARMUP_STEPS, 
     decay_steps=DECAY_STEPS, 
     end_value=4e-3
+)
+
+storage_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0, 
+    peak_value=0.0, 
+    warmup_steps=WARMUP_STEPS, 
+    decay_steps=DECAY_STEPS, 
+    end_value=1e-3
 )
 
 def weight_decay_mask(params):
@@ -301,6 +309,8 @@ class UniversalReasoner(nnx.Module):
             else:
                 forget_val = jnp.zeros((batch_size,))
 
+            storage_val = jnp.mean(jnp.abs(new_shared), axis=(1, 2))
+
             pooled = jnp.mean(new_shared, axis=1)
             halt_logit = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
             halt_prob = jax.nn.sigmoid(halt_logit)
@@ -312,23 +322,40 @@ class UniversalReasoner(nnx.Module):
 
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
 
-            return (new_shared, p_remain_next, weighted_shared_acc), (halt_prob, forget_val, halt_logit, step_div, step_weight)
+            return (new_shared, p_remain_next, weighted_shared_acc), (halt_prob, forget_val, storage_val, halt_logit, step_div, step_weight)
 
         init_weighted_shared = jnp.zeros_like(z_shared)
         init_carry = (z_shared, jnp.ones((batch_size,)), init_weighted_shared)
         
-        final_carry, (all_halts, all_forget_l1, all_halt_logits, all_divs, all_step_weights) = jax.lax.scan(
+        final_carry, (all_halts, all_forget_l1, all_storage_l1, all_halt_logits, all_divs, all_step_weights) = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
         final_shared, p_remain_final, weighted_shared_acc = final_carry
         
         expected_shared = weighted_shared_acc + p_remain_final[:, None, None] * final_shared
         
-        step_weights = all_step_weights.at[-1].add(p_remain_final)
-        
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
-        total_p_cost = jnp.mean(jnp.sum(step_weights * jnp.maximum(0, step_ids - MIN_STEPS), axis=0))
+        step_weights = all_step_weights.at[-1].add(p_remain_final)
+
+        lambda_p = 0.2 
+
+        active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
+        prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
+
+        valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.float32)
+
+        prior_prob = (prior_prob * valid_steps_mask)
+        prior_prob = prior_prob / (jnp.sum(prior_prob, axis=0, keepdims=True) + 1e-8)
+
+        p_x = step_weights + 1e-8 
+        q_x = prior_prob + 1e-8
+
+        kl_div_per_step = p_x * (jnp.log(p_x) - jnp.log(q_x))
+        kl_div_per_batch = jnp.sum(kl_div_per_step * valid_steps_mask, axis=0)
+
+        total_p_cost = jnp.mean(kl_div_per_batch)
         total_f_cost = jnp.mean(jnp.sum(step_weights * all_forget_l1, axis=0))
+        total_s_cost = jnp.mean(jnp.sum(step_weights * all_storage_l1, axis=0))
         total_div_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(step_weights) * all_divs, axis=0))
         
         actual_steps = jnp.sum(step_weights * step_ids, axis=0)
@@ -362,7 +389,7 @@ class UniversalReasoner(nnx.Module):
         if not training:
             self.hunch_cache.value = expected_shared
 
-        return logits, total_p_cost, total_f_cost, total_div_cost, halt_diag, expected_shared
+        return logits, total_p_cost, total_f_cost, total_s_cost, total_div_cost, halt_diag, expected_shared
 
 def calculate_diversity_loss_per_batch(shared_state, margin):
     shared_state = shared_state.astype(jnp.float32)
@@ -381,7 +408,7 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
 
-        preds, ponder_cost, forget_cost, div_loss, halt_diag, expected_shared = model(
+        preds, ponder_cost, forget_cost, storage_cost, div_loss, halt_diag, expected_shared = model(
             inputs, training=True, prev_hunch=prev_hunch
         )
 
@@ -392,18 +419,20 @@ def compute_grad_step(model, batch_tokens, step, prev_hunch=None, should_truncat
 
         current_p_lambda = ponder_lambda_schedule(step)
         current_f_lambda = forget_lambda_schedule(step)
+        current_s_lambda = storage_lambda_schedule(step)
 
         total_loss = (
             token_loss
             + current_p_lambda * jnp.mean(ponder_cost)
             + current_f_lambda * jnp.mean(forget_cost)
+            + current_s_lambda * jnp.mean(storage_cost)
         )
         
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
         halt_diag['diversity_loss'] = jax.lax.stop_gradient(div_loss)
         
-        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), halt_diag, expected_shared)
+        return total_loss, (token_loss, jnp.mean(ponder_cost), jnp.mean(forget_cost), jnp.mean(storage_cost), halt_diag, expected_shared)
 
     (loss, aux), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
