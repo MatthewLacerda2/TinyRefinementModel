@@ -26,6 +26,7 @@ NUM_GROUPS = NUM_HEADS // 4
 
 @struct.dataclass
 class ScanStepOutput:
+    shared_state: jnp.ndarray
     halt_prob: jnp.ndarray
     forget_val: jnp.ndarray
     storage_val: jnp.ndarray
@@ -269,6 +270,7 @@ class UniversalReasoner(nnx.Module):
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
 
             return (new_shared, p_remain_next, weighted_shared_acc), ScanStepOutput(
+                shared_state=new_shared,
                 halt_prob=halt_prob, forget_val=forget_val, storage_val=storage_val,
                 halt_logit=halt_logit, step_div=step_div, step_weight=step_weight
             )
