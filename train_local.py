@@ -383,8 +383,6 @@ def calculate_diversity_loss_per_batch(shared_state, margin):
 
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, should_truncate=False):
-    graphdef, state = nnx.split(model)
-    
     def loss_fn(model):
         inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
         out = model(inputs, training=True)
@@ -404,16 +402,11 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    _, updated_state = nnx.split(model)
-    
     # Pro Way: Implementation-specific state refresh logic.
-    # We only want to carry over the 'hunch_cache' if we are NOT truncating/refreshing.
     should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0)).squeeze()
     
-    # In NNX, a Variable's path in the state is just its attribute name
-    hunch_path = ('hunch_cache',)
-    current_hunch = updated_state[hunch_path]
-    
+    # Access the model attribute directly - NNX handles the JIT synchronization
+    current_hunch = model.hunch_cache.value
     cleared_hunch = jnp.zeros_like(current_hunch)
     
     carried_hunch = jax.lax.cond(
@@ -422,9 +415,10 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         lambda: jax.lax.stop_gradient(current_hunch)
     )
     
-    new_state = updated_state.replace({hunch_path: carried_hunch})
-    nnx.update(model, new_state)
+    # Commit the carry-over back to the model's internal cache
+    model.hunch_cache.value = carried_hunch
 
+    # Calculate global grad norm
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
     
