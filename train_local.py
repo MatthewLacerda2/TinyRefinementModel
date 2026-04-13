@@ -397,7 +397,11 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         total_loss = token_loss + p_lambda * out.ponder_cost + f_lambda * out.forget_cost + s_lambda * out.storage_cost
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
+        # Pro Way: Remove logits from the aux return during training to save massive VRAM (400MB+)
+        # We replace out with a version that only has the metrics we need for logging
+        out = out.replace(logits=None) 
         out.halt_diag['diversity_loss'] = jax.lax.stop_gradient(out.diversity_loss)
+        out.halt_diag['token_loss'] = jax.lax.stop_gradient(token_loss)
         return total_loss, out
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
