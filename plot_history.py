@@ -101,10 +101,12 @@ def plot_training_history(log_path="orbax_checkpoints/training_history.csv"):
                     history.append({
                         'step': int(row['step']),
                         'loss':  float(row.get('loss', 0)),
-                        'ce': float(row.get('ce', 0)),
-                        'avg_ponder': float(row.get('avg_ponder', 0)),
+                        'ce': float(row.get('token_loss', row.get('ce', 0))),
+                        'first_ce': float(row.get('first_ce', row.get('token_loss', 0))),
+                        'ponder_kl': float(row.get('ponder_kl', 0)),
+                        'diversity': float(row.get('diversity', 0)),
                         'forget_density': float(row.get('forget_density', 0)),
-                        'grad_norm_avg': float(row.get('grad_norm_avg', 0)) if row.get('grad_norm_avg') else 0.0,
+                        'grad_norm': float(row.get('grad_norm', 0)),
                     })
                 except ValueError:
                     continue # Skip row if it has malformed floats
@@ -119,9 +121,11 @@ def plot_training_history(log_path="orbax_checkpoints/training_history.csv"):
     steps = np.array([e['step'] for e in history])
     losses = np.array([e['loss'] for e in history])
     ce = np.array([e['ce'] for e in history])
-    ponder = np.array([e['avg_ponder'] for e in history])
+    first_ce = np.array([e['first_ce'] for e in history])
+    ponder_kl = np.array([e['ponder_kl'] for e in history])
+    diversity = np.array([e['diversity'] for e in history])
     forget = np.array([e['forget_density'] for e in history])
-    grad_norm = np.array([e['grad_norm_avg'] for e in history])
+    grad_norm = np.array([e['grad_norm'] for e in history])
 
     plt.style.use('dark_background')
     fig, axes = plt.subplots(2, 2, figsize=(16, 10))
@@ -130,32 +134,36 @@ def plot_training_history(log_path="orbax_checkpoints/training_history.csv"):
     # Pick a smoothing window that doesn't smooth too much at the start
     smoothing_window = max(5, min(100, len(steps) // 20))
 
-    # --- 1. CONVERGENCE (Cross Entropy) ---
-    ax1.plot(steps, ce, color='#ff007b', alpha=0.3, label='Raw CE')
-    ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label=f'Smoothed CE (w={smoothing_window})')
-    ax1.plot(steps, smooth(losses, smoothing_window), color='#ffcc00', linewidth=1.5, linestyle='--', alpha=0.7, label='Agg Loss (Smoothed)')
-    ax1.set_title('Model Convergence', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Cross Entropy Loss')
-    # Use log scale only if CE > 0 strictly
+    # --- 1. CONVERGENCE & REFINEMENT (CE vs First Step) ---
+    ax1.plot(steps, first_ce, color='#ff007b', alpha=0.3, linestyle='--', label='Initial CE (Step 1)')
+    ax1.plot(steps, ce, color='#ff007b', alpha=0.3, label='Final CE (Step 16)')
+    ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Final CE')
+    
+    # Fill the area where the model actually refined the answer
+    ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(first_ce, smoothing_window), 
+                     color='#ff007b', alpha=0.1, label='Refinement Gain')
+    
+    ax1.set_title('Convergence & Refinement Delta', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('Cross Entropy')
     if np.all(ce > 0):
         ax1.set_yscale('log')
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.2)
 
-    # --- 2. REASONING EFFICIENCY (Ponder Dynamics) ---
-    ax2.plot(steps, ponder, color='#adff2f', alpha=0.4, label='Avg Pondering Steps')
-    ax2.plot(steps, smooth(ponder, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed Ponder')
-    ax2.set_title('Reasoning Depth (Ponder Dynamics)', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Avg Steps taken per Sequence')
+    # --- 2. PONDER DYNAMICS (KL Divergence) ---
+    ax2.plot(steps, ponder_kl, color='#adff2f', alpha=0.4, label='Ponder KL (Stat Efficiency)')
+    ax2.plot(steps, smooth(ponder_kl, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed KL')
+    ax2.set_title('Ponder Dynamics (Geometric Prior)', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('KL Divergence')
     ax2.legend(loc='upper right')
     ax2.grid(True, alpha=0.2)
 
-    # --- 3. MEMORY MANAGEMENT (Forgetting) ---
-    ax3.plot(steps, forget, color='#00ff88', alpha=0.4, label='Forget Density (Active Pruning)')
-    ax3.plot(steps, smooth(forget, smoothing_window), color='#00ff88', linewidth=2, label='Smoothed Forget')
-    ax3.set_title('Memory Dynamics (Information Pruning)', fontsize=14, fontweight='bold')
+    # --- 3. REPRESENTATIONAL DIVERSITY (Slots) ---
+    ax3.plot(steps, diversity, color='#00ff88', alpha=0.4, label='Slot Diversity (Orthogonality)')
+    ax3.plot(steps, smooth(diversity, smoothing_window), color='#00ff88', linewidth=2, label='Smoothed Diversity')
+    ax3.set_title('Hidden State Diversity (32 Slots)', fontsize=14, fontweight='bold')
     ax3.set_xlabel('Training Step')
-    ax3.set_ylabel('Forget Gate Density')
+    ax3.set_ylabel('Diversity Penalty (Lower=More Orthogonal)')
     ax3.legend(loc='upper right')
     ax3.grid(True, alpha=0.2)
 

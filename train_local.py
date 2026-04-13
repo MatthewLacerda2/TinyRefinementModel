@@ -10,7 +10,7 @@ from typing import Dict, Any
 LATENT_DIM = 512
 NUM_BLOCKS = 4
 SHARED_SLOTS = 32
-MAX_SEQ_LEN = 2048
+MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100352
 
 #Training
@@ -333,6 +333,17 @@ class UniversalReasoner(nnx.Module):
         
         actual_steps = jnp.sum(full_step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
 
+        # Calculate Initial Logits (Step 1) to track refinement efficiency
+        z_first_out = self.decoder_stack(
+            z_seq,
+            context=all_outputs.shared_state[0],
+            mask=jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, z_seq.shape[1], 1)), 
+            q_pos=seq_pos, 
+            kv_pos=shared_pos,
+            is_causal=False
+        )
+        first_logits = self.seq_norm(z_first_out) @ self.embed.embedding.value.T
+
         z_seq_out = self.decoder_stack(
             z_seq, 
             context=expected_shared, 
@@ -357,6 +368,7 @@ class UniversalReasoner(nnx.Module):
             'forget_density': jnp.mean(all_outputs.forget_val[c_steps:]),
             'saturation': jnp.mean(jnp.abs(all_outputs.halt_prob[c_steps:] - 0.5) * 2.0),
             'temporal_drift': jnp.mean(jnp.abs(all_outputs.halt_prob[c_steps+1:] - all_outputs.halt_prob[c_steps:-1])),
+            'first_logits': first_logits,
         }
         
         # Always update the hunch cache; nnx.split will decide whether to carry it
@@ -397,11 +409,15 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         total_loss = token_loss + p_lambda * out.ponder_cost + f_lambda * out.forget_cost + s_lambda * out.storage_cost
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
+        # Calculate First Step CE (Initial Loss)
+        first_logits = out.halt_diag.pop('first_logits')
+        first_ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=first_logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
+
         # Pro Way: Remove logits from the aux return during training to save massive VRAM (400MB+)
-        # We replace out with a version that only has the metrics we need for logging
         out = out.replace(logits=None) 
         out.halt_diag['diversity_loss'] = jax.lax.stop_gradient(out.diversity_loss)
         out.halt_diag['token_loss'] = jax.lax.stop_gradient(token_loss)
+        out.halt_diag['first_ce'] = jax.lax.stop_gradient(first_ce)
         return total_loss, out
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
