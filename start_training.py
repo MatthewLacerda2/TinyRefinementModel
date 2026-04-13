@@ -36,7 +36,7 @@ LOG_EVERY = 100
 CHECKPOINT_INTERVAL = 200
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 128
-PHASE_STEP = 10000
+PHASE_STEP = 100000
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
 CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))

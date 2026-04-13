@@ -1,7 +1,7 @@
 import optax
 
-WARMUP_STEPS = 100
-DECAY_STEPS = 600
+WARMUP_STEPS = 10000
+DECAY_STEPS = 100000
 
 learning_schedule = optax.warmup_cosine_decay_schedule(
     init_value=5e-5,

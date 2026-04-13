@@ -85,10 +85,10 @@ def print_model_stats():
     print(f"  |-- Encoder Params : {encoder_params:,}")
     print(f"  |-- Layer Params   : {num_reason_param:,} (across {NUM_BLOCKS} blocks)")
 
-def plot_training_history(log_path="orbax_checkpoints/training_history.csv"):
+def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
-        print("Note: The CSV is now stored in your CHECKPOINT_ROOT (default is orbax_checkpoints/).")
+        print("Note: The CSV is now stored in your CHECKPOINT_ROOT (default is ./).")
         print("If you changed CHECKPOINT_ROOT in your .env, use: python plot_history.py --log YOUR_PATH/training_history.csv")
         return
 
@@ -209,7 +209,7 @@ def plot_training_history(log_path="orbax_checkpoints/training_history.csv"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--log', type=str, default="orbax_checkpoints/training_history.csv", 
+    parser.add_argument('--log', type=str, default="training_history.csv", 
                         help="Path to training_history.csv")
     args = parser.parse_args()
     
