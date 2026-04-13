@@ -1,6 +1,6 @@
 import os
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
@@ -171,7 +171,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
     t_compute = 0.0
     
     while True:
-        t_data_start = time.time()
         batch, should_truncate = data_queue.get() 
         if batch is None: 
             break
@@ -186,12 +185,21 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
         
         t_compute += (time.time() - t_compute_start)
 
-        accum_loss += loss / LOG_EVERY
-        accum_token_loss += out.halt_diag.get('token_loss', loss) / LOG_EVERY
-        accum_p += out.ponder_cost / LOG_EVERY
-        accum_forget_cost += out.forget_cost / LOG_EVERY
-        accum_storage_cost += out.storage_cost / LOG_EVERY
-        accum_grad_norm += grad_norm / LOG_EVERY
+        # Force JAX to resolve the array into a Python float instantly
+        current_loss = float(loss)
+        current_token_loss = float(out.halt_diag.get('token_loss', loss))
+        current_p = float(out.ponder_cost)
+        current_forget = float(out.forget_cost)
+        current_storage = float(out.storage_cost)
+        current_grad_norm = float(grad_norm)
+
+        # Now accumulate the pure Python floats
+        accum_loss += current_loss / LOG_EVERY
+        accum_token_loss += current_token_loss / LOG_EVERY
+        accum_p += current_p / LOG_EVERY
+        accum_forget_cost += current_forget / LOG_EVERY
+        accum_storage_cost += current_storage / LOG_EVERY
+        accum_grad_norm += current_grad_norm / LOG_EVERY
             
         if (step + 1) % LOG_EVERY == 0:
             t_total = time.time() - t0_batch

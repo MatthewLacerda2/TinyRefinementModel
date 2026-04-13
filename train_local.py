@@ -165,20 +165,31 @@ class StandardReasoningBlock(nnx.Module):
 
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.blocks = nnx.List([
-            StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
-            for _ in range(num_blocks)
-        ])
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False):
         self.num_blocks = num_blocks
+        self.share_weights = share_weights
+        if share_weights:
+            self.blocks = nnx.List([
+                StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
+            ])
+        else:
+            self.blocks = nnx.List([
+                StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
+                for _ in range(num_blocks)
+            ])
 
     def reset_state(self):
         for block in self.blocks:
             block.attn.reset_state()
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
-        for block in self.blocks:
-            x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+        if self.share_weights:
+            block = self.blocks[0]
+            for _ in range(self.num_blocks):
+                x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+        else:
+            for block in self.blocks:
+                x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         return x
 
 
@@ -193,10 +204,17 @@ class UniversalReasoner(nnx.Module):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        self.stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype)
-        self.encoder_stack = self.stack
-        self.reasoning_stack = self.stack
-        self.decoder_stack = self.stack
+        
+        self.coder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.reasoner_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
+
+        self.encoder_stack = self.coder_stack
+        self.decoder_stack = self.coder_stack
+        
+        self.reasoning_stack = self.reasoner_stack
+
+        # Feedback loop for costs/budget (ponder, forget, diversity)
+        self.meta_proj = nnx.Linear(3, latent_dim, rngs=rngs, dtype=dtype)
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
@@ -227,7 +245,7 @@ class UniversalReasoner(nnx.Module):
         seq_pos = jnp.arange(seq_len)
         
         z_seq_base = self.embed(tokens)
-        z_seq = self.encoder_stack(z_seq_base, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
+        z_seq = self.encoder_stack(z_seq_base, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=False)
         return z_seq, pad_mask, seq_pos
 
     def _reasoning_loop(self, z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared):
@@ -240,13 +258,17 @@ class UniversalReasoner(nnx.Module):
         extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
 
         def scan_step(carry, inputs):
-            curr_shared, p_remain_prev, weighted_shared_acc = carry
+            curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div = carry
             t_signal, step_id = inputs
+            
+            # Feed back ponder, forget, and diversity info as meta-signals
+            meta_input = jnp.stack([p_remain_prev, prev_forget, prev_div], axis=-1)
+            meta_signal = self.meta_proj(meta_input)[:, None, :] # (B, 1, D)
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
-            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :])
+            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :]) + meta_signal
             new_shared = self.reasoning_stack(stack_input, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
 
             if self.use_forget:
@@ -269,18 +291,26 @@ class UniversalReasoner(nnx.Module):
 
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
 
-            return (new_shared, p_remain_next, weighted_shared_acc), ScanStepOutput(
+            return (new_shared, p_remain_next, weighted_shared_acc, forget_val, step_div), ScanStepOutput(
                 shared_state=new_shared,
                 halt_prob=halt_prob, forget_val=forget_val, storage_val=storage_val,
                 halt_logit=halt_logit, step_div=step_div, step_weight=step_weight
             )
 
         init_weighted_shared = jnp.zeros_like(z_shared)
-        init_carry = (z_shared, jnp.ones((batch_size,)), init_weighted_shared)
+        init_carry = (
+            z_shared, 
+            jnp.ones((batch_size,)), 
+            init_weighted_shared,
+            jnp.zeros((batch_size,)),
+            jnp.zeros((batch_size,))
+        )
         
-        final_carry, all_outputs = jax.lax.scan(
+        final_carry_all, all_outputs = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
+        # Unpack first three for standard logic
+        final_carry = (final_carry_all[0], final_carry_all[1], final_carry_all[2])
         return final_carry, all_outputs, shared_pos
 
     def _compute_ponder_kl(self, step_weights, p_remain_final, max_steps):
