@@ -206,11 +206,10 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             logger.log(
                 step + 1, 
                 float(accum_token_loss),
+                float(accum_loss),
                 out,
-                t_total, 
                 t_compute / LOG_EVERY,
                 grad_norm_avg=float(accum_grad_norm),
-                logit_drift=float(out.halt_diag.get('temporal_drift', 0)),
                 first_ce=float(out.halt_diag.get('first_ce', 0))
             )
             

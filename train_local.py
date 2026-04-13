@@ -386,11 +386,7 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
-        step_indices = jnp.arange(1, max_steps + 1)[:, None]
-        expected_steps = jnp.sum(all_outputs.halt_prob * step_indices, axis=0)
-        
         # Diagnostics for logging
-        probs = jax.nn.softmax(logits, axis=-1)
         
         # Temporal drift of shared state across reasoning steps
         states = all_outputs.shared_state # (max_steps, batch, slots, dim)
@@ -399,18 +395,10 @@ class UniversalReasoner(nnx.Module):
         
         halt_diag = {
             'ponder_kl': total_p_cost,
-            'saturation': jnp.mean(jnp.sum(all_outputs.halt_prob, axis=0)),
-            'avg_steps': jnp.mean(expected_steps),
+            'expected_steps': jnp.mean(actual_steps),
             'first_logits': first_logits,
-            'logits_mean': jnp.mean(logits),
-            'logits_std': jnp.std(logits),
-            'logits_min': jnp.min(logits),
-            'logits_max': jnp.max(logits),
-            'prob_mean': jnp.mean(probs),
-            'prob_std': jnp.std(probs),
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
-            'logit_spread': jnp.mean(jnp.max(logits, axis=-1) - jnp.mean(logits, axis=-1))
         }
         
         # Always update the hunch cache; nnx.split will decide whether to carry it
