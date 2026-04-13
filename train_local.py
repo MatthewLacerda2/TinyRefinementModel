@@ -50,8 +50,6 @@ forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     end_value=4e-3
 )
 
-
-
 def weight_decay_mask(params):
     return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
 
