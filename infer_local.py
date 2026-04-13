@@ -27,10 +27,10 @@ def run_model_inference(
     max_steps: int = MAX_STEPS_LIMIT,
     should_refresh: bool = True,
 ) -> jnp.ndarray:
-    logits, ponder_cost, forget_loss, storage_cost, div_cost, halt_diag, expected_shared = model(
+    out = model(
         tokens, max_steps=max_steps, training=False, should_refresh=should_refresh
     )
-    return logits
+    return out.logits
 
 @partial(nnx.jit, static_argnames=['refresh'])
 def get_logits_for_token(model, padded_tks, token_idx, refresh):
