@@ -217,7 +217,7 @@ class UniversalReasoner(nnx.Module):
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
 
-        self.hunch_cache = nnx.Variable(None)
+        self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim)))
 
 
     def _encode_sequence(self, tokens):
@@ -410,7 +410,8 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
     # We only want to carry over the 'hunch_cache' if we are NOT truncating/refreshing.
     should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0)).squeeze()
     
-    hunch_path = ('hunch_cache', 'value')
+    # In NNX, a Variable's path in the state is just its attribute name
+    hunch_path = ('hunch_cache',)
     current_hunch = updated_state[hunch_path]
     
     cleared_hunch = jnp.zeros_like(current_hunch)
