@@ -83,9 +83,19 @@ class MetricsLogger:
             + grad_line
         )
 
+        # Check if file exists and has content to avoid duplicate headers
+        file_is_empty = True
+        try:
+            fs, path = fsspec.core.url_to_fs(self.history_file)
+            if fs.exists(path) and fs.size(path) > 0:
+                file_is_empty = False
+        except:
+            # Fallback if filesystem check fails
+            pass
+
         with fsspec.open(self.history_file, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fields)
-            if f.tell() == 0: 
+            if file_is_empty: 
                 writer.writeheader()
             
             row = {

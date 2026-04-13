@@ -9,7 +9,7 @@ from typing import Dict, Any
 #Params
 LATENT_DIM = 512
 NUM_BLOCKS = 4
-SHARED_SLOTS = 32
+SHARED_SLOTS = 64
 MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100352
 
@@ -287,7 +287,7 @@ class UniversalReasoner(nnx.Module):
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
         full_step_weights = step_weights.at[-1].add(p_remain_final)
 
-        lambda_p = 0.2 
+        lambda_p = 0.01 
         active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
         prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
         valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.float32)
@@ -359,11 +359,28 @@ class UniversalReasoner(nnx.Module):
         step_indices = jnp.arange(1, max_steps + 1)[:, None]
         expected_steps = jnp.sum(all_outputs.halt_prob * step_indices, axis=0)
         
+        # Diagnostics for logging
+        probs = jax.nn.softmax(logits, axis=-1)
+        
+        # Temporal drift of shared state across reasoning steps
+        states = all_outputs.shared_state # (max_steps, batch, slots, dim)
+        diffs = states[1:] - states[:-1]
+        temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
+        
         halt_diag = {
             'ponder_kl': total_p_cost,
             'saturation': jnp.mean(jnp.sum(all_outputs.halt_prob, axis=0)),
             'avg_steps': jnp.mean(expected_steps),
             'first_logits': first_logits,
+            'logits_mean': jnp.mean(logits),
+            'logits_std': jnp.std(logits),
+            'logits_min': jnp.min(logits),
+            'logits_max': jnp.max(logits),
+            'prob_mean': jnp.mean(probs),
+            'prob_std': jnp.std(probs),
+            'temporal_drift': temporal_drift,
+            'forget_density': jnp.mean(all_outputs.forget_val),
+            'logit_spread': jnp.mean(jnp.max(logits, axis=-1) - jnp.mean(logits, axis=-1))
         }
         
         # Always update the hunch cache; nnx.split will decide whether to carry it
