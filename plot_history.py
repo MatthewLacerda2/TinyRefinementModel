@@ -89,7 +89,6 @@ def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
         print("Note: The CSV is now stored in your CHECKPOINT_ROOT (default is ./).")
-        print("If you changed CHECKPOINT_ROOT in your .env, use: python plot_history.py --log YOUR_PATH/training_history.csv")
         return
 
     history = []
@@ -101,15 +100,19 @@ def plot_training_history(log_path="training_history.csv"):
                     history.append({
                         'step': int(row['step']),
                         'loss':  float(row.get('loss', 0)),
-                        'ce': float(row.get('token_loss', row.get('ce', 0))),
-                        'first_ce': float(row.get('first_ce', row.get('token_loss', 0))),
-                        'ponder_kl': float(row.get('ponder_kl', 0)),
-                        'diversity': float(row.get('diversity', 0)),
-                        'forget_density': float(row.get('forget_density', 0)),
-                        'grad_norm': float(row.get('grad_norm', 0)),
+                        'ce': float(row.get('ce', 0)),
+                        'first_ce': float(row.get('first_ce', 0)),
+                        'ponder': float(row.get('avg_ponder', 0)),
+                        'steps': float(row.get('expected_steps', 0)),
+                        'diversity': float(row.get('diversity_loss', 0)),
+                        'forget_cost': float(row.get('avg_forget_cost', 0)),
+                        'storage_cost': float(row.get('avg_storage_cost', 0)),
+                        'grad_norm': float(row.get('grad_norm_avg', 0)),
+                        'saturation': float(row.get('saturation', 0)),
+                        'temporal_drift': float(row.get('temporal_drift', 0)),
                     })
                 except ValueError:
-                    continue # Skip row if it has malformed floats
+                    continue 
     except Exception as e:
         print(f"❌ Error reading {log_path}: {e}")
         return
@@ -122,61 +125,66 @@ def plot_training_history(log_path="training_history.csv"):
     losses = np.array([e['loss'] for e in history])
     ce = np.array([e['ce'] for e in history])
     first_ce = np.array([e['first_ce'] for e in history])
-    ponder_kl = np.array([e['ponder_kl'] for e in history])
+    ponder = np.array([e['ponder'] for e in history])
+    exp_steps = np.array([e['steps'] for e in history])
     diversity = np.array([e['diversity'] for e in history])
-    forget = np.array([e['forget_density'] for e in history])
+    forget = np.array([e['forget_cost'] for e in history])
+    storage = np.array([e['storage_cost'] for e in history])
     grad_norm = np.array([e['grad_norm'] for e in history])
+    saturation = np.array([e['saturation'] for e in history])
+    temporal_drift = np.array([e['temporal_drift'] for e in history])
 
     plt.style.use('dark_background')
-    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     ((ax1, ax2), (ax3, ax4)) = axes
 
-    # Pick a smoothing window that doesn't smooth too much at the start
     smoothing_window = max(5, min(100, len(steps) // 20))
 
-    # --- 1. CONVERGENCE & REFINEMENT (CE vs First Step) ---
-    ax1.plot(steps, first_ce, color='#ff007b', alpha=0.3, linestyle='--', label='Initial CE (Step 1)')
-    ax1.plot(steps, ce, color='#ff007b', alpha=0.3, label='Final CE (Step 16)')
+    # --- 1. CONVERGENCE (CE vs First Step) ---
+    ax1.plot(steps, first_ce, color='#ff007b', alpha=0.2, linestyle='--', label='Initial Guess (Step 0)')
+    ax1.plot(steps, ce, color='#ff007b', alpha=0.2, label='Final Prediction')
     ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Final CE')
-    
-    # Fill the area where the model actually refined the answer
     ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(first_ce, smoothing_window), 
                      color='#ff007b', alpha=0.1, label='Refinement Gain')
-    
-    ax1.set_title('Convergence & Refinement Delta', fontsize=14, fontweight='bold')
+    ax1.set_title('Convergence & Refinement', fontsize=14, fontweight='bold')
     ax1.set_ylabel('Cross Entropy')
-    if np.all(ce > 0):
-        ax1.set_yscale('log')
-    ax1.legend(loc='upper right')
-    ax1.grid(True, alpha=0.2)
+    if np.all(ce > 0): ax1.set_yscale('log')
+    ax1.legend()
+    ax1.grid(True, alpha=0.1)
 
-    # --- 2. PONDER DYNAMICS (KL Divergence) ---
-    ax2.plot(steps, ponder_kl, color='#adff2f', alpha=0.4, label='Ponder KL (Stat Efficiency)')
-    ax2.plot(steps, smooth(ponder_kl, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed KL')
-    ax2.set_title('Ponder Dynamics (Geometric Prior)', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('KL Divergence')
-    ax2.legend(loc='upper right')
-    ax2.grid(True, alpha=0.2)
+    # --- 2. REASONING INTENSITY (Steps & Saturation) ---
+    ax2.plot(steps, exp_steps, color='#adff2f', alpha=0.4, label='Expected Steps')
+    ax2_twin = ax2.twinx()
+    ax2_twin.plot(steps, saturation, color='#ffcc00', alpha=0.3, label='Saturation (%)')
+    ax2_twin.set_ylabel('Saturation %', color='#ffcc00')
+    ax2.plot(steps, smooth(exp_steps, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed Steps')
+    ax2.set_title('Reasoning Intensity', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Steps', color='#adff2f')
+    ax2.legend(loc='upper left')
+    ax2_twin.legend(loc='upper right')
+    ax2.grid(True, alpha=0.1)
 
-    # --- 3. REPRESENTATIONAL DIVERSITY (Slots) ---
-    ax3.plot(steps, diversity, color='#00ff88', alpha=0.4, label='Slot Diversity (Orthogonality)')
-    ax3.plot(steps, smooth(diversity, smoothing_window), color='#00ff88', linewidth=2, label='Smoothed Diversity')
-    ax3.set_title('Hidden State Diversity (32 Slots)', fontsize=14, fontweight='bold')
+    # --- 3. RESOURCE COSTS (Forget & Storage) ---
+    ax3.plot(steps, smooth(forget, smoothing_window), color='#00ff88', linewidth=2, label='Forget Cost')
+    ax3.plot(steps, smooth(storage, smoothing_window), color='#00f2ff', linewidth=2, label='Storage Cost')
+    ax3.set_title('Dynamic Resource Penalties', fontsize=14, fontweight='bold')
     ax3.set_xlabel('Training Step')
-    ax3.set_ylabel('Diversity Penalty (Lower=More Orthogonal)')
-    ax3.legend(loc='upper right')
-    ax3.grid(True, alpha=0.2)
+    ax3.set_ylabel('Cost Value')
+    ax3.legend()
+    ax3.grid(True, alpha=0.1)
 
-    # --- 4. OPTIMIZATION HEALTH (Gradient Norm) ---
-    ax4.plot(steps, grad_norm, color='#00f2ff', alpha=0.4, label='Avg Grad Norm')
-    ax4.plot(steps, smooth(grad_norm, smoothing_window), color='#00f2ff', linewidth=2, label='Smoothed Grad Norm')
-    if np.any(grad_norm > 0):
-        ax4.set_yscale('log')
-    ax4.set_title('Optimization Health / Stability', fontsize=14, fontweight='bold')
+    # --- 4. MODEL HEALTH (Grad Norm & Diversity) ---
+    ax4.plot(steps, smooth(grad_norm, smoothing_window), color='#ffffff', linewidth=2, label='Grad Norm')
+    ax4_twin = ax4.twinx()
+    ax4_twin.plot(steps, smooth(diversity, smoothing_window), color='#ff00ff', linewidth=1, label='Diversity Loss')
+    ax4_twin.set_ylabel('Diversity Loss', color='#ff00ff')
+    ax4.set_title('Optimization Health', fontsize=14, fontweight='bold')
     ax4.set_xlabel('Training Step')
-    ax4.set_ylabel('Gradient Norm (Log Scale)')
-    ax4.legend(loc='upper right')
-    ax4.grid(True, alpha=0.2)
+    ax4.set_ylabel('Gradient Norm')
+    if np.any(grad_norm > 0): ax4.set_yscale('log')
+    ax4.legend(loc='upper left')
+    ax4_twin.legend(loc='upper right')
+    ax4.grid(True, alpha=0.1)
 
     plt.tight_layout()
     output_image = 'reasoning_analytics.png'

@@ -42,13 +42,16 @@ class LossMonitor:
 class MetricsLogger:
     def __init__(self, history_file):
         self.history_file = history_file
+        # Keys to extract from halt_diag
         self.diag_keys = [
-            'expected_steps', 'temporal_drift', 'forget_density', 'diversity_loss'
+            'expected_steps', 'temporal_drift', 'forget_density', 
+            'diversity_loss', 'saturation', 'ponder_kl'
         ]
+        # Full set of fields for CSV
         self.fields = [
-            "step", "ce", "first_ce", "avg_ponder", "expected_steps",
+            "step", "ce", "loss", "first_ce", "avg_ponder", "expected_steps",
             "grad_norm_avg", "avg_forget_cost", "avg_storage_cost",
-            "diversity_loss", "temporal_drift", "forget_density"
+            "diversity_loss", "temporal_drift", "forget_density", "saturation"
         ]
 
     def extract_diags(self, halt_diag, jnp_mean_fn):
@@ -64,7 +67,7 @@ class MetricsLogger:
         print(
             f"Step {step:04d} | CE: {ce:.4f} (first: {first_ce:.4f}) | "
             f"Ponder: {out.ponder_cost:.4f} | Steps: {diag_dict.get('expected_steps', 0):.2f}\n"
-            f"      Loss: {loss:.4f} | Compute: {compute_time:.3f}s"
+            f"      Loss: {loss:.4f} | Saturation: {diag_dict.get('saturation', 0):.1f}% | Compute: {compute_time:.3f}s"
         )
 
         # Check if file exists and has content to avoid duplicate headers
@@ -78,21 +81,23 @@ class MetricsLogger:
             pass
 
         with fsspec.open(self.history_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.fields)
+            writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')
             if file_is_empty: 
                 writer.writeheader()
             
             row = {
                 "step": int(step), 
                 "ce": f"{ce:.4f}",
+                "loss": f"{loss:.4f}",
                 "first_ce": f"{first_ce:.4f}" if first_ce is not None else "",
                 "avg_ponder": f"{out.ponder_cost:.4f}",
                 "expected_steps": f"{diag_dict.get('expected_steps', 0):.4f}",
                 "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
                 "avg_forget_cost": f"{out.forget_cost:.4f}", 
                 "avg_storage_cost": f"{out.storage_cost:.4f}",
-                "diversity_loss": f"{diag_dict.get('diversity_loss', 0):.4f}",
-                "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.4f}",
-                "forget_density": f"{diag_dict.get('forget_density', 0):.4f}",
+                "diversity_loss": f"{diag_dict.get('diversity_loss', 0):.6f}",
+                "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.6f}",
+                "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
+                "saturation": f"{diag_dict.get('saturation', 0):.4f}",
             }
             writer.writerow(row)

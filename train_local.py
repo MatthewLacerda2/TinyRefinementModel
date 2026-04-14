@@ -44,12 +44,15 @@ class ReasonerOutput:
     halt_diag: Dict[str, Any]
     expected_shared: jnp.ndarray
 
-def apply_rope(x, sin_table, cos_table):
-    x_complex = jax.lax.complex(x[..., 0::2], x[..., 1::2])
-    rope_complex = jax.lax.complex(cos_table, sin_table)
+def apply_rope(x, cos, sin):
+    d = x.shape[-1]
+    x1, x2 = jnp.split(x, 2, axis=-1)
+    
+    x_complex = jax.lax.complex(x1, x2)
+    rope_complex = jax.lax.complex(cos, sin)
     rotated = x_complex * rope_complex
     
-    return jnp.stack([rotated.real, rotated.imag], axis=-1).reshape(x.shape).astype(x.dtype)
+    return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.float32):
@@ -82,7 +85,7 @@ class RotaryAttention(nnx.Module):
         self.v_cache.value = None
         self.cache_index.value = jnp.zeros_like(self.cache_index.value)
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
@@ -100,14 +103,14 @@ class RotaryAttention(nnx.Module):
         if kv_pos is None:
             kv_pos = jnp.arange(s_kv)
 
-        sin_q = self.sin_cached[q_pos, None, :]
         cos_q = self.cos_cached[q_pos, None, :]
-        q = apply_rope(q, sin_q, cos_q)
+        sin_q = self.sin_cached[q_pos, None, :]
+        q = apply_rope(q, cos_q, sin_q)
         q = q * self.scale
 
-        sin_kv = self.sin_cached[kv_pos, None, :]
         cos_kv = self.cos_cached[kv_pos, None, :]
-        k = apply_rope(k, sin_kv, cos_kv)
+        sin_kv = self.sin_cached[kv_pos, None, :]
+        k = apply_rope(k, cos_kv, sin_kv)
 
         if use_cache:
             if self.k_cache.value is None:
@@ -124,14 +127,11 @@ class RotaryAttention(nnx.Module):
             k = k_cache
             v = v_cache
 
-        repeats = self.num_heads // self.num_groups
-        if repeats > 1:
-            k = jnp.broadcast_to(k[:, :, :, None, :], (b, s_kv, self.num_groups, repeats, self.head_dim)).reshape(b, s_kv, self.num_heads, self.head_dim)
-            v = jnp.broadcast_to(v[:, :, :, None, :], (b, s_kv, self.num_groups, repeats, self.head_dim)).reshape(b, s_kv, self.num_heads, self.head_dim)
-
+        # GQA broadcasting (G -> H) is handled implicitly by jax.nn.dot_product_attention
         out = jax.nn.dot_product_attention(
             q, k, v,
-            mask=mask, 
+            mask=mask if (mask is not None and mask.dtype == jnp.bool_) else None, 
+            bias=mask if (mask is not None and mask.dtype != jnp.bool_) else None,
             is_causal=is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
@@ -152,7 +152,7 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
         normed_context = self.norm1(context) if context is not None else None
         attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         x = x + attn_out
@@ -182,7 +182,7 @@ class BlockStack(nnx.Module):
         for block in self.blocks:
             block.attn.reset_state()
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
         if self.share_weights:
             block = self.blocks[0]
             for _ in range(self.num_blocks):
@@ -241,21 +241,23 @@ class UniversalReasoner(nnx.Module):
 
     def _encode_sequence(self, tokens):
         pad_mask = tokens != PAD_TOKEN_ID
+        pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
+        pad_bias = pad_bias[:, None, None, :]
+        
         seq_len = tokens.shape[1]
         seq_pos = jnp.arange(seq_len)
         
         z_seq_base = self.embed(tokens)
-        z_seq = self.encoder_stack(z_seq_base, mask=pad_mask[:, None, None, :], q_pos=seq_pos, kv_pos=seq_pos, is_causal=False)
+        z_seq = self.encoder_stack(z_seq_base, mask=pad_bias, q_pos=seq_pos, kv_pos=seq_pos, is_causal=True)
         return z_seq, pad_mask, seq_pos
 
     def _reasoning_loop(self, z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared):
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
-        s_mask = jnp.broadcast_to(pad_mask[:, None, None, :], (batch_size, 1, SHARED_SLOTS, z_seq.shape[1]))
-        causal_shared = jnp.tril(jnp.ones((SHARED_SLOTS, SHARED_SLOTS), dtype=jnp.bool_))
-        sh_mask = jnp.broadcast_to(causal_shared[None, None, :, :], (batch_size, 1, SHARED_SLOTS, SHARED_SLOTS))
-        extended_ctx_mask = jnp.concatenate([s_mask, sh_mask], axis=-1)
+        pad_part = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
+        slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.float32)
+        extended_ctx_bias = jnp.concatenate([pad_part, slot_part], axis=-1)[:, None, None, :]
 
         def scan_step(carry, inputs):
             curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div = carry
@@ -269,7 +271,7 @@ class UniversalReasoner(nnx.Module):
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
             stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :]) + meta_signal
-            new_shared = self.reasoning_stack(stack_input, context=shared_ctx, mask=extended_ctx_mask, q_pos=shared_pos, kv_pos=shared_kv_pos)
+            new_shared = self.reasoning_stack(stack_input, context=shared_ctx, mask=extended_ctx_bias, q_pos=shared_pos, kv_pos=shared_kv_pos, is_causal=True)
 
             if self.use_forget:
                 forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
@@ -399,6 +401,7 @@ class UniversalReasoner(nnx.Module):
             'first_logits': first_logits,
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
+            'saturation': jnp.mean(p_remain_final) * 100.0, # Percentage of tokens hitting max steps
         }
         
         # Always update the hunch cache; nnx.split will decide whether to carry it

@@ -157,7 +157,7 @@ def setup_data_pipeline(start_step):
     return data_queue
 
 def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
-    history_file = f"{CHECKPOINT_ROOT}/training_history.csv"
+    history_file = "training_history.csv"
     logger = MetricsLogger(history_file)
     step = start_step
     
