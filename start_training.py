@@ -1,6 +1,6 @@
 import os
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 #os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
@@ -36,7 +36,7 @@ LOG_EVERY = 100
 CHECKPOINT_INTERVAL = 200
 SORT_BUFFER_SIZE = 1000
 PREFETCH_SIZE = 128
-PHASE_STEP = 100000
+# Transition to SFT now happens dynamically on CE plateau
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
 CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
@@ -101,6 +101,7 @@ def load_or_create_checkpoint(model, optimizer):
         monitor.best_loss = m_state.get("best_loss", float("inf"))
         monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
+        monitor.sft_start_step = m_state.get("sft_start_step", None)
         
         print(f"✅ Resuming from step {start_step}")
         del restored 
@@ -108,10 +109,11 @@ def load_or_create_checkpoint(model, optimizer):
     else:
         print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
+        monitor.sft_start_step = None
 
     return mngr, monitor, start_step
 
-def setup_data_pipeline(start_step):
+def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
@@ -119,44 +121,37 @@ def setup_data_pipeline(start_step):
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
     pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
-    chat_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
+    sft_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
 
     if start_step > 1:
-        if start_step < PHASE_STEP:
+        if sft_start_step is None or start_step < sft_start_step:
             total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS * 1 # BATCH_SIZE
             weights = [0.60, 0.25, 0.15]
             for gen, weight in zip(pretrain_sources, weights):
                 gen.skip_count = int(total_pretrain_seen * weight)
         else:
-            total_chat_seen = (start_step - PHASE_STEP) * ACCUMULATION_STEPS * 1
-            chat_mixer.skip_count = total_chat_seen
+            total_chat_seen = (start_step - sft_start_step) * ACCUMULATION_STEPS * 1
+            sft_mixer.skip_count = total_chat_seen
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
     def data_wrapper():
-        macro_step = start_step
-        micro_counter = 0
-        
         while True:
-            if macro_step < PHASE_STEP:
+            if not sft_phase_event.is_set():
                 res = pretrain_mixer.get_batch(BATCH_SIZE)
             else:
-                res = chat_mixer.get_batch(BATCH_SIZE)
+                res = sft_mixer.get_batch(BATCH_SIZE)
             
             if res[0] is None:
                 data_queue.put((None, None))
                 break
             
             data_queue.put(res)
-            
-            micro_counter += 1
-            if micro_counter % ACCUMULATION_STEPS == 0:
-                macro_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
+def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phase_event):
     history_file = "training_history.csv"
     logger = MetricsLogger(history_file)
     step = start_step
@@ -214,8 +209,22 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
             )
             
             if monitor.push(step, float(accum_token_loss), float(accum_loss)): 
-                print("🛑 Training halted: No improvement in CE.")
-                break
+                if not sft_phase_event.is_set():
+                    sft_phase_event.set()
+                    monitor.sft_start_step = step
+                    print("\n" + "🔄"*30)
+                    print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
+                    print("🔄"*30 + "\n")
+                    
+                    # Reset LossMonitor for fresh SFT baseline
+                    monitor.ce_history = []
+                    monitor.best_ce = float("inf")
+                    monitor.best_loss = float("inf")
+                    monitor.best_avg_ce = float("inf")
+                    monitor.last_improvement_step = step
+                else:
+                    print("🛑 Training halted: No improvement in CE during SFT phase.")
+                    break
 
             if monitor.is_new_best or (step % CHECKPOINT_INTERVAL == 0):
                 mngr.save(
@@ -229,6 +238,8 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step):
                             "best_loss": monitor.best_loss,
                             "best_avg_ce": monitor.best_avg_ce,
                             "last_improvement_step": monitor.last_improvement_step,
+                            "sft_active": sft_phase_event.is_set(),
+                            "sft_start_step": monitor.sft_start_step,
                         }),
                         step=ocp.args.JsonSave(step),
                     ),
@@ -252,10 +263,17 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
+    sft_phase_event = threading.Event()
+
     model, optimizer = init_model_and_optimizer()
     
     mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer)
     
-    data_queue = setup_data_pipeline(start_step)
+    # Set event if resuming in SFT phase
+    if getattr(monitor, "sft_start_step", None) is not None:
+        print(f"🔄 Resuming in SFT phase (started at step {monitor.sft_start_step})")
+        sft_phase_event.set()
+
+    data_queue = setup_data_pipeline(start_step, sft_phase_event, getattr(monitor, "sft_start_step", None))
     
-    train_loop(model, optimizer, data_queue, mngr, monitor, start_step)
+    train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phase_event)
