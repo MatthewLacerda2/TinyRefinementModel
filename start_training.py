@@ -69,6 +69,27 @@ optimizer_chain = optax.MultiSteps(
     use_grad_mean=True
 )
 
+def create_sft_optimizer(model, old_opt=None):
+    print("📉 Recreating optimizer with 10x LR penalty for SFT phase...")
+    sft_lr_schedule = lambda step: learning_schedule(step) * 0.1
+    
+    sft_chain = optax.MultiSteps(
+        optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adamw(
+                learning_rate=sft_lr_schedule,
+                weight_decay=weight_decay_schedule,
+                mask=weight_decay_mask,
+            ),
+        ),
+        every_k_schedule=ACCUMULATION_STEPS,
+        use_grad_mean=True
+    )
+    new_opt = nnx.Optimizer(model, sft_chain, wrt=nnx.Param)
+    if old_opt is not None:
+        nnx.update(new_opt, nnx.state(old_opt))
+    return new_opt
+
 def load_or_create_checkpoint(model, optimizer):
     monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
@@ -120,18 +141,33 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
-    pretrain_mixer = DataMixer(pretrain_sources, [0.60, 0.25, 0.15])
-    sft_mixer = TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat")
+    pretrain_weights = [0.60, 0.25, 0.15]
+    pretrain_mixer = DataMixer(pretrain_sources, pretrain_weights)
+    
+    sft_sources = [
+        TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat"),
+        pretrain_sources[0],
+        pretrain_sources[1],
+        pretrain_sources[2],
+    ]
+    sft_weights = [0.70, 0.15, 0.10, 0.05]
+    sft_mixer = DataMixer(sft_sources, sft_weights)
 
     if start_step > 1:
         if sft_start_step is None or start_step < sft_start_step:
-            total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS * 1 # BATCH_SIZE
-            weights = [0.60, 0.25, 0.15]
-            for gen, weight in zip(pretrain_sources, weights):
+            total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS
+            for gen, weight in zip(pretrain_sources, pretrain_weights):
                 gen.skip_count = int(total_pretrain_seen * weight)
         else:
-            total_chat_seen = (start_step - sft_start_step) * ACCUMULATION_STEPS * 1
-            sft_mixer.skip_count = total_chat_seen
+            # 1. Catch up pretrain sources to the point where pretraining ended
+            total_pre_pretrain_seen = (sft_start_step - 1) * ACCUMULATION_STEPS
+            for gen, weight in zip(pretrain_sources, pretrain_weights):
+                gen.skip_count = int(total_pre_pretrain_seen * weight)
+            
+            # 2. Add SFT usage for all blended sources (Chat + Replay)
+            total_sft_seen = (start_step - sft_start_step) * ACCUMULATION_STEPS
+            for gen, weight in zip(sft_sources, sft_weights):
+                gen.skip_count += int(total_sft_seen * weight)
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
@@ -212,6 +248,10 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                 if not sft_phase_event.is_set():
                     sft_phase_event.set()
                     monitor.sft_start_step = step
+                    
+                    # Apply 10x Learning Rate Penalty for SFT
+                    optimizer = create_sft_optimizer(model, optimizer)
+                    
                     print("\n" + "🔄"*30)
                     print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
                     print("🔄"*30 + "\n")
@@ -273,6 +313,7 @@ if __name__ == "__main__":
     if getattr(monitor, "sft_start_step", None) is not None:
         print(f"🔄 Resuming in SFT phase (started at step {monitor.sft_start_step})")
         sft_phase_event.set()
+        optimizer = create_sft_optimizer(model, optimizer)
 
     data_queue = setup_data_pipeline(start_step, sft_phase_event, getattr(monitor, "sft_start_step", None))
     
