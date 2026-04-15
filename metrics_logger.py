@@ -3,7 +3,7 @@ import fsspec
 import jax.numpy as jnp
 
 class LossMonitor:
-    def __init__(self, patience=2000, window=1000):
+    def __init__(self, patience=1500, window=50):
         self.patience = patience
         self.window = window
         self.ce_history = []
