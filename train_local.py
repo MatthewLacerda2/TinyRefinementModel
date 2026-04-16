@@ -90,6 +90,7 @@ class RotaryAttention(nnx.Module):
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
         kv_input = context if context is not None else x
+        
         s_kv = kv_input.shape[1]
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
@@ -127,12 +128,26 @@ class RotaryAttention(nnx.Module):
             k = k_cache
             v = v_cache
 
-        # GQA broadcasting (G -> H) is handled implicitly by jax.nn.dot_product_attention
+        if is_causal:
+            pos_mask = q_pos[:, None] >= kv_pos[None, :]
+            
+            if mask is not None:
+                if mask.dtype == jnp.bool_:
+                    mask = mask & pos_mask
+                else:
+                    mask = mask + (pos_mask.astype(jnp.float32) - 1.0) * 1e9
+            else:
+                mask = pos_mask
+            
+            effective_is_causal = False
+        else:
+            effective_is_causal = False
+
         out = jax.nn.dot_product_attention(
             q, k, v,
             mask=mask if (mask is not None and mask.dtype == jnp.bool_) else None, 
             bias=mask if (mask is not None and mask.dtype != jnp.bool_) else None,
-            is_causal=is_causal,
+            is_causal=effective_is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -263,9 +278,8 @@ class UniversalReasoner(nnx.Module):
             curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div = carry
             t_signal, step_id = inputs
             
-            # Feed back ponder, forget, and diversity info as meta-signals
             meta_input = jnp.stack([p_remain_prev, prev_forget, prev_div], axis=-1)
-            meta_signal = self.meta_proj(meta_input)[:, None, :] # (B, 1, D)
+            meta_signal = self.meta_proj(meta_input)[:, None, :]
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
@@ -311,7 +325,7 @@ class UniversalReasoner(nnx.Module):
         final_carry_all, all_outputs = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
-        # Unpack first three for standard logic
+
         final_carry = (final_carry_all[0], final_carry_all[1], final_carry_all[2])
         return final_carry, all_outputs, shared_pos
 
@@ -319,7 +333,7 @@ class UniversalReasoner(nnx.Module):
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
         full_step_weights = step_weights.at[-1].add(p_remain_final)
 
-        lambda_p = 0.01 
+        lambda_p = 0.1
         active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
         prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
         valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.float32)
@@ -354,6 +368,35 @@ class UniversalReasoner(nnx.Module):
         else:
             z_shared = z_shared_base
 
+        past_shared_pos = jnp.arange(-SHARED_SLOTS, 0)
+        
+        decoder_ctx = jnp.concatenate([z_seq, z_shared], axis=1)
+        decoder_kv_pos = jnp.concatenate([seq_pos, past_shared_pos], axis=0)
+        
+        decoder_pad_mask = jnp.concatenate([pad_mask, jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)], axis=1)
+        decoder_bias = (decoder_pad_mask.astype(jnp.float32) - 1.0) * 1e9
+        decoder_bias = decoder_bias[:, None, None, :]
+
+        z_first_out = self.decoder_stack(
+            z_seq,
+            context=decoder_ctx,
+            mask=decoder_bias,
+            q_pos=seq_pos, 
+            kv_pos=decoder_kv_pos,
+            is_causal=True
+        )
+        first_logits = self.seq_norm(z_first_out) @ self.embed.embedding.value.T
+
+        z_seq_out = self.decoder_stack(
+            z_seq, 
+            context=decoder_ctx, 
+            mask=decoder_bias, 
+            q_pos=seq_pos, 
+            kv_pos=decoder_kv_pos,
+            is_causal=True
+        )
+        logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
+
         final_carry, all_outputs, shared_pos = self._reasoning_loop(z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared)
         final_shared, p_remain_final, weighted_shared_acc = final_carry
         
@@ -367,31 +410,7 @@ class UniversalReasoner(nnx.Module):
         
         actual_steps = jnp.sum(full_step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
 
-        # Calculate Initial Logits (Step 1) to track refinement efficiency
-        z_first_out = self.decoder_stack(
-            z_seq,
-            context=all_outputs.shared_state[0],
-            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_),
-            q_pos=seq_pos, 
-            kv_pos=shared_pos,
-            is_causal=False
-        )
-        first_logits = self.seq_norm(z_first_out) @ self.embed.embedding.value.T
-
-        z_seq_out = self.decoder_stack(
-            z_seq, 
-            context=expected_shared, 
-            mask=jnp.ones((batch_size, 1, 1, SHARED_SLOTS), dtype=jnp.bool_), 
-            q_pos=seq_pos, 
-            kv_pos=shared_pos,
-            is_causal=False
-        )
-        logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
-
-        # Diagnostics for logging
-        
-        # Temporal drift of shared state across reasoning steps
-        states = all_outputs.shared_state # (max_steps, batch, slots, dim)
+        states = all_outputs.shared_state
         diffs = states[1:] - states[:-1]
         temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
         
@@ -401,10 +420,9 @@ class UniversalReasoner(nnx.Module):
             'first_logits': first_logits,
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
-            'saturation': jnp.mean(p_remain_final) * 100.0, # Percentage of tokens hitting max steps
+            'saturation': jnp.mean(p_remain_final) * 100.0,
         }
         
-        # Always update the hunch cache; nnx.split will decide whether to carry it
         self.hunch_cache.value = expected_shared
 
         return ReasonerOutput(
@@ -446,7 +464,6 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         first_logits = out.halt_diag.pop('first_logits')
         first_ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=first_logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
 
-        # Pro Way: Remove logits from the aux return during training to save massive VRAM (400MB+)
         out = out.replace(logits=None) 
         out.halt_diag['diversity_loss'] = jax.lax.stop_gradient(out.diversity_loss)
         out.halt_diag['token_loss'] = jax.lax.stop_gradient(token_loss)
@@ -455,10 +472,8 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    # Pro Way: Implementation-specific state refresh logic.
     should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0)).squeeze()
     
-    # Access the model attribute directly - NNX handles the JIT synchronization
     current_hunch = model.hunch_cache.value
     cleared_hunch = jnp.zeros_like(current_hunch)
     
@@ -468,10 +483,8 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         lambda: jax.lax.stop_gradient(current_hunch)
     )
     
-    # Commit the carry-over back to the model's internal cache
     model.hunch_cache.value = carried_hunch
 
-    # Calculate global grad norm
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
     
