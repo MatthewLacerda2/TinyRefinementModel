@@ -393,23 +393,16 @@ class UniversalReasoner(nnx.Module):
 
         past_shared_pos = jnp.arange(-SHARED_SLOTS, 0)
         
+        # Build the Universal Context for the Decoder
         decoder_ctx = jnp.concatenate([z_seq, z_shared], axis=1)
         decoder_kv_pos = jnp.concatenate([seq_pos, past_shared_pos], axis=0)
         
+        # Combine pad_mask with ones for the shared slots
         decoder_pad_mask = jnp.concatenate([pad_mask, jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)], axis=1)
         decoder_bias = (decoder_pad_mask.astype(jnp.float32) - 1.0) * 1e9
         decoder_bias = decoder_bias[:, None, None, :]
 
-        z_first_out = self.decoder_stack(
-            z_seq,
-            context=decoder_ctx,
-            mask=decoder_bias,
-            q_pos=seq_pos, 
-            kv_pos=decoder_kv_pos,
-            is_causal=True
-        )
-        first_logits = self.seq_norm(z_first_out) @ self.embed.embedding.value.T
-
+        # Prediction: Use the sequence and the "Hunch" from the previous block
         z_seq_out = self.decoder_stack(
             z_seq, 
             context=decoder_ctx, 
@@ -420,6 +413,8 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
 
+        # Reasoning: Update the "Memory Slots" for the NEXT block
+        # We use a non-causal loop here so the scratchpad can coordinate all-to-all.
         final_carry, all_outputs, shared_pos = self._reasoning_loop(z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared)
         final_shared, p_remain_final, weighted_shared_acc = final_carry
         
@@ -440,12 +435,12 @@ class UniversalReasoner(nnx.Module):
         halt_diag = {
             'ponder_kl': total_p_cost,
             'expected_steps': jnp.mean(actual_steps),
-            'first_logits': first_logits,
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
             'saturation': jnp.mean(p_remain_final) * 100.0,
         }
         
+        # Update the hunch cache for subsequent calls
         self.hunch_cache.value = expected_shared
 
         return ReasonerOutput(
@@ -470,31 +465,38 @@ def calculate_diversity_loss_per_batch(shared_state, margin):
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, should_truncate=False):
     def loss_fn(model):
-        inputs, targets = batch_tokens[:, :-1], batch_tokens[:, 1:]
-        out = model(inputs, training=True)
-        preds = out.logits
+        def compute_ce(logits, targets):
+            mask = targets != PAD_TOKEN_ID
+            return jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
+
+        # Split tokens into two consecutive windows
+        seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
+        seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
+
+        # Passing 1: Fresh start
+        out1 = model(seq1_in, training=True, should_refresh=True)
+        ce1 = compute_ce(out1.logits, seq1_out)
         
-        mask = targets != PAD_TOKEN_ID
-        token_loss = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=preds, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
+        # Passing 2: Uses Hunch from Passing 1. 
+        # Gradients from ce2 will flow into Reasoning Step 1.
+        out2 = model(seq2_in, training=True, should_refresh=False)
+        ce2 = compute_ce(out2.logits, seq2_out)
 
         from schedules import ponder_lambda_schedule, forget_lambda_schedule, storage_lambda_schedule
         p_lambda, f_lambda, s_lambda = ponder_lambda_schedule(step), forget_lambda_schedule(step), storage_lambda_schedule(step)
 
-        total_loss = token_loss + p_lambda * out.ponder_cost + f_lambda * out.forget_cost + s_lambda * out.storage_cost
+        # Objective: Predict Window 2 well using Window 1's summary
+        total_loss = (ce1 + ce2) + p_lambda * (out1.ponder_cost + out2.ponder_cost) + f_lambda * (out1.forget_cost + out2.forget_cost)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
-        # Calculate First Step CE (Initial Loss)
-        first_logits = out.halt_diag.pop('first_logits')
-        first_ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=first_logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
-
+        # Diagnostics
         new_halt_diag = {
-            **out.halt_diag,
-            'diversity_loss': jax.lax.stop_gradient(out.diversity_loss),
-            'token_loss': jax.lax.stop_gradient(token_loss),
-            'first_ce': jax.lax.stop_gradient(first_ce),
+            **out2.halt_diag,
+            'ce1': jax.lax.stop_gradient(ce1),
+            'token_loss': jax.lax.stop_gradient(ce2),
         }
-        out = out.replace(logits=None, halt_diag=new_halt_diag)
-        return total_loss, out
+        out2 = out2.replace(logits=None, halt_diag=new_halt_diag)
+        return total_loss, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     

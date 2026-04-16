@@ -34,12 +34,14 @@ class TextDataGenerator:
         self.pointer = 0
         
         if self.skip_count > 0:
-            tokens_to_skip = self.skip_count * self.max_seq_len
+            # Skip logic must account for the doubled sequence length
+            stride = 2 * self.max_seq_len + 1
+            tokens_to_skip = self.skip_count * stride
             if tokens_to_skip < len(self.data):
                 self.pointer = tokens_to_skip
                 self.skip_count = 0
             else:
-                self.skip_count -= (len(self.data) // self.max_seq_len)
+                self.skip_count -= (len(self.data) // stride)
                 self.current_file_idx += 1
                 return self._load_next_file()
                 
@@ -49,12 +51,13 @@ class TextDataGenerator:
 
     def get_batch(self, batch_size):
         if self.exhausted: return None, None
-        total_tokens = batch_size * self.max_seq_len
+        
+        stride = 2 * self.max_seq_len + 1
+        total_tokens = batch_size * stride
         
         if self.data is None or self.pointer + total_tokens > len(self.data):
             if not self._load_next_file():
                 return None, None
-            # If the new file is also exhausted or too small, retry
             if self.exhausted or self.pointer + total_tokens > len(self.data):
                 return self.get_batch(batch_size)
 
@@ -66,7 +69,7 @@ class TextDataGenerator:
             reset_mask[:] = True
             self.is_new_file = False
             
-        return jnp.array(batch.reshape(batch_size, self.max_seq_len), dtype=jnp.int32), jnp.array(reset_mask)
+        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(reset_mask)
 
 class DataMixer:
     def __init__(self, sources, weights):
