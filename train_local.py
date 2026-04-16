@@ -124,9 +124,15 @@ class RotaryAttention(nnx.Module):
             v_cache = jax.lax.dynamic_update_slice(self.v_cache.value, v, (0, idx, 0, 0))
             self.k_cache.value = k_cache
             self.v_cache.value = v_cache
-            self.cache_index.value = idx + s_kv
-            k = k_cache
-            v = v_cache
+            new_idx = idx + s_kv
+            self.cache_index.value = new_idx
+            
+            k = k_cache[:, :new_idx, :, :]
+            v = v_cache[:, :new_idx, :, :]
+        if self.num_heads != self.num_groups:
+            repeats = self.num_heads // self.num_groups
+            k = jnp.repeat(k, repeats, axis=2)
+            v = jnp.repeat(v, repeats, axis=2)
 
         if is_causal:
             pos_mask = q_pos[:, None] >= kv_pos[None, :]
@@ -274,21 +280,35 @@ class UniversalReasoner(nnx.Module):
         slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.float32)
         extended_ctx_bias = jnp.concatenate([pad_part, slot_part], axis=-1)[:, None, None, :]
 
+        modules = (
+            self.meta_proj, self.time_norm, self.time_signal_norm, 
+            self.reasoning_stack, self.halt_pre, self.halt_head,
+            self.forget_norm if self.use_forget else None,
+            self.forget_head if self.use_forget else None
+        )
+        model_graph, model_state = nnx.split(modules)
+
         def scan_step(carry, inputs):
-            curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div = carry
+            curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div, current_state = carry
             t_signal, step_id = inputs
             
+            (
+                m_proj, t_norm, ts_norm, 
+                r_stack, h_pre, h_head,
+                f_norm, f_head
+            ) = nnx.merge(model_graph, current_state)
+            
             meta_input = jnp.stack([p_remain_prev, prev_forget, prev_div], axis=-1)
-            meta_signal = self.meta_proj(meta_input)[:, None, :]
+            meta_signal = m_proj(meta_input)[:, None, :]
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
             shared_kv_pos = jnp.concatenate([seq_pos, shared_pos])
 
-            stack_input = self.time_norm(curr_shared) + self.time_signal_norm(t_signal[None, None, :]) + meta_signal
-            new_shared = self.reasoning_stack(stack_input, context=shared_ctx, mask=extended_ctx_bias, q_pos=shared_pos, kv_pos=shared_kv_pos, is_causal=True)
+            stack_input = t_norm(curr_shared) + ts_norm(t_signal[None, None, :]) + meta_signal
+            new_shared = r_stack(stack_input, context=shared_ctx, mask=extended_ctx_bias, q_pos=shared_pos, kv_pos=shared_kv_pos, is_causal=False)
 
             if self.use_forget:
-                forget = jax.nn.sigmoid(self.forget_head(self.forget_norm(new_shared)))
+                forget = jax.nn.sigmoid(f_head(f_norm(new_shared)))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
@@ -297,7 +317,7 @@ class UniversalReasoner(nnx.Module):
             storage_val = jnp.mean(jnp.abs(new_shared), axis=(1, 2))
 
             pooled = jnp.mean(new_shared, axis=1)
-            halt_logit = self.halt_head(jax.nn.gelu(self.halt_pre(pooled))).squeeze(-1)
+            halt_logit = h_head(jax.nn.gelu(h_pre(pooled))).squeeze(-1)
             halt_prob = jax.nn.sigmoid(halt_logit)
             halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
 
@@ -307,7 +327,9 @@ class UniversalReasoner(nnx.Module):
 
             step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
 
-            return (new_shared, p_remain_next, weighted_shared_acc, forget_val, step_div), ScanStepOutput(
+            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, h_pre, h_head, f_norm, f_head))
+
+            return (new_shared, p_remain_next, weighted_shared_acc, forget_val, step_div, next_state), ScanStepOutput(
                 shared_state=new_shared,
                 halt_prob=halt_prob, forget_val=forget_val, storage_val=storage_val,
                 halt_logit=halt_logit, step_div=step_div, step_weight=step_weight
@@ -319,7 +341,8 @@ class UniversalReasoner(nnx.Module):
             jnp.ones((batch_size,)), 
             init_weighted_shared,
             jnp.zeros((batch_size,)),
-            jnp.zeros((batch_size,))
+            jnp.zeros((batch_size,)),
+            model_state
         )
         
         final_carry_all, all_outputs = jax.lax.scan(
@@ -464,10 +487,13 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         first_logits = out.halt_diag.pop('first_logits')
         first_ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=first_logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
 
-        out = out.replace(logits=None) 
-        out.halt_diag['diversity_loss'] = jax.lax.stop_gradient(out.diversity_loss)
-        out.halt_diag['token_loss'] = jax.lax.stop_gradient(token_loss)
-        out.halt_diag['first_ce'] = jax.lax.stop_gradient(first_ce)
+        new_halt_diag = {
+            **out.halt_diag,
+            'diversity_loss': jax.lax.stop_gradient(out.diversity_loss),
+            'token_loss': jax.lax.stop_gradient(token_loss),
+            'first_ce': jax.lax.stop_gradient(first_ce),
+        }
+        out = out.replace(logits=None, halt_diag=new_halt_diag)
         return total_loss, out
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
