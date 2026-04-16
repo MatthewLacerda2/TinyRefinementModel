@@ -26,7 +26,7 @@ class TextDataGenerator:
             return False
         
         file_path = self.files[self.current_file_idx]
-        print(f"📖 Streaming {file_path} into TPU memory...")
+        print(f"📖 Streaming {file_path} into VRAM...")
         
         with self.fs.open(file_path, 'rb') as f:
             self.data = np.load(f)
