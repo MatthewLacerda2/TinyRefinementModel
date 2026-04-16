@@ -35,10 +35,11 @@ def smooth(y, box_pts):
 
 def calculate_tokens(step):
     """
-    Calculate total tokens seen across all batches and accumulation steps.
-    Micro-batches accumulated per step = ACCUMULATION_STEPS
+    Calculate total tokens seen across all micro-batches.
+    'step' from the logs represents the number of micro-batches processed.
+    Each micro-batch processes 2 consecutive windows of MAX_SEQ_LEN.
     """
-    return step * BATCH_SIZE * MAX_SEQ_LEN * ACCUMULATION_STEPS
+    return step * BATCH_SIZE * (MAX_SEQ_LEN * 2)
 
 def print_model_stats():
     print("Calculating model parameters (mathematical estimation)...")

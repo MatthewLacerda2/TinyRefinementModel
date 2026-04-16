@@ -266,7 +266,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     print("🛑 Training halted: No improvement in CE during SFT phase.")
                     break
 
-            if monitor.is_new_best or (step % CHECKPOINT_INTERVAL == 0):
+            if monitor.is_new_best:
                 mngr.save(
                     step,
                     args=ocp.args.Composite(

@@ -482,11 +482,15 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         out2 = model(seq2_in, training=True, should_refresh=False)
         ce2 = compute_ce(out2.logits, seq2_out)
 
-        from schedules import ponder_lambda_schedule, forget_lambda_schedule, storage_lambda_schedule
-        p_lambda, f_lambda, s_lambda = ponder_lambda_schedule(step), forget_lambda_schedule(step), storage_lambda_schedule(step)
+        from schedules import ponder_lambda_schedule, forget_lambda_schedule, storage_lambda_schedule, diversity_lambda_schedule
+        opt_step = step // ACCUMULATION_STEPS
+        p_lambda = ponder_lambda_schedule(opt_step)
+        f_lambda = forget_lambda_schedule(opt_step)
+        s_lambda = storage_lambda_schedule(opt_step)
+        d_lambda = diversity_lambda_schedule(opt_step)
 
         # Objective: Predict Window 2 well using Window 1's summary
-        total_loss = (ce1 + ce2) + p_lambda * (out1.ponder_cost + out2.ponder_cost) + f_lambda * (out1.forget_cost + out2.forget_cost)
+        total_loss = (ce1 + ce2) + p_lambda * (out1.ponder_cost + out2.ponder_cost) + f_lambda * (out1.forget_cost + out2.forget_cost) + s_lambda * (out1.storage_cost + out2.storage_cost) + d_lambda * (out1.diversity_loss + out2.diversity_loss)
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
         # Diagnostics
