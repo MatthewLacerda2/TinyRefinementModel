@@ -241,7 +241,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                 out,
                 t_compute / LOG_EVERY,
                 grad_norm_avg=float(accum_grad_norm),
-                first_ce=float(out.halt_diag.get('first_ce', 0))
+                first_ce=float(out.halt_diag.get('ce1', 0))
             )
             
             if monitor.push(step, float(accum_token_loss), float(accum_loss)): 

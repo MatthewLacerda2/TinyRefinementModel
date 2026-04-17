@@ -324,7 +324,7 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             weighted_shared_acc = weighted_shared_acc + step_weight[:, None, None] * new_shared
 
-            step_div = calculate_diversity_loss_per_batch(new_shared, margin=0.5)
+            step_div = calculate_diversity_loss_per_batch(new_shared)
 
             _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, h_pre, h_head, f_norm, f_head))
 
@@ -443,18 +443,15 @@ class UniversalReasoner(nnx.Module):
             halt_diag=halt_diag, expected_shared=expected_shared
         )
 
-def calculate_diversity_loss_per_batch(shared_state, margin):
+def calculate_diversity_loss_per_batch(shared_state):
     shared_state = shared_state.astype(jnp.float32)
-    norm = jnp.linalg.norm(shared_state, axis=-1, keepdims=True)
-
-    normalized = shared_state / (norm + 1e-6)
+    norms = jnp.sqrt(jnp.sum(jnp.square(shared_state), axis=-1, keepdims=True) + 1e-8)
+    normalized = shared_state / norms
     
     dots = jnp.einsum('bsd,btd->bst', normalized, normalized, precision=jax.lax.Precision.HIGHEST)
-    mask = 1.0 - jnp.eye(SHARED_SLOTS)[None, :, :]
+    identity = jnp.eye(SHARED_SLOTS)[None, :, :]
     
-    violation = jnp.maximum(0.0, jnp.abs(dots) - margin)
-    
-    return jnp.mean(jnp.square(violation * mask), axis=(1, 2))
+    return jnp.mean(jnp.square(dots - identity), axis=(1, 2))
 
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, should_truncate=False):
