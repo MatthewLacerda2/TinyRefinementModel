@@ -95,7 +95,7 @@ class MetricsLogger:
                 "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
                 "avg_forget_cost": f"{out.forget_cost:.4f}", 
                 "avg_storage_cost": f"{out.storage_cost:.4f}",
-                "diversity_loss": f"{diag_dict.get('diversity_loss', 0):.6f}",
+                "diversity_loss": f"{out.diversity_loss:.6f}",
                 "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.6f}",
                 "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
                 "saturation": f"{diag_dict.get('saturation', 0):.4f}",
