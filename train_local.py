@@ -20,7 +20,6 @@ BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
 
-HUNCH_REFRESH_EVERY = 4
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4
 
@@ -455,6 +454,8 @@ def calculate_diversity_loss_per_batch(shared_state):
 
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, should_truncate=False):
+    should_refresh = jnp.any(should_truncate).squeeze()
+
     def loss_fn(model):
         def compute_ce(logits, targets):
             mask = targets != PAD_TOKEN_ID
@@ -463,7 +464,7 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
-        out1 = model(seq1_in, training=True, should_refresh=True)
+        out1 = model(seq1_in, training=True, should_refresh=should_refresh)
         ce1 = compute_ce(out1.logits, seq1_out)
         
         out2 = model(seq2_in, training=True, should_refresh=False)
@@ -489,11 +490,10 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    should_refresh = jnp.any(should_truncate | (step % HUNCH_REFRESH_EVERY == 0)).squeeze()
-    
     current_hunch = model.hunch_cache.value
     cleared_hunch = jnp.zeros_like(current_hunch)
     
+    # After the step, we carry forward the hunch UNLESS a truncation was requested
     carried_hunch = jax.lax.cond(
         should_refresh,
         lambda: jax.lax.stop_gradient(cleared_hunch),
