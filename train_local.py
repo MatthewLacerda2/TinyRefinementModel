@@ -8,9 +8,9 @@ from typing import Dict, Any
 
 #Params
 LATENT_DIM = 1024
-NUM_BLOCKS = 8
+NUM_BLOCKS = 16
 SHARED_SLOTS = 64
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
 VOCAB_SIZE = 100352
 
 #Training

@@ -42,11 +42,10 @@ def calculate_tokens(step):
     return step * BATCH_SIZE * (MAX_SEQ_LEN * 2)
 
 def print_model_stats():
-    print("Calculating model parameters (mathematical estimation)...")
+    print("Calculating model statistics (mathematical estimation)...")
     
     head_dim = LATENT_DIM // NUM_HEADS
     
-    # 1. Block Stack (Per Block)
     q_params = LATENT_DIM * LATENT_DIM + LATENT_DIM
     k_params = LATENT_DIM * (NUM_GROUPS * head_dim) + (NUM_GROUPS * head_dim)
     v_params = LATENT_DIM * (NUM_GROUPS * head_dim) + (NUM_GROUPS * head_dim)
@@ -61,30 +60,48 @@ def print_model_stats():
     
     block_norms = LATENT_DIM * 2
     params_per_block = attn_total + mlp_total + block_norms
-    num_reason_param = params_per_block * NUM_BLOCKS
     
-    # 2. Universal Reasoner Extras
+    num_unique_blocks = NUM_BLOCKS + 1
+    total_block_params = params_per_block * num_unique_blocks
+    
     embed = VOCAB_SIZE * LATENT_DIM
     time_embed = (MAX_STEPS_LIMIT + 1) * LATENT_DIM
     shared_token = SHARED_SLOTS * LATENT_DIM
+    meta_proj = 3 * LATENT_DIM + LATENT_DIM
     seq_norm = LATENT_DIM
     
     halt_pre_dim = LATENT_DIM // 4
     halt_pre = LATENT_DIM * halt_pre_dim + halt_pre_dim
     halt_head = halt_pre_dim * 1 + 1
     
-    extra_norms = LATENT_DIM * 4 
+    extra_norms = LATENT_DIM * 5 
     hunch_gate = LATENT_DIM * LATENT_DIM + LATENT_DIM
     forget_head = LATENT_DIM * LATENT_DIM + LATENT_DIM 
     
-    encoder_params = (embed + time_embed + shared_token + seq_norm + 
-                      halt_pre + halt_head + extra_norms + hunch_gate + forget_head)
+    extra_params = (embed + time_embed + shared_token + meta_proj + seq_norm + 
+                    halt_pre + halt_head + extra_norms + hunch_gate + forget_head + 1) # +1 for raw_tau
     
-    param_count = num_reason_param + encoder_params
+    param_count = total_block_params + extra_params
+    
+    num_tpus = 4
+    
+    state_per_param = 2 + 4 + 8 # 14 bytes
+    global_state_gb = (param_count * state_per_param) / (1024**3)
+    sharded_state_gb = global_state_gb / num_tpus
+    
+    act_gb = (BATCH_SIZE * (NUM_BLOCKS * MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS) * LATENT_DIM * 12 * 4) / (1024**3)
+    
+    tpu_vram_gb = sharded_state_gb + act_gb
     
     print(f"Model Parameters: {param_count:,}")
-    print(f"  |-- Encoder Params : {encoder_params:,}")
-    print(f"  |-- Layer Params   : {num_reason_param:,} (across {NUM_BLOCKS} blocks)")
+    print(f"  |-- Unique Blocks  : {num_unique_blocks} ({total_block_params:,} params)")
+    print(f"  |-- Encoder Extras : {extra_params:,} params")
+    print("-" * 50)
+    print(f"Global Training State (Params+Opt): {global_state_gb:.2f} GB")
+    print(f"Estimated VRAM (Per TPU Core)     : {tpu_vram_gb:.2f} GB")
+    print(f"  |-- Sharded State (FSDP)        : {sharded_state_gb:.2f} GB")
+    print(f"  |-- Activations (Estimated)     : {act_gb:.2f} GB")
+    print("-" * 50)
 
 def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):

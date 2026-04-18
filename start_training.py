@@ -54,10 +54,19 @@ fsdp_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec('fsd
 replicate_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
 def shard_state(state):
-    return jax.tree_util.tree_map(
-        lambda x: jax.device_put(x, fsdp_sharding) if hasattr(x, "shape") else x, 
-        state
-    )
+    def apply_sharding(x):
+        if not hasattr(x, "shape") or x.ndim == 0:
+            return x
+        
+        if x.ndim >= 2:
+            spec = jax.sharding.PartitionSpec(None, 'fsdp') 
+        else:
+            spec = jax.sharding.PartitionSpec() 
+            
+        sharding = jax.sharding.NamedSharding(mesh, spec)
+        return jax.device_put(x, sharding)
+
+    return jax.tree_util.tree_map(apply_sharding, state)
 
 def init_model_and_optimizer():
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
@@ -244,19 +253,12 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
         
         t_compute += (time.time() - t_compute_start)
 
-        current_loss = float(loss)
-        current_token_loss = float(out.halt_diag.get('token_loss', loss))
-        current_p = float(out.ponder_cost)
-        current_forget = float(out.forget_cost)
-        current_storage = float(out.storage_cost)
-        current_grad_norm = float(grad_norm)
-
-        accum_loss += current_loss / LOG_EVERY
-        accum_token_loss += current_token_loss / LOG_EVERY
-        accum_p += current_p / LOG_EVERY
-        accum_forget_cost += current_forget / LOG_EVERY
-        accum_storage_cost += current_storage / LOG_EVERY
-        accum_grad_norm += current_grad_norm / LOG_EVERY
+        accum_loss += loss / LOG_EVERY
+        accum_token_loss += out.halt_diag.get('token_loss', loss) / LOG_EVERY
+        accum_p += out.ponder_cost / LOG_EVERY
+        accum_forget_cost += out.forget_cost / LOG_EVERY
+        accum_storage_cost += out.storage_cost / LOG_EVERY
+        accum_grad_norm += grad_norm / LOG_EVERY
             
         if (step + 1) % LOG_EVERY == 0:
             logger.log(

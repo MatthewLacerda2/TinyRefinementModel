@@ -19,8 +19,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CHECKPOINT_DIR = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
-HUNCH_REFRESH_EVERY = 4
-
 def run_model_inference(
     model: UniversalReasoner,
     tokens: jnp.ndarray,
@@ -37,7 +35,7 @@ def get_logits_for_token(model, padded_tks, token_idx, refresh):
     all_logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
     return all_logits[0, token_idx, :]
 
-def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
+def generate_text(model, enc, prompt, max_new_tokens=1024, temperature=0.5):
     seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 
@@ -58,7 +56,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
         if valid_len >= MAX_SEQ_LEN:
             break
 
-        should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
+        should_refresh = (i == 0)
 
         logits = get_logits_for_token(model, input_ids, valid_len - 1, refresh=should_refresh)
 
