@@ -147,6 +147,9 @@ class RotaryAttention(nnx.Module):
             effective_is_causal = False
         else:
             effective_is_causal = False
+            
+        q = q.astype(v.dtype)
+        k = k.astype(v.dtype)
 
         out = jax.nn.dot_product_attention(
             q, k, v,
