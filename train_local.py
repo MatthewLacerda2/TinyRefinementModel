@@ -70,14 +70,14 @@ class RotaryAttention(nnx.Module):
         self.v_cache = nnx.Cache(None)
         self.cache_index = nnx.Cache(jnp.array(0, dtype=jnp.int32))
 
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
-        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
-        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float32)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
+        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
 
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
 
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float32)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
     def reset_state(self):
         self.k_cache.value = None
@@ -164,12 +164,12 @@ class StandardReasoningBlock(nnx.Module):
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
-        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
-        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=dtype)
+        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
+        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
         self.down_proj = nnx.Linear(
             hidden_dim, latent_dim,
             kernel_init=jax.nn.initializers.zeros,
-            rngs=rngs, dtype=dtype,
+            rngs=rngs, dtype=jnp.float16,
         )
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):

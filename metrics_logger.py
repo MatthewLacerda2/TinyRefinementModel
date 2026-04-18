@@ -67,7 +67,8 @@ class MetricsLogger:
         print(
             f"Step {step:04d} | CE: {ce:.4f} (first: {first_ce:.4f}) | "
             f"Ponder: {out.ponder_cost:.4f} | Tau: {diag_dict.get('tau', 0):.4f}\n"
-            f"      Loss: {loss:.4f} | Saturation: {diag_dict.get('saturation', 0):.1f}% | Steps: {diag_dict.get('expected_steps', 0):.2f}"
+            f"      Loss: {loss:.4f} | Saturation: {diag_dict.get('saturation', 0):.1f}% | "
+            f"Steps: {diag_dict.get('expected_steps', 0):.2f} | Compute: {compute_time:.3f}s"
         )
 
         # Check if file exists and has content to avoid duplicate headers
