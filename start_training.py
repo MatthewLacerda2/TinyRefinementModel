@@ -11,6 +11,7 @@ import optax
 from flax import nnx
 import orbax.checkpoint as ocp
 import time
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 import threading
 import queue
 import multiprocessing as mp
@@ -44,10 +45,28 @@ if not DATA_ROOT:
 
 from data_loaders import TextDataGenerator, DataMixer
 
+devices = jax.devices()
+num_devices = len(devices)
+print(f"🌍 Found {num_devices} JAX devices: {devices}")
+
+mesh = jax.sharding.Mesh(devices, ('fsdp',))
+fsdp_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec('fsdp'))
+replicate_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+
+def shard_state(state):
+    return jax.tree_util.tree_map(
+        lambda x: jax.device_put(x, fsdp_sharding) if hasattr(x, "shape") else x, 
+        state
+    )
+
 def init_model_and_optimizer():
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+    
+    print(f"💎 Sharding model & optimizer across {num_devices} devices (FSDP)...")
+    nnx.update(model, shard_state(nnx.state(model)))
+    nnx.update(optimizer, shard_state(nnx.state(optimizer)))
     
     return model, optimizer
 
@@ -109,9 +128,11 @@ def load_or_create_checkpoint(model, optimizer):
             ),
         )
 
-        nnx.update(model, restored["model"])
+        nnx.update(model, shard_state(restored["model"]))
+        
         graphdef, _ = nnx.split(optimizer)
-        optimizer = nnx.merge(graphdef, restored["optimizer"])
+        sharded_opt_state = shard_state(restored["optimizer"])
+        optimizer = nnx.merge(graphdef, sharded_opt_state)
         
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
@@ -122,7 +143,7 @@ def load_or_create_checkpoint(model, optimizer):
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         monitor.sft_start_step = m_state.get("sft_start_step", None)
         
-        print(f"✅ Resuming from step {start_step}")
+        print(f"✅ Resuming from step {start_step} (Sharded)")
         del restored 
         import gc; gc.collect()
     else:
@@ -134,6 +155,9 @@ def load_or_create_checkpoint(model, optimizer):
 
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
+    global_batch_size = BATCH_SIZE * num_devices
+    print(f"📦 Global Batch Size: {global_batch_size} (Per-device: {BATCH_SIZE})")
+    
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
@@ -153,17 +177,17 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
 
     if start_step > 1:
         if sft_start_step is None or start_step < sft_start_step:
-            total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS
+            total_pretrain_seen = (start_step - 1) * ACCUMULATION_STEPS * num_devices
             for gen, weight in zip(pretrain_sources, pretrain_weights):
                 gen.skip_count = int(total_pretrain_seen * weight)
         else:
             # 1. Catch up pretrain sources to the point where pretraining ended
-            total_pre_pretrain_seen = (sft_start_step - 1) * ACCUMULATION_STEPS
+            total_pre_pretrain_seen = (sft_start_step - 1) * ACCUMULATION_STEPS * num_devices
             for gen, weight in zip(pretrain_sources, pretrain_weights):
                 gen.skip_count = int(total_pre_pretrain_seen * weight)
             
             # 2. Add SFT usage for all blended sources (Chat + Replay)
-            total_sft_seen = (start_step - sft_start_step) * ACCUMULATION_STEPS
+            total_sft_seen = (start_step - sft_start_step) * ACCUMULATION_STEPS * num_devices
             for gen, weight in zip(sft_sources, sft_weights):
                 gen.skip_count += int(total_sft_seen * weight)
 
@@ -172,9 +196,9 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     def data_wrapper():
         while True:
             if not sft_phase_event.is_set():
-                res = pretrain_mixer.get_batch(BATCH_SIZE)
+                res = pretrain_mixer.get_batch(global_batch_size)
             else:
-                res = sft_mixer.get_batch(BATCH_SIZE)
+                res = sft_mixer.get_batch(global_batch_size)
             
             if res[0] is None:
                 data_queue.put((None, None))
@@ -206,15 +230,20 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
         
         t_compute_start = time.time()
         
+        data_s = NamedSharding(mesh, PartitionSpec('fsdp', None))
+        
+        batch_sharded = jax.device_put(batch, data_s)
+        step_replicated = jax.device_put(jnp.array(step), replicate_sharding)
+        truncate_replicated = jax.device_put(jnp.array(should_truncate), replicate_sharding)
+
         loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, jnp.array(step), should_truncate=should_truncate
+            model, batch_sharded, step_replicated, should_truncate=truncate_replicated
         )
         
         apply_grads(optimizer, grads, model)
         
         t_compute += (time.time() - t_compute_start)
 
-        # Force JAX to resolve the array into a Python float instantly
         current_loss = float(loss)
         current_token_loss = float(out.halt_diag.get('token_loss', loss))
         current_p = float(out.ponder_cost)
@@ -222,7 +251,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
         current_storage = float(out.storage_cost)
         current_grad_norm = float(grad_norm)
 
-        # Now accumulate the pure Python floats
         accum_loss += current_loss / LOG_EVERY
         accum_token_loss += current_token_loss / LOG_EVERY
         accum_p += current_p / LOG_EVERY
@@ -305,7 +333,6 @@ if __name__ == "__main__":
     
     mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer)
     
-    # Set event if resuming in SFT phase
     if getattr(monitor, "sft_start_step", None) is not None:
         print(f"🔄 Resuming in SFT phase (started at step {monitor.sft_start_step})")
         sft_phase_event.set()

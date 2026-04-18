@@ -7,16 +7,16 @@ from typing import Dict, Any
 #Keep (most) values powers of 2 if you know what's good for you
 
 #Params
-LATENT_DIM = 512
-NUM_BLOCKS = 4
-SHARED_SLOTS = 32
-MAX_SEQ_LEN = 512
+LATENT_DIM = 1024
+NUM_BLOCKS = 8
+SHARED_SLOTS = 64
+MAX_SEQ_LEN = 1024
 VOCAB_SIZE = 100352
 
 #Training
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 32
 MIN_STEPS = 4
-BATCH_SIZE = 1
+BATCH_SIZE = 8
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
 
@@ -54,7 +54,7 @@ def apply_rope(x, cos, sin):
     return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.float32):
+    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.bfloat16):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -63,21 +63,21 @@ class RotaryAttention(nnx.Module):
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         t = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS)
         freqs = jnp.outer(t, inv_freq)
-        self.sin_cached = jnp.sin(freqs)
-        self.cos_cached = jnp.cos(freqs)
+        self.sin_cached = jnp.sin(freqs).astype(dtype)
+        self.cos_cached = jnp.cos(freqs).astype(dtype)
 
         self.k_cache = nnx.Cache(None)
         self.v_cache = nnx.Cache(None)
         self.cache_index = nnx.Cache(jnp.array(0, dtype=jnp.int32))
 
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
-        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
-        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.bfloat16)
+        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.bfloat16)
+        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.bfloat16)
 
-        self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
-        self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
+        self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
+        self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
 
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.bfloat16)
 
     def reset_state(self):
         self.k_cache.value = None
@@ -148,12 +148,12 @@ class RotaryAttention(nnx.Module):
         else:
             effective_is_causal = False
             
-        q = q.astype(jnp.float16)
-        k = k.astype(jnp.float16)
-        v = v.astype(jnp.float16)
+        q = q.astype(jnp.bfloat16)
+        k = k.astype(jnp.bfloat16)
+        v = v.astype(jnp.bfloat16)
         
         if mask is not None and mask.dtype != jnp.bool_:
-            attn_bias = mask.astype(jnp.float16)
+            attn_bias = mask.astype(jnp.bfloat16)
             mask_arg = None
         else:
             attn_bias = None
@@ -169,18 +169,18 @@ class RotaryAttention(nnx.Module):
 
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
+    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.bfloat16):
         self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
         self.norm1 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
-        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
-        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
+        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.bfloat16)
+        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.bfloat16)
         self.down_proj = nnx.Linear(
             hidden_dim, latent_dim,
             kernel_init=jax.nn.initializers.zeros,
-            rngs=rngs, dtype=jnp.float16,
+            rngs=rngs, dtype=jnp.bfloat16,
         )
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
@@ -196,7 +196,7 @@ class StandardReasoningBlock(nnx.Module):
 
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False):
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.bfloat16, share_weights=False):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
         if share_weights:
@@ -225,13 +225,13 @@ class BlockStack(nnx.Module):
 
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.bfloat16, use_forget=True):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
 
         self.shared_token = nnx.Param(
-            jax.nn.initializers.orthogonal()(rngs(), (1, SHARED_SLOTS, latent_dim), jnp.float32)
+            jax.nn.initializers.orthogonal()(rngs(), (1, SHARED_SLOTS, latent_dim), jnp.bfloat16)
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
@@ -248,8 +248,8 @@ class UniversalReasoner(nnx.Module):
 
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
-        self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.float32, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -1.0) 
+        self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.bfloat16, rngs=rngs)
+        self.halt_head.bias.value = jnp.full((1,), -1.0, dtype=jnp.bfloat16) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
@@ -268,12 +268,12 @@ class UniversalReasoner(nnx.Module):
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
 
-        self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim)))
+        self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim), dtype=dtype))
 
 
     def _encode_sequence(self, tokens):
         pad_mask = tokens != PAD_TOKEN_ID
-        pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
+        pad_bias = (pad_mask.astype(jnp.bfloat16) - 1.0) * 1e9
         pad_bias = pad_bias[:, None, None, :]
         
         seq_len = tokens.shape[1]
@@ -287,8 +287,8 @@ class UniversalReasoner(nnx.Module):
         shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
         
-        pad_part = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
-        slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.float32)
+        pad_part = (pad_mask.astype(jnp.bfloat16) - 1.0) * 1e9
+        slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.bfloat16)
         extended_ctx_bias = jnp.concatenate([pad_part, slot_part], axis=-1)[:, None, None, :]
 
         modules = (
@@ -373,7 +373,7 @@ class UniversalReasoner(nnx.Module):
         lambda_p = 0.1
         active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
         prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
-        valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.float32)
+        valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.bfloat16)
 
         prior_prob = (prior_prob * valid_steps_mask)
         prior_prob = prior_prob / (jnp.sum(prior_prob, axis=0, keepdims=True) + 1e-8)
@@ -410,7 +410,7 @@ class UniversalReasoner(nnx.Module):
         decoder_kv_pos = jnp.concatenate([seq_pos, past_shared_pos], axis=0)
         
         decoder_pad_mask = jnp.concatenate([pad_mask, jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)], axis=1)
-        decoder_bias = (decoder_pad_mask.astype(jnp.float32) - 1.0) * 1e9
+        decoder_bias = (decoder_pad_mask.astype(jnp.bfloat16) - 1.0) * 1e9
         decoder_bias = decoder_bias[:, None, None, :]
 
         final_carry, all_outputs, shared_pos = self._reasoning_loop(z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared)
