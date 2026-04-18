@@ -9,8 +9,8 @@ from typing import Dict, Any
 #Params
 LATENT_DIM = 512
 NUM_BLOCKS = 4
-SHARED_SLOTS = 64
-MAX_SEQ_LEN = 1024
+SHARED_SLOTS = 32
+MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100352
 
 #Training
@@ -251,6 +251,8 @@ class UniversalReasoner(nnx.Module):
             rngs=rngs, dtype=dtype,
         )
 
+        self.raw_tau = nnx.Param(jnp.array(-2.3))
+
         self.use_forget = use_forget
         if self.use_forget:
             self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
@@ -282,7 +284,8 @@ class UniversalReasoner(nnx.Module):
             self.meta_proj, self.time_norm, self.time_signal_norm, 
             self.reasoning_stack, self.halt_pre, self.halt_head,
             self.forget_norm if self.use_forget else None,
-            self.forget_head if self.use_forget else None
+            self.forget_head if self.use_forget else None,
+            self.raw_tau
         )
         model_graph, model_state = nnx.split(modules)
 
@@ -293,7 +296,7 @@ class UniversalReasoner(nnx.Module):
             (
                 m_proj, t_norm, ts_norm, 
                 r_stack, h_pre, h_head,
-                f_norm, f_head
+                f_norm, f_head, raw_tau_param
             ) = nnx.merge(model_graph, current_state)
             
             meta_input = jnp.stack([p_remain_prev, prev_forget, prev_div], axis=-1)
@@ -323,9 +326,11 @@ class UniversalReasoner(nnx.Module):
             p_remain_next = p_remain_prev * (1.0 - halt_prob)
             weighted_shared_acc = weighted_shared_acc + step_weight[:, None, None] * new_shared
 
-            step_div = calculate_diversity_loss_per_batch(new_shared)
+            tau = jax.nn.softplus(raw_tau_param.value) + 1e-4
 
-            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, h_pre, h_head, f_norm, f_head))
+            step_div = calculate_infonce_loss(new_shared, curr_shared, tau)
+
+            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, h_pre, h_head, f_norm, f_head, raw_tau_param))
 
             return (new_shared, p_remain_next, weighted_shared_acc, forget_val, step_div, next_state), ScanStepOutput(
                 shared_state=new_shared,
@@ -432,6 +437,7 @@ class UniversalReasoner(nnx.Module):
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
             'saturation': jnp.mean(p_remain_final) * 100.0,
+            'tau': jax.nn.softplus(self.raw_tau.value) + 1e-4,
         }
         
         self.hunch_cache.value = expected_shared
@@ -442,15 +448,27 @@ class UniversalReasoner(nnx.Module):
             halt_diag=halt_diag, expected_shared=expected_shared
         )
 
-def calculate_diversity_loss_per_batch(shared_state):
-    shared_state = shared_state.astype(jnp.float32)
-    norms = jnp.sqrt(jnp.sum(jnp.square(shared_state), axis=-1, keepdims=True) + 1e-8)
-    normalized = shared_state / norms
+def calculate_infonce_loss(new_shared, curr_shared, tau):
+    b, s, d = new_shared.shape
     
-    dots = jnp.einsum('bsd,btd->bst', normalized, normalized, precision=jax.lax.Precision.HIGHEST)
-    identity = jnp.eye(SHARED_SLOTS)[None, :, :]
+    anchor = new_shared / jnp.sqrt(jnp.sum(jnp.square(new_shared), axis=-1, keepdims=True) + 1e-8)
+    positive = jax.lax.stop_gradient(
+        curr_shared / jnp.sqrt(jnp.sum(jnp.square(curr_shared), axis=-1, keepdims=True) + 1e-8)
+    )
     
-    return jnp.mean(jnp.square(dots - identity), axis=(1, 2))
+    pos_logits = jnp.sum(anchor * positive, axis=-1, keepdims=True) / tau
+    
+    neg_logits = jnp.einsum('bsd,btd->bst', anchor, anchor, precision=jax.lax.Precision.HIGHEST) / tau
+    
+    identity = jnp.eye(s)[None, :, :]
+    neg_logits = neg_logits + (identity * -1e9)
+    logits = jnp.concatenate([pos_logits, neg_logits], axis=-1)
+    
+    labels = jnp.zeros((b, s), dtype=jnp.int32)
+    
+    loss_per_slot = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
+    
+    return jnp.mean(loss_per_slot, axis=-1)
 
 @nnx.jit
 def compute_grad_step(model, batch_tokens, step, should_truncate=False):
