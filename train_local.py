@@ -377,17 +377,17 @@ class UniversalReasoner(nnx.Module):
         
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens)
 
-        if should_refresh:
-            self.hunch_cache.value = None
-
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
-        current_hunch = self.hunch_cache.value
         
-        if current_hunch is not None:
+        def get_fresh():
+            return z_shared_base
+            
+        def get_carried():
+            current_hunch = self.hunch_cache.value
             gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
-            z_shared = gate * current_hunch + (1.0 - gate) * z_shared_base
-        else:
-            z_shared = z_shared_base
+            return gate * current_hunch + (1.0 - gate) * z_shared_base
+        
+        z_shared = jax.lax.cond(should_refresh, get_fresh, get_carried)
 
         past_shared_pos = jnp.arange(-SHARED_SLOTS, 0)
         
