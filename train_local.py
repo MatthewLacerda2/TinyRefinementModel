@@ -236,8 +236,8 @@ class UniversalReasoner(nnx.Module):
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.encoder_stack = BlockStack(1, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
-        self.decoder_stack = BlockStack(1, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.encoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.decoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
 
         self.meta_proj = nnx.Linear(3, latent_dim, rngs=rngs, dtype=dtype)
