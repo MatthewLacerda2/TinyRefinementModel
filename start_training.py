@@ -32,11 +32,9 @@ from metrics_logger import LossMonitor, MetricsLogger
 
 load_dotenv()
 
-LOG_EVERY = 100
-CHECKPOINT_INTERVAL = 200
-SORT_BUFFER_SIZE = 1000
+LOG_EVERY = 250
+CHECKPOINT_INTERVAL = 1000
 PREFETCH_SIZE = 128
-# Transition to SFT now happens dynamically on CE plateau
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
 CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
@@ -233,7 +231,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
         accum_grad_norm += current_grad_norm / LOG_EVERY
             
         if (step + 1) % LOG_EVERY == 0:
-            t_total = time.time() - t0_batch
             logger.log(
                 step + 1, 
                 float(accum_token_loss),
@@ -292,7 +289,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             accum_forget_cost = 0.0
             accum_storage_cost = 0.0
             accum_grad_norm = 0.0
-            t0_batch = time.time()
             t_compute = 0.0
 
         step += 1
