@@ -148,13 +148,21 @@ class RotaryAttention(nnx.Module):
         else:
             effective_is_causal = False
             
-        q = q.astype(v.dtype)
-        k = k.astype(v.dtype)
+        q = q.astype(jnp.float16)
+        k = k.astype(jnp.float16)
+        v = v.astype(jnp.float16)
+        
+        if mask is not None and mask.dtype != jnp.bool_:
+            attn_bias = mask.astype(jnp.float16)
+            mask_arg = None
+        else:
+            attn_bias = None
+            mask_arg = mask
 
         out = jax.nn.dot_product_attention(
             q, k, v,
-            mask=mask if (mask is not None and mask.dtype == jnp.bool_) else None, 
-            bias=mask if (mask is not None and mask.dtype != jnp.bool_) else None,
+            mask=mask_arg, 
+            bias=attn_bias,
             is_causal=effective_is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
