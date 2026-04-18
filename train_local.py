@@ -14,7 +14,7 @@ MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100352
 
 #Training
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 32
 MIN_STEPS = 4
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
@@ -236,13 +236,9 @@ class UniversalReasoner(nnx.Module):
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.coder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
-        self.reasoner_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
-
-        self.encoder_stack = self.coder_stack
-        self.decoder_stack = self.coder_stack
-        
-        self.reasoning_stack = self.reasoner_stack
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
 
         self.meta_proj = nnx.Linear(3, latent_dim, rngs=rngs, dtype=dtype)
 
