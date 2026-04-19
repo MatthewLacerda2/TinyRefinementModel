@@ -236,8 +236,8 @@ class UniversalReasoner(nnx.Module):
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.encoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
-        self.decoder_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
 
         self.meta_proj = nnx.Linear(3, latent_dim, rngs=rngs, dtype=dtype)
@@ -362,24 +362,14 @@ class UniversalReasoner(nnx.Module):
         final_carry = (final_carry_all[0], final_carry_all[1], final_carry_all[2])
         return final_carry, all_outputs, shared_pos
 
-    def _compute_ponder_kl(self, step_weights, p_remain_final, max_steps):
+    def _compute_ponder_cost(self, step_weights, p_remain_final, max_steps):
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
         full_step_weights = step_weights.at[-1].add(p_remain_final)
 
-        lambda_p = 0.2
-        active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
-        prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
-        valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.bfloat16)
+        steps_taken = jnp.sum(full_step_weights * step_ids, axis=0)
+        ponder_cost = steps_taken - MIN_STEPS
 
-        prior_prob = (prior_prob * valid_steps_mask)
-        prior_prob = prior_prob / (jnp.sum(prior_prob, axis=0, keepdims=True) + 1e-8)
-
-        p_x = full_step_weights + 1e-8 
-        q_x = prior_prob + 1e-8
-
-        kl_div_per_step = p_x * (jnp.log(p_x) - jnp.log(q_x))
-        kl_div_per_batch = jnp.sum(kl_div_per_step * valid_steps_mask, axis=0)
-        return jnp.mean(kl_div_per_batch), full_step_weights
+        return jnp.mean(ponder_cost), full_step_weights
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
         batch_size = tokens.shape[0]
