@@ -245,7 +245,7 @@ class UniversalReasoner(nnx.Module):
         halt_pre_dim = latent_dim // 4
         self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
         self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.bfloat16, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -1.0, dtype=jnp.bfloat16) 
+        self.halt_head.bias.value = jnp.full((1,), -2.0, dtype=jnp.bfloat16) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
@@ -366,7 +366,7 @@ class UniversalReasoner(nnx.Module):
         step_ids = jnp.arange(1, max_steps + 1)[:, None]
         full_step_weights = step_weights.at[-1].add(p_remain_final)
 
-        lambda_p = 0.1
+        lambda_p = 0.2
         active_steps = jnp.maximum(0, step_ids - MIN_STEPS)
         prior_prob = lambda_p * ((1.0 - lambda_p) ** active_steps)
         valid_steps_mask = (step_ids >= MIN_STEPS).astype(jnp.bfloat16)
@@ -428,9 +428,9 @@ class UniversalReasoner(nnx.Module):
         
         total_p_cost, full_step_weights = self._compute_ponder_kl(all_outputs.step_weight, p_remain_final, max_steps)
         
-        total_f_cost = jnp.mean(jnp.sum(full_step_weights * all_outputs.forget_val, axis=0))
-        total_s_cost = jnp.mean(jnp.sum(full_step_weights * all_outputs.storage_val, axis=0))
-        total_div_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(full_step_weights) * all_outputs.step_div, axis=0))
+        total_f_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(full_step_weights) * all_outputs.forget_val, axis=0))
+        total_s_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(full_step_weights) * all_outputs.storage_val, axis=0))
+        total_div_cost = jnp.mean(jnp.sum(full_step_weights * all_outputs.step_div, axis=0))
         
         actual_steps = jnp.sum(full_step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
 
@@ -495,6 +495,11 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         out2 = model(seq2_in, training=True, should_refresh=False)
         ce2 = compute_ce(out2.logits, seq2_out)
 
+        refinement_regression = jnp.maximum(0.0, ce2 - ce1) 
+        refinement_loss = refinement_regression * 0.08
+        
+        early_penalty = ce1 * 0.03
+
         from schedules import ponder_lambda_schedule, forget_lambda_schedule, storage_lambda_schedule, diversity_lambda_schedule
         opt_step = step // ACCUMULATION_STEPS
         p_lambda = ponder_lambda_schedule(opt_step)
@@ -502,7 +507,14 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         s_lambda = storage_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
 
-        total_loss = (ce1 + ce2) + p_lambda * (out1.ponder_cost + out2.ponder_cost) + f_lambda * (out1.forget_cost + out2.forget_cost) + s_lambda * (out1.storage_cost + out2.storage_cost) + d_lambda * (out1.diversity_loss + out2.diversity_loss)
+        total_loss = (ce1 + ce2) \
+                     + p_lambda * (out1.ponder_cost + out2.ponder_cost) \
+                     + f_lambda * (out1.forget_cost + out2.forget_cost) \
+                     + s_lambda * (out1.storage_cost + out2.storage_cost) \
+                     + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
+                     + refinement_loss \
+                     + early_penalty
+
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
         new_halt_diag = {
