@@ -16,28 +16,20 @@ from train_local import (
     NUM_GROUPS
 )
 
-# Ensure UTF-8 encoding for console output
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
 def smooth(y, box_pts):
-    """Simple moving average smoothing."""
     if len(y) < box_pts:
         return np.array(y)
     box = np.ones(box_pts) / box_pts
     y_smooth = np.convolve(y, box, mode='valid')
     
-    # Pad so original shape is maintained
     pad_front = box_pts // 2
     pad_back = len(y) - len(y_smooth) - pad_front
     return np.pad(y_smooth, (pad_front, pad_back), mode='edge')
 
 def calculate_tokens(step):
-    """
-    Calculate total tokens seen across all micro-batches.
-    'step' from the logs represents the number of micro-batches processed.
-    Each micro-batch processes 2 consecutive windows of MAX_SEQ_LEN.
-    """
     return step * BATCH_SIZE * (MAX_SEQ_LEN * 2)
 
 def print_model_stats():
@@ -63,9 +55,9 @@ def print_model_stats():
     block_norms = LATENT_DIM * 2
     params_per_block = attn_total + mlp_total + block_norms
     
-    num_enc_blocks = NUM_BLOCKS // 2
-    num_dec_blocks = NUM_BLOCKS // 2
-    num_reasoning_blocks = 1
+    num_enc_blocks = 1
+    num_dec_blocks = 1
+    num_reasoning_blocks = NUM_BLOCKS
     
     unique_blocks = num_enc_blocks + num_dec_blocks + num_reasoning_blocks
     
@@ -80,7 +72,7 @@ def print_model_stats():
     shared_token = SHARED_SLOTS * LATENT_DIM
     seq_norm = LATENT_DIM
     
-    meta_proj = 3 * LATENT_DIM + LATENT_DIM
+    meta_proj = 2 * LATENT_DIM + LATENT_DIM
     
     extra_norms = LATENT_DIM * 4 
     hunch_gate = LATENT_DIM * LATENT_DIM + LATENT_DIM
@@ -96,9 +88,9 @@ def print_model_stats():
     print(f"Model Parameters: {param_count:,}")
     print(f"  |-- Structure Params : {structure_params:,} (Embeddings, Norms, Heads)")
     print(f"  |-- Unique Layer Params : {num_layer_params:,} (across {unique_blocks} unique blocks)")
-    print(f"      |-- Encoder Stack   : {enc_params:,} ({num_enc_blocks} blocks)")
-    print(f"      |-- Decoder Stack   : {dec_params:,} ({num_dec_blocks} blocks)")
-    print(f"      |-- Reasoning Stack : {reason_params:,} (1 shared block)")
+    print(f"      |-- Encoder Stack   : {enc_params:,} (Shared)")
+    print(f"      |-- Decoder Stack   : {dec_params:,} (Shared)")
+    print(f"      |-- Reasoning Stack : {reason_params:,} ({num_reasoning_blocks} Unique Blocks)")
 
 def plot_training_history(log_path="training_history.csv"):
     if not os.path.exists(log_path):
