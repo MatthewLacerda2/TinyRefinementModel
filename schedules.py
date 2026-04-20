@@ -11,8 +11,6 @@ learning_schedule = optax.warmup_cosine_decay_schedule(
     end_value=1e-6
 )
 
-
-
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
     peak_value=1.0, 
