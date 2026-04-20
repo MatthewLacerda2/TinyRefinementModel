@@ -225,7 +225,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
     
     accum_loss = 0.0
     accum_token_loss = 0.0
-    accum_p = 0.0
     accum_forget_cost = 0.0
     accum_storage_cost = 0.0
     accum_grad_norm = 0.0
@@ -255,7 +254,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
         accum_loss += loss / LOG_EVERY
         accum_token_loss += out.halt_diag.get('token_loss', loss) / LOG_EVERY
-        accum_p += out.ponder_cost / LOG_EVERY
         accum_forget_cost += out.forget_cost / LOG_EVERY
         accum_storage_cost += out.storage_cost / LOG_EVERY
         accum_grad_norm += grad_norm / LOG_EVERY
@@ -315,7 +313,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             
             accum_loss = 0.0
             accum_token_loss = 0.0
-            accum_p = 0.0
             accum_forget_cost = 0.0
             accum_storage_cost = 0.0
             accum_grad_norm = 0.0

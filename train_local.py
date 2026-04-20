@@ -26,17 +26,13 @@ NUM_GROUPS = NUM_HEADS // 4
 @struct.dataclass
 class ScanStepOutput:
     shared_state: jnp.ndarray
-    halt_prob: jnp.ndarray
     forget_val: jnp.ndarray
     storage_val: jnp.ndarray
-    halt_logit: jnp.ndarray
     step_div: jnp.ndarray
-    step_weight: jnp.ndarray
 
 @struct.dataclass
 class ReasonerOutput:
     logits: jnp.ndarray
-    ponder_cost: float
     forget_cost: float
     storage_cost: float
     diversity_loss: float
@@ -240,12 +236,7 @@ class UniversalReasoner(nnx.Module):
         self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
 
-        self.meta_proj = nnx.Linear(3, latent_dim, rngs=rngs, dtype=dtype)
-
-        halt_pre_dim = latent_dim // 4
-        self.halt_pre = nnx.Linear(latent_dim, halt_pre_dim, rngs=rngs, dtype=dtype)
-        self.halt_head = nnx.Linear(halt_pre_dim, 1, dtype=jnp.bfloat16, rngs=rngs)
-        self.halt_head.bias.value = jnp.full((1,), -2.0, dtype=jnp.bfloat16) 
+        self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
@@ -289,7 +280,7 @@ class UniversalReasoner(nnx.Module):
 
         modules = (
             self.meta_proj, self.time_norm, self.time_signal_norm, 
-            self.reasoning_stack, self.halt_pre, self.halt_head,
+            self.reasoning_stack,
             self.forget_norm if self.use_forget else None,
             self.forget_head if self.use_forget else None,
             self.raw_tau
@@ -297,16 +288,16 @@ class UniversalReasoner(nnx.Module):
         model_graph, model_state = nnx.split(modules)
 
         def scan_step(carry, inputs):
-            curr_shared, p_remain_prev, weighted_shared_acc, prev_forget, prev_div, current_state = carry
+            curr_shared, prev_forget, prev_div, current_state = carry
             t_signal, step_id = inputs
             
             (
                 m_proj, t_norm, ts_norm, 
-                r_stack, h_pre, h_head,
+                r_stack,
                 f_norm, f_head, raw_tau_param
             ) = nnx.merge(model_graph, current_state)
             
-            meta_input = jnp.stack([p_remain_prev, prev_forget, prev_div], axis=-1)
+            meta_input = jnp.stack([prev_forget, prev_div], axis=-1)
             meta_signal = m_proj(meta_input)[:, None, :]
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
@@ -322,34 +313,22 @@ class UniversalReasoner(nnx.Module):
             else:
                 forget_val = jnp.zeros((batch_size,))
 
-            storage_val = jnp.mean(jnp.abs(new_shared), axis=(1, 2))
-
-            pooled = jnp.mean(new_shared, axis=1)
-            halt_logit = h_head(jax.nn.gelu(h_pre(pooled))).squeeze(-1)
-            halt_prob = jax.nn.sigmoid(halt_logit)
-            halt_prob = jnp.where(step_id < MIN_STEPS, 0.0, jnp.clip(halt_prob, 0.0, 1.0 - 1e-7))
-
-            step_weight = halt_prob * p_remain_prev
-            p_remain_next = p_remain_prev * (1.0 - halt_prob)
-            weighted_shared_acc = weighted_shared_acc + step_weight[:, None, None] * new_shared
+            storage_val = jnp.mean(jnp.square(new_shared), axis=(1, 2))
 
             tau = jax.nn.softplus(raw_tau_param.value) + 1e-4
 
             step_div = calculate_infonce_loss(new_shared, curr_shared, tau)
 
-            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, h_pre, h_head, f_norm, f_head, raw_tau_param))
+            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, f_norm, f_head, raw_tau_param))
 
-            return (new_shared, p_remain_next, weighted_shared_acc, forget_val, step_div, next_state), ScanStepOutput(
+            return (new_shared, forget_val, step_div, next_state), ScanStepOutput(
                 shared_state=new_shared,
-                halt_prob=halt_prob, forget_val=forget_val, storage_val=storage_val,
-                halt_logit=halt_logit, step_div=step_div, step_weight=step_weight
+                forget_val=forget_val, storage_val=storage_val,
+                step_div=step_div
             )
 
-        init_weighted_shared = jnp.zeros_like(z_shared)
         init_carry = (
             z_shared, 
-            jnp.ones((batch_size,)), 
-            init_weighted_shared,
             jnp.zeros((batch_size,)),
             jnp.zeros((batch_size,)),
             model_state
@@ -359,17 +338,8 @@ class UniversalReasoner(nnx.Module):
             jax.checkpoint(scan_step), init_carry, (all_time_embeds, jnp.arange(max_steps))
         )
 
-        final_carry = (final_carry_all[0], final_carry_all[1], final_carry_all[2])
+        final_carry = (final_carry_all[0],)
         return final_carry, all_outputs, shared_pos
-
-    def _compute_ponder_cost(self, step_weights, p_remain_final, max_steps):
-        step_ids = jnp.arange(1, max_steps + 1)[:, None]
-        full_step_weights = step_weights.at[-1].add(p_remain_final)
-
-        steps_taken = jnp.sum(full_step_weights * step_ids, axis=0)
-        ponder_cost = steps_taken - MIN_STEPS
-
-        return jnp.mean(ponder_cost), full_step_weights
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
         batch_size = tokens.shape[0]
@@ -400,9 +370,7 @@ class UniversalReasoner(nnx.Module):
         decoder_bias = decoder_bias[:, None, None, :]
 
         final_carry, all_outputs, shared_pos = self._reasoning_loop(z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared)
-        final_shared, p_remain_final, weighted_shared_acc = final_carry
-        
-        expected_shared = weighted_shared_acc + p_remain_final[:, None, None] * final_shared
+        expected_shared = final_carry[0]
         
         decoder_ctx_final = jnp.concatenate([z_seq, expected_shared], axis=1)
         
@@ -416,31 +384,24 @@ class UniversalReasoner(nnx.Module):
         )
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
         
-        total_p_cost, full_step_weights = self._compute_ponder_kl(all_outputs.step_weight, p_remain_final, max_steps)
+        total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
+        total_s_cost = jnp.mean(jnp.sum(all_outputs.storage_val, axis=0))
+        total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
         
-        total_f_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(full_step_weights) * all_outputs.forget_val, axis=0))
-        total_s_cost = jnp.mean(jnp.sum(jax.lax.stop_gradient(full_step_weights) * all_outputs.storage_val, axis=0))
-        total_div_cost = jnp.mean(jnp.sum(full_step_weights * all_outputs.step_div, axis=0))
-        
-        actual_steps = jnp.sum(full_step_weights * jnp.arange(1, max_steps + 1)[:, None], axis=0)
-
         states = all_outputs.shared_state
         diffs = states[1:] - states[:-1]
         temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
         
         halt_diag = {
-            'ponder_kl': total_p_cost,
-            'expected_steps': jnp.mean(actual_steps),
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
-            'saturation': jnp.mean(p_remain_final) * 100.0,
             'tau': jax.nn.softplus(self.raw_tau.value) + 1e-4,
         }
         
         self.hunch_cache.value = expected_shared
 
         return ReasonerOutput(
-            logits=logits, ponder_cost=total_p_cost, forget_cost=total_f_cost,
+            logits=logits, forget_cost=total_f_cost,
             storage_cost=total_s_cost, diversity_loss=total_div_cost,
             halt_diag=halt_diag, expected_shared=expected_shared
         )
@@ -448,9 +409,9 @@ class UniversalReasoner(nnx.Module):
 def calculate_infonce_loss(new_shared, curr_shared, tau):
     b, s, d = new_shared.shape
     
-    anchor = new_shared / jnp.sqrt(jnp.sum(jnp.square(new_shared), axis=-1, keepdims=True) + 1e-8)
+    anchor = new_shared / jnp.sqrt(jnp.sum(jnp.square(new_shared), axis=-1, keepdims=True) + 1e-5)
     positive = jax.lax.stop_gradient(
-        curr_shared / jnp.sqrt(jnp.sum(jnp.square(curr_shared), axis=-1, keepdims=True) + 1e-8)
+        curr_shared / jnp.sqrt(jnp.sum(jnp.square(curr_shared), axis=-1, keepdims=True) + 1e-5)
     )
     
     pos_logits = jnp.sum(anchor * positive, axis=-1, keepdims=True) / tau
@@ -490,15 +451,13 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         
         early_penalty = ce1 * 0.03
 
-        from schedules import ponder_lambda_schedule, forget_lambda_schedule, storage_lambda_schedule, diversity_lambda_schedule
+        from schedules import forget_lambda_schedule, storage_lambda_schedule, diversity_lambda_schedule
         opt_step = step // ACCUMULATION_STEPS
-        p_lambda = ponder_lambda_schedule(opt_step)
         f_lambda = forget_lambda_schedule(opt_step)
         s_lambda = storage_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
 
         total_loss = (ce1 + ce2) \
-                     + p_lambda * (out1.ponder_cost + out2.ponder_cost) \
                      + f_lambda * (out1.forget_cost + out2.forget_cost) \
                      + s_lambda * (out1.storage_cost + out2.storage_cost) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \

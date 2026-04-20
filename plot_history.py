@@ -67,19 +67,15 @@ def print_model_stats():
     embed = VOCAB_SIZE * LATENT_DIM
     time_embed = (MAX_STEPS_LIMIT + 1) * LATENT_DIM
     shared_token = SHARED_SLOTS * LATENT_DIM
-    meta_proj = 3 * LATENT_DIM + LATENT_DIM
+    meta_proj = 2 * LATENT_DIM + LATENT_DIM
     seq_norm = LATENT_DIM
-    
-    halt_pre_dim = LATENT_DIM // 4
-    halt_pre = LATENT_DIM * halt_pre_dim + halt_pre_dim
-    halt_head = halt_pre_dim * 1 + 1
     
     extra_norms = LATENT_DIM * 5 
     hunch_gate = LATENT_DIM * LATENT_DIM + LATENT_DIM
     forget_head = LATENT_DIM * LATENT_DIM + LATENT_DIM 
     
     extra_params = (embed + time_embed + shared_token + meta_proj + seq_norm + 
-                    halt_pre + halt_head + extra_norms + hunch_gate + forget_head + 1) # +1 for raw_tau
+                    extra_norms + hunch_gate + forget_head + 1) # +1 for raw_tau
     
     param_count = total_block_params + extra_params
     
@@ -120,13 +116,10 @@ def plot_training_history(log_path="training_history.csv"):
                         'loss':  float(row.get('loss', 0)),
                         'ce': float(row.get('ce', 0)),
                         'first_ce': float(row.get('first_ce', 0)),
-                        'ponder': float(row.get('avg_ponder', 0)),
-                        'steps': float(row.get('expected_steps', 0)),
                         'diversity': float(row.get('diversity_loss', 0)),
                         'forget_cost': float(row.get('avg_forget_cost', 0)),
                         'storage_cost': float(row.get('avg_storage_cost', 0)),
                         'grad_norm': float(row.get('grad_norm_avg', 0)),
-                        'saturation': float(row.get('saturation', 0)),
                         'temporal_drift': float(row.get('temporal_drift', 0)),
                     })
                 except ValueError:
@@ -143,13 +136,10 @@ def plot_training_history(log_path="training_history.csv"):
     losses = np.array([e['loss'] for e in history])
     ce = np.array([e['ce'] for e in history])
     first_ce = np.array([e['first_ce'] for e in history])
-    ponder = np.array([e['ponder'] for e in history])
-    exp_steps = np.array([e['steps'] for e in history])
     diversity = np.array([e['diversity'] for e in history])
     forget = np.array([e['forget_cost'] for e in history])
     storage = np.array([e['storage_cost'] for e in history])
     grad_norm = np.array([e['grad_norm'] for e in history])
-    saturation = np.array([e['saturation'] for e in history])
     temporal_drift = np.array([e['temporal_drift'] for e in history])
 
     plt.style.use('dark_background')
@@ -170,16 +160,12 @@ def plot_training_history(log_path="training_history.csv"):
     ax1.legend()
     ax1.grid(True, alpha=0.1)
 
-    # --- 2. REASONING INTENSITY (Steps & Saturation) ---
-    ax2.plot(steps, exp_steps, color='#adff2f', alpha=0.4, label='Expected Steps')
-    ax2_twin = ax2.twinx()
-    ax2_twin.plot(steps, saturation, color='#ffcc00', alpha=0.3, label='Saturation (%)')
-    ax2_twin.set_ylabel('Saturation %', color='#ffcc00')
-    ax2.plot(steps, smooth(exp_steps, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed Steps')
-    ax2.set_title('Reasoning Intensity', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Steps', color='#adff2f')
+    # --- 2. TEMPORAL DRIFT (Replaces Steps & Saturation) ---
+    ax2.plot(steps, temporal_drift, color='#adff2f', alpha=0.4, label='Temporal Drift')
+    ax2.plot(steps, smooth(temporal_drift, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed Drift')
+    ax2.set_title('Temporal Drift (State Evolution)', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('Drift Magnitude', color='#adff2f')
     ax2.legend(loc='upper left')
-    ax2_twin.legend(loc='upper right')
     ax2.grid(True, alpha=0.1)
 
     # --- 3. RESOURCE COSTS (Forget & Storage) ---
