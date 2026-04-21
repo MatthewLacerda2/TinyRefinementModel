@@ -8,7 +8,7 @@ from typing import Dict, Any
 
 #Params
 LATENT_DIM = 512
-NUM_BLOCKS = 4
+NUM_BLOCKS = 8
 SHARED_SLOTS = 32
 MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100352
@@ -228,9 +228,9 @@ class UniversalReasoner(nnx.Module):
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
-        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
-        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
+        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True)
 
         self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype)
         
