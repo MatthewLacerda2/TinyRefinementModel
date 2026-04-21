@@ -3,9 +3,10 @@ import fsspec
 import jax.numpy as jnp
 
 class LossMonitor:
-    def __init__(self, patience=1500, window=50):
+    def __init__(self, patience=50000, window=20, min_delta=0.005):
         self.patience = patience
         self.window = window
+        self.min_delta = min_delta
         self.ce_history = []
         self.best_ce = float("inf")
         self.best_loss = float("inf")
@@ -31,7 +32,7 @@ class LossMonitor:
         avg_ce = sum(self.ce_history) / len(self.ce_history)
         # Using a small epsilon for early stopping stability as before
         # But we decouple this from the "is_new_best" flag used for checkpointing
-        if avg_ce < (getattr(self, 'best_avg_ce', float('inf')) - 0.01):
+        if avg_ce < (getattr(self, 'best_avg_ce', float('inf')) - self.min_delta):
             self.best_avg_ce = avg_ce
             self.last_improvement_step = step
             return False
