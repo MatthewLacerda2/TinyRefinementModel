@@ -14,8 +14,7 @@ MAX_SEQ_LEN = 2048
 VOCAB_SIZE = 100352
 
 #Training
-MAX_STEPS_LIMIT = 64
-MIN_STEPS = 4
+MAX_STEPS_LIMIT = 32
 BATCH_SIZE = 8
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
@@ -27,14 +26,12 @@ NUM_GROUPS = NUM_HEADS // 4
 class ScanStepOutput:
     shared_state: jnp.ndarray
     forget_val: jnp.ndarray
-    storage_val: jnp.ndarray
     step_div: jnp.ndarray
 
 @struct.dataclass
 class ReasonerOutput:
     logits: jnp.ndarray
     forget_cost: float
-    storage_cost: float
     diversity_loss: float
     halt_diag: Dict[str, Any]
     expected_shared: jnp.ndarray
@@ -313,7 +310,6 @@ class UniversalReasoner(nnx.Module):
             else:
                 forget_val = jnp.zeros((batch_size,))
 
-            storage_val = jnp.mean(jnp.square(new_shared), axis=(1, 2))
 
             tau = jax.nn.softplus(raw_tau_param.value) + 1e-4
 
@@ -323,7 +319,7 @@ class UniversalReasoner(nnx.Module):
 
             return (new_shared, forget_val, step_div, next_state), ScanStepOutput(
                 shared_state=new_shared,
-                forget_val=forget_val, storage_val=storage_val,
+                forget_val=forget_val,
                 step_div=step_div
             )
 
@@ -385,7 +381,6 @@ class UniversalReasoner(nnx.Module):
         logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
         
         total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
-        total_s_cost = jnp.mean(jnp.sum(all_outputs.storage_val, axis=0))
         total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
         
         states = all_outputs.shared_state
@@ -402,7 +397,7 @@ class UniversalReasoner(nnx.Module):
 
         return ReasonerOutput(
             logits=logits, forget_cost=total_f_cost,
-            storage_cost=total_s_cost, diversity_loss=total_div_cost,
+            diversity_loss=total_div_cost,
             halt_diag=halt_diag, expected_shared=expected_shared
         )
 
@@ -451,15 +446,13 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         
         early_penalty = ce1 * 0.03
 
-        from schedules import forget_lambda_schedule, storage_lambda_schedule, diversity_lambda_schedule
+        from schedules import forget_lambda_schedule, diversity_lambda_schedule
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
-        s_lambda = storage_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
 
         total_loss = (ce1 + ce2) \
                      + f_lambda * (out1.forget_cost + out2.forget_cost) \
-                     + s_lambda * (out1.storage_cost + out2.storage_cost) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
                      + refinement_loss \
                      + early_penalty

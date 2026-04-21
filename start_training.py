@@ -34,7 +34,6 @@ from metrics_logger import LossMonitor, MetricsLogger
 load_dotenv()
 
 LOG_EVERY = 250
-CHECKPOINT_INTERVAL = 1000
 PREFETCH_SIZE = 128
 
 DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
@@ -228,7 +227,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
     accum_forget_cost = 0.0
     accum_storage_cost = 0.0
     accum_grad_norm = 0.0
-    t0_batch = time.time()
     t_compute = 0.0
     
     while True:
