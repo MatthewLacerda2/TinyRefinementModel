@@ -1,0 +1,9 @@
+# The unique project ID of your existing GCP project
+project_id = "the_project_id"
+
+# The region to deploy your resources to
+region = "us-central1"
+
+# The name of the GCS bucket. This MUST be globally unique across all of Google Cloud.
+# A common pattern is to prefix it with your project id, e.g., "my-gcp-project-id-model-data"
+bucket_name = "the_bucket_name"
