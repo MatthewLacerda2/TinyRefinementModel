@@ -69,11 +69,7 @@ class RotaryAttention(nnx.Module):
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
 
-        self.o_proj = nnx.Linear(
-            in_features, in_features,
-            kernel_init=jax.nn.initializers.zeros,
-            rngs=rngs, dtype=jnp.bfloat16
-        )
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
     def reset_state(self):
         self.k_cache.value = None
