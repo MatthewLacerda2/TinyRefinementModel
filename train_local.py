@@ -426,7 +426,8 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
     def loss_fn(model):
         def compute_ce_from_z(z_seq_out, targets):
-            logits = model.seq_norm(z_seq_out) @ model.embed.embedding.value.T
+            logits = jnp.dot(model.seq_norm(z_seq_out), model.embed.embedding.value.T, precision=jax.lax.Precision.DEFAULT)
+            logits = logits.astype(jnp.bfloat16) # Force bf16
             mask = targets != PAD_TOKEN_ID
             return jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
         
