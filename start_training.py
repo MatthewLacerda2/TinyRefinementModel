@@ -36,8 +36,14 @@ load_dotenv()
 LOG_EVERY = 250
 PREFETCH_SIZE = 128
 
-DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
-CHECKPOINT_ROOT = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
+def get_env_path(var_name, default=""):
+    val = os.environ.get(var_name, default)
+    if val.startswith(("gs://", "s3://", "https://")):
+        return val
+    return os.path.abspath(val)
+
+DATA_ROOT = get_env_path("DATA_ROOT", "")
+CHECKPOINT_ROOT = get_env_path("CHECKPOINT_ROOT", "orbax_checkpoints")
 
 if not DATA_ROOT:
     print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
