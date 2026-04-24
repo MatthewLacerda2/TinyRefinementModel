@@ -491,4 +491,4 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
 @nnx.jit
 def apply_grads(opt, grads, model):
-    opt.update(model, grads)
+    opt.update(grads)
