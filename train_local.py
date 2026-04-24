@@ -40,11 +40,10 @@ def apply_rope(x, cos, sin):
     d = x.shape[-1]
     x1, x2 = jnp.split(x, 2, axis=-1)
     
-    x_complex = jax.lax.complex(x1, x2)
-    rope_complex = jax.lax.complex(cos, sin)
-    rotated = x_complex * rope_complex
+    rotated_real = x1 * cos - x2 * sin
+    rotated_imag = x1 * sin + x2 * cos
     
-    return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
+    return jnp.concatenate([rotated_real, rotated_imag], axis=-1).astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.bfloat16):
