@@ -209,10 +209,10 @@ class BlockStack(nnx.Module):
         if self.share_weights:
             block = self.blocks[0]
             for _ in range(self.num_blocks):
-                x = nnx.remat(block)(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                x = nnx.remat(block, static_argnums=(5, 6))(x, context, mask, q_pos, kv_pos, use_cache, is_causal)
         else:
             for block in self.blocks:
-                x = nnx.remat(block)(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                x = nnx.remat(block, static_argnums=(5, 6))(x, context, mask, q_pos, kv_pos, use_cache, is_causal)
         return x
 
 
