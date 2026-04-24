@@ -69,7 +69,11 @@ class RotaryAttention(nnx.Module):
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
 
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.bfloat16)
+        self.o_proj = nnx.Linear(
+            in_features, in_features,
+            kernel_init=jax.nn.initializers.zeros,
+            rngs=rngs, dtype=jnp.bfloat16
+        )
 
     def reset_state(self):
         self.k_cache.value = None
@@ -232,7 +236,11 @@ class UniversalReasoner(nnx.Module):
         self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False)
 
-        self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype) 
+        self.meta_proj = nnx.Linear(
+            2, latent_dim,
+            kernel_init=jax.nn.initializers.zeros,
+            rngs=rngs, dtype=dtype
+        ) 
         
         self.time_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
