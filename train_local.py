@@ -193,14 +193,14 @@ class BlockStack(nnx.Module):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
         if share_weights:
-            self.blocks = nnx.List([
+            self.blocks = [
                 StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
-            ])
+            ]
         else:
-            self.blocks = nnx.List([
+            self.blocks = [
                 StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
                 for _ in range(num_blocks)
-            ])
+            ]
 
     def reset_state(self):
         for block in self.blocks:
