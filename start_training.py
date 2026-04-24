@@ -75,7 +75,7 @@ def shard_state(state):
 
 def init_model_and_optimizer():
     print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42), batch_size=BATCH_SIZE * num_devices)
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
     
     print(f"💎 Sharding model & optimizer across {num_devices} devices (FSDP)...")
