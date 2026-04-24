@@ -30,7 +30,7 @@ class ScanStepOutput:
 
 @struct.dataclass
 class ReasonerOutput:
-    logits: jnp.ndarray
+    z_seq_out: Any
     forget_cost: float
     diversity_loss: float
     halt_diag: Dict[str, Any]
@@ -209,10 +209,10 @@ class BlockStack(nnx.Module):
         if self.share_weights:
             block = self.blocks[0]
             for _ in range(self.num_blocks):
-                x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                x = nnx.remat(block)(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         else:
             for block in self.blocks:
-                x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                x = nnx.remat(block)(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         return x
 
 
@@ -377,8 +377,6 @@ class UniversalReasoner(nnx.Module):
             kv_pos=decoder_kv_pos,
             is_causal=True
         )
-        logits = self.seq_norm(z_seq_out) @ self.embed.embedding.value.T
-        
         total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
         total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
         
@@ -395,7 +393,7 @@ class UniversalReasoner(nnx.Module):
         self.hunch_cache.value = expected_shared
 
         return ReasonerOutput(
-            logits=logits, forget_cost=total_f_cost,
+            z_seq_out=z_seq_out, forget_cost=total_f_cost,
             diversity_loss=total_div_cost,
             halt_diag=halt_diag, expected_shared=expected_shared
         )
@@ -427,18 +425,22 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
     should_refresh = jnp.any(should_truncate).squeeze()
 
     def loss_fn(model):
-        def compute_ce(logits, targets):
+        def compute_ce_from_z(z_seq_out, targets):
+            logits = model.seq_norm(z_seq_out) @ model.embed.embedding.value.T
             mask = targets != PAD_TOKEN_ID
             return jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
+        
+        compute_ce_remat = nnx.remat(compute_ce_from_z)
 
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
         out1 = model(seq1_in, training=True, should_refresh=should_refresh)
-        ce1 = compute_ce(out1.logits, seq1_out)
+        ce1 = compute_ce_remat(out1.z_seq_out, seq1_out)
+        out1 = out1.replace(z_seq_out=None)
         
         out2 = model(seq2_in, training=True, should_refresh=False)
-        ce2 = compute_ce(out2.logits, seq2_out)
+        ce2 = compute_ce_remat(out2.z_seq_out, seq2_out)
 
         refinement_regression = jnp.maximum(0.0, ce2 - ce1) 
         refinement_loss = refinement_regression * 0.08
@@ -463,7 +465,7 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
             'ce1': jax.lax.stop_gradient(ce1),
             'token_loss': jax.lax.stop_gradient(ce2),
         }
-        out2 = out2.replace(logits=None, halt_diag=new_halt_diag)
+        out2 = out2.replace(z_seq_out=None, halt_diag=new_halt_diag)
         return total_loss, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
