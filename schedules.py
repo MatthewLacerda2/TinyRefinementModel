@@ -19,13 +19,6 @@ forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
     end_value=0.01
 )
 
-storage_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0, 
-    peak_value=2e-3, 
-    warmup_steps=WARMUP_STEPS, 
-    decay_steps=DECAY_STEPS, 
-    end_value=1e-4
-)
 
 diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
     init_value=0.0, 
