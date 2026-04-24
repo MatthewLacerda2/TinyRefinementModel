@@ -15,7 +15,7 @@ VOCAB_SIZE = 100352
 
 #Training
 MAX_STEPS_LIMIT = 32
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
 
@@ -491,4 +491,4 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
 @nnx.jit
 def apply_grads(opt, grads, model):
-    opt.update(grads)
+    opt.update(grads, model)

@@ -251,7 +251,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             model, batch_sharded, step_replicated, should_truncate=truncate_replicated
         )
         
-        apply_grads(optimizer, grads)
+        apply_grads(optimizer, grads, model)
         
         t_compute += (time.time() - t_compute_start)
 
