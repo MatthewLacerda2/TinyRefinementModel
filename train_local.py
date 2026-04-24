@@ -293,7 +293,7 @@ class UniversalReasoner(nnx.Module):
                 f_norm, f_head, raw_tau_param
             ) = nnx.merge(model_graph, current_state)
             
-            meta_input = jnp.stack([prev_forget, prev_div], axis=-1)
+            meta_input = jnp.stack([prev_forget, prev_div], axis=-1).astype(curr_shared.dtype)
             meta_signal = m_proj(meta_input)[:, None, :]
             
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
@@ -305,14 +305,14 @@ class UniversalReasoner(nnx.Module):
             if self.use_forget:
                 forget = jax.nn.sigmoid(f_head(f_norm(new_shared)))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
-                forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
+                forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2)).astype(jnp.float32)
             else:
-                forget_val = jnp.zeros((batch_size,))
+                forget_val = jnp.zeros((batch_size,), dtype=jnp.float32)
 
 
             tau = jax.nn.softplus(raw_tau_param.value) + 1e-4
 
-            step_div = calculate_infonce_loss(new_shared, curr_shared, tau)
+            step_div = calculate_infonce_loss(new_shared, curr_shared, tau).astype(jnp.float32)
 
             _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, f_norm, f_head, raw_tau_param))
 
@@ -324,8 +324,8 @@ class UniversalReasoner(nnx.Module):
 
         init_carry = (
             z_shared, 
-            jnp.zeros((batch_size,)),
-            jnp.zeros((batch_size,)),
+            jnp.zeros((batch_size,), dtype=jnp.float32),
+            jnp.zeros((batch_size,), dtype=jnp.float32),
             model_state
         )
         
