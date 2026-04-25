@@ -100,7 +100,7 @@ optimizer_chain = optax.MultiSteps(
     use_grad_mean=True
 )
 
-def create_sft_optimizer(model, old_opt=None):
+def create_sft_optimizer(model, old_state=None):
     print("📉 Recreating optimizer with 10x LR penalty for SFT phase...")
     sft_lr_schedule = lambda step: learning_schedule(step) * 0.1
     
@@ -117,8 +117,8 @@ def create_sft_optimizer(model, old_opt=None):
         use_grad_mean=True
     )
     new_opt = nnx.Optimizer(model, sft_chain, wrt=nnx.Param)
-    if old_opt is not None:
-        nnx.update(new_opt, nnx.state(old_opt))
+    if old_state is not None:
+        nnx.update(new_opt, old_state)
     return new_opt
 
 def load_or_create_checkpoint(model, optimizer):
@@ -276,8 +276,15 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     sft_phase_event.set()
                     monitor.sft_start_step = step
                     
+                    # Explicitly cleanup old optimizer to prevent OOM
+                    old_state = nnx.state(optimizer)
+                    del optimizer
+                    import gc; gc.collect()
+                    
                     # Apply 10x Learning Rate Penalty for SFT
-                    optimizer = create_sft_optimizer(model, optimizer)
+                    optimizer = create_sft_optimizer(model, old_state)
+                    del old_state
+                    gc.collect()
                     
                     print("\n" + "🔄"*30)
                     print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
@@ -336,7 +343,13 @@ if __name__ == "__main__":
     if getattr(monitor, "sft_start_step", None) is not None:
         print(f"🔄 Resuming in SFT phase (started at step {monitor.sft_start_step})")
         sft_phase_event.set()
-        optimizer = create_sft_optimizer(model, optimizer)
+        
+        old_state = nnx.state(optimizer)
+        del optimizer
+        import gc; gc.collect()
+        optimizer = create_sft_optimizer(model, old_state)
+        del old_state
+        gc.collect()
 
     data_queue = setup_data_pipeline(start_step, sft_phase_event, getattr(monitor, "sft_start_step", None))
     

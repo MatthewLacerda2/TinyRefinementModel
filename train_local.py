@@ -15,8 +15,8 @@ VOCAB_SIZE = 100352
 
 #Training
 MAX_STEPS_LIMIT = 32
-BATCH_SIZE = 4
-ACCUMULATION_STEPS = 128
+BATCH_SIZE = 8
+ACCUMULATION_STEPS = 64
 PAD_TOKEN_ID = 100257
 
 NUM_HEADS = 16
@@ -37,7 +37,6 @@ class ReasonerOutput:
     expected_shared: jnp.ndarray
 
 def apply_rope(x, cos, sin):
-    d = x.shape[-1]
     x1, x2 = jnp.split(x, 2, axis=-1)
     
     rotated_real = x1 * cos - x2 * sin
@@ -69,7 +68,11 @@ class RotaryAttention(nnx.Module):
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.bfloat16)
 
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.o_proj = nnx.Linear(
+            in_features, in_features,
+            kernel_init=jax.nn.initializers.zeros,
+            rngs=rngs, dtype=jnp.bfloat16
+        )
 
     def reset_state(self):
         self.k_cache.value = None
@@ -430,8 +433,8 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
 
     def loss_fn(model):
         def compute_ce_from_z(z_seq_out, targets):
-            logits = jnp.dot(model.seq_norm(z_seq_out), model.embed.embedding.value.T, precision=jax.lax.Precision.DEFAULT)
-            logits = logits.astype(jnp.bfloat16) # Force bf16
+            logits = jnp.dot(model.seq_norm(z_seq_out), model.embed.embedding.value.T, precision=jax.lax.Precision.HIGHEST)
+            logits = logits.astype(jnp.float32)
             mask = targets != PAD_TOKEN_ID
             return jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
         
