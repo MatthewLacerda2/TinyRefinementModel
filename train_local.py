@@ -14,7 +14,7 @@ MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100352
 
 #Training
-MAX_STEPS_LIMIT = 16
+MAX_STEPS_LIMIT = 4
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
@@ -240,7 +240,7 @@ class UniversalReasoner(nnx.Module):
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.hunch_gate = nnx.Linear(
-            latent_dim, latent_dim,
+            2 * latent_dim, latent_dim,
             bias_init=jax.nn.initializers.constant(-2.0),
             rngs=rngs, dtype=dtype,
         )
@@ -249,7 +249,7 @@ class UniversalReasoner(nnx.Module):
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Linear(2 * latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
 
         self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim)))
 
@@ -303,7 +303,8 @@ class UniversalReasoner(nnx.Module):
             new_shared = r_stack(stack_input, context=shared_ctx, mask=extended_ctx_bias, q_pos=shared_pos, kv_pos=shared_kv_pos, is_causal=False)
 
             if self.use_forget:
-                forget = jax.nn.sigmoid(f_head(f_norm(new_shared)))
+                gate_in = jnp.concatenate([f_norm(new_shared), f_norm(curr_shared)], axis=-1)
+                forget = jax.nn.sigmoid(f_head(gate_in))
                 new_shared = forget * new_shared + (1.0 - forget) * curr_shared
                 forget_val = jnp.mean(jnp.abs(forget), axis=(1, 2))
             else:
@@ -352,7 +353,10 @@ class UniversalReasoner(nnx.Module):
             
         def get_carried():
             current_hunch = self.hunch_cache.value
-            gate = jax.nn.sigmoid(self.hunch_gate(self.hunch_norm(current_hunch)))
+            seq_context = jnp.mean(z_seq, axis=1, keepdims=True)
+            seq_context = jnp.tile(seq_context, (1, SHARED_SLOTS, 1))
+            gate_in = jnp.concatenate([self.hunch_norm(current_hunch), self.hunch_norm(seq_context)], axis=-1)
+            gate = jax.nn.sigmoid(self.hunch_gate(gate_in))
             return gate * current_hunch + (1.0 - gate) * z_shared_base
         
         z_shared = jax.lax.cond(should_refresh, get_fresh, get_carried)
@@ -411,7 +415,7 @@ def calculate_infonce_loss(new_shared, curr_shared, tau):
     
     pos_logits = jnp.sum(anchor * positive, axis=-1, keepdims=True) / tau
     
-    neg_logits = jnp.einsum('bsd,btd->bst', anchor, anchor, precision=jax.lax.Precision.HIGHEST) / tau
+    neg_logits = jnp.einsum('bsd,btd->bst', anchor, positive, precision=jax.lax.Precision.HIGHEST) / tau
     
     identity = jnp.eye(s)[None, :, :]
     neg_logits = neg_logits + (identity * -1e9)
@@ -452,7 +456,6 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         d_lambda = diversity_lambda_schedule(opt_step)
 
         total_loss = (ce1 + ce2) \
-                     + f_lambda * (out1.forget_cost + out2.forget_cost) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
                      + refinement_loss \
                      + early_penalty

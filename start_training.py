@@ -114,8 +114,7 @@ def load_or_create_checkpoint(model, optimizer):
         )
 
         nnx.update(model, restored["model"])
-        graphdef, _ = nnx.split(optimizer)
-        optimizer = nnx.merge(graphdef, restored["optimizer"])
+        nnx.update(optimizer, restored["optimizer"])
         
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
@@ -134,7 +133,7 @@ def load_or_create_checkpoint(model, optimizer):
         start_step = 1
         monitor.sft_start_step = None
 
-    return mngr, monitor, start_step
+    return mngr, monitor, start_step, optimizer
 
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
@@ -309,7 +308,7 @@ if __name__ == "__main__":
 
     model, optimizer = init_model_and_optimizer()
     
-    mngr, monitor, start_step = load_or_create_checkpoint(model, optimizer)
+    mngr, monitor, start_step, optimizer = load_or_create_checkpoint(model, optimizer)
     
     # Set event if resuming in SFT phase
     if getattr(monitor, "sft_start_step", None) is not None:
