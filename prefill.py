@@ -6,6 +6,9 @@ from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
 import json
 import glob
+import time
+import threading
+import queue
 from layers import MAX_SEQ_LEN
 from dotenv import load_dotenv
 
@@ -88,11 +91,8 @@ def run_prefill():
                         indices = [int(os.path.basename(f).split('_')[1].split('.')[0]) for f in existing_chunks]
                         file_idx = max(indices) + 1
                         
-                        # Calculate total tokens from file sizes (assuming int32 = 4 bytes)
-                        # More robust to just add them up
                         total_tokens_ds = 0
                         for f in existing_chunks:
-                            # We check shape without loading full data for speed
                             data = np.load(f, mmap_mode='r')
                             total_tokens_ds += len(data)
                         
@@ -112,77 +112,123 @@ def run_prefill():
             if items_processed > 0:
                 ds = ds.skip(items_processed)
             
+            # Setup prefetch pipeline: Producer thread to buffer raw text records
+            prefetch_queue = queue.Queue(maxsize=15000)
+            stop_event = threading.Event()
+            
+            def producer():
+                try:
+                    for item in ds:
+                        if stop_event.is_set():
+                            break
+                        
+                        if name == "fineweb-edu":
+                            score = item.get("score", item.get("educational_score", 0.0))
+                            if score < 3.0:
+                                continue
+                        
+                        if name == "ultrachat" and "messages" in item:
+                            msg_list = item["messages"]
+                            if isinstance(msg_list, list):
+                                txt = "\n\n".join(f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in msg_list)
+                            else:
+                                txt = str(msg_list)
+                        else:
+                            txt = item.get("text") or item.get("content") or item.get("prompt")
+                        
+                        if not txt and "data" in item:
+                            if isinstance(item["data"], list):
+                                txt = "\n".join(str(x) for x in item["data"])
+                            else:
+                                txt = str(item["data"])
+                        
+                        if txt:
+                            prefetch_queue.put(txt)
+                except Exception as e:
+                    print(f"\n⚠️ Prefetcher thread exception: {e}")
+                finally:
+                    # Put terminal sentinel
+                    prefetch_queue.put(None)
+
+            prefetch_thread = threading.Thread(target=producer, daemon=True)
+            prefetch_thread.start()
+
             buffer = []
             token_acc = []
-            current_batch_count = 0
             
-            for item in ds:
-                if name == "fineweb-edu":
-                    score = item.get("score", item.get("educational_score", 0.0))
-                    if score < 3.0:
-                        continue
-                
-                if name == "ultrachat" and "messages" in item:
-                    msg_list = item["messages"]
-                    if isinstance(msg_list, list):
-                        txt = "\n\n".join(f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in msg_list)
-                    else:
-                        txt = str(msg_list)
-                else:
-                    txt = item.get("text") or item.get("content") or item.get("prompt")
-                
-                # Handle lists of strings (like UltraChat's 'data' field)
-                if not txt and "data" in item:
-                    if isinstance(item["data"], list):
-                        txt = "\n".join(str(x) for x in item["data"])
-                    else:
-                        txt = str(item["data"])
+            t_start = time.time()
+            initial_tokens = total_tokens_ds
+            items_since_start = 0
 
-                if txt: 
-                    buffer.append(txt)
-                
-                current_batch_count += 1
-                
-                # Batch size for parallel processing
-                if len(buffer) >= 4000:
-                    # Parallel Tokenization
-                    token_lists = pool.map(tokenize_batch_parallel, buffer)
-                    flat_batch = np.array([t for sub in token_lists for t in sub], dtype=np.int32)
-                    
-                    token_acc.append(flat_batch)
-                    total_tokens_ds += len(flat_batch)
-                    items_processed += len(buffer)
-                    buffer = []
-                    
-                    # Live Progress Report
-                    progress = (total_tokens_ds / target) * 100
-                    sys.stdout.write(f"\rProgress: {total_tokens_ds/1e6:.1f}M / {target/1e6:.0f}M tokens ({progress:.1f}%)")
-                    sys.stdout.flush()
-
-                    current_chunk_size = sum(len(x) for x in token_acc)
-                    if current_chunk_size >= TOKENS_PER_FILE:
-                        chunk_data = np.concatenate(token_acc)
-                        stride = 2 * MAX_SEQ_LEN + 1
-                        valid_len = (len(chunk_data) // stride) * stride
-                        
-                        np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data[:valid_len])
-                        file_idx += 1
-                        
-                        remainder = chunk_data[valid_len:]
-                        token_acc = [remainder] if len(remainder) > 0 else []
-                        
-                        # Save status after writing chunk
-                        with open(status_file, 'w') as f:
-                            json.dump({
-                                "file_idx": file_idx,
-                                "total_tokens": total_tokens_ds,
-                                "items_processed": items_processed
-                            }, f)
-
-                    if total_tokens_ds >= target:
-                        print(f"\n✅ {name} target reached.")
+            try:
+                while True:
+                    # Pull next item from the background download queue
+                    txt = prefetch_queue.get()
+                    if txt is None: # Sentinel received
                         break
-            
+                    
+                    buffer.append(txt)
+                    
+                    # Batch size for parallel processing
+                    if len(buffer) >= 4000:
+                        token_lists = pool.map(tokenize_batch_parallel, buffer)
+                        flat_batch = np.array([t for sub in token_lists for t in sub], dtype=np.int32)
+                        
+                        token_acc.append(flat_batch)
+                        total_tokens_ds += len(flat_batch)
+                        items_processed += len(buffer)
+                        items_since_start += len(buffer)
+                        buffer = []
+                        
+                        # Calculate Metrics
+                        elapsed = time.time() - t_start
+                        tokens_sec = (total_tokens_ds - initial_tokens) / max(1e-3, elapsed)
+                        progress = (total_tokens_ds / target) * 100
+                        
+                        sys.stdout.write(
+                            f"\rProgress: {total_tokens_ds/1e6:.1f}M/{target/1e6:.0f}M tokens ({progress:.1f}%) | "
+                            f"Speed: {tokens_sec/1e3:.1f}k tok/s | Elapsed: {elapsed/60:.1f}m"
+                        )
+                        sys.stdout.flush()
+
+                        current_chunk_size = sum(len(x) for x in token_acc)
+                        if current_chunk_size >= TOKENS_PER_FILE:
+                            chunk_data = np.concatenate(token_acc)
+                            stride = 2 * MAX_SEQ_LEN + 1
+                            valid_len = (len(chunk_data) // stride) * stride
+                            
+                            t_save = time.strftime('%H:%M:%S', time.localtime())
+                            np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data[:valid_len])
+                            print(f"\n[{t_save}] 💾 Saved chunk_{file_idx}.npy ({valid_len/1e6:.1f}M tokens)")
+                            
+                            file_idx += 1
+                            remainder = chunk_data[valid_len:]
+                            token_acc = [remainder] if len(remainder) > 0 else []
+                            
+                            # Save status after writing chunk
+                            with open(status_file, 'w') as f:
+                                json.dump({
+                                    "file_idx": file_idx,
+                                    "total_tokens": total_tokens_ds,
+                                    "items_processed": items_processed
+                                }, f)
+
+                        if total_tokens_ds >= target:
+                            print(f"\n✅ {name} target reached.")
+                            break
+            except KeyboardInterrupt:
+                print("\n🛑 Interrupted by user. Cleaning up background threads...")
+                stop_event.set()
+                # Empty queue to unblock the producer thread
+                while not prefetch_queue.empty():
+                    try:
+                        prefetch_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                raise
+            finally:
+                stop_event.set()
+
             # Final Flush for this dataset
             if (token_acc or buffer) and total_tokens_ds < target:
                 if buffer:
@@ -197,7 +243,9 @@ def run_prefill():
                     valid_len = (len(chunk_data) // stride) * stride
                     
                     if valid_len > 0:
+                        t_save = time.strftime('%H:%M:%S', time.localtime())
                         np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data[:valid_len])
+                        print(f"\n[{t_save}] 💾 Saved final flush chunk_{file_idx}.npy ({valid_len/1e6:.1f}M tokens)")
                     
                     # Final status update
                     with open(status_file, 'w') as f:
