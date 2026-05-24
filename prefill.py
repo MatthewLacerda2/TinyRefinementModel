@@ -117,11 +117,18 @@ def run_prefill():
             
             for item in ds:
                 if name == "fineweb-edu":
-                    score = item.get("educational_score", 0.0)
+                    score = item.get("score", item.get("educational_score", 0.0))
                     if score < 3.0:
                         continue
                 
-                txt = item.get("text") or item.get("content") or item.get("prompt")
+                if name == "ultrachat" and "messages" in item:
+                    msg_list = item["messages"]
+                    if isinstance(msg_list, list):
+                        txt = "\n\n".join(f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in msg_list)
+                    else:
+                        txt = str(msg_list)
+                else:
+                    txt = item.get("text") or item.get("content") or item.get("prompt")
                 
                 # Handle lists of strings (like UltraChat's 'data' field)
                 if not txt and "data" in item:
