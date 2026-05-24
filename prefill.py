@@ -7,10 +7,10 @@ from multiprocessing import Pool, cpu_count
 import json
 import glob
 from layers import MAX_SEQ_LEN
+from dotenv import load_dotenv
 
-#train on fineweb and densefinelist and truthfulqa and python-edu
-#than openmath and proofwriter and believemenot
-#than ultrachat
+# Load environment variables (such as HF_TOKEN) before datasets loads
+load_dotenv()
 
 # Config
 ENC_NAME = "cl100k_base"
