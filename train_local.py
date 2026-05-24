@@ -20,8 +20,8 @@ from layers import (
 )
 
 
-@nnx.jit
-def compute_grad_step(model, batch_tokens, step, should_truncate=False):
+@nnx.jit(static_argnames=['max_steps'])
+def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=False):
     should_refresh = jnp.any(should_truncate).squeeze()
 
     def loss_fn(model):
@@ -32,10 +32,10 @@ def compute_grad_step(model, batch_tokens, step, should_truncate=False):
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
-        out1 = model(seq1_in, training=True, should_refresh=should_refresh)
+        out1 = model(seq1_in, max_steps=max_steps, training=True, should_refresh=should_refresh)
         ce1 = compute_ce(out1.logits, seq1_out)
         
-        out2 = model(seq2_in, training=True, should_refresh=False)
+        out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
         ce2 = compute_ce(out2.logits, seq2_out)
 
         refinement_regression = jnp.maximum(0.0, ce2 - ce1) 

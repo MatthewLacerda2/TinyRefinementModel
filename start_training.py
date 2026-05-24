@@ -106,6 +106,47 @@ def create_sft_optimizer(model, old_state=None):
     gc.collect()
     return new_opt
 
+def get_curriculum_weights(loader_step):
+    CURRICULUM_STEPS = 10000.0
+    step = float(loader_step)
+    if step >= CURRICULUM_STEPS:
+        return [0.35, 0.40, 0.25]
+    fraction = step / CURRICULUM_STEPS
+    w_web = 0.85 - 0.50 * fraction
+    w_code = 0.10 + 0.30 * fraction
+    w_math = 0.05 + 0.20 * fraction
+    return [w_web, w_code, w_math]
+
+def get_average_curriculum_weights(loader_step):
+    step = float(loader_step)
+    CURRICULUM_STEPS = 10000.0
+    if step == 0:
+        return [0.85, 0.10, 0.05]
+    if step >= CURRICULUM_STEPS:
+        curriculum_fraction = CURRICULUM_STEPS / step
+        post_fraction = 1.0 - curriculum_fraction
+        avg_web = 0.60 * curriculum_fraction + 0.35 * post_fraction
+        avg_code = 0.25 * curriculum_fraction + 0.40 * post_fraction
+        avg_math = 0.15 * curriculum_fraction + 0.25 * post_fraction
+        return [avg_web, avg_code, avg_math]
+    else:
+        curr = get_curriculum_weights(step)
+        return [
+            (0.85 + curr[0]) / 2.0,
+            (0.10 + curr[1]) / 2.0,
+            (0.05 + curr[2]) / 2.0
+        ]
+
+def get_curriculum_steps(train_opt_step):
+    if train_opt_step < 1000:
+        return 1
+    elif train_opt_step < 4000:
+        return 2
+    elif train_opt_step < 8000:
+        return 4
+    else:
+        return 8
+
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [
@@ -113,7 +154,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
         TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
-    pretrain_weights = [0.60, 0.25, 0.15]
+    pretrain_weights = [0.85, 0.10, 0.05]
     pretrain_mixer = DataMixer(pretrain_sources, pretrain_weights)
     
     sft_sources = [
@@ -126,14 +167,18 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     sft_mixer = DataMixer(sft_sources, sft_weights)
 
     if start_step > 1:
+        start_opt_step = start_step // ACCUMULATION_STEPS
         if sft_start_step is None or start_step < sft_start_step:
             total_pretrain_seen = (start_step - 1)
-            for gen, weight in zip(pretrain_sources, pretrain_weights):
+            avg_weights = get_average_curriculum_weights(start_opt_step)
+            for gen, weight in zip(pretrain_sources, avg_weights):
                 gen.skip_count = int(total_pretrain_seen * weight)
         else:
             # 1. Catch up pretrain sources to the point where pretraining ended
+            sft_start_opt_step = sft_start_step // ACCUMULATION_STEPS
             total_pre_pretrain_seen = (sft_start_step - 1)
-            for gen, weight in zip(pretrain_sources, pretrain_weights):
+            avg_weights = get_average_curriculum_weights(sft_start_opt_step)
+            for gen, weight in zip(pretrain_sources, avg_weights):
                 gen.skip_count = int(total_pre_pretrain_seen * weight)
             
             # 2. Add SFT usage for all blended sources (Chat + Replay)
@@ -144,8 +189,11 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
     def data_wrapper():
+        loader_step = start_step
         while True:
+            loader_opt_step = loader_step // ACCUMULATION_STEPS
             if not sft_phase_event.is_set():
+                pretrain_mixer.weights = get_curriculum_weights(loader_opt_step)
                 res = pretrain_mixer.get_batch(BATCH_SIZE)
             else:
                 res = sft_mixer.get_batch(BATCH_SIZE)
@@ -155,6 +203,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
                 break
             
             data_queue.put(res)
+            loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
@@ -178,8 +227,11 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             
             t_compute_start = time.time()
             
+            opt_step = step // ACCUMULATION_STEPS
+            curr_steps = get_curriculum_steps(opt_step)
+            
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step), should_truncate=should_truncate
+                model, batch, jnp.array(step), curr_steps, should_truncate=should_truncate
             )
             
             apply_grads(optimizer, grads, model)
@@ -209,6 +261,15 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     grad_norm_avg=float(accum_grad_norm),
                     first_ce=float(out.halt_diag.get('ce1', 0))
                 )
+                
+                if not sft_phase_event.is_set():
+                    curr_weights = get_curriculum_weights(opt_step)
+                    print(
+                        f"📚 [Curriculum] Opt Step: {opt_step} | Reasoning Steps: {curr_steps} | "
+                        f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
+                    )
+                else:
+                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Reasoning Steps: {curr_steps} | Weights (Chat/Web/Code/Math): [0.70, 0.15, 0.10, 0.05]")
                 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()

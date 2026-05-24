@@ -116,6 +116,11 @@ def run_prefill():
             current_batch_count = 0
             
             for item in ds:
+                if name == "fineweb-edu":
+                    score = item.get("educational_score", 0.0)
+                    if score < 3.0:
+                        continue
+                
                 txt = item.get("text") or item.get("content") or item.get("prompt")
                 
                 # Handle lists of strings (like UltraChat's 'data' field)
