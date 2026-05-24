@@ -117,38 +117,59 @@ def run_prefill():
             stop_event = threading.Event()
             
             def producer():
-                try:
-                    for item in ds:
-                        if stop_event.is_set():
-                            break
-                        
-                        if name == "fineweb-edu":
-                            score = item.get("score", item.get("educational_score", 0.0))
-                            if score < 3.0:
-                                continue
-                        
-                        if name == "ultrachat" and "messages" in item:
-                            msg_list = item["messages"]
-                            if isinstance(msg_list, list):
-                                txt = "\n\n".join(f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in msg_list)
+                current_offset = items_processed
+                active_ds = ds
+                
+                while not stop_event.is_set():
+                    producer_consumed = 0
+                    try:
+                        for item in active_ds:
+                            if stop_event.is_set():
+                                break
+                            
+                            producer_consumed += 1
+                            
+                            if name == "fineweb-edu":
+                                score = item.get("score", item.get("educational_score", 0.0))
+                                if score < 3.0:
+                                    continue
+                            
+                            if name == "ultrachat" and "messages" in item:
+                                msg_list = item["messages"]
+                                if isinstance(msg_list, list):
+                                    txt = "\n\n".join(f"{msg.get('role', 'unknown').capitalize()}: {msg.get('content', '')}" for msg in msg_list)
+                                else:
+                                    txt = str(msg_list)
                             else:
-                                txt = str(msg_list)
-                        else:
-                            txt = item.get("text") or item.get("content") or item.get("prompt")
+                                txt = item.get("text") or item.get("content") or item.get("prompt")
+                            
+                            if not txt and "data" in item:
+                                if isinstance(item["data"], list):
+                                    txt = "\n".join(str(x) for x in item["data"])
+                                else:
+                                    txt = str(item["data"])
+                            
+                            if txt:
+                                prefetch_queue.put(txt)
+                        # Natural exit means dataset is completed
+                        break
+                    except Exception as e:
+                        # Catch connection timeouts, name resolution failures, or closed HTTPX client errors
+                        current_offset += producer_consumed
+                        t_now = time.strftime('%H:%M:%S', time.localtime())
+                        print(f"\n[{t_now}] 🔌 Prefetcher connection dropped: {e}")
+                        print(f"[{t_now}] 🔄 Re-connecting and resuming dataset from item {current_offset:,} in 5 seconds...")
+                        time.sleep(5)
                         
-                        if not txt and "data" in item:
-                            if isinstance(item["data"], list):
-                                txt = "\n".join(str(x) for x in item["data"])
-                            else:
-                                txt = str(item["data"])
-                        
-                        if txt:
-                            prefetch_queue.put(txt)
-                except Exception as e:
-                    print(f"\n⚠️ Prefetcher thread exception: {e}")
-                finally:
-                    # Put terminal sentinel
-                    prefetch_queue.put(None)
+                        try:
+                            active_ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split=split_name, streaming=True)
+                            if current_offset > 0:
+                                active_ds = active_ds.skip(current_offset)
+                        except Exception as conn_err:
+                            print(f"\n⚠️ Re-connection failed: {conn_err}. Will retry shortly...")
+                
+                # Signal end of stream
+                prefetch_queue.put(None)
 
             prefetch_thread = threading.Thread(target=producer, daemon=True)
             prefetch_thread.start()
