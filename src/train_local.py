@@ -239,17 +239,19 @@ class UniversalReasoner(nnx.Module):
         self.time_signal_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         self.hunch_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
-        self.hunch_gate = nnx.Linear(
-            2 * latent_dim, latent_dim,
-            bias_init=jax.nn.initializers.constant(-2.0),
-            rngs=rngs, dtype=dtype,
+        self.hunch_gate = nnx.Sequential(
+            nnx.Linear(2 * latent_dim, latent_dim, rngs=rngs, dtype=dtype),
+            nnx.Silu(),
+            nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(-2.0), rngs=rngs, dtype=dtype),
         )
-
-        self.raw_tau = nnx.Param(jnp.array(-2.3))
 
         self.use_forget = use_forget
         if self.use_forget:
-            self.forget_head = nnx.Linear(2 * latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(1.0), rngs=rngs, dtype=dtype)
+            self.forget_head = nnx.Sequential(
+                nnx.Linear(2 * latent_dim, latent_dim, rngs=rngs, dtype=dtype),
+                nnx.Silu(),
+                nnx.Linear(latent_dim, latent_dim, bias_init=jax.nn.initializers.constant(0.0), rngs=rngs, dtype=dtype),
+            )
 
         self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim)))
 
