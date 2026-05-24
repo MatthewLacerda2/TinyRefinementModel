@@ -1,9 +1,7 @@
 import os
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
-#os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=8'
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 
 import jax
 import jax.numpy as jnp
@@ -15,8 +13,7 @@ import threading
 import queue
 import multiprocessing as mp
 from dotenv import load_dotenv
-from train_local import (
-    UniversalReasoner,
+from layers import (
     LATENT_DIM,
     NUM_BLOCKS,
     SHARED_SLOTS,
@@ -28,6 +25,9 @@ from train_local import (
     PAD_TOKEN_ID,
     NUM_HEADS,
     NUM_GROUPS,
+)
+from model import UniversalReasoner
+from train_local import (
     compute_grad_step,
     apply_grads,
 )
@@ -290,10 +290,32 @@ def create_sft_optimizer(model, old_state=None):
     gc.collect()
     return new_opt
 
-def load_or_create_checkpoint(model, optimizer, force_new_run=False):
+def discover_latest_checkpoint_run(runs_root="runs"):
+    if not os.path.exists(runs_root):
+        return None, None
+    
+    import glob
+    run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
+    
+    for r_dir in reversed(run_dirs):
+        chk_dir = os.path.join(r_dir, "checkpoints")
+        if os.path.exists(chk_dir):
+            try:
+                mngr = ocp.CheckpointManager(
+                    chk_dir,
+                    item_names=("model", "optimizer", "monitor_state", "step"),
+                )
+                if mngr.latest_step() is not None:
+                    run_id = os.path.basename(r_dir)
+                    return chk_dir, run_id
+            except Exception:
+                pass
+    return None, None
+
+def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
     monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
-        CHECKPOINT_ROOT,
+        checkpoint_path,
         item_names=("model", "optimizer", "monitor_state", "step"),
         options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
     )
@@ -517,24 +539,47 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Custom folder for Orbax checkpoints")
     args = parser.parse_args()
 
-    # Override checkpoint root if specified
+    # 1. Resolve checkpoint path and run_id to resume (if any)
+    checkpoint_run_id = None
+    active_checkpoint_path = None
+    
     if args.checkpoint_path is not None:
-        CHECKPOINT_ROOT = os.path.abspath(args.checkpoint_path)
-        print(f"📁 Using custom checkpoint path: {CHECKPOINT_ROOT}")
+        active_checkpoint_path = os.path.abspath(args.checkpoint_path)
+        # Try to extract run_id from path if it follows runs/run_xxx/checkpoints
+        parts = active_checkpoint_path.split(os.sep)
+        for part in parts:
+            if part.startswith("run_"):
+                checkpoint_run_id = part
+                break
+        print(f"📁 Using custom checkpoint path: {active_checkpoint_path}")
+    elif not args.new_run:
+        # Auto-discover the latest checkpointed run
+        discovered_path, discovered_run_id = discover_latest_checkpoint_run()
+        if discovered_path is not None:
+            active_checkpoint_path = discovered_path
+            checkpoint_run_id = discovered_run_id
+            print(f"🔎 Auto-discovered latest checkpointed run: {checkpoint_run_id}")
+    
+    # 2. Start/Resume Run Tracker session
+    run_tracker = RunTracker()
+    if checkpoint_run_id is None:
+        # Starting a brand new run
+        run_tracker.start_session(run_id=None)
+        if active_checkpoint_path is None:
+            active_checkpoint_path = os.path.join(run_tracker.run_dir, "checkpoints")
+    else:
+        # Resuming existing run
+        run_tracker.start_session(run_id=checkpoint_run_id)
+        if active_checkpoint_path is None:
+            active_checkpoint_path = os.path.join(run_tracker.run_dir, "checkpoints")
 
     sft_phase_event = threading.Event()
 
     model, optimizer = init_model_and_optimizer()
     
-    mngr, monitor, start_step, optimizer, checkpoint_run_id = load_or_create_checkpoint(
-        model, optimizer, force_new_run=args.new_run
+    mngr, monitor, start_step, optimizer, checkpoint_run_id_from_meta = load_or_create_checkpoint(
+        model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
-
-    run_tracker = RunTracker()
-    if start_step == 1 or checkpoint_run_id is None:
-        run_tracker.start_session(run_id=None)
-    else:
-        run_tracker.start_session(run_id=checkpoint_run_id)
     
     # Set event if resuming in SFT phase
     if getattr(monitor, "sft_start_step", None) is not None:
