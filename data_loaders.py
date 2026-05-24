@@ -27,16 +27,21 @@ class TextDataGenerator:
                 return False
             
             file_path = self.files[self.current_file_idx]
-            print(f"📖 Streaming {file_path} into VRAM...")
+            print(f"📖 Memory-mapping {file_path} into VRAM...")
             
-            with self.fs.open(file_path, 'rb') as f:
-                self.data = np.load(f)
+            try:
+                # Attempt direct OS-level memory mapping for zero-copy lazy paging
+                self.data = np.load(file_path, mmap_mode='r')
+            except (ValueError, TypeError, OSError):
+                # Fallback to fsspec wrapper for remote or virtual file systems
+                with self.fs.open(file_path, 'rb') as f:
+                    self.data = np.load(f)
                 
             self.pointer = 0
+            stride = 2 * self.max_seq_len + 1
             
             if self.skip_count > 0:
-                # Skip logic must account for the doubled sequence length
-                stride = 2 * self.max_seq_len + 1
+                # Checkpoint recovery: Skip exact number of previously seen tokens
                 tokens_to_skip = self.skip_count * stride
                 if tokens_to_skip < len(self.data):
                     self.pointer = tokens_to_skip
@@ -45,6 +50,11 @@ class TextDataGenerator:
                     self.skip_count -= (len(self.data) // stride)
                     self.current_file_idx += 1
                     continue  # Loop to load the next file
+            else:
+                # Dynamic Token Boundary Augmentation: apply a random starting offset
+                random_offset = np.random.randint(0, stride)
+                if random_offset < len(self.data):
+                    self.pointer = random_offset
                     
             self.current_file_idx += 1
             self.is_new_file = True
