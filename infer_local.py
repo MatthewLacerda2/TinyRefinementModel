@@ -7,13 +7,13 @@ import orbax.checkpoint as ocp
 import time
 from functools import partial
 
-from train_local import (
-    UniversalReasoner,
+from layers import (
     LATENT_DIM,
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
     MAX_STEPS_LIMIT
 )
+from model import UniversalReasoner
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -89,8 +89,16 @@ def run_inference():
 
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
 
+    active_checkpoint_dir = CHECKPOINT_DIR
+    if os.environ.get("CHECKPOINT_ROOT") is None:
+        from start_training import discover_latest_checkpoint_run
+        discovered_path, discovered_run_id = discover_latest_checkpoint_run()
+        if discovered_path is not None:
+            active_checkpoint_dir = discovered_path
+            print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
+
     mngr = ocp.CheckpointManager(
-        CHECKPOINT_DIR,
+        active_checkpoint_dir,
         item_names=('model', 'optimizer', 'monitor_state', 'step'),
     )
 

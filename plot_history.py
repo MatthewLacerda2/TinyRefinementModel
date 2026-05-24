@@ -4,7 +4,7 @@ import os
 import numpy as np
 import sys
 import argparse
-from train_local import (
+from layers import (
     BATCH_SIZE, 
     MAX_SEQ_LEN, 
     LATENT_DIM, 

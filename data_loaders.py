@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import fsspec
-from train_local import MAX_SEQ_LEN
+from layers import MAX_SEQ_LEN
 
 class TextDataGenerator:
     def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
