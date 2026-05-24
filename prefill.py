@@ -20,7 +20,7 @@ ENC_NAME = "cl100k_base"
 OUTPUT_DIR = "./tpu_data"
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 
-# Targets: 7.8B total for $10 run + ~15% buffer
+# Targets: 8.05B total for high-performance SOTA corpus
 MIXTURE = [
     {
         "path": "HuggingFaceFW/fineweb-edu",
@@ -29,7 +29,7 @@ MIXTURE = [
         "alias": "fineweb-edu"
     },
     {
-        "path": "TokenBender/code_instructions_122k_alpaca_style",
+        "path": "HuggingFaceTB/python-edu",
         "target_tokens": 2_000_000_000,
         "folder": "pretrain",
         "alias": "code_instructions"
@@ -44,7 +44,7 @@ MIXTURE = [
     {
         "path": "HuggingFaceH4/ultrachat_200k",
         "split": "train_sft",
-        "target_tokens": 1_500_000_000,
+        "target_tokens": 350_000_000,
         "folder": "chat",
         "alias": "ultrachat"
     }
