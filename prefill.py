@@ -6,6 +6,7 @@ from datasets import load_dataset
 from multiprocessing import Pool, cpu_count
 import json
 import glob
+from layers import MAX_SEQ_LEN
 
 #train on fineweb and densefinelist and truthfulqa and python-edu
 #than openmath and proofwriter and believemenot
@@ -161,9 +162,14 @@ def run_prefill():
                     current_chunk_size = sum(len(x) for x in token_acc)
                     if current_chunk_size >= TOKENS_PER_FILE:
                         chunk_data = np.concatenate(token_acc)
-                        np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data)
+                        stride = 2 * MAX_SEQ_LEN + 1
+                        valid_len = (len(chunk_data) // stride) * stride
+                        
+                        np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data[:valid_len])
                         file_idx += 1
-                        token_acc = []
+                        
+                        remainder = chunk_data[valid_len:]
+                        token_acc = [remainder] if len(remainder) > 0 else []
                         
                         # Save status after writing chunk
                         with open(status_file, 'w') as f:
@@ -187,7 +193,11 @@ def run_prefill():
                     items_processed += len(buffer)
                 if token_acc:
                     chunk_data = np.concatenate(token_acc)
-                    np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data)
+                    stride = 2 * MAX_SEQ_LEN + 1
+                    valid_len = (len(chunk_data) // stride) * stride
+                    
+                    if valid_len > 0:
+                        np.save(os.path.join(save_path, f"chunk_{file_idx}.npy"), chunk_data[:valid_len])
                     
                     # Final status update
                     with open(status_file, 'w') as f:

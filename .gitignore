@@ -37,3 +37,5 @@ npy_dir/
 *.pkl
 *.png
 pip-log.txt
+auxmd.md
+

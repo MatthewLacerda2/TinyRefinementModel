@@ -1,4 +1,4 @@
-Do not use mathematical notations to explain things. In its place, rather, explain things at a high level, what do they do and what are they for, and what happens if we remove them hence their role.
+Do not use mathematical notations to explain things. In its place, rather, explain things at a macro level, what they are for and what they do.
 
 Be direct.
 
