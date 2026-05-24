@@ -1,6 +1,55 @@
-This model is meant to prove latent reasoning beats token-level reasoning.
-We use a scratchpad to store the intermediate states of the reasoning process.
+# Tiny Refinement Model
 
-I won't bother explaining more because i change the architecture too frequently.
+This repository implements the **Universal Reasoner**, a latent reasoning language model designed to demonstrate that continuous latent-space reasoning is highly effective compared to traditional token-level chain-of-thought scratchpads.
 
-The code was made with a RTX 2060 6GB VRAM in mind. That card is not bfloat16 compatible.
+## Architecture
+
+The Universal Reasoner separates sequence-level token processing from reasoning-level representation. Instead of generating human-readable reasoning tokens, the model processes thoughts in a high-dimensional continuous latent space. 
+
+The architecture is divided into three specialized transformer blocks:
+
+1. **Encoder Stack**: Processes raw input tokens into rich contextual representations using causal self-attention.
+2. **Latent Reasoning Loop**: Operates over a set of private latent slot tokens, representing the model's continuous 'internal scratchpad'. This stack recursively processes the scratchpad over several steps. A hunch gating mechanism carries memory across sequence segments, while a forget gate dynamically updates the scratchpad by blending fresh thoughts with historical memory at each iteration.
+3. **Decoder Stack**: Combines the output of the encoder stack with the final state of the latent scratchpad, merging the sequence context with the model's completed reasoning before mapping the representations back to predict the next token.
+
+### Information Flow
+
+```
+  [Input Tokens] 
+        │
+        ▼
+  [Embedding]
+        │
+        ▼
+┌──────────────────┐
+│  Encoder Stack   │ (Process input context causally)
+└────────┬─────────┘
+         │
+         ├───► [Hunch Gate] ───► [Initialize Latent Scratchpad]
+         │                                   │
+         │                                   ▼
+         │                      ┌─────────────────────────┐
+         ├─────────────────────►│  Reasoning Loop Stack   │◄─── [Forget Gate]
+         │  (Attend to context) │  (Runs for N steps)     │
+         │                      └────────────┬────────────┘
+         ▼                                   │
+┌──────────────────┐                         │
+│  Decoder Stack   │◄────────────────────────┘
+│ (Blend & Decode) │ (Read final scratchpad states)
+└────────┬─────────┘
+         │
+         ▼
+    [LM Head]
+         │
+         ▼
+  [Output logits]
+```
+
+---
+
+## Tech stack
+
+* **JAX**: High-performance numerical computing library used for compiling and executing optimized array operations.
+* **Flax NNX**: Modern, module-based neural network library for JAX that simplifies state management and parameter tracking.
+* **Hugging Face**: Streamed dataset pipelines used for curriculum training and evaluation.
+* **Tiktoken**: Fast byte-pair encoding tokenizer using the `cl100k_base` encoding vocabulary.
