@@ -64,3 +64,51 @@ The architecture is divided into three specialized transformer blocks:
 * **Orbax**: High-performance checkpointing library for JAX used to save and load training states and metadata asynchronously.
 * **Hugging Face**: Streamed dataset pipelines used for curriculum training and evaluation.
 * **Tiktoken**: Fast byte-pair encoding tokenizer using the `cl100k_base` encoding vocabulary.
+
+---
+
+## How to Run
+
+Before running the scripts, activate your virtual environment and ensure you have copied the environment file template:
+```bash
+source venv/bin/activate
+cp .env.example .env  # Update HF_TOKEN inside .env
+```
+
+### 1. Prefill Data Tokenization
+Download and pre-tokenize the FineWeb-Edu, Python-Edu, FineMath, and UltraChat datasets. This processes and chunks tokens into `runs/data/` for high-throughput training:
+```bash
+python prefill.py
+```
+
+### 2. Start or Resume Training
+Initiate the model training loop. The script automatically handles data mixing, curriculum learning, and SFT plateau transitions:
+* **Auto-Resume (Default)**: Automatically detects and resumes the latest training run directory (reusing checkpoints if saved, or beginning from step 1 appending to the same `metrics.csv` if checkpoints do not exist yet):
+  ```bash
+  python start_training.py
+  ```
+* **Force Brand New Run**: Ignore previous checkpoints/runs and start entirely from scratch:
+  ```bash
+  python start_training.py --new-run
+  ```
+* **Custom Checkpoint Folder**: Point to a specific directory containing Orbax checkpoint segments:
+  ```bash
+  python start_training.py --checkpoint-path runs/run_xxxxx/checkpoints
+  ```
+
+### 3. Plot Training History
+Visualize the metrics, resource costs, and optimization health:
+* **Auto-Discover Latest Run**: Analyzes the most recent run's `metrics.csv` inside `runs/` and outputs `reasoning_analytics.png`:
+  ```bash
+  python plot_history.py
+  ```
+* **Specific Run**: Plot a custom log file:
+  ```bash
+  python plot_history.py --log runs/run_xxxxx/metrics.csv
+  ```
+
+### 4. Run Local Inference CLI
+Chat interactively with the trained Universal Reasoner. The CLI automatically loads the latest saved checkpoint weights:
+```bash
+python infer_local.py
+```
