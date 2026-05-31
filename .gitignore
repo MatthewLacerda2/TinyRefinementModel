@@ -1,42 +1,10 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Environments
+# Existing environment and cache folders
 .env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# IDEs & AI Editors
-.vscode/
-.idea/
-.cursorignore
-.cursorindexingignore
-.cursor/
-
-# Type checkers & Linters
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-
-# Project Specifics & Large Binary Outputs
-runs/
-tpu_data/
+__pycache__/
 orbax_checkpoints/
-npy_dir/
-*.npy
-*.pkl
-*.png
-pip-log.txt
+runs/
+venv/
+
+# Explicitly kept helpers
 auxmd.md
 auxpy.py
-

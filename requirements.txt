@@ -1,4 +1,4 @@
-jax[tpu]
+jax
 flax
 optax
 orbax-checkpoint
@@ -9,3 +9,4 @@ matplotlib
 numpy
 hf-transfer
 gcsfs
+fsspec

@@ -17,7 +17,7 @@ load_dotenv()
 
 # Config
 ENC_NAME = "cl100k_base"
-OUTPUT_DIR = "./tpu_data"
+OUTPUT_DIR = os.path.abspath(os.environ.get("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 
 # Targets: 8.05B total for high-performance SOTA corpus

@@ -38,7 +38,7 @@ from schedules import (
 
 from metrics_logger import LossMonitor, MetricsLogger
 from run_tracker import RunTracker
-from checkpoint_utils import discover_latest_checkpoint_run, load_or_create_checkpoint
+from checkpoint_utils import discover_latest_run, discover_latest_checkpoint_run, load_or_create_checkpoint
 import json
 import datetime
 import subprocess
@@ -366,6 +366,13 @@ if __name__ == "__main__":
             active_checkpoint_path = discovered_path
             checkpoint_run_id = discovered_run_id
             print(f"🔎 Auto-discovered latest checkpointed run: {checkpoint_run_id}")
+        else:
+            # Fallback to the latest run folder even if it hasn't saved checkpoints yet
+            discovered_run_id = discover_latest_run()
+            if discovered_run_id is not None:
+                checkpoint_run_id = discovered_run_id
+                active_checkpoint_path = os.path.join("runs", checkpoint_run_id, "checkpoints")
+                print(f"🔎 Auto-discovered latest run (no checkpoints yet): {checkpoint_run_id}")
     
     # 2. Start/Resume Run Tracker session
     run_tracker = RunTracker()

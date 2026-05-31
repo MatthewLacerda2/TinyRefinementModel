@@ -91,11 +91,15 @@ def run_inference():
 
     active_checkpoint_dir = CHECKPOINT_DIR
     if os.environ.get("CHECKPOINT_ROOT") is None:
-        from start_training import discover_latest_checkpoint_run
+        from checkpoint_utils import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()
         if discovered_path is not None:
             active_checkpoint_dir = discovered_path
             print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
+        else:
+            print("❌ Error: No available weights here.")
+            print("Please train the model first using: python start_training.py")
+            return
 
     mngr = ocp.CheckpointManager(
         active_checkpoint_dir,
@@ -104,8 +108,8 @@ def run_inference():
 
     latest_step = mngr.latest_step()
     if latest_step is None:
-        print(f"❌ Error: No checkpoints found in {CHECKPOINT_DIR}")
-        print("Please train the model first using start_training.py")
+        print(f"❌ Error: No available weights here (no checkpoints found in {active_checkpoint_dir}).")
+        print("Please train the model first using: python start_training.py")
         return
 
     print(f"🔄 Loading weights from step {latest_step}...")

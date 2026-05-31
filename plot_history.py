@@ -117,10 +117,26 @@ def print_model_stats():
     print(f"  |-- Activations (Est) : {act_bytes_est / (1024**2):.2f} MB")
     print(f"  => TOTAL ESTIMATED   : {total_vram_gb:.2f} GB")
 
-def plot_training_history(log_path="training_history.csv"):
-    if not os.path.exists(log_path):
+def plot_training_history(log_path=None):
+    if log_path is None:
+        # Try to auto-discover the latest metrics.csv from the runs directory
+        discovered = None
+        if os.path.exists("runs"):
+            import glob
+            run_dirs = sorted(glob.glob(os.path.join("runs", "run_*")))
+            for r_dir in reversed(run_dirs):
+                csv_path = os.path.join(r_dir, "metrics.csv")
+                if os.path.exists(csv_path):
+                    discovered = csv_path
+                    break
+        if discovered:
+            print(f"🔎 Auto-discovered latest metrics CSV: {discovered}")
+            log_path = discovered
+        else:
+            print("❌ Error: No training runs or metrics.csv found inside 'runs/'.")
+            return
+    elif not os.path.exists(log_path):
         print(f"❌ Error: {log_path} not found.")
-        print("Note: The CSV is now stored in your CHECKPOINT_ROOT (default is ./).")
         return
 
     history = []
@@ -236,8 +252,8 @@ def plot_training_history(log_path="training_history.csv"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--log', type=str, default="training_history.csv", 
-                        help="Path to training_history.csv")
+    parser.add_argument('--log', type=str, default=None, 
+                        help="Path to the metrics CSV file (defaults to auto-discovering the latest run)")
     args = parser.parse_args()
     
     plot_training_history(log_path=args.log)

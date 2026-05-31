@@ -5,6 +5,15 @@ from flax import nnx
 import orbax.checkpoint as ocp
 from metrics_logger import LossMonitor
 
+def discover_latest_run(runs_root="runs"):
+    if not os.path.exists(runs_root):
+        return None
+    import glob
+    run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
+    if run_dirs:
+        return os.path.basename(run_dirs[-1])
+    return None
+
 def discover_latest_checkpoint_run(runs_root="runs"):
     if not os.path.exists(runs_root):
         return None, None
