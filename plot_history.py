@@ -154,6 +154,8 @@ def plot_training_history(log_path=None):
                         'forget_cost': float(row.get('avg_forget_cost', 0)),
                         'grad_norm': float(row.get('grad_norm_avg', 0)),
                         'temporal_drift': float(row.get('temporal_drift', 0)),
+                        'ponder_cost': float(row.get('ponder_cost', 0)),
+                        'mean_halt_step': float(row.get('mean_halt_step', 0)),
                     })
                 except ValueError:
                     continue 
@@ -173,6 +175,8 @@ def plot_training_history(log_path=None):
     forget = np.array([e['forget_cost'] for e in history])
     grad_norm = np.array([e['grad_norm'] for e in history])
     temporal_drift = np.array([e['temporal_drift'] for e in history])
+    ponder_cost = np.array([e['ponder_cost'] for e in history])
+    mean_halt_step = np.array([e['mean_halt_step'] for e in history])
 
     plt.style.use('dark_background')
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -202,10 +206,14 @@ def plot_training_history(log_path=None):
 
     # --- 3. RESOURCE COSTS (Forget & Storage) ---
     ax3.plot(steps, smooth(forget, smoothing_window), color='#00ff88', linewidth=2, label='Forget Cost')
-    ax3.set_title('Dynamic Resource Penalties', fontsize=14, fontweight='bold')
+    ax3_twin = ax3.twinx()
+    ax3_twin.plot(steps, smooth(mean_halt_step, smoothing_window), color='#ffaa00', linewidth=1, label='Mean Halt Step')
+    ax3_twin.set_ylabel('Mean Halt Step', color='#ffaa00')
+    ax3.set_title('Dynamic Compute & Resource Penalties', fontsize=14, fontweight='bold')
     ax3.set_xlabel('Training Step')
     ax3.set_ylabel('Cost Value')
-    ax3.legend()
+    ax3.legend(loc='upper left')
+    ax3_twin.legend(loc='upper right')
     ax3.grid(True, alpha=0.1)
 
     # --- 4. MODEL HEALTH (Grad Norm & Diversity) ---
