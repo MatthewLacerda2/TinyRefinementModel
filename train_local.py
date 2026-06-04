@@ -18,9 +18,7 @@ from layers import (
 )
 
 # Light regularizer on expected computation depth.
-# Encourages the model to converge efficiently rather than always running all steps.
-PONDER_LAMBDA = 0.01
-
+# We will anneal this using ponder_lambda_schedule.
 
 @nnx.jit(static_argnames=['max_steps'])
 def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=False):
@@ -48,16 +46,17 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
         
         early_penalty = ce1 * 0.03
 
-        from schedules import forget_lambda_schedule, diversity_lambda_schedule
+        from schedules import forget_lambda_schedule, diversity_lambda_schedule, ponder_lambda_schedule
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
+        p_lambda = ponder_lambda_schedule(opt_step)
 
         total_loss = (ce1 + ce2) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
                      + refinement_loss \
                      + early_penalty \
-                     + PONDER_LAMBDA * (out1.ponder_cost + out2.ponder_cost)
+                     + p_lambda * (out1.ponder_cost + out2.ponder_cost)
 
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
