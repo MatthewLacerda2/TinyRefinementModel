@@ -45,13 +45,14 @@ class MetricsLogger:
         self.history_file = history_file
         self.diag_keys = [
             'temporal_drift', 'forget_density', 
-            'diversity_loss', 'tau'
+            'diversity_loss', 'tau', 'mean_halt_step',
         ]
         # Full set of fields for CSV
         self.fields = [
             "step", "ce", "loss", "first_ce",
             "grad_norm_avg", "avg_forget_cost",
-            "diversity_loss", "temporal_drift", "forget_density", "tau"
+            "diversity_loss", "temporal_drift", "forget_density", "tau",
+            "mean_halt_step", "ponder_cost",
         ]
 
     def extract_diags(self, halt_diag, jnp_mean_fn):
@@ -66,7 +67,7 @@ class MetricsLogger:
         # Log to BOTH and TERMINAL ONLY
         print(
             f"Step {step:04d} | CE: {ce:.4f} (first: {first_ce:.4f}) | "
-            f"Tau: {diag_dict.get('tau', 0):.4f}\n"
+            f"Tau: {diag_dict.get('tau', 0):.4f} | Halt@: {diag_dict.get('mean_halt_step', 0):.2f}\n"
             f"      Loss: {loss:.4f} | Drift: {diag_dict.get('temporal_drift', 0):.6f} | "
             f"Compute: {compute_time:.3f}s"
         )
@@ -97,5 +98,7 @@ class MetricsLogger:
                 "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.6f}",
                 "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
                 "tau": f"{diag_dict.get('tau', 0):.6f}",
+                "mean_halt_step": f"{diag_dict.get('mean_halt_step', 0):.4f}",
+                "ponder_cost": f"{out.ponder_cost:.4f}",
             }
             writer.writerow(row)

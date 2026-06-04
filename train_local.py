@@ -3,7 +3,6 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-# Import architectural constants and helpers
 from layers import (
     LATENT_DIM,
     NUM_BLOCKS,
@@ -16,8 +15,11 @@ from layers import (
     PAD_TOKEN_ID,
     NUM_HEADS,
     NUM_GROUPS,
-    calculate_infonce_loss,
 )
+
+# Light regularizer on expected computation depth.
+# Encourages the model to converge efficiently rather than always running all steps.
+PONDER_LAMBDA = 0.01
 
 
 @nnx.jit(static_argnames=['max_steps'])
@@ -38,7 +40,10 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
         out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
         ce2 = compute_ce(out2.logits, seq2_out)
 
-        refinement_regression = jnp.maximum(0.0, ce2 - ce1) 
+        # stop_gradient on ce1: the refinement term should only push ce2 down toward
+        # ce1 as a target. Without this, the gradient through ce1 perversely incentivizes
+        # making seq1 worse to reduce the ce2-ce1 gap.
+        refinement_regression = jnp.maximum(0.0, ce2 - jax.lax.stop_gradient(ce1))
         refinement_loss = refinement_regression * 0.08
         
         early_penalty = ce1 * 0.03
@@ -51,7 +56,8 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
         total_loss = (ce1 + ce2) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
                      + refinement_loss \
-                     + early_penalty
+                     + early_penalty \
+                     + PONDER_LAMBDA * (out1.ponder_cost + out2.ponder_cost)
 
         total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
         
@@ -59,6 +65,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
             **out2.halt_diag,
             'ce1': jax.lax.stop_gradient(ce1),
             'token_loss': jax.lax.stop_gradient(ce2),
+            'ponder_cost': jax.lax.stop_gradient(out1.ponder_cost + out2.ponder_cost),
         }
         out2 = out2.replace(logits=None, halt_diag=new_halt_diag)
         return total_loss, out2
@@ -68,7 +75,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
     current_hunch = model.hunch_cache.value
     cleared_hunch = jnp.zeros_like(current_hunch)
     
-    # After the step, we carry forward the hunch UNLESS a truncation was requested
+    # After the step, carry the hunch forward UNLESS a document boundary was hit
     carried_hunch = jax.lax.cond(
         should_refresh,
         lambda: jax.lax.stop_gradient(cleared_hunch),

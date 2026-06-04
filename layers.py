@@ -9,12 +9,14 @@ class ScanStepOutput:
     shared_state: jnp.ndarray
     forget_val: jnp.ndarray
     step_div: jnp.ndarray
+    halt_prob: jnp.ndarray   # per-batch halting probability at this step
 
 @struct.dataclass
 class ReasonerOutput:
     logits: jnp.ndarray
     forget_cost: float
     diversity_loss: float
+    ponder_cost: float        # expected reasoning depth (ACT-style)
     halt_diag: Dict[str, Any]
     expected_shared: jnp.ndarray
 
@@ -53,7 +55,9 @@ class RotaryAttention(nnx.Module):
         self.scale = self.head_dim ** -0.5
 
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
-        t = jnp.arange(MAX_SEQ_LEN + SHARED_SLOTS)
+        # Extended to cover MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS positions
+        # so that slot query positions can advance with each reasoning iteration
+        t = jnp.arange(MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS)
         freqs = jnp.outer(t, inv_freq)
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
@@ -186,9 +190,12 @@ class StandardReasoningBlock(nnx.Module):
         return x
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False):
+    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False, use_remat=True):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
+        # use_remat=False for the reasoning stack, which is already inside a
+        # jax.checkpoint(scan_step) — double-checkpointing causes redundant recomputation
+        self.use_remat = use_remat
         if share_weights:
             self.blocks = nnx.List([
                 StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
@@ -222,22 +229,35 @@ class BlockStack(nnx.Module):
             nnx.update(block, new_block_state)
             return x_out
 
+        apply_remat = training and self.use_remat
+
         if self.share_weights:
             block = self.blocks[0]
             for _ in range(self.num_blocks):
-                if training:
+                if apply_remat:
                     x = checkpoint_block(block, x, context, mask, q_pos, kv_pos)
                 else:
                     x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         else:
             for block in self.blocks:
-                if training:
+                if apply_remat:
                     x = checkpoint_block(block, x, context, mask, q_pos, kv_pos)
                 else:
                     x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
         return x
 
-def calculate_infonce_loss(new_shared, curr_shared, tau):
+
+def calculate_slot_stability_loss(new_shared, curr_shared, tau):
+    """
+    InfoNCE-based slot stability loss.
+
+    For each slot i in new_shared, the matching slot i in curr_shared (stop-gradient)
+    is the positive, and all other slots in curr_shared are negatives.
+
+    Effect: each slot is pushed to be more similar to its own previous state than to
+    any other slot's previous state — enforcing stable slot identity across reasoning
+    steps (specialization), not diversity within a step.
+    """
     b, s, d = new_shared.shape
     
     anchor = new_shared / jnp.sqrt(jnp.sum(jnp.square(new_shared), axis=-1, keepdims=True) + 1e-5)
@@ -258,4 +278,3 @@ def calculate_infonce_loss(new_shared, curr_shared, tau):
     loss_per_slot = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
     
     return jnp.mean(loss_per_slot, axis=-1)
-

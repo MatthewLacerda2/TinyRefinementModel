@@ -2,6 +2,7 @@ import os
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"  # reduces fragmentation during scan backward
 
 import jax
 import jax.numpy as jnp
