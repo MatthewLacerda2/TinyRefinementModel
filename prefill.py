@@ -29,10 +29,10 @@ MIXTURE = [
         "alias": "fineweb-edu"
     },
     {
-        "path": "HuggingFaceTB/python-edu",
+        "path": "codeparrot/codeparrot-clean",
         "target_tokens": 2_000_000_000,
         "folder": "pretrain",
-        "alias": "code_instructions"
+        "alias": "codeparrot"
     },
     {
         "path": "HuggingFaceTB/finemath",
@@ -53,7 +53,7 @@ MIXTURE = [
 def tokenize_batch_parallel(text):
     """Worker function for parallel tokenization."""
     enc = tiktoken.get_encoding(ENC_NAME)
-    return enc.encode(text) + [enc.eot_token]
+    return enc.encode(text, allowed_special="all") + [enc.eot_token]
 
 def run_prefill():
     os.makedirs(OUTPUT_DIR, exist_ok=True)

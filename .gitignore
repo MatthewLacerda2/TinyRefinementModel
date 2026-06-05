@@ -8,3 +8,4 @@ venv/
 # Explicitly kept helpers
 auxmd.md
 auxpy.py
+docs/

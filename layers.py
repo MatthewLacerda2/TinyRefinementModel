@@ -23,10 +23,10 @@ class ReasonerOutput:
 # Keep (most) values powers of 2 if you know what's good for you
 
 # Params
-LATENT_DIM = 1024
+LATENT_DIM = 512
 NUM_BLOCKS = 8
 SHARED_SLOTS = 32
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 512
 VOCAB_SIZE = 100352
 
 # Training

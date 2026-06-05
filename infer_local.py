@@ -32,12 +32,31 @@ def run_model_inference(
     )
     return out.logits
 
-@partial(nnx.jit, static_argnames=['refresh'])
-def get_logits_for_token(model, padded_tks, token_idx, refresh):
+@partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p'])
+def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p):
     all_logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
-    return all_logits[0, token_idx, :]
+    logits = all_logits[0, token_idx, :]
+    
+    if top_k > 0:
+        top_vals, _ = jax.lax.top_k(logits, top_k)
+        k_threshold = top_vals[-1]
+        logits = jnp.where(logits < k_threshold, -jnp.inf, logits)
+    
+    if top_p < 1.0:
+        sorted_indices = jnp.argsort(logits)[::-1]
+        sorted_logits = logits[sorted_indices]
+        probs = jax.nn.softmax(sorted_logits)
+        cum_probs = jnp.cumsum(probs)
+        
+        cum_probs_shifted = jnp.roll(cum_probs, 1).at[0].set(0.0)
+        cutoff_mask = cum_probs_shifted < top_p
+        
+        p_threshold = jnp.min(jnp.where(cutoff_mask, sorted_logits, jnp.inf))
+        logits = jnp.where(logits < p_threshold, -jnp.inf, logits)
+        
+    return logits
 
-def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
+def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k=50, top_p=0.9):
     seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 
@@ -60,7 +79,10 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5):
 
         should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
 
-        logits = get_logits_for_token(model, input_ids, valid_len - 1, refresh=should_refresh)
+        logits = get_logits_for_token(
+            model, input_ids, valid_len - 1, 
+            refresh=should_refresh, top_k=top_k, top_p=top_p
+        )
 
         rng, subkey = jax.random.split(rng)
 
@@ -94,7 +116,7 @@ def run_inference():
         from checkpoint_utils import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()
         if discovered_path is not None:
-            active_checkpoint_dir = discovered_path
+            active_checkpoint_dir = os.path.abspath(discovered_path)
             print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
         else:
             print("❌ Error: No available weights here.")

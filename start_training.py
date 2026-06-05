@@ -152,7 +152,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
-        TextDataGenerator(f"{DATA_ROOT}/pretrain/code_instructions"),
+        TextDataGenerator(f"{DATA_ROOT}/pretrain/codeparrot"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
     pretrain_weights = [0.85, 0.10, 0.05]
@@ -387,6 +387,8 @@ if __name__ == "__main__":
         run_tracker.start_session(run_id=checkpoint_run_id)
         if active_checkpoint_path is None:
             active_checkpoint_path = os.path.join(run_tracker.run_dir, "checkpoints")
+
+    active_checkpoint_path = os.path.abspath(active_checkpoint_path)
 
     sft_phase_event = threading.Event()
 

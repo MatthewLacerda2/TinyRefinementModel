@@ -61,10 +61,10 @@ def print_model_stats():
     
     total_params_per_block = f16_per_block + f32_per_block
     
-    # Unique Physical Blocks
-    num_enc_blocks = 1 # Shared
-    num_dec_blocks = 1 # Shared
-    num_reasoning_blocks = NUM_BLOCKS
+    # Unique Physical Blocks (based on model.py Stack Block setup)
+    num_enc_blocks = NUM_BLOCKS // 2 # share_weights=False
+    num_dec_blocks = NUM_BLOCKS // 2 # share_weights=False
+    num_reasoning_blocks = 1 # share_weights=True
     unique_blocks = num_enc_blocks + num_dec_blocks + num_reasoning_blocks
     
     total_layer_params = total_params_per_block * unique_blocks
@@ -77,13 +77,14 @@ def print_model_stats():
     seq_norm = LATENT_DIM
     meta_proj = 2 * LATENT_DIM + LATENT_DIM
     extra_norms = LATENT_DIM * 4 # time, forget, signal, hunch
-    hunch_gate = LATENT_DIM * LATENT_DIM + LATENT_DIM
+    hunch_gate = 2 * LATENT_DIM * LATENT_DIM + LATENT_DIM
     tau_param = 1
-    forget_head = LATENT_DIM * LATENT_DIM + LATENT_DIM
+    forget_head = 2 * LATENT_DIM * LATENT_DIM + LATENT_DIM
+    halt_probe = LATENT_DIM * 1 + 1
     
     # Most structural params are f32 by default in UniversalReasoner
     structure_params = (embed + time_embed + shared_token + seq_norm + meta_proj + 
-                        extra_norms + hunch_gate + tau_param + forget_head)
+                        extra_norms + hunch_gate + tau_param + forget_head + halt_probe)
     structure_bytes = structure_params * 4
     
     total_params = total_layer_params + structure_params
@@ -106,9 +107,9 @@ def print_model_stats():
     print(f"Model Parameters: {total_params:,}")
     print(f"  |-- Structure Params  : {structure_params:,}")
     print(f"  |-- Unique Layer Params : {total_layer_params:,} ({unique_blocks} unique blocks)")
-    print(f"      |-- Shared Encoder : {total_params_per_block:,}")
-    print(f"      |-- Shared Decoder : {total_params_per_block:,}")
-    print(f"      |-- Reasoning Stack: {total_params_per_block * NUM_BLOCKS:,} ({NUM_BLOCKS} Blocks)")
+    print(f"      |-- Unique Encoder : {total_params_per_block * num_enc_blocks:,} ({num_enc_blocks} Blocks)")
+    print(f"      |-- Unique Decoder : {total_params_per_block * num_dec_blocks:,} ({num_dec_blocks} Blocks)")
+    print(f"      |-- Unique Reasoning: {total_params_per_block * num_reasoning_blocks:,} (Shared across {NUM_BLOCKS} Blocks)")
     print("-" * 50)
     print(f"ESTIMATED VRAM FOOTPRINT (Training)")
     print(f"  |-- Weights (f16/f32) : {total_weight_bytes / (1024**2):.2f} MB")
