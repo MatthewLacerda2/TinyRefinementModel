@@ -54,6 +54,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=Fals
 
         total_loss = (ce1 + ce2) \
                      + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
+                     + f_lambda * (out1.forget_cost + out2.forget_cost) \
                      + refinement_loss \
                      + early_penalty \
                      + p_lambda * (out1.ponder_cost + out2.ponder_cost)

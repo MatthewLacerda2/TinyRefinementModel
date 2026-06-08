@@ -25,6 +25,7 @@ The goal was to improve the core reasoning mechanics and the thermodynamics of t
 **`train_local.py` (Gradient Dynamics)**
 *   **Stop-Gradient on Structural Loss**: Applied `stop_gradient` to the cross-entropy logits inside the `refinement_loss` computation. This prevents the heavy next-token prediction gradients from overpowering the attention layers' ability to learn how to route information structurally.
 *   **Thermodynamics (Ponder Cost)**: Added a `PONDER_LAMBDA = 0.01` penalty to the `total_loss` based on the newly calculated `ponder_cost`.
+*   **Thermodynamics (Forget Cost)**: Added the `forget_cost` penalty to the `total_loss` scaled by the `forget_lambda_schedule` (`f_lambda`). This enables the model to receive gradients from the forget gates and learn to retain or overwrite scratchpad information dynamically.
 
 **`metrics_logger.py` & `start_training.py` (Harness Integration)**
 *   Added tracking for `mean_halt_step` and `ponder_cost` across CSV logging and console outputs.
