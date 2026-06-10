@@ -111,7 +111,7 @@ def print_model_stats():
     print(f"      |-- Unique Decoder : {total_params_per_block * num_dec_blocks:,} ({num_dec_blocks} Blocks)")
     print(f"      |-- Unique Reasoning: {total_params_per_block * num_reasoning_blocks:,} (Shared across {NUM_BLOCKS} Blocks)")
     print("-" * 50)
-    print(f"ESTIMATED VRAM FOOTPRINT (Training)")
+    print("ESTIMATED VRAM FOOTPRINT (Training)")
     print(f"  |-- Weights (f16/f32) : {total_weight_bytes / (1024**2):.2f} MB")
     print(f"  |-- Optimizer (AdamW) : {optimizer_bytes / (1024**2):.2f} MB")
     print(f"  |-- Gradients (f32)   : {gradient_bytes / (1024**2):.2f} MB")
@@ -181,14 +181,12 @@ def plot_training_history(log_path=None):
     history = monotonic
 
     steps = np.array([e['step'] for e in history])
-    losses = np.array([e['loss'] for e in history])
     ce = np.array([e['ce'] for e in history])
     first_ce = np.array([e['first_ce'] for e in history])
     diversity = np.array([e['diversity'] for e in history])
     forget = np.array([e['forget_cost'] for e in history])
     grad_norm = np.array([e['grad_norm'] for e in history])
     temporal_drift = np.array([e['temporal_drift'] for e in history])
-    ponder_cost = np.array([e['ponder_cost'] for e in history])
     mean_halt_step = np.array([e['mean_halt_step'] for e in history])
 
     plt.style.use('dark_background')
@@ -205,7 +203,8 @@ def plot_training_history(log_path=None):
                      color='#ff007b', alpha=0.1, label='Refinement Gain')
     ax1.set_title('Convergence & Refinement', fontsize=14, fontweight='bold')
     ax1.set_ylabel('Cross Entropy')
-    if np.all(ce > 0): ax1.set_yscale('log')
+    if np.all(ce > 0):
+        ax1.set_yscale('log')
     ax1.legend()
     ax1.grid(True, alpha=0.1)
 
@@ -237,7 +236,8 @@ def plot_training_history(log_path=None):
     ax4.set_title('Optimization Health', fontsize=14, fontweight='bold')
     ax4.set_xlabel('Training Step')
     ax4.set_ylabel('Gradient Norm')
-    if np.any(grad_norm > 0): ax4.set_yscale('log')
+    if np.any(grad_norm > 0):
+        ax4.set_yscale('log')
     ax4.legend(loc='upper left')
     ax4_twin.legend(loc='upper right')
     ax4.grid(True, alpha=0.1)

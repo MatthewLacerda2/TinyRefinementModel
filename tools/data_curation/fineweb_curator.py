@@ -21,7 +21,6 @@ class FineWebCurator(BaseDatasetCurator):
             return 0.0
 
         retained = 0
-        total_score = 0.0
         scores_seen = []
 
         for item in samples:

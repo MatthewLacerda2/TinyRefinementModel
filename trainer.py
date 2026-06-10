@@ -67,7 +67,8 @@ def init_model_and_optimizer():
 def create_sft_optimizer(model, old_state=None):
     print("📉 Recreating optimizer with LR reduced to 10% for SFT phase...")
 
-    sft_lr_schedule = lambda step: learning_schedule(step) * 0.1
+    def sft_lr_schedule(step):
+        return learning_schedule(step) * 0.1
 
     sft_chain = optax.MultiSteps(
         optax.chain(

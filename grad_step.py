@@ -16,8 +16,29 @@ from schedules import (
     ANCHOR_CE_WEIGHT,
 )
 
-# Light regularizer on expected computation depth.
-# We will anneal this using ponder_lambda_schedule.
+def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda, p_lambda):
+    """Assembles the full training loss from both segments' outputs.
+
+    Standalone (not buried in the jitted grad step) so the loss-wiring test can
+    assert every cost component actually contributes — a forget-cost term was
+    once computed and logged but never added here, and the model spent ~3900
+    opt steps not learning to forget.
+    """
+    # stop_gradient on ce1: the refinement term should only push ce2 down toward
+    # ce1 as a target. Without this, the gradient through ce1 perversely incentivizes
+    # making seq1 worse to reduce the ce2-ce1 gap.
+    refinement_regression = jnp.maximum(0.0, ce2 - jax.lax.stop_gradient(ce1))
+    refinement_loss = refinement_regression * REFINEMENT_LOSS_WEIGHT
+
+    early_penalty = ce1 * ANCHOR_CE_WEIGHT
+
+    return (ce1 + ce2) \
+           + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
+           + f_lambda * (out1.forget_cost + out2.forget_cost) \
+           + refinement_loss \
+           + early_penalty \
+           + p_lambda * (out1.ponder_cost + out2.ponder_cost)
+
 
 @nnx.jit(static_argnames=['max_steps'])
 def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
@@ -39,25 +60,12 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
         ce2 = compute_ce(out2.logits, seq2_out)
 
-        # stop_gradient on ce1: the refinement term should only push ce2 down toward
-        # ce1 as a target. Without this, the gradient through ce1 perversely incentivizes
-        # making seq1 worse to reduce the ce2-ce1 gap.
-        refinement_regression = jnp.maximum(0.0, ce2 - jax.lax.stop_gradient(ce1))
-        refinement_loss = refinement_regression * REFINEMENT_LOSS_WEIGHT
-
-        early_penalty = ce1 * ANCHOR_CE_WEIGHT
-
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
         p_lambda = ponder_lambda_schedule(opt_step)
 
-        total_loss = (ce1 + ce2) \
-                     + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
-                     + f_lambda * (out1.forget_cost + out2.forget_cost) \
-                     + refinement_loss \
-                     + early_penalty \
-                     + p_lambda * (out1.ponder_cost + out2.ponder_cost)
+        total_loss = compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda, p_lambda)
 
         # No NaN masking here: a non-finite loss must surface in the train loop
         # (which skips the update and aborts on a streak), not be silently zeroed.

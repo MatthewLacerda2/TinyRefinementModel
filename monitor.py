@@ -16,7 +16,8 @@ class LossMonitor:
 
     def push(self, step, ce_loss, total_loss):
         self.ce_history.append(ce_loss)
-        if len(self.ce_history) > self.window: self.ce_history.pop(0)
+        if len(self.ce_history) > self.window:
+            self.ce_history.pop(0)
 
         # Record-breaking logic (raw metrics)
         self.is_new_best = False

@@ -1,0 +1,18 @@
+[project]
+name = "tiny-refinement-model"
+version = "0.1.0"
+description = "Universal Reasoner — a tiny latent-reasoning language model written from scratch in JAX/Flax NNX"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["venv"]
+
+[tool.ruff.lint]
+# Errors and bugs only (pyflakes + pycodestyle errors); formatting is not enforced.
+select = ["E4", "E7", "E9", "F", "W6"]

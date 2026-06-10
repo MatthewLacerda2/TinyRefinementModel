@@ -1,12 +1,19 @@
-jax
-flax
-optax
-orbax-checkpoint
-tiktoken
-datasets
-python-dotenv
-matplotlib
-numpy
-hf-transfer
-gcsfs
-fsspec
+# Pinned to the working local environment (Python 3.14, CUDA 12 / RTX 2060).
+# JAX and Flax NNX APIs churn quickly — do not unpin casually.
+jax[cuda12]==0.9.1
+flax==0.12.3
+optax==0.2.6
+orbax-checkpoint==0.11.32
+tiktoken==0.12.0
+datasets==4.5.0
+python-dotenv==1.2.2
+matplotlib==3.10.8
+numpy==2.3.5
+hf-transfer==0.1.9
+fsspec==2025.10.0
+# Only needed when DATA_ROOT/CHECKPOINT_ROOT point at gs:// (not installed locally).
+# gcsfs==2025.10.0
+
+# Dev tooling
+pytest==9.0.3
+ruff==0.15.16

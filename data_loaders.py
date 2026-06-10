@@ -1,12 +1,13 @@
 import numpy as np
 import jax.numpy as jnp
 import fsspec
-from config import MAX_SEQ_LEN
+from config import MAX_SEQ_LEN, DATA_SEED
 
 class TextDataGenerator:
-    def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
+    def __init__(self, directory, max_seq_len=MAX_SEQ_LEN, rng=None):
         self.max_seq_len = max_seq_len
         self.directory = directory
+        self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
         
         self.fs, self.path_prefix = fsspec.core.url_to_fs(directory)
         
@@ -52,7 +53,7 @@ class TextDataGenerator:
                     continue  # Loop to load the next file
             else:
                 # Dynamic Token Boundary Augmentation: apply a random starting offset
-                random_offset = np.random.randint(0, stride)
+                random_offset = int(self.rng.integers(0, stride))
                 if random_offset < len(self.data):
                     self.pointer = random_offset
                     
@@ -61,8 +62,9 @@ class TextDataGenerator:
             return True
 
     def get_batch(self, batch_size):
-        if self.exhausted: return None, None
-        
+        if self.exhausted:
+            return None, None
+
         stride = 2 * self.max_seq_len + 1
         total_tokens = batch_size * stride
         
@@ -85,9 +87,10 @@ class TextDataGenerator:
         return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
 
 class DataMixer:
-    def __init__(self, sources, weights):
+    def __init__(self, sources, weights, rng=None):
         self.sources = list(sources)
         self.weights = list(weights)
+        self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
         # Original index of each surviving source, so full-length weight lists
         # supplied via set_weights can be mapped after sources exhaust.
         self._alive = list(range(len(self.sources)))
@@ -104,7 +107,7 @@ class DataMixer:
 
     def get_batch(self, batch_size):
         while len(self.sources) > 0:
-            counts = np.random.multinomial(batch_size, self.weights)
+            counts = self.rng.multinomial(batch_size, self.weights)
             batch_list = []
             exhausted_indices = []
 
@@ -125,7 +128,8 @@ class DataMixer:
                         new_alive.append(self._alive[i])
                 self.sources = new_sources
                 self._alive = new_alive
-                if not self.sources: return None, None
+                if not self.sources:
+                    return None, None
                 total_w = sum(new_weights)
                 self.weights = [w / total_w for w in new_weights]
                 continue

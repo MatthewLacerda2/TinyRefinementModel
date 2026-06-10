@@ -1,5 +1,3 @@
-import os
-import sys
 from datasets import load_dataset
 
 class BaseDatasetCurator:

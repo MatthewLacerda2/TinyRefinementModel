@@ -34,3 +34,7 @@ MAX_STEPS_LIMIT = 8
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 PAD_TOKEN_ID = 100257
+
+# Seed for data-pipeline randomness (start-offset augmentation, mixture draws).
+# Recorded in run_metadata.json so runs are reproducible.
+DATA_SEED = 42

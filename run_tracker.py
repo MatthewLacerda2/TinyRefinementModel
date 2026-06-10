@@ -17,6 +17,7 @@ from config import (
     PAD_TOKEN_ID,
     NUM_HEADS,
     NUM_GROUPS,
+    DATA_SEED,
 )
 
 class RunTracker:
@@ -68,6 +69,7 @@ class RunTracker:
             "PAD_TOKEN_ID": PAD_TOKEN_ID,
             "NUM_HEADS": NUM_HEADS,
             "NUM_GROUPS": NUM_GROUPS,
+            "DATA_SEED": DATA_SEED,
         }
 
     def _check_compatibility(self, metadata_path):

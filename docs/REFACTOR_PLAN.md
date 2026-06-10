@@ -392,3 +392,23 @@ future work in `docs/PLAN.md`.
   constants named in `schedules.py`; schedules import hoisted out of the jitted loss.
 - `resolve_root()` in `config.py`: remote URLs (gs://) are no longer mangled by abspath;
   also fixed the DATA_ROOT empty-check (abspath("") returns cwd, so the warning never fired).
+
+**2026-06-09 — Phase 4 complete.**
+- Tests (trimmed scope, both guard real past bugs): `tests/test_loss_wiring.py` exercises
+  `compute_total_loss` — extracted from the jitted loss for exactly this purpose — and
+  asserts every cost component (forget, diversity, ponder, both CEs, refinement, anchor)
+  provably moves the total; `tests/test_data_mixer.py` covers full-sized batches through
+  source exhaustion, mass redistribution to survivors, and `set_weights` renormalization.
+- `pyproject.toml` added (pytest config with `pythonpath = ["."]` for the flat layout;
+  ruff limited to error/bug rules — formatting is not enforced). Full `ruff format` was
+  deliberately skipped to avoid a whole-repo mechanical diff; lint findings were fixed
+  instead (2 dead arrays in `plot_history`, dead `total_score` in the fineweb curator,
+  unused imports, one-liner ifs, a lambda assignment).
+- `requirements.txt` pinned to the working venv (Python 3.14, `jax[cuda12]==0.9.1`,
+  `flax==0.12.3`, ...); gcsfs left as a commented optional (not installed locally, only
+  needed for gs:// roots). pytest/ruff pinned as dev tooling.
+- D3 seeding: `DATA_SEED` in `config.py`; `TextDataGenerator` and `DataMixer` take an
+  injectable `np.random.default_rng` (default seeded with `DATA_SEED`); the seed is
+  recorded in `run_metadata.json` via `RunTracker.get_hyperparameters`.
+- Verified: 7 tests green, `ruff check` clean, GPU grad step loss unchanged
+  (21.973316…, identical to the Phase 2/3 smoke).
