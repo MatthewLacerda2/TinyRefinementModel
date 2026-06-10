@@ -76,7 +76,7 @@ cp .env.example .env  # Update HF_TOKEN inside .env
 ```
 
 ### 1. Prefill Data Tokenization
-Download and pre-tokenize the FineWeb-Edu, Python-Edu, FineMath, and UltraChat datasets. This processes and chunks tokens into `runs/data/` for high-throughput training:
+Download and pre-tokenize the FineWeb-Edu, CodeParrot-clean, FineMath, and UltraChat datasets. This processes and chunks tokens into `runs/data/` for high-throughput training:
 ```bash
 python prefill.py
 ```

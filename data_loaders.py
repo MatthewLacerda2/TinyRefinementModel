@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import fsspec
-from layers import MAX_SEQ_LEN
+from config import MAX_SEQ_LEN
 
 class TextDataGenerator:
     def __init__(self, directory, max_seq_len=MAX_SEQ_LEN):
@@ -27,7 +27,7 @@ class TextDataGenerator:
                 return False
             
             file_path = self.files[self.current_file_idx]
-            print(f"📖 Memory-mapping {file_path} into VRAM...")
+            print(f"📖 Memory-mapping {file_path} (lazy host-RAM paging)...")
             
             try:
                 # Attempt direct OS-level memory mapping for zero-copy lazy paging
@@ -75,12 +75,14 @@ class TextDataGenerator:
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
         
-        reset_mask = np.zeros((batch_size,), dtype=bool)
+        # doc_boundary: marks batches that start a new file, i.e. the previous
+        # document's carried state is no longer relevant downstream.
+        doc_boundary = np.zeros((batch_size,), dtype=bool)
         if self.is_new_file:
-            reset_mask[:] = True
+            doc_boundary[:] = True
             self.is_new_file = False
-            
-        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(reset_mask)
+
+        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
 
 class DataMixer:
     def __init__(self, sources, weights):

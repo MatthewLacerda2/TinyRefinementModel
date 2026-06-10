@@ -7,11 +7,11 @@ import orbax.checkpoint as ocp
 import time
 from functools import partial
 
-from layers import (
+from config import (
     LATENT_DIM,
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
-    MAX_STEPS_LIMIT
+    MAX_STEPS_LIMIT,
 )
 from model import UniversalReasoner
 

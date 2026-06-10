@@ -3,7 +3,7 @@ import gc
 import jax.numpy as jnp
 from flax import nnx
 import orbax.checkpoint as ocp
-from metrics_logger import LossMonitor
+from monitor import LossMonitor
 
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):
@@ -80,6 +80,5 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         else:
             print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
-        monitor.sft_start_step = None
 
     return mngr, monitor, start_step, optimizer, run_id

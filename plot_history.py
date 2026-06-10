@@ -4,16 +4,16 @@ import os
 import numpy as np
 import sys
 import argparse
-from layers import (
-    BATCH_SIZE, 
-    MAX_SEQ_LEN, 
-    LATENT_DIM, 
-    NUM_BLOCKS, 
-    VOCAB_SIZE, 
-    SHARED_SLOTS, 
+from config import (
+    BATCH_SIZE,
+    MAX_SEQ_LEN,
+    LATENT_DIM,
+    NUM_BLOCKS,
+    VOCAB_SIZE,
+    SHARED_SLOTS,
     MAX_STEPS_LIMIT,
     NUM_HEADS,
-    NUM_GROUPS
+    NUM_GROUPS,
 )
 
 if hasattr(sys.stdout, 'reconfigure'):

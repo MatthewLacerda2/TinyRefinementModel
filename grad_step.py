@@ -3,26 +3,20 @@ import optax
 from flax import nnx
 import jax.numpy as jnp
 
-from layers import (
-    LATENT_DIM,
-    NUM_BLOCKS,
-    SHARED_SLOTS,
+from config import (
     MAX_SEQ_LEN,
-    VOCAB_SIZE,
-    MAX_STEPS_LIMIT,
-    BATCH_SIZE,
     ACCUMULATION_STEPS,
     PAD_TOKEN_ID,
-    NUM_HEADS,
-    NUM_GROUPS,
 )
 
 # Light regularizer on expected computation depth.
 # We will anneal this using ponder_lambda_schedule.
 
 @nnx.jit(static_argnames=['max_steps'])
-def compute_grad_step(model, batch_tokens, step, max_steps, should_truncate=False):
-    should_refresh = jnp.any(should_truncate).squeeze()
+def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
+    # A document boundary means the hunch cache holds state from an unrelated
+    # document — the model should start its slots fresh.
+    should_refresh = jnp.any(doc_boundary).squeeze()
 
     def loss_fn(model):
         def compute_ce(logits, targets):

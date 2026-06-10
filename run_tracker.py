@@ -5,7 +5,7 @@ import time
 import datetime
 import subprocess
 
-from layers import (
+from config import (
     LATENT_DIM,
     NUM_BLOCKS,
     SHARED_SLOTS,

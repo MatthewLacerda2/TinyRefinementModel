@@ -4,6 +4,8 @@ import optax
 from flax import nnx, struct
 from typing import Dict, Any
 
+from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS
+
 @struct.dataclass
 class ScanStepOutput:
     shared_state: jnp.ndarray
@@ -19,24 +21,6 @@ class ReasonerOutput:
     ponder_cost: float        # expected reasoning depth (ACT-style)
     halt_diag: Dict[str, Any]
     expected_shared: jnp.ndarray
-
-# Keep (most) values powers of 2 if you know what's good for you
-
-# Params
-LATENT_DIM = 512
-NUM_BLOCKS = 8
-SHARED_SLOTS = 32
-MAX_SEQ_LEN = 512
-VOCAB_SIZE = 100352
-
-# Training
-MAX_STEPS_LIMIT = 8
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
-PAD_TOKEN_ID = 100257
-
-NUM_HEADS = 16
-NUM_GROUPS = NUM_HEADS // 4
 
 def apply_rope(x, cos, sin):
     x1, x2 = jnp.split(x, 2, axis=-1)

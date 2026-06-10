@@ -1,11 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from layers import (
-    BlockStack,
-    ScanStepOutput,
-    ReasonerOutput,
-    LATENT_DIM,
+from config import (
     NUM_BLOCKS,
     SHARED_SLOTS,
     MAX_SEQ_LEN,
@@ -14,6 +10,11 @@ from layers import (
     BATCH_SIZE,
     PAD_TOKEN_ID,
     NUM_HEADS,
+)
+from layers import (
+    BlockStack,
+    ScanStepOutput,
+    ReasonerOutput,
     calculate_slot_stability_loss,
 )
 

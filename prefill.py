@@ -9,7 +9,7 @@ import glob
 import time
 import threading
 import queue
-from layers import MAX_SEQ_LEN
+from config import MAX_SEQ_LEN
 from dotenv import load_dotenv
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
@@ -57,7 +57,7 @@ def tokenize_batch_parallel(text):
 
 def run_prefill():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    # Use 75% of cores to keep system responsive
+    # Leave one core free to keep the system responsive
     num_workers = max(1, int(cpu_count() - 1))
     
     with Pool(num_workers) as pool:

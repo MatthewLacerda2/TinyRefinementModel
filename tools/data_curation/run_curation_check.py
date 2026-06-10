@@ -11,11 +11,11 @@ try:
     from ultrachat_curator import UltraChatCurator
     from curator_base import BaseDatasetCurator
 except ModuleNotFoundError:
-    from tests.data_curation.fineweb_curator import FineWebCurator
-    from tests.data_curation.code_curator import CodeCurator
-    from tests.data_curation.finemath_curator import FineMathCurator
-    from tests.data_curation.ultrachat_curator import UltraChatCurator
-    from tests.data_curation.curator_base import BaseDatasetCurator
+    from tools.data_curation.fineweb_curator import FineWebCurator
+    from tools.data_curation.code_curator import CodeCurator
+    from tools.data_curation.finemath_curator import FineMathCurator
+    from tools.data_curation.ultrachat_curator import UltraChatCurator
+    from tools.data_curation.curator_base import BaseDatasetCurator
 
 
 def run_all_checks():

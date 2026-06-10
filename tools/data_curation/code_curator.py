@@ -1,7 +1,7 @@
 try:
     from curator_base import BaseDatasetCurator
 except ModuleNotFoundError:
-    from tests.data_curation.curator_base import BaseDatasetCurator
+    from tools.data_curation.curator_base import BaseDatasetCurator
 
 class CodeCurator(BaseDatasetCurator):
     def __init__(self, split="train"):
