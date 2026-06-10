@@ -151,7 +151,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
     accum_loss = 0.0
     accum_token_loss = 0.0
-    accum_forget_cost = 0.0
     accum_grad_norm = 0.0
     t_compute = 0.0
 
@@ -176,13 +175,11 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
             current_loss = float(loss)
             current_token_loss = float(out.halt_diag.get('token_loss', loss))
-            current_forget = float(out.forget_cost)
             current_grad_norm = float(grad_norm)
 
             divisor = ACCUMULATION_STEPS * LOG_REAL_STEPS
             accum_loss += current_loss / divisor
             accum_token_loss += current_token_loss / divisor
-            accum_forget_cost += current_forget / divisor
             accum_grad_norm += current_grad_norm / divisor
 
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
@@ -259,7 +256,6 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
                 accum_loss = 0.0
                 accum_token_loss = 0.0
-                accum_forget_cost = 0.0
                 accum_grad_norm = 0.0
                 t_compute = 0.0
 

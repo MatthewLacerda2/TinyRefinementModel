@@ -46,10 +46,6 @@ class RotaryAttention(nnx.Module):
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
 
-        self.k_cache = nnx.Cache(None)
-        self.v_cache = nnx.Cache(None)
-        self.cache_index = nnx.Cache(jnp.array(0, dtype=jnp.int32))
-
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
         self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
@@ -59,12 +55,7 @@ class RotaryAttention(nnx.Module):
 
         self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
 
-    def reset_state(self):
-        self.k_cache.value = None
-        self.v_cache.value = None
-        self.cache_index.value = jnp.zeros_like(self.cache_index.value)
-
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, is_causal=True):
         b, s, d = x.shape
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
@@ -92,30 +83,16 @@ class RotaryAttention(nnx.Module):
         sin_kv = self.sin_cached[kv_pos, None, :]
         k = apply_rope(k, cos_kv, sin_kv)
 
-        if use_cache:
-            if self.k_cache.value is None:
-                cache_shape = (b, MAX_SEQ_LEN + SHARED_SLOTS, self.num_groups, self.head_dim)
-                self.k_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
-                self.v_cache.value = jnp.zeros(cache_shape, dtype=x.dtype)
-            
-            idx = self.cache_index.value
-            k_cache = jax.lax.dynamic_update_slice(self.k_cache.value, k, (0, idx, 0, 0))
-            v_cache = jax.lax.dynamic_update_slice(self.v_cache.value, v, (0, idx, 0, 0))
-            self.k_cache.value = k_cache
-            self.v_cache.value = v_cache
-            new_idx = idx + s_kv
-            self.cache_index.value = new_idx
-            
-            k = k_cache[:, :new_idx, :, :]
-            v = v_cache[:, :new_idx, :, :]
         if self.num_heads != self.num_groups:
             repeats = self.num_heads // self.num_groups
             k = jnp.repeat(k, repeats, axis=2)
             v = jnp.repeat(v, repeats, axis=2)
 
+        # Causality is folded into the explicit mask (positions are not plain
+        # 0..N here, so dot_product_attention's built-in is_causal cannot be used).
         if is_causal:
             pos_mask = q_pos[:, None] >= kv_pos[None, :]
-            
+
             if mask is not None:
                 if mask.dtype == jnp.bool_:
                     mask = mask & pos_mask
@@ -123,11 +100,7 @@ class RotaryAttention(nnx.Module):
                     mask = mask + (pos_mask.astype(jnp.float32) - 1.0) * 1e9
             else:
                 mask = pos_mask
-            
-            effective_is_causal = False
-        else:
-            effective_is_causal = False
-            
+
         q = q.astype(jnp.float16)
         k = k.astype(jnp.float16)
         v = v.astype(jnp.float16)
@@ -141,9 +114,8 @@ class RotaryAttention(nnx.Module):
 
         out = jax.nn.dot_product_attention(
             q, k, v,
-            mask=mask_arg, 
+            mask=mask_arg,
             bias=attn_bias,
-            is_causal=effective_is_causal,
         )
         return self.o_proj(out.reshape(b, s, d))
 
@@ -162,9 +134,9 @@ class StandardReasoningBlock(nnx.Module):
             rngs=rngs, dtype=jnp.float16,
         )
 
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, is_causal=True):
         normed_context = self.norm1(context) if context is not None else None
-        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+        attn_out = self.attn(self.norm1(x), context=normed_context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, is_causal=is_causal)
         x = x + attn_out
 
         mlp_in = self.norm2(x)
@@ -177,8 +149,11 @@ class BlockStack(nnx.Module):
     def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False, use_remat=True):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
-        # use_remat=False for the reasoning stack, which is already inside a
-        # jax.checkpoint(scan_step) — double-checkpointing causes redundant recomputation
+        # Per-block remat: recompute each block's intermediates during the backward
+        # pass instead of storing them. The reasoning stack is additionally wrapped
+        # in the scan-level jax.checkpoint inside model._reasoning_loop — that double
+        # checkpointing trades extra recompute FLOPs for fitting the backward pass
+        # in 6 GB of VRAM, and is the configuration the existing runs trained with.
         self.use_remat = use_remat
         if share_weights:
             self.blocks = nnx.List([
@@ -190,25 +165,21 @@ class BlockStack(nnx.Module):
                 for _ in range(num_blocks)
             ])
 
-    def reset_state(self):
-        for block in self.blocks:
-            block.attn.reset_state()
-
-    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, use_cache=False, is_causal=True, training=False):
+    def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, is_causal=True, training=False):
         def checkpoint_block(block, x_val, ctx_val, mask_val, q_val, kv_val):
             block_graph, block_state = nnx.split(block)
-            
+
             @jax.checkpoint
             def _pure_block_fn(state, x_in, ctx_in, mask_in, q_in, kv_in):
                 blk = nnx.merge(block_graph, state)
                 out_x = blk(
-                    x_in, context=ctx_val if ctx_in is None else ctx_in, mask=mask_in, 
-                    q_pos=q_in, kv_pos=kv_in, 
-                    use_cache=use_cache, is_causal=is_causal
+                    x_in, context=ctx_val if ctx_in is None else ctx_in, mask=mask_in,
+                    q_pos=q_in, kv_pos=kv_in,
+                    is_causal=is_causal
                 )
                 _, out_state = nnx.split(blk)
                 return out_x, out_state
-            
+
             x_out, new_block_state = _pure_block_fn(block_state, x_val, ctx_val, mask_val, q_val, kv_val)
             nnx.update(block, new_block_state)
             return x_out
@@ -221,13 +192,13 @@ class BlockStack(nnx.Module):
                 if apply_remat:
                     x = checkpoint_block(block, x, context, mask, q_pos, kv_pos)
                 else:
-                    x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                    x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, is_causal=is_causal)
         else:
             for block in self.blocks:
                 if apply_remat:
                     x = checkpoint_block(block, x, context, mask, q_pos, kv_pos)
                 else:
-                    x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, use_cache=use_cache, is_causal=is_causal)
+                    x = block(x, context=context, mask=mask, q_pos=q_pos, kv_pos=kv_pos, is_causal=is_causal)
         return x
 
 

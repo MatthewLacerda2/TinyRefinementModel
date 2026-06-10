@@ -201,10 +201,7 @@ class UniversalReasoner(nnx.Module):
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
         batch_size = tokens.shape[0]
-        self.encoder_stack.reset_state()
-        self.reasoning_stack.reset_state()
-        self.decoder_stack.reset_state()
-        
+
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens, training=training)
 
         z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))

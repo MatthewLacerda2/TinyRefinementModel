@@ -1,6 +1,5 @@
 import os
 import gc
-import jax.numpy as jnp
 from flax import nnx
 import orbax.checkpoint as ocp
 from monitor import LossMonitor
@@ -44,7 +43,6 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
     )
 
-    run_id = None
     if not force_new_run and mngr.latest_step() is not None:
         latest_step = mngr.latest_step()
         print(f"📖 Loading Orbax checkpoint from step {latest_step}...")
@@ -69,8 +67,7 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         monitor.sft_start_step = m_state.get("sft_start_step", None)
-        run_id = m_state.get("run_id", None)
-        
+
         print(f"✅ Resuming from step {start_step}")
         del restored 
         gc.collect()
@@ -81,4 +78,4 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
             print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
-    return mngr, monitor, start_step, optimizer, run_id
+    return mngr, monitor, start_step

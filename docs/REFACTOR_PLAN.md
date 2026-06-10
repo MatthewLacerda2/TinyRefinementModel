@@ -352,3 +352,19 @@ finite loss/grad-norm.
   (prepends cwd, collapses `//`). Harmless for local paths, but the `.env.example`
   advertises a GCS path that would break. Fix alongside B-items: only abspath when the
   path has no URL scheme.
+
+**2026-06-09 — Phase 2 complete.** Deleted: KV-cache machinery in `RotaryAttention`
+(`k_cache`/`v_cache`/`cache_index`, `reset_state`, the `use_cache` parameter threaded
+through every attention signature, and the three `reset_state()` calls in
+`model.__call__`); the always-False `effective_is_causal`; the never-logged
+`accum_forget_cost` in the train loop; unused `jnp` import in `checkpoint_utils`.
+`load_or_create_checkpoint` now returns `(mngr, monitor, start_step)` — it no longer
+returns the optimizer it never modified, nor a run id nobody read. The stale remat
+comment in `layers.py` was rewritten to describe actual behavior (per-block remat
+everywhere; the reasoning stack is additionally inside the scan-level checkpoint, a
+deliberate FLOPs-for-VRAM trade on 6 GB). Incremental decoding is logged as designed
+future work in `docs/PLAN.md`.
+- **Breaking note:** removing the `nnx.Cache` variables changes the model's state tree,
+  so checkpoints saved before Phase 2 (e.g. `run_20260604_011134`) are no longer
+  restorable. Accepted: that run trained on code with the unwired forget cost and is
+  superseded.

@@ -72,7 +72,7 @@ if __name__ == "__main__":
 
     model, optimizer = init_model_and_optimizer()
 
-    mngr, monitor, start_step, optimizer, checkpoint_run_id_from_meta = load_or_create_checkpoint(
+    mngr, monitor, start_step = load_or_create_checkpoint(
         model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
