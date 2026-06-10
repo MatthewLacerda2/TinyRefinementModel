@@ -191,13 +191,21 @@ Decisions taken:
 - Net so far: 388 → 264 ms/micro-step (**−32%**, 49.7 s → 33.8 s per opt step) with
   no math changes (bit-identical loss smoke green) and unchanged peak VRAM.
 
-**Next hypothesis (promoted to top of queue): the LM head runs in f32.**
-`seq_norm(z) @ embed.T` multiplies f32 × f32 — no tensor cores, and the 2060's f32
-throughput is ~6.5 TFLOPs vs ~26-50 f16. The head is ~55% of model FLOPs
-(2·1024·512·100352 ≈ 105 GFLOP fwd per micro-step across both segments), so an
-f16-input matmul with f32 accumulation (`preferred_element_type`) could plausibly cut
-another 25-40% of step time *and* is the P3 memory lever. Numerics-affecting → needs
-the CE-delta verification described in P3 before adoption.
+**2026-06-10 — P3(a) f16 LM head: adopted, hypothesis mostly wrong.**
+The head matmul now runs in COMPUTE_DTYPE with f32 accumulation
+(`preferred_element_type`). Verified on 8 real fineweb batches: max relative CE delta
+3.3e-6 — numerically indistinguishable. Measured: 264 -> **249.6 ms/micro-step
+(32.0 s/opt-step)** — only −5.5%, far below the 25-40% the FLOP analysis predicted.
+Conclusion: the f32 head was *not* the dominant cost; the remaining ~250 ms (still only
+~2.4 TFLOPs sustained, single-digit % of peak) hides somewhere a roofline argument
+can't see — candidates include the f32 complex-math RoPE applied per block per scan
+iteration, the GQA `jnp.repeat` materialization, scan/dispatch overheads inside the
+checkpointed backward, and XLA fusion quality on Turing. **Next perf step is a real
+`jax.profiler` trace, not more arithmetic.** Chunked CE (P3(b)) is deferred — it's a
+memory lever for P7, and memory is currently not the constraint (peak 3.56 GB).
+
+**Cumulative: 427 ms (historical wall) -> 249.6 ms/micro-step ≈ 1.7x faster; 54.7 s ->
+32.0 s per optimizer step, with zero training-math change.**
 
 ## Acceptance criteria
 - Every merged change has before/after steps/sec and peak-VRAM numbers in its commit.
