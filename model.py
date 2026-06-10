@@ -30,12 +30,14 @@ class UniversalReasoner(nnx.Module):
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
         
-        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
-        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
-        # use_remat=True: per-block checkpointing within the scan recomputation
-        # prevents storing all 8 shared-block intermediates simultaneously.
-        # The extra recomputation FLOPs are the correct tradeoff for limited GPU memory.
-        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True, use_remat=True)
+        # use_remat=False everywhere: benchmarked 2026-06-10 (tools/bench_train_step.py,
+        # depth 8) — per-block remat cost 18% step time and saved no measurable VRAM.
+        # The reasoning stack's memory is already bounded by the scan-level
+        # jax.checkpoint in _reasoning_loop; per-block remat inside it was double
+        # checkpointing (322ms -> 271ms/micro-step from dropping it alone).
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=False)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=False)
+        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True, use_remat=False)
 
         self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype)
         

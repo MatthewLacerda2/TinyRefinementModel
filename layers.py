@@ -150,10 +150,11 @@ class BlockStack(nnx.Module):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
         # Per-block remat: recompute each block's intermediates during the backward
-        # pass instead of storing them. The reasoning stack is additionally wrapped
-        # in the scan-level jax.checkpoint inside model._reasoning_loop — that double
-        # checkpointing trades extra recompute FLOPs for fitting the backward pass
-        # in 6 GB of VRAM, and is the configuration the existing runs trained with.
+        # pass instead of storing them. Benchmarked 2026-06-10: it saved no measurable
+        # VRAM here (the reasoning stack is already memory-bounded by the scan-level
+        # jax.checkpoint in model._reasoning_loop) and cost ~18% step time, so all
+        # stacks now pass use_remat=False. The machinery stays for future configs
+        # that might actually be memory-bound (larger dims, real batching).
         self.use_remat = use_remat
         if share_weights:
             self.blocks = nnx.List([

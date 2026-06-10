@@ -1,9 +1,11 @@
 import os
 
-# These must be set before JAX initializes (imported transitively via trainer).
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"  # reduces fragmentation during scan backward
+# Must be set before JAX initializes (imported transitively via trainer).
+# Preallocated BFC arena: benchmarked 17-22% faster than the old `platform`
+# allocator (synchronous cudaMalloc per buffer) — see docs/PERFORMANCE_PLAN.md
+# results log, 2026-06-10. The display does not run on this GPU, so claiming
+# 85% of VRAM up front is safe. setdefault keeps it overridable from the shell.
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import gc
 import argparse

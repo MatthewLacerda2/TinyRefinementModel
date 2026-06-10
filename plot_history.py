@@ -11,6 +11,7 @@ from config import (
     NUM_BLOCKS,
     SHARED_SLOTS,
     MAX_STEPS_LIMIT,
+    ACCUMULATION_STEPS,
 )
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -26,8 +27,11 @@ def smooth(y, box_pts):
     pad_back = len(y) - len(y_smooth) - pad_front
     return np.pad(y_smooth, (pad_front, pad_back), mode='edge')
 
-def calculate_tokens(step):
-    return step * BATCH_SIZE * (MAX_SEQ_LEN * 2)
+def calculate_tokens(opt_step):
+    # CSV steps are optimizer steps; each one is ACCUMULATION_STEPS micro-steps
+    # of 2*MAX_SEQ_LEN tokens (the old version forgot the accumulation factor
+    # and under-reported tokens by 128x).
+    return opt_step * ACCUMULATION_STEPS * BATCH_SIZE * (MAX_SEQ_LEN * 2)
 
 def print_model_stats():
     """Parameter/memory stats derived from the live model's nnx.state — counted

@@ -152,6 +152,53 @@ a few thousand opt steps — not just the bench harness.
 5. P4 (donation) and P6 (cudnn probe) opportunistically alongside.
 6. P7 (batching) last, behind its convergence gate.
 
+## Results log
+
+**2026-06-10 — baseline correction.** The user-reported 6.03–6.5 s/opt-step was a timing
+artifact: the old train loop stopped `t_compute`'s clock before the `float(loss)` sync,
+so it measured async dispatch (~9.5 ms × 640 micro-steps ≈ 6.1 s per log window), not GPU
+work. Ground truth from `run_metadata.json` durations vs CSV steps: **73.1 h for 4815 opt
+steps = 54.7 s/opt-step = 427 ms/micro-step** (~2.4k tok/s, ~3% of tensor-core peak).
+The roofline section above, which trusted the 48 ms figure, overestimated utilization by
+~8x — real headroom is large. (Phase 3's reordering of the floats incidentally already
+fixed the `t_compute` measurement; `calculate_tokens` in plot_history was also
+under-reporting trained tokens by the 128x accumulation factor — fixed.)
+
+**2026-06-10 — bench matrix** (tools/bench_train_step.py, depth 8, 60 timed steps,
+kernel mode unless noted; RTX 2060, GPU otherwise idle — display runs on the iGPU):
+
+| config | ms/micro-step | opt-step | peak VRAM |
+|---|---|---|---|
+| platform alloc, full remat (production config) | 388 (loop: 388) | 49.7 s | n/a (no stats) |
+| BFC preallocated (MEM_FRACTION=0.85), full remat | 322 | 41.3 s | 3555 MB |
+| BFC, no enc/dec remat | 314 | 40.2 s | 3573 MB |
+| BFC, no reasoning remat | 271 | 34.7 s | 3555 MB |
+| **BFC, no per-block remat at all (adopted)** | **264** | **33.8 s** | **3573 MB** |
+
+Decisions taken:
+- **P2 adopted:** `start_training.py` now sets `XLA_PYTHON_CLIENT_MEM_FRACTION=0.85`
+  (BFC, preallocated) instead of the platform allocator. Note: BFC *without*
+  preallocation fragments and OOMs mid-run — preallocation is required.
+- **P5 adopted:** `use_remat=False` for all three stacks. Per-block remat saved no
+  measurable VRAM (the scan-level checkpoint already bounds the reasoning loop) and
+  cost ~18%. The pre-Phase-2 comment warning about double checkpointing was correct.
+- **P1 demoted to cleanup:** loop mode == kernel mode (388.3 vs 389.3 ms) — the loop is
+  entirely GPU-bound; per-step host syncs cost nothing today. The fused step remains
+  worthwhile only as code simplification, not as a performance item.
+- **P6 dead:** cudnn attention rejects the broadcastable [B,1,1,KV] bias shape (and
+  Turing flash support is doubtful anyway). Would need bias materialization to even
+  probe further; not worth it.
+- Net so far: 388 → 264 ms/micro-step (**−32%**, 49.7 s → 33.8 s per opt step) with
+  no math changes (bit-identical loss smoke green) and unchanged peak VRAM.
+
+**Next hypothesis (promoted to top of queue): the LM head runs in f32.**
+`seq_norm(z) @ embed.T` multiplies f32 × f32 — no tensor cores, and the 2060's f32
+throughput is ~6.5 TFLOPs vs ~26-50 f16. The head is ~55% of model FLOPs
+(2·1024·512·100352 ≈ 105 GFLOP fwd per micro-step across both segments), so an
+f16-input matmul with f32 accumulation (`preferred_element_type`) could plausibly cut
+another 25-40% of step time *and* is the P3 memory lever. Numerics-affecting → needs
+the CE-delta verification described in P3 before adoption.
+
 ## Acceptance criteria
 - Every merged change has before/after steps/sec and peak-VRAM numbers in its commit.
 - Math-preserving changes keep the bit-identical-loss smoke green; the rest pass a
