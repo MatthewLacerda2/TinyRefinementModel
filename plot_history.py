@@ -168,6 +168,18 @@ def plot_training_history(log_path=None):
         print("ℹ️ Warning: No valid training data found in CSV.")
         return
 
+    # CSVs written before resume-trimming existed contain replayed (non-monotonic)
+    # step ranges; keep only the first occurrence of each advancing step.
+    monotonic = []
+    last_step = -1
+    for entry in history:
+        if entry['step'] > last_step:
+            monotonic.append(entry)
+            last_step = entry['step']
+    if len(monotonic) < len(history):
+        print(f"ℹ️ Dropped {len(history) - len(monotonic)} non-monotonic (replayed) rows from the CSV.")
+    history = monotonic
+
     steps = np.array([e['step'] for e in history])
     losses = np.array([e['loss'] for e in history])
     ce = np.array([e['ce'] for e in history])

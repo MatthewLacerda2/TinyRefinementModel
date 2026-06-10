@@ -4,7 +4,7 @@ import optax
 from flax import nnx, struct
 from typing import Dict, Any
 
-from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS
+from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS, COMPUTE_DTYPE
 
 @struct.dataclass
 class ScanStepOutput:
@@ -32,7 +32,7 @@ def apply_rope(x, cos, sin):
     return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, dtype=jnp.float32):
+    def __init__(self, num_heads, in_features, num_groups=4, rngs=None):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
@@ -46,14 +46,14 @@ class RotaryAttention(nnx.Module):
         self.sin_cached = jnp.sin(freqs)
         self.cos_cached = jnp.cos(freqs)
 
-        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
-        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
-        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=jnp.float16)
+        self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=COMPUTE_DTYPE)
+        self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
+        self.v_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
 
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
 
-        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=jnp.float16)
+        self.o_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=COMPUTE_DTYPE)
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, is_causal=True):
         b, s, d = x.shape
@@ -101,12 +101,12 @@ class RotaryAttention(nnx.Module):
             else:
                 mask = pos_mask
 
-        q = q.astype(jnp.float16)
-        k = k.astype(jnp.float16)
-        v = v.astype(jnp.float16)
-        
+        q = q.astype(COMPUTE_DTYPE)
+        k = k.astype(COMPUTE_DTYPE)
+        v = v.astype(COMPUTE_DTYPE)
+
         if mask is not None and mask.dtype != jnp.bool_:
-            attn_bias = mask.astype(jnp.float16)
+            attn_bias = mask.astype(COMPUTE_DTYPE)
             mask_arg = None
         else:
             attn_bias = None
@@ -121,17 +121,17 @@ class RotaryAttention(nnx.Module):
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs, dtype=dtype)
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs)
         self.norm1 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
-        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
-        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=jnp.float16)
+        self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
+        self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
         self.down_proj = nnx.Linear(
             hidden_dim, latent_dim,
             kernel_init=jax.nn.initializers.zeros,
-            rngs=rngs, dtype=jnp.float16,
+            rngs=rngs, dtype=COMPUTE_DTYPE,
         )
 
     def __call__(self, x, context=None, mask=None, q_pos=None, kv_pos=None, is_causal=True):

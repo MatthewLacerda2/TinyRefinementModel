@@ -8,6 +8,13 @@ from config import (
     ACCUMULATION_STEPS,
     PAD_TOKEN_ID,
 )
+from schedules import (
+    forget_lambda_schedule,
+    diversity_lambda_schedule,
+    ponder_lambda_schedule,
+    REFINEMENT_LOSS_WEIGHT,
+    ANCHOR_CE_WEIGHT,
+)
 
 # Light regularizer on expected computation depth.
 # We will anneal this using ponder_lambda_schedule.
@@ -36,11 +43,10 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         # ce1 as a target. Without this, the gradient through ce1 perversely incentivizes
         # making seq1 worse to reduce the ce2-ce1 gap.
         refinement_regression = jnp.maximum(0.0, ce2 - jax.lax.stop_gradient(ce1))
-        refinement_loss = refinement_regression * 0.08
-        
-        early_penalty = ce1 * 0.03
+        refinement_loss = refinement_regression * REFINEMENT_LOSS_WEIGHT
 
-        from schedules import forget_lambda_schedule, diversity_lambda_schedule, ponder_lambda_schedule
+        early_penalty = ce1 * ANCHOR_CE_WEIGHT
+
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
@@ -53,8 +59,8 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
                      + early_penalty \
                      + p_lambda * (out1.ponder_cost + out2.ponder_cost)
 
-        total_loss = jnp.where(jnp.isfinite(total_loss), total_loss, 0.0)
-        
+        # No NaN masking here: a non-finite loss must surface in the train loop
+        # (which skips the update and aborts on a streak), not be silently zeroed.
         new_halt_diag = {
             **out2.halt_diag,
             'ce1': jax.lax.stop_gradient(ce1),

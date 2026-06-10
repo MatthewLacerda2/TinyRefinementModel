@@ -88,32 +88,48 @@ class DataMixer:
     def __init__(self, sources, weights):
         self.sources = list(sources)
         self.weights = list(weights)
-        
+        # Original index of each surviving source, so full-length weight lists
+        # supplied via set_weights can be mapped after sources exhaust.
+        self._alive = list(range(len(self.sources)))
+
+    def set_weights(self, weights):
+        """Update mixture weights with a full-length list (one weight per
+        *original* source). Weights of exhausted sources are dropped and the
+        remainder renormalized — never mutate self.weights from outside, as the
+        internal list shrinks when sources exhaust."""
+        mapped = [weights[i] for i in self._alive]
+        total = sum(mapped)
+        if total > 0:
+            self.weights = [w / total for w in mapped]
+
     def get_batch(self, batch_size):
         while len(self.sources) > 0:
             counts = np.random.multinomial(batch_size, self.weights)
             batch_list = []
             exhausted_indices = []
-            
+
             for i, (source, count) in enumerate(zip(self.sources, counts)):
                 if count > 0:
                     res = source.get_batch(count)
-                    if res is None or getattr(source, "exhausted", False):
+                    if res[0] is None or getattr(source, "exhausted", False):
                         exhausted_indices.append(i)
                     else:
                         batch_list.append(res)
-            
+
             if exhausted_indices:
-                new_sources, new_weights = [], []
+                new_sources, new_weights, new_alive = [], [], []
                 for i, (s, w) in enumerate(zip(self.sources, self.weights)):
                     if i not in exhausted_indices:
-                        new_sources.append(s); new_weights.append(w)
+                        new_sources.append(s)
+                        new_weights.append(w)
+                        new_alive.append(self._alive[i])
                 self.sources = new_sources
+                self._alive = new_alive
                 if not self.sources: return None, None
                 total_w = sum(new_weights)
                 self.weights = [w / total_w for w in new_weights]
                 continue
-                
+
             if batch_list:
                 batches, masks = zip(*batch_list)
                 return jnp.concatenate(batches, axis=0), jnp.concatenate(masks, axis=0)

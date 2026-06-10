@@ -11,7 +11,9 @@ from flax import nnx
 import orbax.checkpoint as ocp
 from dotenv import load_dotenv
 
-from config import BATCH_SIZE, ACCUMULATION_STEPS, LATENT_DIM
+import math
+
+from config import BATCH_SIZE, ACCUMULATION_STEPS, LATENT_DIM, resolve_root
 from model import UniversalReasoner
 from grad_step import compute_grad_step, apply_grads
 from schedules import (
@@ -29,10 +31,14 @@ load_dotenv()
 LOG_REAL_STEPS = 5
 PREFETCH_SIZE = 128
 
-DATA_ROOT = os.path.abspath(os.environ.get("DATA_ROOT", ""))
+# Abort training after this many consecutive non-finite micro-steps.
+MAX_NONFINITE_STREAK = 50
 
-if not DATA_ROOT:
-    print(f"⚠️ Warning: DATA_ROOT is not set. Data loading will likely fail unless provided via environment.")
+DATA_ROOT = os.environ.get("DATA_ROOT", "")
+if DATA_ROOT:
+    DATA_ROOT = resolve_root(DATA_ROOT)
+else:
+    print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
 
 
 def weight_decay_mask(params):
@@ -129,7 +135,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
         while True:
             loader_opt_step = loader_step // ACCUMULATION_STEPS
             if not sft_phase_event.is_set():
-                pretrain_mixer.weights = get_curriculum_weights(loader_opt_step)
+                pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
                 res = pretrain_mixer.get_batch(BATCH_SIZE)
             else:
                 res = sft_mixer.get_batch(BATCH_SIZE)
@@ -146,13 +152,17 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
 
 def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phase_event, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
-    logger = MetricsLogger(history_file)
+    # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
+    # (start_step == 1) appends to any existing CSV untouched.
+    start_opt_step = start_step // ACCUMULATION_STEPS if start_step > 1 else None
+    logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
     step = start_step
 
     accum_loss = 0.0
     accum_token_loss = 0.0
     accum_grad_norm = 0.0
     t_compute = 0.0
+    nonfinite_streak = 0
 
     try:
         while True:
@@ -169,13 +179,32 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                 model, batch, jnp.array(step), curr_steps, doc_boundary=doc_boundary
             )
 
+            current_loss = float(loss)
+            current_grad_norm = float(grad_norm)
+
+            if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
+                # Divergence must be loud and must not poison the optimizer state
+                # or the carried hunch (which the grad step already overwrote).
+                nonfinite_streak += 1
+                print(
+                    f"⚠️ Non-finite loss/grad at micro-step {step} "
+                    f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — skipping update."
+                )
+                model.hunch_cache.value = jnp.zeros_like(model.hunch_cache.value)
+                if nonfinite_streak >= MAX_NONFINITE_STREAK:
+                    raise RuntimeError(
+                        f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
+                        f"(last at step {step})."
+                    )
+                step += 1
+                continue
+            nonfinite_streak = 0
+
             apply_grads(optimizer, grads, model)
 
             t_compute += (time.time() - t_compute_start)
 
-            current_loss = float(loss)
             current_token_loss = float(out.halt_diag.get('token_loss', loss))
-            current_grad_norm = float(grad_norm)
 
             divisor = ACCUMULATION_STEPS * LOG_REAL_STEPS
             accum_loss += current_loss / divisor

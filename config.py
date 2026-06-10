@@ -1,6 +1,25 @@
 # Single source of truth for all architecture and training constants.
 # Keep (most) values powers of 2 if you know what's good for you.
 
+import os
+import jax.numpy as jnp
+
+# Dtype policy: training runs on an RTX 2060 (Turing), which has no bfloat16
+# support — float16 compute is the deliberate, permanent policy here.
+# Parameters are stored float32 (NNX's default param_dtype); COMPUTE_DTYPE only
+# sets the computation dtype of the matmul-heavy layers. If f16 gradient
+# underflow ever becomes a problem, the fix is optax loss scaling, not a
+# dtype change.
+COMPUTE_DTYPE = jnp.float16
+PARAM_DTYPE = jnp.float32
+
+def resolve_root(path):
+    """abspath for local paths; remote URLs (gs://, s3://, ...) pass through
+    untouched — abspath would prepend the cwd and mangle them."""
+    if "://" in path:
+        return path
+    return os.path.abspath(path)
+
 # Architecture
 LATENT_DIM = 512
 NUM_BLOCKS = 8

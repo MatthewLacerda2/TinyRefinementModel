@@ -1,13 +1,14 @@
 import csv
+import math
 import fsspec
 import jax.numpy as jnp
 
 
 class MetricsLogger:
-    def __init__(self, history_file):
+    def __init__(self, history_file, start_opt_step=None):
         self.history_file = history_file
         self.diag_keys = [
-            'temporal_drift', 'forget_density', 
+            'temporal_drift', 'forget_density',
             'diversity_loss', 'tau', 'mean_halt_step',
         ]
         # Full set of fields for CSV
@@ -17,6 +18,32 @@ class MetricsLogger:
             "diversity_loss", "temporal_drift", "forget_density", "tau",
             "mean_halt_step", "ponder_cost",
         ]
+        # Warn once per metric name when a non-finite value shows up, so a broken
+        # diagnostic can't silently fill the CSV with NaN.
+        self._warned_nonfinite = set()
+        if start_opt_step is not None:
+            self._truncate_replayed_rows(start_opt_step)
+
+    def _truncate_replayed_rows(self, start_opt_step):
+        """On resume, drop rows at/after the restored step. Checkpoints restore to
+        the last *best* step, which can be earlier than the last logged row — without
+        trimming, every resume appends an overlapping step range to the CSV."""
+        try:
+            fs, path = fsspec.core.url_to_fs(self.history_file)
+            if not fs.exists(path) or fs.size(path) == 0:
+                return
+            with fsspec.open(self.history_file, "r", newline="") as f:
+                rows = list(csv.DictReader(f))
+            kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
+            if len(kept) == len(rows):
+                return
+            print(f"✂️ Trimming {len(rows) - len(kept)} replayed metric rows (step >= {start_opt_step}) from {self.history_file}")
+            with fsspec.open(self.history_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(kept)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"⚠️ Could not trim replayed rows from {self.history_file}: {e}")
 
     def extract_diags(self, halt_diag, jnp_mean_fn):
         """Extracts and formats diagnostics from the model step using a provided mean function."""
@@ -26,7 +53,12 @@ class MetricsLogger:
             grad_norm_avg=None, first_ce=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.halt_diag, jnp.mean)
-        
+
+        for name, value in {**diag_dict, "ce": ce, "loss": loss}.items():
+            if not math.isfinite(value) and name not in self._warned_nonfinite:
+                self._warned_nonfinite.add(name)
+                print(f"⚠️ Non-finite metric '{name}' ({value}) at step {step} — check the diagnostics pipeline.")
+
         # Log to BOTH and TERMINAL ONLY
         print(
             f"Step {step:04d} | CE: {ce:.4f} (first: {first_ce:.4f}) | "
@@ -41,9 +73,8 @@ class MetricsLogger:
             fs, path = fsspec.core.url_to_fs(self.history_file)
             if fs.exists(path) and fs.size(path) > 0:
                 file_is_empty = False
-        except:
-            # Fallback if filesystem check fails
-            pass
+        except OSError as e:
+            print(f"⚠️ Could not stat {self.history_file} ({e}); assuming empty.")
 
         with fsspec.open(self.history_file, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')

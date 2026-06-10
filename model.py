@@ -19,7 +19,7 @@ from layers import (
 )
 
 class UniversalReasoner(nnx.Module):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True):
+    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
@@ -67,7 +67,9 @@ class UniversalReasoner(nnx.Module):
                 rngs=rngs, dtype=dtype
             )
 
-        self.hunch_cache = nnx.Variable(jnp.zeros((BATCH_SIZE, SHARED_SLOTS, latent_dim)))
+        # Stateful cross-segment memory: sized at construction, so the model only
+        # accepts batches of exactly this size (asserted in __call__).
+        self.hunch_cache = nnx.Variable(jnp.zeros((batch_size, SHARED_SLOTS, latent_dim)))
 
 
     def _encode_sequence(self, tokens, training=False):
@@ -201,6 +203,11 @@ class UniversalReasoner(nnx.Module):
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
         batch_size = tokens.shape[0]
+        assert batch_size == self.hunch_cache.value.shape[0], (
+            f"Batch size {batch_size} does not match the hunch cache built for batch "
+            f"size {self.hunch_cache.value.shape[0]}; construct UniversalReasoner with "
+            f"batch_size={batch_size}."
+        )
 
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens, training=training)
 
@@ -250,9 +257,15 @@ class UniversalReasoner(nnx.Module):
         total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
         total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
         
+        # Average distance the slot state moves between consecutive reasoning steps.
+        # Undefined for a 1-step trajectory (no transitions): report 0, not the NaN
+        # that jnp.mean over an empty diff produces.
         states = all_outputs.shared_state
-        diffs = states[1:] - states[:-1]
-        temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
+        if max_steps > 1:
+            diffs = states[1:] - states[:-1]
+            temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
+        else:
+            temporal_drift = jnp.array(0.0)
         
         halt_diag = {
             'temporal_drift': temporal_drift,

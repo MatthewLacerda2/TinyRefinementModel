@@ -41,3 +41,14 @@ The goal was to improve the core reasoning mechanics and the thermodynamics of t
     *   *Result*: The gradient flows properly through the carry-path of `jax.lax.scan` without requiring the entire step history.
     *   *Note on OOM*: An isolated benchmark test encountered a Resource Exhausted (OOM) error allocating ~1.15GiB on the Language Modeling head. Further profiling confirmed this is a pre-existing ceiling caused by running the test context cold (without the warm JIT cache and with a massive Adam optimizer state loaded into eager memory), and *not* a regression caused by the newly introduced architectural changes.
     *   *Conclusion*: The model is syntactically clean, mathematically sound, and ready to resume training using the standard harness.
+
+## 2026-06-09 — Metrics CSV resume behavior changed (Phase 3)
+- Historical CSVs (e.g. `runs/run_20260604_011134/metrics.csv`) contain overlapping,
+  non-monotonic step ranges: checkpoints restore to the last *best* step while the CSV
+  already had rows past it, so every resume appended a replayed range.
+- From Phase 3 on, `MetricsLogger` trims rows at/after the restored step on resume, so
+  new CSVs keep strictly increasing steps. `plot_history.py` additionally drops
+  non-monotonic rows defensively so the historical CSVs remain plottable.
+- Also note: `temporal_drift` in historical CSVs is NaN for opt steps 1–1000. The metric
+  (state movement between consecutive reasoning steps) is undefined while the depth
+  curriculum used a single reasoning step; it now reports 0.0 in that regime.

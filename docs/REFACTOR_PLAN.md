@@ -368,3 +368,27 @@ future work in `docs/PLAN.md`.
   so checkpoints saved before Phase 2 (e.g. `run_20260604_011134`) are no longer
   restorable. Accepted: that run trained on code with the unwired forget cost and is
   superseded.
+
+**2026-06-09 — Phase 3 complete.** Correctness fixes:
+- B1: `DataMixer.set_weights()` maps full-length curriculum weight lists onto surviving
+  sources by original index and renormalizes; the trainer no longer mutates
+  `mixer.weights` directly. Also fixed the dead `res is None` check (sources return
+  `(None, None)`, never `None`).
+- B2: NaN masking removed from the loss. The train loop now checks loss/grad-norm
+  finiteness per micro-step: warns, skips the optimizer update, clears the (poisoned)
+  hunch cache, and aborts after `MAX_NONFINITE_STREAK = 50` consecutive failures. Bare
+  `except:`/`except Exception: pass` blocks in `metrics_logger`, `run_tracker`, and
+  `checkpoint_utils` replaced with narrowed exceptions + visible warnings.
+- B5: temporal_drift reports 0.0 for 1-step trajectories; `MetricsLogger` warns once per
+  metric name on the first non-finite value.
+- B6: `MetricsLogger` trims replayed CSV rows on resume; `plot_history` drops
+  non-monotonic rows defensively for historical CSVs. Documented in `docs/CHANGES.md`.
+- B7: `UniversalReasoner` takes an explicit `batch_size` constructor arg (defaults to
+  `config.BATCH_SIZE`) and asserts incoming batch shape with an actionable message.
+- A2: `COMPUTE_DTYPE`/`PARAM_DTYPE` policy in `config.py` (f16 compute — Turing has no
+  bf16; f32 params); hardcoded `jnp.float16` removed from `layers.py`; the ignored
+  `dtype` parameter on `RotaryAttention` removed.
+- C4: `REFINEMENT_LOSS_WEIGHT`/`ANCHOR_CE_WEIGHT` and curriculum endpoint/boundary
+  constants named in `schedules.py`; schedules import hoisted out of the jitted loss.
+- `resolve_root()` in `config.py`: remote URLs (gs://) are no longer mangled by abspath;
+  also fixed the DATA_ROOT empty-check (abspath("") returns cwd, so the warning never fired).

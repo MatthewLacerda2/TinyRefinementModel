@@ -31,8 +31,10 @@ def discover_latest_checkpoint_run(runs_root="runs"):
                 if mngr.latest_step() is not None:
                     run_id = os.path.basename(r_dir)
                     return chk_dir, run_id
-            except Exception:
-                pass
+            except Exception as e:
+                # Orbax raises a variety of errors on malformed checkpoint dirs;
+                # skip them, but say which directory was skipped and why.
+                print(f"⚠️ Skipping unreadable checkpoint dir {chk_dir}: {e}")
     return None, None
 
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):

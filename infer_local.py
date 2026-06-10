@@ -12,13 +12,14 @@ from config import (
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
     MAX_STEPS_LIMIT,
+    resolve_root,
 )
 from model import UniversalReasoner
 
 from dotenv import load_dotenv
 load_dotenv()
 
-CHECKPOINT_DIR = os.path.abspath(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
+CHECKPOINT_DIR = resolve_root(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 HUNCH_REFRESH_EVERY = 4
 
 def run_model_inference(

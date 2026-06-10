@@ -9,7 +9,7 @@ import glob
 import time
 import threading
 import queue
-from config import MAX_SEQ_LEN
+from config import MAX_SEQ_LEN, resolve_root
 from dotenv import load_dotenv
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
@@ -17,7 +17,7 @@ load_dotenv()
 
 # Config
 ENC_NAME = "cl100k_base"
-OUTPUT_DIR = os.path.abspath(os.environ.get("DATA_ROOT", "runs/data"))
+OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 
 # Targets: 8.05B total for high-performance SOTA corpus

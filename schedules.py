@@ -39,50 +39,68 @@ ponder_lambda_schedule = optax.join_schedules(
 weight_decay_schedule = optax.constant_schedule(1e-2)
 
 
+# ── Fixed auxiliary loss weights (used in grad_step.loss_fn) ─────────────────
+
+# Penalty on the second segment's CE exceeding the first's: pushes the carried
+# hunch state to actually help (refine) rather than hurt.
+REFINEMENT_LOSS_WEIGHT = 0.08
+
+# Small direct CE weight on the first (anchor) segment beyond its base CE term.
+ANCHOR_CE_WEIGHT = 0.03
+
+
 # ── Data curriculum ──────────────────────────────────────────────────────────
-# Mixture weights ramp from web-heavy toward a code/math-heavy blend over the
-# first CURRICULUM_STEPS optimizer steps, then hold steady.
+# Mixture weights ramp linearly from web-heavy toward a code/math-heavy blend
+# over the first CURRICULUM_STEPS optimizer steps, then hold steady.
 
 CURRICULUM_STEPS = 10000.0
+# Endpoints over the (web, code, math) sources, in DataMixer source order.
+CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
+CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]
 
 def get_curriculum_weights(loader_step):
     step = float(loader_step)
     if step >= CURRICULUM_STEPS:
-        return [0.35, 0.40, 0.25]
+        return list(CURRICULUM_END_WEIGHTS)
     fraction = step / CURRICULUM_STEPS
-    w_web = 0.85 - 0.50 * fraction
-    w_code = 0.10 + 0.30 * fraction
-    w_math = 0.05 + 0.20 * fraction
-    return [w_web, w_code, w_math]
+    return [
+        start + (end - start) * fraction
+        for start, end in zip(CURRICULUM_START_WEIGHTS, CURRICULUM_END_WEIGHTS)
+    ]
 
 def get_average_curriculum_weights(loader_step):
     """Average mixture weights over steps [0, loader_step] — used on resume to
     estimate how many samples each source has already served."""
     step = float(loader_step)
     if step == 0:
-        return [0.85, 0.10, 0.05]
+        return list(CURRICULUM_START_WEIGHTS)
     if step >= CURRICULUM_STEPS:
-        curriculum_fraction = CURRICULUM_STEPS / step
-        post_fraction = 1.0 - curriculum_fraction
-        avg_web = 0.60 * curriculum_fraction + 0.35 * post_fraction
-        avg_code = 0.25 * curriculum_fraction + 0.40 * post_fraction
-        avg_math = 0.15 * curriculum_fraction + 0.25 * post_fraction
-        return [avg_web, avg_code, avg_math]
+        # During the linear ramp the average weight is the start/end midpoint;
+        # blend that with the post-ramp plateau proportionally to time spent in each.
+        ramp_fraction = CURRICULUM_STEPS / step
+        post_fraction = 1.0 - ramp_fraction
+        return [
+            (start + end) / 2.0 * ramp_fraction + end * post_fraction
+            for start, end in zip(CURRICULUM_START_WEIGHTS, CURRICULUM_END_WEIGHTS)
+        ]
     else:
         curr = get_curriculum_weights(step)
         return [
-            (0.85 + curr[0]) / 2.0,
-            (0.10 + curr[1]) / 2.0,
-            (0.05 + curr[2]) / 2.0
+            (start + current) / 2.0
+            for start, current in zip(CURRICULUM_START_WEIGHTS, curr)
         ]
+
+
+# ── Reasoning-depth curriculum ───────────────────────────────────────────────
+# (opt-step boundary, reasoning steps used below that boundary); past the last
+# boundary the depth is DEPTH_FINAL.
+
+DEPTH_CURRICULUM = [(1000, 1), (4000, 2), (8000, 4)]
+DEPTH_FINAL = 8
 
 def get_curriculum_steps(train_opt_step):
     """Reasoning-loop depth curriculum: grow max steps as training progresses."""
-    if train_opt_step < 1000:
-        return 1
-    elif train_opt_step < 4000:
-        return 2
-    elif train_opt_step < 8000:
-        return 4
-    else:
-        return 8
+    for boundary, depth in DEPTH_CURRICULUM:
+        if train_opt_step < boundary:
+            return depth
+    return DEPTH_FINAL

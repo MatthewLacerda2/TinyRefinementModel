@@ -37,20 +37,20 @@ class RunTracker:
         try:
             commit = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
             metadata["commit"] = commit
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not read git commit ({e}); recording 'unknown'.")
 
         try:
             branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
             metadata["branch"] = branch
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not read git branch ({e}); recording 'unknown'.")
 
         try:
             status = subprocess.check_output(["git", "status", "--porcelain"], stderr=subprocess.DEVNULL).decode().strip()
             metadata["dirty"] = len(status) > 0
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not read git status ({e}); recording dirty=False.")
 
         return metadata
 
@@ -102,9 +102,11 @@ class RunTracker:
                 print("🛑"*20 + "\n")
                 sys.exit(1)
         except SystemExit:
-            sys.exit(1)
-        except Exception:
-            pass
+            raise
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            # A malformed metadata file must not kill training, but the disabled
+            # compatibility check must be visible.
+            print(f"⚠️ Could not verify run compatibility from {metadata_path}: {e}")
 
     def start_session(self, run_id=None):
         os.makedirs(self.runs_root, exist_ok=True)
@@ -151,7 +153,8 @@ class RunTracker:
                 try:
                     with open(metadata_path, "r") as f:
                         metadata = json.load(f)
-                except Exception:
+                except (OSError, json.JSONDecodeError) as e:
+                    print(f"⚠️ Could not read {metadata_path} ({e}); regenerating run metadata.")
                     metadata = None
             else:
                 metadata = None
@@ -189,16 +192,17 @@ class RunTracker:
         try:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
-            
+
             end_timestamp = datetime.datetime.now().astimezone().isoformat()
             duration = time.time() - self.start_time
-            
+
             metadata["sections"][self.session_index]["end_time"] = end_timestamp
             metadata["sections"][self.session_index]["duration_seconds"] = round(duration, 2)
-            
+
             self.save_metadata(metadata)
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, KeyError, IndexError) as e:
+            # Metadata bookkeeping must never kill training, but failures stay visible.
+            print(f"⚠️ Could not update session duration in {metadata_path}: {e}")
 
     def save_metadata(self, metadata):
         metadata_path = os.path.join(self.run_dir, "run_metadata.json")
