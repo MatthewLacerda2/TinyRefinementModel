@@ -9,11 +9,8 @@ from config import (
     MAX_SEQ_LEN,
     LATENT_DIM,
     NUM_BLOCKS,
-    VOCAB_SIZE,
     SHARED_SLOTS,
     MAX_STEPS_LIMIT,
-    NUM_HEADS,
-    NUM_GROUPS,
 )
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -33,86 +30,58 @@ def calculate_tokens(step):
     return step * BATCH_SIZE * (MAX_SEQ_LEN * 2)
 
 def print_model_stats():
-    print("Calculating model parameters & memory footprint...")
-    
-    head_dim = LATENT_DIM // NUM_HEADS
-    
-    # --- Block Parameters ---
-    # Rotary Attention
-    # q, k, v projs are f16, o_proj is f16. Norms are f32.
-    q_params = LATENT_DIM * LATENT_DIM + LATENT_DIM
-    k_params = LATENT_DIM * (NUM_GROUPS * head_dim) + (NUM_GROUPS * head_dim)
-    v_params = LATENT_DIM * (NUM_GROUPS * head_dim) + (NUM_GROUPS * head_dim)
-    o_params = LATENT_DIM * LATENT_DIM + LATENT_DIM
-    attn_norms = head_dim * 2 # q_norm, k_norm
-    
-    # MLP (gate, up are f16, down is f16. Norms are f32)
-    hidden_dim = int(256 * ((LATENT_DIM * 8 / 3 + 255) // 256))
-    gate_params = LATENT_DIM * hidden_dim + hidden_dim
-    up_params = LATENT_DIM * hidden_dim + hidden_dim
-    down_params = hidden_dim * LATENT_DIM + LATENT_DIM
-    
-    block_norms = LATENT_DIM * 2 # Standard norm1, norm2
-    
-    # Pointers to specific precisions (Bytes)
-    f16_per_block = (q_params + k_params + v_params + o_params + 
-                     gate_params + up_params + down_params)
-    f32_per_block = attn_norms + block_norms
-    
-    total_params_per_block = f16_per_block + f32_per_block
-    
-    # Unique Physical Blocks (based on model.py Stack Block setup)
-    num_enc_blocks = NUM_BLOCKS // 2 # share_weights=False
-    num_dec_blocks = NUM_BLOCKS // 2 # share_weights=False
-    num_reasoning_blocks = 1 # share_weights=True
-    unique_blocks = num_enc_blocks + num_dec_blocks + num_reasoning_blocks
-    
-    total_layer_params = total_params_per_block * unique_blocks
-    total_layer_bytes = (f16_per_block * 2 + f32_per_block * 4) * unique_blocks
-    
-    # --- Structural Parameters ---
-    embed = VOCAB_SIZE * LATENT_DIM
-    time_embed = (MAX_STEPS_LIMIT + 1) * LATENT_DIM
-    shared_token = SHARED_SLOTS * LATENT_DIM
-    seq_norm = LATENT_DIM
-    meta_proj = 2 * LATENT_DIM + LATENT_DIM
-    extra_norms = LATENT_DIM * 4 # time, forget, signal, hunch
-    hunch_gate = 2 * LATENT_DIM * LATENT_DIM + LATENT_DIM
-    tau_param = 1
-    forget_head = 2 * LATENT_DIM * LATENT_DIM + LATENT_DIM
-    halt_probe = LATENT_DIM * 1 + 1
-    
-    # Most structural params are f32 by default in UniversalReasoner
-    structure_params = (embed + time_embed + shared_token + seq_norm + meta_proj + 
-                        extra_norms + hunch_gate + tau_param + forget_head + halt_probe)
-    structure_bytes = structure_params * 4
-    
-    total_params = total_layer_params + structure_params
-    total_weight_bytes = total_layer_bytes + structure_bytes
-    
-    # Optimizer State (AdamW: 2 f32 moments per parameter)
+    """Parameter/memory stats derived from the live model's nnx.state — counted
+    from real shapes and dtypes, never transcribed formulas (which drift; the
+    old hand-math here wrongly assumed f16 parameter storage)."""
+    print("Calculating model parameters & memory footprint from the live model...")
+    import jax
+    from flax import nnx
+    from model import UniversalReasoner
+
+    with jax.default_device(jax.devices("cpu")[0]):
+        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+
+    params = nnx.state(model, nnx.Param)
+    leaves_with_paths = jax.tree_util.tree_flatten_with_path(params)[0]
+
+    def group_of(top_key):
+        if top_key in ("encoder_stack", "decoder_stack", "reasoning_stack"):
+            return top_key
+        if top_key in ("embed", "time_embed", "shared_token"):
+            return "embeddings"
+        return "heads & norms"
+
+    group_params = {}
+    group_bytes = {}
+    for path, leaf in leaves_with_paths:
+        top = str(getattr(path[0], 'key', path[0]))
+        group = group_of(top)
+        group_params[group] = group_params.get(group, 0) + leaf.size
+        group_bytes[group] = group_bytes.get(group, 0) + leaf.size * leaf.dtype.itemsize
+
+    total_params = sum(group_params.values())
+    total_weight_bytes = sum(group_bytes.values())
+
+    # Optimizer state (AdamW: 2 f32 moments per parameter) and f32 gradients
     optimizer_bytes = total_params * 4 * 2
-    
-    # Gradients (f32)
     gradient_bytes = total_params * 4
-    
-    # Activation Memory (Highly heuristic estimation)
-    # z_seq + reasoning states + attn scores for a single path
-    # (Batch * Seq * Dim * Blocks) + (Batch * Steps * Slots * Dim)
-    act_bytes_est = (BATCH_SIZE * MAX_SEQ_LEN * LATENT_DIM * 2 * NUM_BLOCKS * 2) # f16
-    act_bytes_est += (BATCH_SIZE * MAX_STEPS_LIMIT * SHARED_SLOTS * LATENT_DIM * 2) # f16
-    
+
+    # Activation memory (heuristic estimate, f16 compute):
+    # z_seq through the blocks + reasoning slot states across steps
+    act_bytes_est = (BATCH_SIZE * MAX_SEQ_LEN * LATENT_DIM * 2 * NUM_BLOCKS * 2)
+    act_bytes_est += (BATCH_SIZE * MAX_STEPS_LIMIT * SHARED_SLOTS * LATENT_DIM * 2)
+
     total_vram_gb = (total_weight_bytes + optimizer_bytes + gradient_bytes + act_bytes_est) / (1024**3)
 
     print(f"Model Parameters: {total_params:,}")
-    print(f"  |-- Structure Params  : {structure_params:,}")
-    print(f"  |-- Unique Layer Params : {total_layer_params:,} ({unique_blocks} unique blocks)")
-    print(f"      |-- Unique Encoder : {total_params_per_block * num_enc_blocks:,} ({num_enc_blocks} Blocks)")
-    print(f"      |-- Unique Decoder : {total_params_per_block * num_dec_blocks:,} ({num_dec_blocks} Blocks)")
-    print(f"      |-- Unique Reasoning: {total_params_per_block * num_reasoning_blocks:,} (Shared across {NUM_BLOCKS} Blocks)")
+    order = ["embeddings", "encoder_stack", "decoder_stack", "reasoning_stack", "heads & norms"]
+    for group in order:
+        if group in group_params:
+            note = f" (1 physical block, shared across {NUM_BLOCKS} iterations)" if group == "reasoning_stack" else ""
+            print(f"  |-- {group:16}: {group_params[group]:>12,}{note}")
     print("-" * 50)
     print("ESTIMATED VRAM FOOTPRINT (Training)")
-    print(f"  |-- Weights (f16/f32) : {total_weight_bytes / (1024**2):.2f} MB")
+    print(f"  |-- Weights           : {total_weight_bytes / (1024**2):.2f} MB (f32 storage, f16 compute)")
     print(f"  |-- Optimizer (AdamW) : {optimizer_bytes / (1024**2):.2f} MB")
     print(f"  |-- Gradients (f32)   : {gradient_bytes / (1024**2):.2f} MB")
     print(f"  |-- Activations (Est) : {act_bytes_est / (1024**2):.2f} MB")

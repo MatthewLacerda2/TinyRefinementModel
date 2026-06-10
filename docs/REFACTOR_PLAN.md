@@ -412,3 +412,23 @@ future work in `docs/PLAN.md`.
   recorded in `run_metadata.json` via `RunTracker.get_hyperparameters`.
 - Verified: 7 tests green, `ruff check` clean, GPU grad step loss unchanged
   (21.973316…, identical to the Phase 2/3 smoke).
+
+**2026-06-09 — Phase 5 complete. All phases done.**
+- B4: `print_model_stats` builds the real model on CPU and counts parameters/bytes from
+  `nnx.state(model, nnx.Param)` shapes and dtypes, grouped by component. The transcribed
+  formulas (which wrongly assumed f16 parameter storage) are gone. Ground truth:
+  79,640,898 params — 51.4M embeddings, 12.1M encoder, 12.1M decoder, 3.0M reasoning
+  block (shared across 8 iterations), 1.1M heads/norms; ~1.19 GB estimated training
+  footprint (f32 weights 304 MB + AdamW moments 608 MB + f32 grads 304 MB + activations).
+- C5: `prefill.py` decomposed into `extract_text` (per-dataset parsing + fineweb score
+  filter, sanity-checked against all four dataset shapes), `load_progress`/`save_progress`,
+  `stream_with_retries` (reconnecting producer), `tokenize_buffer`, `write_chunk`
+  (stride-aligned saves), and a ~70-line `process_dataset` orchestrator. Magic numbers
+  named: `PREFETCH_BUFFER`, `TOKENIZE_BATCH_ITEMS`, `FINEWEB_MIN_SCORE`. One deliberate
+  behavior improvement: the final-flush status no longer increments `file_idx` when no
+  chunk was actually written (the old code could skip an index). Dead `items_since_start`
+  counter removed.
+- The repo now meets all Part 5 acceptance criteria. Next stage (out of scope for this
+  plan): review the LLM architecture and training signal using `metrics.csv` evidence —
+  halting-probe saturation during the fixed-depth phases, forget dynamics after the
+  e516132 fix, and the first_ce-vs-ce refinement gap.
