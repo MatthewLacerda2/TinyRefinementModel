@@ -11,16 +11,14 @@ class ScanStepOutput:
     shared_state: jnp.ndarray
     forget_val: jnp.ndarray
     step_div: jnp.ndarray
-    halt_prob: jnp.ndarray   # per-batch halting probability at this step
 
 @struct.dataclass
 class ReasonerOutput:
     logits: jnp.ndarray
     forget_cost: float
     diversity_loss: float
-    ponder_cost: float        # expected reasoning depth (ACT-style)
-    halt_diag: Dict[str, Any]
-    expected_shared: jnp.ndarray
+    diag: Dict[str, Any]
+    final_shared: jnp.ndarray
 
 def apply_rope(x, cos, sin):
     x1, x2 = jnp.split(x, 2, axis=-1)

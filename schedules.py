@@ -1,4 +1,7 @@
+import numpy as np
 import optax
+
+from config import MAX_STEPS_LIMIT, DATA_SEED
 
 WARMUP_STEPS = 1000
 DECAY_STEPS = 15000
@@ -27,26 +30,7 @@ diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
     end_value=0.1
 )
 
-ponder_lambda_schedule = optax.join_schedules(
-    schedules=[
-        optax.constant_schedule(0.0),
-        optax.linear_schedule(init_value=0.0, end_value=0.02, transition_steps=3000),
-        optax.constant_schedule(0.02)
-    ],
-    boundaries=[2000, 5000] # Zero penalty for first 2k steps, ramps up over next 3k steps
-)
-
 weight_decay_schedule = optax.constant_schedule(1e-2)
-
-
-# ── Fixed auxiliary loss weights (used in grad_step.loss_fn) ─────────────────
-
-# Penalty on the second segment's CE exceeding the first's: pushes the carried
-# hunch state to actually help (refine) rather than hurt.
-REFINEMENT_LOSS_WEIGHT = 0.08
-
-# Small direct CE weight on the first (anchor) segment beyond its base CE term.
-ANCHOR_CE_WEIGHT = 0.03
 
 
 # ── Data curriculum ──────────────────────────────────────────────────────────
@@ -91,16 +75,15 @@ def get_average_curriculum_weights(loader_step):
         ]
 
 
-# ── Reasoning-depth curriculum ───────────────────────────────────────────────
-# (opt-step boundary, reasoning steps used below that boundary); past the last
-# boundary the depth is DEPTH_FINAL.
+# ── Reasoning-depth sampling ─────────────────────────────────────────────────
+# The reasoning-loop depth is drawn uniformly per micro-step instead of following
+# a fixed curriculum. Because the model never knows how many steps it gets, every
+# step's slot state must be a viable answer — which is what makes extra steps
+# improve the prediction rather than collapse into a copy of step 1. At inference
+# the depth is always MAX_STEPS_LIMIT.
 
-DEPTH_CURRICULUM = [(1000, 1), (4000, 2), (8000, 4)]
-DEPTH_FINAL = 8
-
-def get_curriculum_steps(train_opt_step):
-    """Reasoning-loop depth curriculum: grow max steps as training progresses."""
-    for boundary, depth in DEPTH_CURRICULUM:
-        if train_opt_step < boundary:
-            return depth
-    return DEPTH_FINAL
+def sample_reasoning_depth(micro_step):
+    """Uniform depth in [1, MAX_STEPS_LIMIT], derived deterministically from the
+    micro-step so resumed runs replay the exact same depth sequence."""
+    rng = np.random.default_rng(DATA_SEED * 1_000_003 + micro_step)
+    return int(rng.integers(1, MAX_STEPS_LIMIT + 1))

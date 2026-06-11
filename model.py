@@ -55,10 +55,6 @@ class UniversalReasoner(nnx.Module):
 
         self.raw_tau = nnx.Param(jnp.array(-2.3))
 
-        # Lightweight probe: reads mean-pooled slot state, outputs a per-batch halting
-        # probability. Trained implicitly by the ponder cost + slot stability losses.
-        self.halt_probe = nnx.Linear(latent_dim, 1, rngs=rngs, dtype=dtype)
-
         self.use_forget = use_forget
         if self.use_forget:
             self.forget_head = nnx.Linear(
@@ -104,31 +100,28 @@ class UniversalReasoner(nnx.Module):
         ])  # [max_steps, SHARED_SLOTS]
 
         all_time_embeds = self.time_embed(jnp.arange(max_steps))
-        step_nums = jnp.arange(1, max_steps + 1, dtype=jnp.float32)  # [max_steps]
-        
+
         pad_part = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
         slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.float32)
         extended_ctx_bias = jnp.concatenate([pad_part, slot_part], axis=-1)[:, None, None, :]
 
         modules = (
-            self.meta_proj, self.time_norm, self.time_signal_norm, 
+            self.meta_proj, self.time_norm, self.time_signal_norm,
             self.reasoning_stack,
             self.forget_norm if self.use_forget else None,
             self.forget_head if self.use_forget else None,
             self.raw_tau,
-            self.halt_probe,
         )
         model_graph, model_state = nnx.split(modules)
 
         def scan_step(carry, inputs):
-            curr_shared, cumul_expected, remaining_survival, cumul_ponder, prev_forget, prev_div, current_state = carry
-            t_signal, step_shared_pos, step_num = inputs
-            
+            curr_shared, prev_forget, prev_div, current_state = carry
+            t_signal, step_shared_pos = inputs
+
             (
-                m_proj, t_norm, ts_norm, 
+                m_proj, t_norm, ts_norm,
                 r_stack,
                 f_norm, f_head, raw_tau_param,
-                h_probe,
             ) = nnx.merge(model_graph, current_state)
             
             meta_input = jnp.stack([prev_forget, prev_div], axis=-1)
@@ -151,39 +144,18 @@ class UniversalReasoner(nnx.Module):
 
             step_div = calculate_slot_stability_loss(new_shared, curr_shared, tau)
 
-            # Halting probe: reads the mean slot state, outputs a per-batch
-            # probability of stopping at this step.
-            slot_mean = jnp.mean(new_shared, axis=1)  # [batch, dim]
-            halt_prob = jax.nn.sigmoid(h_probe(slot_mean)).squeeze(-1)  # [batch]
-
-            # ── In-carry ACT accumulation ─────────────────────────────────────
-            # p_t = h_t * survival_t  (survival = prob of not having halted yet)
-            # Instead of materializing the full trajectory for the backward,
-            # we accumulate expected_shared and ponder_cost in the carry.
-            # This keeps the gradient flowing only through the carry path, which
-            # jax.lax.scan's reverse-mode is optimized to handle efficiently.
-            step_weight = halt_prob * remaining_survival               # [B]
-            new_cumul_expected = cumul_expected + step_weight[:, None, None] * new_shared
-            new_remaining = remaining_survival * (1.0 - halt_prob)
-            new_cumul_ponder = cumul_ponder + step_weight * step_num
-
-            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, f_norm, f_head, raw_tau_param, h_probe))
+            _, next_state = nnx.split((m_proj, t_norm, ts_norm, r_stack, f_norm, f_head, raw_tau_param))
 
             return (
-                new_shared, new_cumul_expected, new_remaining, new_cumul_ponder,
-                forget_val, step_div, next_state
+                new_shared, forget_val, step_div, next_state
             ), ScanStepOutput(
                 shared_state=new_shared,
                 forget_val=forget_val,
                 step_div=step_div,
-                halt_prob=halt_prob,
             )
 
         init_carry = (
             z_shared,
-            jnp.zeros_like(z_shared),          # cumul_expected [B, S, D]
-            jnp.ones((batch_size,)),            # remaining_survival [B] starts at 1
-            jnp.zeros((batch_size,)),           # cumul_ponder [B]
             jnp.zeros((batch_size,)),           # prev_forget [B]
             jnp.zeros((batch_size,)),           # prev_div [B]
             model_state
@@ -191,17 +163,11 @@ class UniversalReasoner(nnx.Module):
 
         final_carry, all_outputs = jax.lax.scan(
             jax.checkpoint(scan_step), init_carry,
-            (all_time_embeds, all_step_shared_pos, step_nums)
+            (all_time_embeds, all_step_shared_pos)
         )
 
-        final_shared, cumul_expected, remaining, cumul_ponder = final_carry[:4]
-
-        # The remaining survival probability mass is assigned to the last step's state.
-        # This ensures the weights sum to exactly 1 without any post-scan computation.
-        expected_shared = cumul_expected + remaining[:, None, None] * final_shared
-        ponder_cost = jnp.mean(cumul_ponder + remaining * float(max_steps))
-
-        return expected_shared, ponder_cost, all_outputs
+        final_shared = final_carry[0]
+        return final_shared, all_outputs
 
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
@@ -238,13 +204,14 @@ class UniversalReasoner(nnx.Module):
         decoder_bias = (decoder_pad_mask.astype(jnp.float32) - 1.0) * 1e9
         decoder_bias = decoder_bias[:, None, None, :]
 
-        expected_shared, ponder_cost, all_outputs = self._reasoning_loop(
+        final_shared, all_outputs = self._reasoning_loop(
             z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared, training=training
         )
-        
-        # Decoder reads from the soft-halting weighted slot state — a quality-weighted
-        # summary of the full reasoning trajectory, not just the final step.
-        decoder_ctx_final = jnp.concatenate([z_seq, expected_shared], axis=1)
+
+        # Decoder reads from the final step's slot state. Training samples the loop
+        # depth randomly, so every step's state must already be a viable answer —
+        # no halting-weighted mixture needed.
+        decoder_ctx_final = jnp.concatenate([z_seq, final_shared], axis=1)
         
         z_seq_out = self.decoder_stack(
             z_seq, 
@@ -276,22 +243,19 @@ class UniversalReasoner(nnx.Module):
         else:
             temporal_drift = jnp.array(0.0)
         
-        halt_diag = {
+        diag = {
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
             'tau': jax.nn.softplus(self.raw_tau.value) + 1e-4,
-            'mean_halt_step': ponder_cost,
         }
-        
-        # Carry the soft-weighted slot state forward — a better scratchpad summary
-        # than the raw final step (which may have overwritten useful intermediate states).
-        self.hunch_cache.value = expected_shared
+
+        # Carry the final slot state forward as the next segment's hunch.
+        self.hunch_cache.value = final_shared
 
         return ReasonerOutput(
             logits=logits,
             forget_cost=total_f_cost,
             diversity_loss=total_div_cost,
-            ponder_cost=ponder_cost,
-            halt_diag=halt_diag,
-            expected_shared=expected_shared,
+            diag=diag,
+            final_shared=final_shared,
         )

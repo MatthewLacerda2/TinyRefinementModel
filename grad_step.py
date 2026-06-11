@@ -11,33 +11,24 @@ from config import (
 from schedules import (
     forget_lambda_schedule,
     diversity_lambda_schedule,
-    ponder_lambda_schedule,
-    REFINEMENT_LOSS_WEIGHT,
-    ANCHOR_CE_WEIGHT,
 )
 
-def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda, p_lambda):
+def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda):
     """Assembles the full training loss from both segments' outputs.
 
     Standalone (not buried in the jitted grad step) so the loss-wiring test can
     assert every cost component actually contributes — a forget-cost term was
     once computed and logged but never added here, and the model spent ~3900
     opt steps not learning to forget.
+
+    Plain CE on both segments plus the two regularizers. The old refinement,
+    anchor, and ponder terms are gone: with the reasoning depth randomly sampled
+    per training step, "use the extra steps well" is enforced structurally
+    instead of through patch losses (which made copying step 1 the optimum).
     """
-    # stop_gradient on ce1: the refinement term should only push ce2 down toward
-    # ce1 as a target. Without this, the gradient through ce1 perversely incentivizes
-    # making seq1 worse to reduce the ce2-ce1 gap.
-    refinement_regression = jnp.maximum(0.0, ce2 - jax.lax.stop_gradient(ce1))
-    refinement_loss = refinement_regression * REFINEMENT_LOSS_WEIGHT
-
-    early_penalty = ce1 * ANCHOR_CE_WEIGHT
-
     return (ce1 + ce2) \
            + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
-           + f_lambda * (out1.forget_cost + out2.forget_cost) \
-           + refinement_loss \
-           + early_penalty \
-           + p_lambda * (out1.ponder_cost + out2.ponder_cost)
+           + f_lambda * (out1.forget_cost + out2.forget_cost)
 
 
 @nnx.jit(static_argnames=['max_steps'])
@@ -63,19 +54,17 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
         d_lambda = diversity_lambda_schedule(opt_step)
-        p_lambda = ponder_lambda_schedule(opt_step)
 
-        total_loss = compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda, p_lambda)
+        total_loss = compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda)
 
         # No NaN masking here: a non-finite loss must surface in the train loop
         # (which skips the update and aborts on a streak), not be silently zeroed.
-        new_halt_diag = {
-            **out2.halt_diag,
-            'ce1': jax.lax.stop_gradient(ce1),
+        new_diag = {
+            **out2.diag,
+            'seg1_ce': jax.lax.stop_gradient(ce1),
             'token_loss': jax.lax.stop_gradient(ce2),
-            'ponder_cost': jax.lax.stop_gradient(out1.ponder_cost + out2.ponder_cost),
         }
-        out2 = out2.replace(logits=None, halt_diag=new_halt_diag)
+        out2 = out2.replace(logits=None, diag=new_diag)
         return total_loss, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)

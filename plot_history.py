@@ -123,13 +123,14 @@ def plot_training_history(log_path=None):
                         'step': int(row['step']),
                         'loss':  float(row.get('loss', 0)),
                         'ce': float(row.get('ce', 0)),
-                        'first_ce': float(row.get('first_ce', 0)),
+                        # old CSVs called the first segment's CE "first_ce"
+                        'seg1_ce': float(row.get('seg1_ce') or row.get('first_ce') or 0),
                         'diversity': float(row.get('diversity_loss', 0)),
                         'forget_cost': float(row.get('avg_forget_cost', 0)),
                         'grad_norm': float(row.get('grad_norm_avg', 0)),
                         'temporal_drift': float(row.get('temporal_drift', 0)),
-                        'ponder_cost': float(row.get('ponder_cost', 0)),
-                        'mean_halt_step': float(row.get('mean_halt_step', 0)),
+                        # old CSVs logged mean_halt_step where new ones log sampled depth
+                        'depth_avg': float(row.get('depth_avg') or row.get('mean_halt_step') or 0),
                     })
                 except ValueError:
                     continue 
@@ -155,12 +156,12 @@ def plot_training_history(log_path=None):
 
     steps = np.array([e['step'] for e in history])
     ce = np.array([e['ce'] for e in history])
-    first_ce = np.array([e['first_ce'] for e in history])
+    seg1_ce = np.array([e['seg1_ce'] for e in history])
     diversity = np.array([e['diversity'] for e in history])
     forget = np.array([e['forget_cost'] for e in history])
     grad_norm = np.array([e['grad_norm'] for e in history])
     temporal_drift = np.array([e['temporal_drift'] for e in history])
-    mean_halt_step = np.array([e['mean_halt_step'] for e in history])
+    depth_avg = np.array([e['depth_avg'] for e in history])
 
     plt.style.use('dark_background')
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -168,13 +169,13 @@ def plot_training_history(log_path=None):
 
     smoothing_window = max(5, min(100, len(steps) // 20))
 
-    # --- 1. CONVERGENCE (CE vs First Step) ---
-    ax1.plot(steps, first_ce, color='#ff007b', alpha=0.2, linestyle='--', label='Initial Guess (Step 0)')
-    ax1.plot(steps, ce, color='#ff007b', alpha=0.2, label='Final Prediction')
-    ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Final CE')
-    ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(first_ce, smoothing_window), 
-                     color='#ff007b', alpha=0.1, label='Refinement Gain')
-    ax1.set_title('Convergence & Refinement', fontsize=14, fontweight='bold')
+    # --- 1. CONVERGENCE (Segment 2 vs Segment 1 CE) ---
+    ax1.plot(steps, seg1_ce, color='#ff007b', alpha=0.2, linestyle='--', label='Segment 1 CE (fresh slots)')
+    ax1.plot(steps, ce, color='#ff007b', alpha=0.2, label='Segment 2 CE (carried hunch)')
+    ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Segment 2 CE')
+    ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(seg1_ce, smoothing_window),
+                     color='#ff007b', alpha=0.1, label='Hunch-Carry Gain')
+    ax1.set_title('Convergence & Hunch Carry', fontsize=14, fontweight='bold')
     ax1.set_ylabel('Cross Entropy')
     if np.all(ce > 0):
         ax1.set_yscale('log')
@@ -189,12 +190,12 @@ def plot_training_history(log_path=None):
     ax2.legend(loc='upper left')
     ax2.grid(True, alpha=0.1)
 
-    # --- 3. RESOURCE COSTS (Forget & Storage) ---
+    # --- 3. RESOURCE COSTS (Forget & Sampled Depth) ---
     ax3.plot(steps, smooth(forget, smoothing_window), color='#00ff88', linewidth=2, label='Forget Cost')
     ax3_twin = ax3.twinx()
-    ax3_twin.plot(steps, smooth(mean_halt_step, smoothing_window), color='#ffaa00', linewidth=1, label='Mean Halt Step')
-    ax3_twin.set_ylabel('Mean Halt Step', color='#ffaa00')
-    ax3.set_title('Dynamic Compute & Resource Penalties', fontsize=14, fontweight='bold')
+    ax3_twin.plot(steps, smooth(depth_avg, smoothing_window), color='#ffaa00', linewidth=1, label='Avg Sampled Depth')
+    ax3_twin.set_ylabel('Avg Sampled Depth', color='#ffaa00')
+    ax3.set_title('Sampled Depth & Resource Penalties', fontsize=14, fontweight='bold')
     ax3.set_xlabel('Training Step')
     ax3.set_ylabel('Cost Value')
     ax3.legend(loc='upper left')

@@ -21,7 +21,7 @@ from schedules import (
     weight_decay_schedule,
     get_curriculum_weights,
     get_average_curriculum_weights,
-    get_curriculum_steps,
+    sample_reasoning_depth,
 )
 from metrics_logger import MetricsLogger
 from data_loaders import TextDataGenerator, DataMixer
@@ -162,6 +162,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
     accum_loss = 0.0
     accum_token_loss = 0.0
     accum_grad_norm = 0.0
+    accum_depth = 0.0
     t_compute = 0.0
     nonfinite_streak = 0
 
@@ -173,11 +174,10 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
             t_compute_start = time.time()
 
-            opt_step = step // ACCUMULATION_STEPS
-            curr_steps = get_curriculum_steps(opt_step)
+            depth = sample_reasoning_depth(step)
 
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step), curr_steps, doc_boundary=doc_boundary
+                model, batch, jnp.array(step), depth, doc_boundary=doc_boundary
             )
 
             current_loss = float(loss)
@@ -205,12 +205,13 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
 
             t_compute += (time.time() - t_compute_start)
 
-            current_token_loss = float(out.halt_diag.get('token_loss', loss))
+            current_token_loss = float(out.diag.get('token_loss', loss))
 
             divisor = ACCUMULATION_STEPS * LOG_REAL_STEPS
             accum_loss += current_loss / divisor
             accum_token_loss += current_token_loss / divisor
             accum_grad_norm += current_grad_norm / divisor
+            accum_depth += depth / divisor
 
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
@@ -222,17 +223,18 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     out,
                     t_compute,
                     grad_norm_avg=float(accum_grad_norm),
-                    first_ce=float(out.halt_diag.get('ce1', 0))
+                    seg1_ce=float(out.diag.get('seg1_ce', 0)),
+                    depth_avg=float(accum_depth),
                 )
 
                 if not sft_phase_event.is_set():
                     curr_weights = get_curriculum_weights(opt_step)
                     print(
-                        f"📚 [Curriculum] Opt Step: {opt_step} | Reasoning Steps: {curr_steps} | "
+                        f"📚 [Curriculum] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | "
                         f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
                     )
                 else:
-                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Reasoning Steps: {curr_steps} | Weights (Chat/Web/Code/Math): [0.70, 0.15, 0.10, 0.05]")
+                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | Weights (Chat/Web/Code/Math): [0.70, 0.15, 0.10, 0.05]")
 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()
@@ -287,6 +289,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                 accum_loss = 0.0
                 accum_token_loss = 0.0
                 accum_grad_norm = 0.0
+                accum_depth = 0.0
                 t_compute = 0.0
 
             step += 1

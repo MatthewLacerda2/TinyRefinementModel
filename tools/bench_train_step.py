@@ -88,7 +88,7 @@ def main():
             # The real train loop pulls these to the host every micro-step.
             _ = float(loss)
             _ = float(grad_norm)
-            _ = float(out.halt_diag.get("mean_halt_step", 0.0))
+            _ = float(out.diag.get("temporal_drift", 0.0))
         return loss
 
     t0 = time.time()
