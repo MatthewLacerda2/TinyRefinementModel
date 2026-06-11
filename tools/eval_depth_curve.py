@@ -31,14 +31,13 @@ load_dotenv()
 
 
 @nnx.jit(static_argnames=["max_steps"])
-def eval_segment_ce(model, tokens, max_steps):
+def eval_token_ces(model, tokens, max_steps):
+    """Per-token CE and validity mask, so the caller can slice by difficulty."""
     seq_in, seq_out = tokens[:, :MAX_SEQ_LEN], tokens[:, 1:MAX_SEQ_LEN + 1]
     out = model(seq_in, max_steps=max_steps, training=False, should_refresh=True)
     mask = seq_out != PAD_TOKEN_ID
-    ce = jnp.sum(
-        optax.softmax_cross_entropy_with_integer_labels(logits=out.logits, labels=seq_out) * mask
-    ) / jnp.sum(mask).clip(min=1)
-    return ce
+    token_ce = optax.softmax_cross_entropy_with_integer_labels(logits=out.logits, labels=seq_out)
+    return token_ce, mask
 
 
 def restore_model(checkpoint_path):
@@ -100,29 +99,52 @@ def main():
     print(f"📚 Evaluating {len(batches)} batches (segment 1, fresh slots) at depths 1..{MAX_STEPS_LIMIT}")
 
     # Same batches at every depth, so the curve isolates depth and nothing else.
+    # Hard tokens are the worst quartile *ranked at depth 1*: the set is fixed
+    # before depth varies, otherwise re-ranking per depth would bias the slice.
     depths = list(range(1, MAX_STEPS_LIMIT + 1))
-    mean_ces = []
-    for depth in depths:
-        total = 0.0
-        for batch in batches:
-            total += float(eval_segment_ce(model, batch, depth))
-        mean_ces.append(total / len(batches))
-        print(f"  depth {depth}: CE {mean_ces[-1]:.4f}")
+    ce_sums = {d: 0.0 for d in depths}
+    ce_counts = {d: 0 for d in depths}
+    hard_sums = {d: 0.0 for d in depths}
+    hard_counts = {d: 0 for d in depths}
+
+    import numpy as np
+    for batch in batches:
+        hard_mask = None
+        for depth in depths:
+            token_ce, mask = eval_token_ces(model, batch, depth)
+            token_ce, mask = np.asarray(token_ce), np.asarray(mask)
+            if depth == 1:
+                valid_ces = token_ce[mask]
+                threshold = np.quantile(valid_ces, 0.75)
+                hard_mask = mask & (token_ce >= threshold)
+            ce_sums[depth] += token_ce[mask].sum()
+            ce_counts[depth] += mask.sum()
+            hard_sums[depth] += token_ce[hard_mask].sum()
+            hard_counts[depth] += hard_mask.sum()
+
+    mean_ces = [ce_sums[d] / ce_counts[d] for d in depths]
+    hard_ces = [hard_sums[d] / hard_counts[d] for d in depths]
+    for d, ce, hard in zip(depths, mean_ces, hard_ces):
+        print(f"  depth {d}: CE {ce:.4f} | hard-quartile CE {hard:.4f}")
 
     print("-" * 40)
-    best = min(range(len(depths)), key=lambda i: mean_ces[i])
-    print(f"Best depth: {depths[best]} (CE {mean_ces[best]:.4f}) | depth 1 CE {mean_ces[0]:.4f} | gain {mean_ces[0] - mean_ces[best]:+.4f}")
+    print(f"All tokens   : depth 1 CE {mean_ces[0]:.4f} -> depth 8 CE {mean_ces[-1]:.4f} | gain {mean_ces[0] - mean_ces[-1]:+.4f}")
+    print(f"Hard quartile: depth 1 CE {hard_ces[0]:.4f} -> depth 8 CE {hard_ces[-1]:.4f} | gain {hard_ces[0] - hard_ces[-1]:+.4f}")
 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     plt.style.use("dark_background")
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(depths, mean_ces, marker="o", color="#ff007b")
-    ax.set_xlabel("Reasoning depth (steps)")
-    ax.set_ylabel("Cross entropy (held-out)")
-    ax.set_title(f"CE vs reasoning depth — checkpoint step {ckpt_step}")
-    ax.grid(True, alpha=0.2)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+    ax1.plot(depths, mean_ces, marker="o", color="#ff007b")
+    ax1.set_title("All tokens")
+    ax2.plot(depths, hard_ces, marker="o", color="#ffaa00")
+    ax2.set_title("Hard quartile (ranked at depth 1)")
+    for ax in (ax1, ax2):
+        ax.set_xlabel("Reasoning depth (steps)")
+        ax.set_ylabel("Cross entropy (held-out)")
+        ax.grid(True, alpha=0.2)
+    fig.suptitle(f"CE vs reasoning depth — checkpoint step {ckpt_step}")
     out_path = "depth_curve.png"
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
