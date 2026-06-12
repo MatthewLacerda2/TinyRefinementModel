@@ -1,6 +1,6 @@
 # Latent-scratchpad models can leak future tokens into past predictions through their memory slots
 
-Status: confirmed
+Status: confirmed (fixed in f24f238)
 Date: 2026-06-11
 Commit: f55c29b  Run: n/a (architectural, affects all runs to date)
 Measured with: `venv/bin/python -m pytest tests/test_model_invariants.py` (the strict xfail)
@@ -44,3 +44,13 @@ quantified. A clean quantification: compare depth curves where slots are
 computed from the same window vs only from the previous window. The structural
 argument, however, applies to any design where a bidirectional summary is
 visible to causal decode positions.
+
+## Resolution
+
+Fixed in commit f24f238, same day: the decoder now attends to the slots the
+window started with (carried hunch — strictly past information), never the
+current window's loop output, and the hunch gate no longer conditions on the
+current window's mean. Both causality tests pass and remain in the suite as
+guards. The single-batch overfit gate passes on the fixed architecture. The
+depth-curve diagnostic was redesigned to the unconfounded form: window-2 CE
+versus window-1 reasoning depth, with a no-hunch control.
