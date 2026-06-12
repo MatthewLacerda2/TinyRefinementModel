@@ -1,16 +1,16 @@
 """Whole-model invariants: padding correctness and causality.
 
-The padding test is a true invariant and must always pass. The causality test
-documents a KNOWN VIOLATION: the reasoning slots read the entire sequence
-bidirectionally (model.py: is_causal=False over z_seq) and the decoder exposes
-those slots to every token position, so predicting token t can use information
-about tokens after t. It is marked xfail(strict) — if it ever passes, the leak
-was fixed and the marker must be removed.
+Causality history: until 2026-06-11 the decoder read this window's reasoning
+output, whose slots had seen the whole window bidirectionally — a future-token
+leak (docs/findings/2026-06-11-slot-future-leak.md). Fixed by decoding against
+the slots the window started with; the loop's output now only reaches the NEXT
+window through the hunch cache. Both causality tests below guard that fix: the
+fresh-slot path and the carried-hunch path (whose gate once peeked at the
+current window's mean — the second leak).
 """
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from config import PAD_TOKEN_ID
 
@@ -35,13 +35,6 @@ def test_pad_tail_length_does_not_change_real_token_logits(tiny_model, token_bat
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known future-information leak: reasoning slots summarize the full "
-           "window bidirectionally and the decoder attends to them from every "
-           "position. Training CE and the depth-curve diagnostic are optimistic "
-           "until the architecture closes this. Remove this marker when fixed.",
-)
 def test_future_token_cannot_influence_past_predictions(tiny_model, token_batch):
     perturbed = token_batch.copy()
     perturbed[0, 40] = int(perturbed[0, 40]) + 1
@@ -50,3 +43,20 @@ def test_future_token_cannot_influence_past_predictions(tiny_model, token_batch)
     after = _logits(tiny_model, perturbed)[:, :40]
 
     np.testing.assert_allclose(base, after, rtol=1e-3, atol=1e-3)
+
+
+def test_causality_holds_with_carried_hunch(tiny_model, token_batch):
+    """The riskier path: decode window B against the hunch carried from window A.
+    A future token in B must still not influence B's earlier predictions.
+    (Window A influencing all of B is legitimate — A is entirely in the past.)"""
+    window_a = (token_batch + 17) % 5000 + 1
+
+    def run(tokens_b):
+        tiny_model(jnp.asarray(window_a), max_steps=2, training=False, should_refresh=True)
+        out = tiny_model(jnp.asarray(tokens_b), max_steps=2, training=False, should_refresh=False)
+        return np.asarray(out.logits, dtype=np.float32)[:, :40]
+
+    perturbed = token_batch.copy()
+    perturbed[0, 40] = int(perturbed[0, 40]) + 1
+
+    np.testing.assert_allclose(run(token_batch), run(perturbed), rtol=1e-3, atol=1e-3)

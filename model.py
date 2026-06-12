@@ -186,17 +186,21 @@ class UniversalReasoner(nnx.Module):
             return z_shared_base
             
         def get_carried():
+            # The gate may only look at the hunch and the fresh prior. The current
+            # window's content must not enter here: these slots feed the decoder at
+            # every position, so conditioning on the window mean (as this once did)
+            # leaks future tokens into past predictions.
             current_hunch = self.hunch_cache.value
-            seq_context = jnp.mean(z_seq, axis=1, keepdims=True)
-            seq_context = jnp.tile(seq_context, (1, SHARED_SLOTS, 1))
-            gate_in = jnp.concatenate([self.hunch_norm(current_hunch), self.hunch_norm(seq_context)], axis=-1)
+            gate_in = jnp.concatenate([self.hunch_norm(current_hunch), self.hunch_norm(z_shared_base)], axis=-1)
             gate = jax.nn.sigmoid(self.hunch_gate(gate_in))
             return gate * current_hunch + (1.0 - gate) * z_shared_base
         
         z_shared = jax.lax.cond(should_refresh, get_fresh, get_carried)
 
         # Decoder slots use negative positions, which index into the tail of the
-        # extended RoPE cache — distinct from all query/key positions in the reasoning loop.
+        # extended RoPE cache — distinct from all query/key positions in the
+        # reasoning loop, and semantically right: memory carried from previous
+        # windows sits "before" the current sequence.
         past_shared_pos = jnp.arange(-SHARED_SLOTS, 0)
         decoder_kv_pos = jnp.concatenate([seq_pos, past_shared_pos], axis=0)
         
@@ -208,14 +212,17 @@ class UniversalReasoner(nnx.Module):
             z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared, training=training
         )
 
-        # Decoder reads from the final step's slot state. Training samples the loop
-        # depth randomly, so every step's state must already be a viable answer —
-        # no halting-weighted mixture needed.
-        decoder_ctx_final = jnp.concatenate([z_seq, final_shared], axis=1)
-        
+        # Causality: the decoder reads the slots this window STARTED with (fresh,
+        # or the hunch carried from previous windows) — never this window's loop
+        # output. The loop reads the whole window bidirectionally, so exposing its
+        # output to the decoder leaks future tokens into past predictions
+        # (docs/findings/2026-06-11-slot-future-leak.md). This window's reasoning
+        # benefits the NEXT window, via the hunch cache.
+        decoder_ctx = jnp.concatenate([z_seq, z_shared], axis=1)
+
         z_seq_out = self.decoder_stack(
-            z_seq, 
-            context=decoder_ctx_final, 
+            z_seq,
+            context=decoder_ctx,
             mask=decoder_bias, 
             q_pos=seq_pos, 
             kv_pos=decoder_kv_pos,

@@ -1,8 +1,12 @@
-"""Decode the model at every reasoning depth and plot CE against depth.
+"""Does reasoning about the previous window help predict the next one?
 
-This is the chess-engine curve: if extra reasoning steps genuinely refine the
-prediction, CE should fall monotonically with depth (with diminishing returns).
-A flat curve means the loop is dead weight.
+Since the 2026-06-11 causality fix, a window's reasoning loop only influences
+the NEXT window (through the hunch cache) — so this measures the architecture's
+honest claim. For each held-out sample: run window 1 at depth d (priming the
+hunch), then score window 2's tokens against that hunch. The fresh-slots
+baseline (no hunch at all) is the control. If the curve sits below the baseline
+and falls with depth, reasoning works; flat at the baseline means the hunch is
+dead weight.
 
 Run offline against the latest (or a given) checkpoint:
     PYTHONPATH=. python tools/eval_depth_curve.py [--batches 16] [--skip 200000]
@@ -17,134 +21,105 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 import argparse
 
 import jax.numpy as jnp
+import numpy as np
 import optax
 from flax import nnx
-import orbax.checkpoint as ocp
 from dotenv import load_dotenv
 
-from config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, BATCH_SIZE, PAD_TOKEN_ID, resolve_root
-from model import UniversalReasoner
-from data_loaders import TextDataGenerator
-from checkpoint_utils import discover_latest_checkpoint_run
+from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, PAD_TOKEN_ID
 
 load_dotenv()
 
+from tools.common import restore_model, load_eval_batches
+
 
 @nnx.jit(static_argnames=["max_steps"])
-def eval_token_ces(model, tokens, max_steps):
-    """Per-token CE and validity mask, so the caller can slice by difficulty."""
-    seq_in, seq_out = tokens[:, :MAX_SEQ_LEN], tokens[:, 1:MAX_SEQ_LEN + 1]
-    out = model(seq_in, max_steps=max_steps, training=False, should_refresh=True)
+def prime_hunch(model, window1, max_steps):
+    """Run the reasoning loop over window 1; its output lands in the hunch cache."""
+    model(window1, max_steps=max_steps, training=False, should_refresh=True)
+
+
+@nnx.jit(static_argnames=["use_hunch"])
+def score_window2(model, tokens, use_hunch):
+    """Per-token CE on window 2. Its own loop depth is irrelevant to its logits
+    (the decoder reads the slots the window started with), so run depth 1."""
+    seq_in = tokens[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN]
+    seq_out = tokens[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
+    out = model(seq_in, max_steps=1, training=False, should_refresh=not use_hunch)
     mask = seq_out != PAD_TOKEN_ID
     token_ce = optax.softmax_cross_entropy_with_integer_labels(logits=out.logits, labels=seq_out)
     return token_ce, mask
 
 
-def restore_model(checkpoint_path):
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
-    mngr = ocp.CheckpointManager(
-        checkpoint_path,
-        item_names=("model", "optimizer", "monitor_state", "step"),
-    )
-    latest = mngr.latest_step()
-    if latest is None:
-        raise SystemExit(f"No checkpoint found under {checkpoint_path}")
-    print(f"📖 Restoring model weights from step {latest} ({checkpoint_path})")
-    restored = mngr.restore(
-        latest,
-        args=ocp.args.Composite(model=ocp.args.StandardRestore(nnx.state(model))),
-    )
-    nnx.update(model, restored["model"])
-    return model, latest
-
-
-def load_eval_batches(source_dir, num_batches, skip):
-    gen = TextDataGenerator(source_dir)
-    # Jump past the data the training run has consumed so the curve is measured
-    # on sequences the model has never seen.
-    gen.skip_count = skip
-    batches = []
-    while len(batches) < num_batches:
-        batch, _ = gen.get_batch(BATCH_SIZE)
-        if batch is None:
-            break
-        batches.append(batch)
-    if not batches:
-        raise SystemExit(f"No eval data available in {source_dir} after skipping {skip} samples.")
-    return batches
-
-
 def main():
-    parser = argparse.ArgumentParser(description="CE-vs-depth diagnostic")
+    parser = argparse.ArgumentParser(description="window-2 CE vs window-1 reasoning depth")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Orbax checkpoint dir (defaults to the latest run's)")
     parser.add_argument("--batches", type=int, default=16, help="number of held-out batches to average over")
     parser.add_argument("--skip", type=int, default=200_000, help="samples to skip so eval data is past the trained range")
     parser.add_argument("--source", type=str, default="pretrain/fineweb-edu", help="data subdirectory under DATA_ROOT")
     args = parser.parse_args()
 
-    checkpoint_path = args.checkpoint_path
-    if checkpoint_path is None:
-        checkpoint_path, run_id = discover_latest_checkpoint_run()
-        if checkpoint_path is None:
-            raise SystemExit("No checkpointed run found under runs/.")
-        print(f"🔎 Using latest checkpointed run: {run_id}")
+    model, ckpt_step = restore_model(args.checkpoint_path)
+    batches = load_eval_batches(args.source, args.batches, args.skip)
+    print(f"📚 Evaluating {len(batches)} batches: window-2 CE | fresh baseline vs window-1 depths 1..{MAX_STEPS_LIMIT}")
 
-    data_root = os.environ.get("DATA_ROOT", "")
-    if not data_root:
-        raise SystemExit("DATA_ROOT is not set.")
-    source_dir = f"{resolve_root(data_root)}/{args.source}"
+    # "fresh" = no hunch at all (control); depth d = hunch primed on window 1.
+    # Same window-2 tokens in every condition, so the curve isolates the hunch.
+    # Hard tokens are the worst quartile ranked under the FRESH condition: the
+    # slice is fixed before the hunch enters, otherwise re-ranking would bias it.
+    conditions = ["fresh"] + list(range(1, MAX_STEPS_LIMIT + 1))
+    ce_sums = {c: 0.0 for c in conditions}
+    ce_counts = {c: 0 for c in conditions}
+    hard_sums = {c: 0.0 for c in conditions}
+    hard_counts = {c: 0 for c in conditions}
 
-    model, ckpt_step = restore_model(os.path.abspath(checkpoint_path))
-    batches = load_eval_batches(source_dir, args.batches, args.skip)
-    print(f"📚 Evaluating {len(batches)} batches (segment 1, fresh slots) at depths 1..{MAX_STEPS_LIMIT}")
-
-    # Same batches at every depth, so the curve isolates depth and nothing else.
-    # Hard tokens are the worst quartile *ranked at depth 1*: the set is fixed
-    # before depth varies, otherwise re-ranking per depth would bias the slice.
-    depths = list(range(1, MAX_STEPS_LIMIT + 1))
-    ce_sums = {d: 0.0 for d in depths}
-    ce_counts = {d: 0 for d in depths}
-    hard_sums = {d: 0.0 for d in depths}
-    hard_counts = {d: 0 for d in depths}
-
-    import numpy as np
     for batch in batches:
+        window1 = batch[:, :MAX_SEQ_LEN]
         hard_mask = None
-        for depth in depths:
-            token_ce, mask = eval_token_ces(model, batch, depth)
+        for cond in conditions:
+            model.hunch_cache.value = jnp.zeros_like(model.hunch_cache.value)
+            if cond == "fresh":
+                token_ce, mask = score_window2(model, batch, use_hunch=False)
+            else:
+                prime_hunch(model, window1, cond)
+                token_ce, mask = score_window2(model, batch, use_hunch=True)
             token_ce, mask = np.asarray(token_ce), np.asarray(mask)
-            if depth == 1:
-                valid_ces = token_ce[mask]
-                threshold = np.quantile(valid_ces, 0.75)
+            if cond == "fresh":
+                threshold = np.quantile(token_ce[mask], 0.75)
                 hard_mask = mask & (token_ce >= threshold)
-            ce_sums[depth] += token_ce[mask].sum()
-            ce_counts[depth] += mask.sum()
-            hard_sums[depth] += token_ce[hard_mask].sum()
-            hard_counts[depth] += hard_mask.sum()
+            ce_sums[cond] += token_ce[mask].sum()
+            ce_counts[cond] += mask.sum()
+            hard_sums[cond] += token_ce[hard_mask].sum()
+            hard_counts[cond] += hard_mask.sum()
 
-    mean_ces = [ce_sums[d] / ce_counts[d] for d in depths]
-    hard_ces = [hard_sums[d] / hard_counts[d] for d in depths]
-    for d, ce, hard in zip(depths, mean_ces, hard_ces):
-        print(f"  depth {d}: CE {ce:.4f} | hard-quartile CE {hard:.4f}")
+    mean_ces = {c: ce_sums[c] / ce_counts[c] for c in conditions}
+    hard_ces = {c: hard_sums[c] / hard_counts[c] for c in conditions}
+    for c in conditions:
+        label = "fresh (no hunch)" if c == "fresh" else f"depth {c}"
+        print(f"  {label:>16}: CE {mean_ces[c]:.4f} | hard-quartile CE {hard_ces[c]:.4f}")
 
+    depths = conditions[1:]
     print("-" * 40)
-    print(f"All tokens   : depth 1 CE {mean_ces[0]:.4f} -> depth 8 CE {mean_ces[-1]:.4f} | gain {mean_ces[0] - mean_ces[-1]:+.4f}")
-    print(f"Hard quartile: depth 1 CE {hard_ces[0]:.4f} -> depth 8 CE {hard_ces[-1]:.4f} | gain {hard_ces[0] - hard_ces[-1]:+.4f}")
+    print(f"All tokens   : fresh {mean_ces['fresh']:.4f} -> depth {depths[-1]} {mean_ces[depths[-1]]:.4f} | gain {mean_ces['fresh'] - mean_ces[depths[-1]]:+.4f}")
+    print(f"Hard quartile: fresh {hard_ces['fresh']:.4f} -> depth {depths[-1]} {hard_ces[depths[-1]]:.4f} | gain {hard_ces['fresh'] - hard_ces[depths[-1]]:+.4f}")
 
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     plt.style.use("dark_background")
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
-    ax1.plot(depths, mean_ces, marker="o", color="#ff007b")
-    ax1.set_title("All tokens")
-    ax2.plot(depths, hard_ces, marker="o", color="#ffaa00")
-    ax2.set_title("Hard quartile (ranked at depth 1)")
-    for ax in (ax1, ax2):
-        ax.set_xlabel("Reasoning depth (steps)")
-        ax.set_ylabel("Cross entropy (held-out)")
+    for ax, ces, title, color in (
+        (ax1, mean_ces, "All tokens", "#ff007b"),
+        (ax2, hard_ces, "Hard quartile (ranked with no hunch)", "#ffaa00"),
+    ):
+        ax.plot(depths, [ces[d] for d in depths], marker="o", color=color, label="hunch from window 1")
+        ax.axhline(ces["fresh"], linestyle="--", color="#888888", label="fresh slots (no hunch)")
+        ax.set_title(title)
+        ax.set_xlabel("Window-1 reasoning depth (steps)")
+        ax.set_ylabel("Window-2 cross entropy (held-out)")
         ax.grid(True, alpha=0.2)
-    fig.suptitle(f"CE vs reasoning depth — checkpoint step {ckpt_step}")
+        ax.legend()
+    fig.suptitle(f"Window-2 CE vs window-1 reasoning depth — checkpoint step {ckpt_step}")
     out_path = "depth_curve.png"
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
