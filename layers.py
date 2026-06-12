@@ -34,7 +34,6 @@ class RotaryAttention(nnx.Module):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
-        self.scale = self.head_dim ** -0.5
 
         inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         # Extended to cover MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS positions
@@ -75,7 +74,6 @@ class RotaryAttention(nnx.Module):
         cos_q = self.cos_cached[q_pos, None, :]
         sin_q = self.sin_cached[q_pos, None, :]
         q = apply_rope(q, cos_q, sin_q)
-        q = q * self.scale
 
         cos_kv = self.cos_cached[kv_pos, None, :]
         sin_kv = self.sin_cached[kv_pos, None, :]
@@ -110,6 +108,8 @@ class RotaryAttention(nnx.Module):
             attn_bias = None
             mask_arg = mask
 
+        # dot_product_attention scales the scores internally — never pre-scale q
+        # (doing both blurred every attention layer until 2026-06-11).
         out = jax.nn.dot_product_attention(
             q, k, v,
             mask=mask_arg,

@@ -29,3 +29,23 @@
     encoder sequence as cross-attention context) or can be amortized.
   - Slot KV positions advance per reasoning iteration — a cache must account for the
     extended RoPE position scheme.
+
+## Roadmap additions (2026-06-11) — validated findings from the cross-machine review
+
+### Slot read/write position mismatch (decide deliberately)
+Slots are written at the RoPE positions of whichever reasoning step produced them,
+but the decoder always reads them at fixed negative positions that wrap around the
+RoPE cache onto the final-step, full-depth positions. Under random-depth training
+the write position now varies every micro-step while the read position stays pinned
+at depth 8. This was an accident that happened to work, not a decision. Options:
+key the slots at the positions of the step that actually produced them, or keep the
+fixed home. Decide with depth-curve evidence in hand, not before.
+
+### The seg1-vs-seg2 CE gap is confounded — build the clean diagnostic
+`seg1_ce` vs `token_loss` compares different tokens with different intrinsic
+difficulty, so the gap mostly reflects which half of the document was harder, not
+whether the carried hunch helped. Do not read it as a refinement signal. The clean
+measurement: run segment 2 twice — once with the carried hunch, once with fresh
+slots — and compare on the same tokens. Build it as an offline diagnostic (sibling
+of `tools/eval_depth_curve.py`: it isolates the hunch cache the way the depth curve
+isolates depth), not as a loss term.
