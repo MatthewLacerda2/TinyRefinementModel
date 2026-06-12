@@ -8,4 +8,6 @@ venv/
 # Explicitly kept helpers
 auxmd.md
 auxpy.py
-docs/
+
+# Working plans stay local; docs/findings/ is tracked and publishable
+docs/plans/
