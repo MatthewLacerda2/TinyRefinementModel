@@ -9,13 +9,13 @@ The Universal Reasoner separates sequence-level token processing from reasoning-
 The architecture is divided into three specialized transformer blocks:
 
 1. **Encoder Stack**: Processes raw input tokens into rich contextual representations using causal self-attention.
-2. **Latent Reasoning Loop**: Operates over a set of private latent slot tokens, representing the model's continuous 'internal scratchpad'. This stack recursively processes the scratchpad over several steps. A hunch gating mechanism carries memory across sequence segments, while a forget mechanism dynamically updates the scratchpad by blending fresh thoughts with historical memory at each iteration.
-3. **Decoder Stack**: Combines the output of the encoder stack with the final state of the latent scratchpad, merging the sequence context with the model's completed reasoning before mapping the representations back to predict the next token.
+2. **Latent Reasoning Loop**: Operates over a set of private latent slot tokens, representing the model's continuous 'internal scratchpad'. This stack recursively processes the scratchpad over several steps (the depth is randomly sampled during training, fixed at inference). A forget mechanism dynamically updates the scratchpad by blending fresh thoughts with historical memory at each iteration.
+3. **Decoder Stack**: Combines the output of the encoder stack with the scratchpad state the window *started* with — the hunch carried over from previous windows through a gating mechanism. The current window's completed reasoning is never shown to its own decoder (that would leak future tokens into past predictions); it is stored in the hunch cache and benefits the *next* window. Reasoning about what was just read helps predict what comes next.
 
 ### Information Flow
 
 ```
-  [Input Tokens] 
+  [Input Tokens]
         │
         ▼
   [Embedding]
@@ -25,27 +25,26 @@ The architecture is divided into three specialized transformer blocks:
 │  Encoder Stack   │ (Process input context causally)
 └────────┬─────────┘
          │
-         ├───► [Hunch Gate] ───► [Initialize Latent Scratchpad]
-         │                                   │
-         │                                   ▼
-         │                      ┌─────────────────────────┐
-         ├─────────────────────►│  Reasoning Loop Stack   │◄─────────┐
-         │  (Attend to context) │  (Runs for N steps)     │          │
-         │                      └────────────┬────────────┘          │ (Recursive
-         │                                   │                       │  feedback 
-         │                                   ▼                       │  loop)
-         │                             [Forget Head]                 │
-         │                        (Project current & new)            │
-         │                                   │                       │
-         │                                   ▼                       │
-         │                             [Forget Gate] ────────────────┘
-         │                        (Sigmoid-gated blend)
-         ▼                                   │
-┌──────────────────┐                         ▼
-│  Decoder Stack   │◄────────────────────────┘
-│ (Blend & Decode) │ (Read final scratchpad states)
-└────────┬─────────┘
-         │
+         │   [Hunch Cache] ──► [Hunch Gate] ──► [Initial Scratchpad Slots]
+         │  (from previous      (blend with               │
+         │      window)          fresh slots)             ├──────────────┐
+         │                                                ▼              │
+         │                                  ┌─────────────────────────┐  │
+         ├─────────────────────────────────►│  Reasoning Loop Stack   │  │
+         │     (Attend to context)          │ (N steps; depth random  │  │
+         │                                  │  during training)       │  │
+         │                                  └────────────┬────────────┘  │
+         │                                               │               │
+         │                                  [Forget Gate]│(blend per     │
+         │                                               │ iteration)    │
+         │                                               ▼               │
+         │                                        [Hunch Cache] ──► (next window)
+         ▼                                                               │
+┌──────────────────┐                                                     │
+│  Decoder Stack   │◄────────────────────────────────────────────────────┘
+│ (Blend & Decode) │ (Reads the slots this window STARTED with — strictly
+└────────┬─────────┘  past information; this window's reasoning output
+         │            only reaches the NEXT window via the hunch cache)
          ▼
     [LM Head]
          │
@@ -111,4 +110,16 @@ Visualize the metrics, resource costs, and optimization health:
 Chat interactively with the trained Universal Reasoner. The CLI automatically loads the latest saved checkpoint weights:
 ```bash
 python infer_local.py
+```
+
+### 5. Tests and Diagnostics
+The test suite runs on CPU by default, so it works even while a training run owns the GPU (set `RUN_TESTS_ON_GPU=1` to exercise the real half-precision path on a free GPU):
+```bash
+python -m pytest tests/
+```
+Offline diagnostics, each answering one question against the latest checkpoint:
+```bash
+PYTHONPATH=. python tools/eval_depth_curve.py    # does reasoning about the previous window help the next one?
+PYTHONPATH=. python tools/overfit_smoke.py       # can the training path overfit one batch? (pre-run gate)
+PYTHONPATH=. python tools/dump_transcripts.py    # fixed-prompt transcripts, archived per checkpoint
 ```
