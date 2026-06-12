@@ -10,7 +10,11 @@ import jax.numpy as jnp
 # sets the computation dtype of the matmul-heavy layers. If f16 gradient
 # underflow ever becomes a problem, the fix is optax loss scaling, not a
 # dtype change.
-COMPUTE_DTYPE = jnp.float16
+# FORCE_F32_COMPUTE is a test-only escape hatch: CPU XLA cannot lower the
+# f16-with-f32-accumulation matmuls inside the rematerialized scan, so the
+# test suite (which defaults to CPU while the GPU trains) sets it. Never set
+# it for training.
+COMPUTE_DTYPE = jnp.float32 if os.environ.get("FORCE_F32_COMPUTE") else jnp.float16
 PARAM_DTYPE = jnp.float32
 
 def resolve_root(path):
