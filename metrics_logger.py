@@ -16,7 +16,7 @@ class MetricsLogger:
             "step", "ce", "loss", "seg1_ce",
             "grad_norm_avg", "avg_forget_cost",
             "diversity_loss", "temporal_drift", "forget_density", "tau",
-            "depth_avg",
+            "depth_avg", "val_ce",
         ]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
@@ -33,9 +33,13 @@ class MetricsLogger:
             if not fs.exists(path) or fs.size(path) == 0:
                 return
             with fsspec.open(self.history_file, "r", newline="") as f:
-                rows = list(csv.DictReader(f))
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                old_fields = reader.fieldnames
             kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
-            if len(kept) == len(rows):
+            # Rewrite also when the schema gained columns, otherwise appended
+            # rows would be wider than the existing header.
+            if len(kept) == len(rows) and list(old_fields or []) == self.fields:
                 return
             print(f"✂️ Trimming {len(rows) - len(kept)} replayed metric rows (step >= {start_opt_step}) from {self.history_file}")
             with fsspec.open(self.history_file, "w", newline="") as f:
@@ -50,7 +54,7 @@ class MetricsLogger:
         return {k: float(jnp_mean_fn(diag.get(k, 0))) for k in self.diag_keys}
 
     def log(self, step, ce, loss, out, compute_time,
-            grad_norm_avg=None, seg1_ce=None, depth_avg=None):
+            grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -93,5 +97,6 @@ class MetricsLogger:
                 "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
                 "tau": f"{diag_dict.get('tau', 0):.6f}",
                 "depth_avg": f"{depth_avg:.4f}" if depth_avg is not None else "",
+                "val_ce": f"{val_ce:.4f}" if val_ce is not None else "",
             }
             writer.writerow(row)

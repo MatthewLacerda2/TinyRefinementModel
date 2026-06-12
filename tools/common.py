@@ -41,8 +41,12 @@ def restore_model(checkpoint_path=None):
     return model, latest
 
 
-def load_eval_batches(source="pretrain/fineweb-edu", num_batches=16, skip=200_000):
-    """Held-out batches: skip past the data the training run has consumed."""
+def load_eval_batches(source="pretrain/fineweb-edu", num_batches=16, skip=3_000_000):
+    """Held-out batches: skip past the data the training run has consumed.
+
+    The default skip sits far beyond plausible consumption (an 8k-opt-step run
+    reads under 1M fineweb samples of its 4.3M) — the old 200k default was
+    inside the range long runs train through, contaminating the eval slice."""
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set.")

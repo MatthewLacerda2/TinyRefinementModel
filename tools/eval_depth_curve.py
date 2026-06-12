@@ -9,7 +9,7 @@ and falls with depth, reasoning works; flat at the baseline means the hunch is
 dead weight.
 
 Run offline against the latest (or a given) checkpoint:
-    PYTHONPATH=. python tools/eval_depth_curve.py [--batches 16] [--skip 200000]
+    PYTHONPATH=. python tools/eval_depth_curve.py [--batches 16] [--skip 3000000]
 """
 
 import os
@@ -55,7 +55,7 @@ def main():
     parser = argparse.ArgumentParser(description="window-2 CE vs window-1 reasoning depth")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Orbax checkpoint dir (defaults to the latest run's)")
     parser.add_argument("--batches", type=int, default=16, help="number of held-out batches to average over")
-    parser.add_argument("--skip", type=int, default=200_000, help="samples to skip so eval data is past the trained range")
+    parser.add_argument("--skip", type=int, default=3_000_000, help="samples to skip so eval data is past the trained range")
     parser.add_argument("--source", type=str, default="pretrain/fineweb-edu", help="data subdirectory under DATA_ROOT")
     args = parser.parse_args()
 

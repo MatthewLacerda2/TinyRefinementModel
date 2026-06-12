@@ -131,6 +131,8 @@ def plot_training_history(log_path=None):
                         'temporal_drift': float(row.get('temporal_drift', 0)),
                         # old CSVs logged mean_halt_step where new ones log sampled depth
                         'depth_avg': float(row.get('depth_avg') or row.get('mean_halt_step') or 0),
+                        # sparse: only written every VAL_EVERY_OPT_STEPS, 0 means absent
+                        'val_ce': float(row.get('val_ce') or 0),
                     })
                 except ValueError:
                     continue 
@@ -162,6 +164,7 @@ def plot_training_history(log_path=None):
     grad_norm = np.array([e['grad_norm'] for e in history])
     temporal_drift = np.array([e['temporal_drift'] for e in history])
     depth_avg = np.array([e['depth_avg'] for e in history])
+    val_ce = np.array([e['val_ce'] for e in history])
 
     plt.style.use('dark_background')
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -175,6 +178,10 @@ def plot_training_history(log_path=None):
     ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Segment 2 CE')
     ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(seg1_ce, smoothing_window),
                      color='#ff007b', alpha=0.1, label='Hunch-Carry Gain')
+    has_val = val_ce > 0
+    if np.any(has_val):
+        ax1.plot(steps[has_val], val_ce[has_val], color='#00e5ff', linewidth=1.5,
+                 marker='o', markersize=3, label='Held-out Validation CE')
     ax1.set_title('Convergence & Hunch Carry', fontsize=14, fontweight='bold')
     ax1.set_ylabel('Cross Entropy')
     if np.all(ce > 0):

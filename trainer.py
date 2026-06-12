@@ -13,7 +13,14 @@ from dotenv import load_dotenv
 
 import math
 
-from config import BATCH_SIZE, ACCUMULATION_STEPS, LATENT_DIM, resolve_root
+from config import (
+    BATCH_SIZE,
+    ACCUMULATION_STEPS,
+    LATENT_DIM,
+    MAX_SEQ_LEN,
+    PAD_TOKEN_ID,
+    resolve_root,
+)
 from model import UniversalReasoner
 from grad_step import compute_grad_step, apply_grads
 from schedules import (
@@ -34,11 +41,76 @@ PREFETCH_SIZE = 128
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
 
+# Held-out validation: the same fixed batches, scored the same deterministic way,
+# every VAL_EVERY_OPT_STEPS optimizer steps. Train CE cannot see overfitting or
+# data drift; this curve is the one decisions should read.
+VAL_EVERY_OPT_STEPS = 64
+VAL_BATCHES = 4
+VAL_FIXED_DEPTH = 4
+# Far past any plausible training consumption (an 8k-opt-step run consumes
+# under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
+VAL_SKIP_SAMPLES = 3_000_000
+
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
 else:
     print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
+
+
+@nnx.jit
+def _val_ce_sums(model, batch):
+    """Masked CE sums over both windows, mirroring the training segment structure
+    (window 1 fresh, window 2 on the carried hunch) at a fixed depth."""
+    seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
+    seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
+    out1 = model(seq1_in, max_steps=VAL_FIXED_DEPTH, training=False, should_refresh=True)
+    out2 = model(seq2_in, max_steps=VAL_FIXED_DEPTH, training=False, should_refresh=False)
+    total = jnp.array(0.0)
+    count = jnp.array(0)
+    for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
+        mask = targets != PAD_TOKEN_ID
+        ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
+        total += jnp.sum(ce * mask)
+        count += jnp.sum(mask)
+    return total, count
+
+
+class ValidationProbe:
+    """Loads VAL_BATCHES fixed held-out batches once, then scores them on demand.
+    Restores the training stream's carried hunch afterwards, so validating never
+    perturbs training."""
+
+    def __init__(self):
+        self._batches = None
+
+    def _load(self):
+        gen = TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu")
+        gen.skip_count = VAL_SKIP_SAMPLES
+        batches = []
+        while len(batches) < VAL_BATCHES:
+            batch, _ = gen.get_batch(BATCH_SIZE)
+            if batch is None:
+                break
+            batches.append(batch)
+        if not batches:
+            print("⚠️ Validation disabled: no held-out data available past the skip range.")
+        return batches
+
+    def run(self, model):
+        if self._batches is None:
+            self._batches = self._load()
+        if not self._batches:
+            return None
+        saved_hunch = model.hunch_cache.value
+        total, count = 0.0, 0
+        for batch in self._batches:
+            model.hunch_cache.value = jnp.zeros_like(saved_hunch)
+            ce_sum, ce_count = _val_ce_sums(model, batch)
+            total += float(ce_sum)
+            count += int(ce_count)
+        model.hunch_cache.value = saved_hunch
+        return total / max(count, 1)
 
 
 def weight_decay_mask(params):
@@ -157,6 +229,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
     # (start_step == 1) appends to any existing CSV untouched.
     start_opt_step = start_step // ACCUMULATION_STEPS if start_step > 1 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
+    val_probe = ValidationProbe()
     step = start_step
 
     accum_loss = 0.0
@@ -216,6 +289,12 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
 
+                val_ce = None
+                if opt_step % VAL_EVERY_OPT_STEPS == 0:
+                    val_ce = val_probe.run(model)
+                    if val_ce is not None:
+                        print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
+
                 logger.log(
                     opt_step,
                     float(accum_token_loss),
@@ -225,6 +304,7 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     grad_norm_avg=float(accum_grad_norm),
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=float(accum_depth),
+                    val_ce=val_ce,
                 )
 
                 if not sft_phase_event.is_set():
