@@ -76,7 +76,7 @@ def _masked_acc_ce(logits, tgt, mask):
 
 
 def train_one(task_fn, vocab, depth, *, dim=96, heads=4, enc=2, steps=2500,
-              batch=256, lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096):
+              batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, n_pool=32768, n_test=4096):
     key = jax.random.PRNGKey(seed)
     # Generate the data pool ONCE — the task's perms/scan are expensive, and doing
     # them per step starved the tiny model's GPU (host-bound at ~10% util). Train on
@@ -89,7 +89,7 @@ def train_one(task_fn, vocab, depth, *, dim=96, heads=4, enc=2, steps=2500,
 
     model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                           num_encoder_layers=enc, max_depth=max(depth, 1),
-                          max_seq_len=SEQ, rngs=nnx.Rngs(seed))
+                          max_seq_len=SEQ, gate_bias=gate_bias, rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
     @nnx.jit(static_argnames=["depth"])
@@ -122,18 +122,20 @@ def main():
     ap.add_argument("--depths", default="1,2,4,8")
     ap.add_argument("--steps", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--gate-bias", type=float, default=0.0,
+                    help="init bias of the update gate; negative = retention-biased (stabilizes deep recurrence)")
     args = ap.parse_args()
 
     task_fn = TASKS[args.task]
     vocab = VOCAB[args.task]
     depths = [int(d) for d in args.depths.split(",")]
 
-    print(f"== Plan A depth ablation: task={args.task} (seq={SEQ}, vocab={vocab}) steps={args.steps} seed={args.seed} ==")
+    print(f"== Plan A depth ablation: task={args.task} (seq={SEQ}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} ==")
     print(f"{'depth':>6} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
         t0 = time.time()
-        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed)
+        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed, gate_bias=args.gate_bias)
         results[d] = (acc, ce)
         print(f"{d:>6} {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
 

@@ -94,7 +94,7 @@ class CausalRefiner(nnx.Module):
     """
 
     def __init__(self, *, dim, vocab_size, num_heads=4, num_encoder_layers=2,
-                 max_depth=8, max_seq_len=512, use_gate=True, rngs, dtype=jnp.float32):
+                 max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0, rngs, dtype=jnp.float32):
         self.dim = dim
         self.vocab_size = vocab_size
         self.max_depth = max_depth
@@ -114,9 +114,11 @@ class CausalRefiner(nnx.Module):
         self.out_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         if use_gate:
-            # sigmoid(0) = 0.5 at init: balanced refine/retain, same rationale as the
-            # old forget gate's zero-bias fix.
-            self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.zeros, rngs=rngs, dtype=dtype)
+            # gate_bias sets the init retention/refine balance: sigmoid(gate_bias).
+            # 0.0 -> 0.5 (balanced); negative -> retention-biased (small early update
+            # steps), which stabilizes deep recurrence where balanced steps compound
+            # and diverge (the depth-8 collapse, ablation_results.md run 2).
+            self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None):
         depth = self.max_depth if depth is None else depth
