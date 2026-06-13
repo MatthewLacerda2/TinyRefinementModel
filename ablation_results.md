@@ -71,3 +71,15 @@ depth 8 at lr 5e-4 and 1e-3 (vs the 2e-3 default). If a lower LR recovers depth 
 the fix is a depth-aware LR schedule (trivial). If depth 8 still collapses at low
 LR, the instability is structural (signal degradation through the shared loop) and
 needs a design decision — escalate to Matheus rather than brute-force overnight.
+
+Result: depth 8 @ lr 2e-3 = 0.374 (collapsed); @ **lr 1e-3 = 0.985**; @ lr 5e-4 =
+0.981. **The collapse was LR-driven instability, not structural.** At a sane LR
+depth 8 solves the task, matching depth 4 and far above depth 1. Fix: deeper
+recurrence needs a lower LR (depth-aware LR schedule). The production schedule's
+peak LR is already 1e-4 (10x below the rescuing 1e-3), so this likely won't even
+manifest at real scale — but a depth-aware LR is the safe rule.
+
+## Run 5 (in progress) — clean confirmatory depth curve, single LR
+
+Depths 1,2,4,8 all at lr 1e-3 (the stable LR), to give one rigorous monotonic
+curve instead of the mixed-LR numbers above. This is the capstone figure.
