@@ -57,3 +57,17 @@ iterations and diverges. Biasing the gate to retention at init (gate_bias=-2 ->
 sigmoid=0.12, small early steps) should stabilize deep recurrence. Re-running the
 full depth sweep with --gate-bias -2; success = depth 8 recovers toward depth-4
 accuracy without hurting depths 1-4.
+
+Result (gate_bias=-2): depth 1 0.871, depth 2 **0.959**, depth 4 0.982, depth 8
+**0.274**. Hypothesis **falsified** — retention bias did not rescue depth 8 (still
+collapsed, slightly worse). Depth 2 did improve. So the collapse is not a gate-init
+issue. Collapse to *near-chance* (not partial) points to training instability, not
+slow convergence — next probe: lower LR at depth 8 (LR-driven divergence is the
+likeliest culprit for deep unrolled recurrence).
+
+## Run 4 (in progress) — depth-8 LR probe
+
+depth 8 at lr 5e-4 and 1e-3 (vs the 2e-3 default). If a lower LR recovers depth 8,
+the fix is a depth-aware LR schedule (trivial). If depth 8 still collapses at low
+LR, the instability is structural (signal degradation through the shared loop) and
+needs a design decision — escalate to Matheus rather than brute-force overnight.

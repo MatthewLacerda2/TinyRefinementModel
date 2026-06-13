@@ -124,6 +124,7 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gate-bias", type=float, default=0.0,
                     help="init bias of the update gate; negative = retention-biased (stabilizes deep recurrence)")
+    ap.add_argument("--lr", type=float, default=2e-3)
     args = ap.parse_args()
 
     task_fn = TASKS[args.task]
@@ -135,7 +136,7 @@ def main():
     results = {}
     for d in depths:
         t0 = time.time()
-        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed, gate_bias=args.gate_bias)
+        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed, gate_bias=args.gate_bias, lr=args.lr)
         results[d] = (acc, ce)
         print(f"{d:>6} {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
 
