@@ -31,12 +31,41 @@ def cumulative_task(key, batch, seq, mod):
     return x.astype(jnp.int32), targets.astype(jnp.int32), mask
 
 
+def state_tracking_task(key, batch, seq, n_states=5, n_gen=4):
+    """Non-commutative state tracking: each input token picks one of `n_gen` fixed
+    permutations of `n_states`; the target at position t is the state reached by
+    composing those permutations over the prefix, starting from state 0. Because
+    composition is non-abelian, there is no sum/count shortcut — getting position t
+    right requires sequentially tracking the state, so it genuinely rewards depth
+    (the Liu et al. "Transformers Learn Shortcuts to Automata" regime)."""
+    gen_key = jax.random.PRNGKey(12345)  # fixed generators across all calls
+    perms = jnp.stack([
+        jax.random.permutation(jax.random.fold_in(gen_key, i), n_states) for i in range(n_gen)
+    ])  # [n_gen, n_states]
+
+    toks = jax.random.randint(key, (batch, seq), 0, n_gen)
+
+    def track(tok_row):
+        def step(state, t):
+            new = perms[t][state]
+            return new, new
+        _, states = jax.lax.scan(step, jnp.int32(0), tok_row)
+        return states
+
+    targets = jax.vmap(track)(toks).astype(jnp.int32)
+    mask = jnp.ones((batch, seq), dtype=jnp.float32)
+    return toks.astype(jnp.int32), targets, mask
+
+
 SEQ = 24
 TASKS = {
     "parity": lambda key, batch: cumulative_task(key, batch, SEQ, 2),
     "cumsum5": lambda key, batch: cumulative_task(key, batch, SEQ, 5),
+    "statetrack": lambda key, batch: state_tracking_task(key, batch, SEQ, 5, 4),
 }
-VOCAB = {"parity": 2, "cumsum5": 5}
+# Vocab must cover both input tokens and targets. statetrack: inputs in [0,n_gen),
+# targets (states) in [0,n_states) -> vocab = max(n_gen, n_states).
+VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 
 def evaluate(model, task_fn, depth, key, batch=2048):
