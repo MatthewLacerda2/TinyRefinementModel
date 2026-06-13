@@ -68,25 +68,34 @@ TASKS = {
 VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 
-def evaluate(model, task_fn, depth, key, batch=2048):
-    inp, tgt, mask = task_fn(key, batch)
-    logits = model(inp, depth=depth)
+def _masked_acc_ce(logits, tgt, mask):
     pred = logits.argmax(-1)
-    acc = float(jnp.sum((pred == tgt) * mask) / jnp.sum(mask))
-    ce = float(jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask) / jnp.sum(mask))
+    acc = jnp.sum((pred == tgt) * mask) / jnp.sum(mask)
+    ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask) / jnp.sum(mask)
     return acc, ce
 
 
 def train_one(task_fn, vocab, depth, *, dim=96, heads=4, enc=2, steps=2500,
-              batch=256, lr=2e-3, wd=0.01, seed=0):
+              batch=256, lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096):
     key = jax.random.PRNGKey(seed)
+    # Generate the data pool ONCE — the task's perms/scan are expensive, and doing
+    # them per step starved the tiny model's GPU (host-bound at ~10% util). Train on
+    # minibatches sampled on-device inside the jitted step; eval on a held-out slice
+    # so the depth comparison also reflects generalization, not just fit.
+    key, dk = jax.random.split(key)
+    inp_all, tgt_all, mask_all = task_fn(dk, n_pool + n_test)
+    tr_inp, tr_tgt, tr_mask = inp_all[:n_pool], tgt_all[:n_pool], mask_all[:n_pool]
+    te_inp, te_tgt, te_mask = inp_all[n_pool:], tgt_all[n_pool:], mask_all[n_pool:]
+
     model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                           num_encoder_layers=enc, max_depth=max(depth, 1),
                           max_seq_len=SEQ, rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
     @nnx.jit(static_argnames=["depth"])
-    def step(model, opt, inp, tgt, mask, depth):
+    def step(model, opt, key, inp_all, tgt_all, mask_all, depth):
+        idx = jax.random.randint(key, (batch,), 0, inp_all.shape[0])
+        inp, tgt, mask = inp_all[idx], tgt_all[idx], mask_all[idx]
         def loss_fn(m):
             logits = m(inp, depth=depth)
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt)
@@ -95,13 +104,16 @@ def train_one(task_fn, vocab, depth, *, dim=96, heads=4, enc=2, steps=2500,
         opt.update(model, grads)
         return loss
 
+    @nnx.jit(static_argnames=["depth"])
+    def eval_step(model, inp, tgt, mask, depth):
+        return _masked_acc_ce(model(inp, depth=depth), tgt, mask)
+
     for _ in range(steps):
         key, k = jax.random.split(key)
-        inp, tgt, mask = task_fn(k, batch)
-        step(model, opt, inp, tgt, mask, depth)
+        step(model, opt, k, tr_inp, tr_tgt, tr_mask, depth)
 
-    key, k = jax.random.split(key)
-    return evaluate(model, task_fn, depth, k)
+    acc, ce = eval_step(model, te_inp, te_tgt, te_mask, depth)
+    return float(acc), float(ce)
 
 
 def main():
