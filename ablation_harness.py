@@ -57,11 +57,11 @@ def state_tracking_task(key, batch, seq, n_states=5, n_gen=4):
     return toks.astype(jnp.int32), targets, mask
 
 
-SEQ = 24
+SEQ = 24  # default train length
 TASKS = {
-    "parity": lambda key, batch: cumulative_task(key, batch, SEQ, 2),
-    "cumsum5": lambda key, batch: cumulative_task(key, batch, SEQ, 5),
-    "statetrack": lambda key, batch: state_tracking_task(key, batch, SEQ, 5, 4),
+    "parity": lambda key, batch, seq: cumulative_task(key, batch, seq, 2),
+    "cumsum5": lambda key, batch, seq: cumulative_task(key, batch, seq, 5),
+    "statetrack": lambda key, batch, seq: state_tracking_task(key, batch, seq, 5, 4),
 }
 # Vocab must cover both input tokens and targets. statetrack: inputs in [0,n_gen),
 # targets (states) in [0,n_states) -> vocab = max(n_gen, n_states).
@@ -76,20 +76,24 @@ def _masked_acc_ce(logits, tgt, mask):
 
 
 def train_one(task_fn, vocab, depth, *, dim=96, heads=4, enc=2, steps=2500,
-              batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, n_pool=32768, n_test=4096):
+              batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, n_pool=32768, n_test=4096,
+              train_seq=SEQ, test_seq=None):
+    # When test_seq > train_seq this is a length-generalization probe: the model
+    # trains on length train_seq and is evaluated on longer sequences, so it must
+    # use RoPE positions it never saw in training. test_seq=None -> same length.
+    test_seq = train_seq if test_seq is None else test_seq
     key = jax.random.PRNGKey(seed)
-    # Generate the data pool ONCE — the task's perms/scan are expensive, and doing
-    # them per step starved the tiny model's GPU (host-bound at ~10% util). Train on
-    # minibatches sampled on-device inside the jitted step; eval on a held-out slice
-    # so the depth comparison also reflects generalization, not just fit.
-    key, dk = jax.random.split(key)
-    inp_all, tgt_all, mask_all = task_fn(dk, n_pool + n_test)
-    tr_inp, tr_tgt, tr_mask = inp_all[:n_pool], tgt_all[:n_pool], mask_all[:n_pool]
-    te_inp, te_tgt, te_mask = inp_all[n_pool:], tgt_all[n_pool:], mask_all[n_pool:]
+    # Generate each pool ONCE — the task's perms/scan are expensive, and doing them
+    # per step starved the tiny model's GPU (host-bound at ~10% util). Train on
+    # minibatches sampled on-device inside the jitted step; eval on a separately
+    # drawn held-out pool so the comparison reflects generalization, not just fit.
+    key, dk_tr, dk_te = jax.random.split(key, 3)
+    tr_inp, tr_tgt, tr_mask = task_fn(dk_tr, n_pool, train_seq)
+    te_inp, te_tgt, te_mask = task_fn(dk_te, n_test, test_seq)
 
     model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                           num_encoder_layers=enc, max_depth=max(depth, 1),
-                          max_seq_len=SEQ, gate_bias=gate_bias, rngs=nnx.Rngs(seed))
+                          max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias, rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
     @nnx.jit(static_argnames=["depth"])
@@ -125,18 +129,24 @@ def main():
     ap.add_argument("--gate-bias", type=float, default=0.0,
                     help="init bias of the update gate; negative = retention-biased (stabilizes deep recurrence)")
     ap.add_argument("--lr", type=float, default=2e-3)
+    ap.add_argument("--train-seq", type=int, default=SEQ)
+    ap.add_argument("--test-seq", type=int, default=None,
+                    help="eval length; > train-seq makes it a length-generalization probe (default: = train-seq)")
     args = ap.parse_args()
 
     task_fn = TASKS[args.task]
     vocab = VOCAB[args.task]
     depths = [int(d) for d in args.depths.split(",")]
+    test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== Plan A depth ablation: task={args.task} (seq={SEQ}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} ==")
+    print(f"== Plan A depth ablation: task={args.task} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} lr={args.lr} ==")
     print(f"{'depth':>6} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
         t0 = time.time()
-        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed, gate_bias=args.gate_bias, lr=args.lr)
+        acc, ce = train_one(task_fn, vocab, d, steps=args.steps, seed=args.seed,
+                            gate_bias=args.gate_bias, lr=args.lr,
+                            train_seq=args.train_seq, test_seq=test_seq)
         results[d] = (acc, ce)
         print(f"{d:>6} {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
 

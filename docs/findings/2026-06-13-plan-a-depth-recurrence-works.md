@@ -58,11 +58,40 @@ depth-aware LR (deeper recurrence wants a lower LR). The production schedule's p
 LR is already 1e-4, well below the rescuing 1e-3, so it likely won't manifest at
 real scale — but the depth-aware rule is the safe default.
 
+## Length generalization (run 7, 3 seeds)
+
+Train on length 24, evaluate on length 48 (RoPE positions 24-47 unseen, state chain
+2x longer). Mean accuracy [range]:
+
+| depth | acc @ 48 | range | acc @ 24 (run 6) |
+|---|---|---|---|
+| 1 | 0.542 | 0.537–0.545 | 0.856 |
+| 2 | 0.600 | 0.597–0.605 | 0.934 |
+| 4 | 0.639 | 0.633–0.643 | 0.983 |
+| 8 | **0.683** | 0.674–0.691 | 0.981 |
+
+Two-sided, and the interesting part is the sign flip vs in-distribution:
+
+- **Absolute length generalization is weak** — best 0.68 at 2x length vs 0.98
+  in-distribution (above chance 0.20, so partial transfer, not solved). Report
+  honestly: the model leans partly on length-bound structure and does not freely
+  extrapolate RoPE to unseen positions.
+- **Depth is the lever that helps under length shift, and stops saturating.**
+  In-distribution accuracy plateaued at depth 4 (4 ≈ 8); out-of-distribution it
+  climbs monotonically 1->2->4->8 (+0.141 mean, no adjacent-depth overlap on any
+  seed). A longer sequence is a longer sequential composition, so it needs more
+  refinement iterations — depth-as-compute scaling with problem size. This is
+  direct evidence for letting the inference depth dial scale with context length
+  rather than pinning it at a fixed 4 (and motivates the untried adaptive-depth
+  direction, distinct from the ACT halting removed in f6cb905).
+
 ## Limitations
 
 Tiny scale (dim 96), single synthetic task family, 3 seeds (depth gain robust
-across them), in the same-length regime (no length generalization tested). cumsum/parity tasks from run 1 were less
-informative (cumsum too easy — depth-1 saturates; parity too noisy). This shows
+across them). Length generalization tested (run 7 above) and found weak in absolute
+terms, though the depth benefit survives and grows under length shift. cumsum/parity
+tasks from run 1 were less informative (cumsum too easy — depth-1 saturates; parity
+too noisy). This shows
 depth recurrence *can* help on a task that needs it at toy scale; it does NOT yet
 show the gain transfers to fineweb language modeling at 79.6M — that requires
 wiring CausalRefiner into the production trainer and a real run, neither done.

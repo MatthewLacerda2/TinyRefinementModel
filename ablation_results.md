@@ -118,3 +118,47 @@ depth-aware LR schedule). Open items for Matheus: (1) wire CausalRefiner into th
 production fineweb trainer (different interface from UniversalReasoner), (2) run
 the full test battery on that integration, (3) only then the gated cl100k run.
 Not started — they need review/go per docs/AUTONOMY.md.
+
+## Run 7 — 2026-06-13 (post-PR #15) — length generalization (train seq 24, eval seq 48)
+
+The open question run 5/6 did not answer: does the depth benefit survive when the
+sequence is *longer than training*? Same task/config (statetrack, dim 96, enc 2,
+lr 1e-3, 6000 steps), but the model trains on length-24 sequences and is evaluated
+on length-48 — so it must use RoPE positions 24-47 it never saw, on a state chain
+twice as long. Baseline for comparison: run 6 (same task, eval length 24).
+
+3 seeds (0,1,2), mean accuracy [range] at eval length 48:
+
+| depth | mean acc @ 48 | range | (ref) acc @ 24, run 6 mean |
+|---|---|---|---|
+| 1 | 0.542 | 0.537–0.545 | 0.856 |
+| 2 | 0.600 | 0.597–0.605 | 0.934 |
+| 4 | 0.639 | 0.633–0.643 | 0.983 |
+| 8 | **0.683** | 0.674–0.691 | 0.981 |
+
+Two findings, opposite signs:
+
+1. **Absolute length generalization is poor.** Best accuracy at 2x length is 0.68
+   vs 0.98 in-distribution. The model leans partly on length-bound structure and
+   cannot freely extrapolate RoPE to unseen positions — a real limitation to flag
+   before any scale claim. (Above chance 0.20, so the algorithm *partially*
+   transfers, but far from solved.)
+2. **Depth is the component that helps under length shift — and now monotonically
+   to 8.** In-distribution, accuracy saturated at depth 4 (4 ≈ 8). Out-of-distribution
+   it keeps climbing 1 -> 2 -> 4 -> 8 (+0.138, depth 8 best). Mechanistically
+   sensible: a length-48 chain is a *longer* sequential composition than length-24,
+   so it needs *more* refinement iterations. This is depth-as-compute scaling with
+   problem size — the same reasoning that motivates adaptive/length-aware depth
+   (the untried idea, not a documented dead-end).
+
+Robust across 3 seeds: monotonic 1<2<4<8 on every seed, with no overlap between
+adjacent depths (depth-1 max 0.545 < depth-2 min 0.597 < depth-4 min 0.633 <
+depth-8 min 0.674); mean gain depth1->8 = +0.141. The elevated depth-2 CE on seed
+0 (1.81) was single-seed noise — accuracy is clean. The model-build difference from
+run 6 (max_seq_len 48 vs 24) is immaterial to training: RoPE positions 0-23 are
+identical regardless of table size, only the eval length differs.
+
+Read forward: this does NOT block anything — it's a property measurement, not a
+gate. It says (a) report length-gen honestly as weak, (b) depth genuinely buys
+extrapolation headroom, strengthening the case that the inference depth dial
+should perhaps scale with context length rather than being a fixed 4.
