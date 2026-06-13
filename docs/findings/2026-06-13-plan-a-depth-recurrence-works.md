@@ -35,6 +35,20 @@ here). This is the depth-helps signal the cross-window hunch never produced
 or slightly worse; here, more causal refinement iterations measurably improve the
 prediction they refine.
 
+Robust across 3 seeds (0, 1, 2), mean accuracy [range]:
+
+| depth | mean acc | range |
+|---|---|---|
+| 1 | 0.856 | 0.848-0.871 |
+| 2 | 0.934 | 0.919-0.943 |
+| 4 | 0.983 | 0.982-0.984 |
+| 8 | 0.981 | 0.976-0.985 |
+
+The depth-1 -> depth-4 gain (+0.127 mean) is unambiguous: depth-1's *best* seed
+(0.871) is below depth-4's *worst* (0.982) — no overlap. Depth 4 and 8 are
+statistically indistinguishable (saturation past 4), and depth 8 is stable across
+every seed at lr 1e-3 (the LR fix holds, not a one-seed fluke).
+
 Stability note worth keeping: at the harness's default lr 2e-3, depth 8 *collapsed*
 to chance (0.374), reproducibly (it also degraded parity in an earlier run). This
 was LR-driven instability in the deep unrolled loop, not structural — at lr 1e-3
@@ -46,8 +60,8 @@ real scale — but the depth-aware rule is the safe default.
 
 ## Limitations
 
-Tiny scale (dim 96), single synthetic task family, single seed, in the same-length
-regime (no length generalization tested). cumsum/parity tasks from run 1 were less
+Tiny scale (dim 96), single synthetic task family, 3 seeds (depth gain robust
+across them), in the same-length regime (no length generalization tested). cumsum/parity tasks from run 1 were less
 informative (cumsum too easy — depth-1 saturates; parity too noisy). This shows
 depth recurrence *can* help on a task that needs it at toy scale; it does NOT yet
 show the gain transfers to fineweb language modeling at 79.6M — that requires

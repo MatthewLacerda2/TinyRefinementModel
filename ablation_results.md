@@ -95,6 +95,19 @@ curve instead of the mixed-LR numbers above. This is the capstone figure.
 and depth 8 holds strong (0.976, no collapse) at a stable LR. Diminishing returns
 past depth 4 on this task (4 ≈ 8), so depth 4 is the sweet spot here.
 
+## Run 6 — multi-seed robustness (statetrack, lr 1e-3, seeds 0/1/2)
+
+| depth | mean acc | range |
+|---|---|---|
+| 1 | 0.856 | 0.848-0.871 |
+| 2 | 0.934 | 0.919-0.943 |
+| 4 | 0.983 | 0.982-0.984 |
+| 8 | 0.981 | 0.976-0.985 |
+
+depth-1 -> depth-4 gain robust (+0.127 mean, no seed overlap: depth-1 best 0.871
+< depth-4 worst 0.982). Depth 4 ≈ depth 8 (saturation). depth 8 stable across all
+seeds at lr 1e-3. Single-seed caveat retired.
+
 ## Conclusion (2026-06-13 overnight)
 
 Causal within-window depth recurrence (Plan A) does real work where the
