@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussion / open question
+    url: https://github.com/lendacerda/TinyRefinementModel/discussions
+    about: For open-ended ideas not yet shaped into an experiment or finding.

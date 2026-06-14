@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest (CPU)
+    runs-on: ubuntu-latest
+    env:
+      # CPU-only CI for the unit tests; no GPU/CUDA, no training runs.
+      JAX_PLATFORMS: cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the local environment (requirements.txt header: Python 3.14).
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # requirements.txt pins jax[cuda12] for the RTX 2060 box; CUDA wheels
+          # can't install on a CPU runner. Install the same jax VERSION as a CPU
+          # build, then the rest of the file with the cuda jax line stripped.
+          pip install "jax==0.9.1"
+          grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
+
+      - name: Run tests
+        run: pytest tests/ -q
