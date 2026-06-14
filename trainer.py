@@ -8,7 +8,6 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
-import orbax.checkpoint as ocp
 from dotenv import load_dotenv
 
 import math
@@ -22,6 +21,7 @@ from config import (
     resolve_root,
 )
 from model import UniversalReasoner
+from checkpoint_utils import save_checkpoint
 from grad_step import compute_grad_step, apply_grads
 from schedules import (
     learning_schedule,
@@ -223,7 +223,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phase_event, run_tracker):
+def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
     # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
     # (start_step == 1) appends to any existing CSV untouched.
@@ -238,6 +238,9 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
     accum_depth = 0.0
     t_compute = 0.0
     nonfinite_streak = 0
+    # Latest held-out CE from the validation probe, carried so the (less frequent)
+    # logging block can record it. None until the first probe fires.
+    latest_val_ce = None
 
     try:
         while True:
@@ -286,14 +289,20 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
             accum_grad_norm += current_grad_norm / divisor
             accum_depth += depth / divisor
 
-            if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
+            # Validation probe fires on its own cadence at the optimizer-step
+            # boundary (every ACCUMULATION_STEPS micro-steps), independent of the
+            # logging block — nesting it inside logging multiplied the effective
+            # interval by LOG_REAL_STEPS.
+            if (step + 1) % ACCUMULATION_STEPS == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
-
-                val_ce = None
                 if opt_step % VAL_EVERY_OPT_STEPS == 0:
                     val_ce = val_probe.run(model)
                     if val_ce is not None:
+                        latest_val_ce = val_ce
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
+
+            if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
+                opt_step = (step + 1) // ACCUMULATION_STEPS
 
                 logger.log(
                     opt_step,
@@ -304,8 +313,10 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                     grad_norm_avg=float(accum_grad_norm),
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=float(accum_depth),
-                    val_ce=val_ce,
+                    val_ce=latest_val_ce,
                 )
+                # Logged once; clear so it isn't re-attributed to later opt-steps.
+                latest_val_ce = None
 
                 if not sft_phase_event.is_set():
                     curr_weights = get_curriculum_weights(opt_step)
@@ -345,26 +356,14 @@ def train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phas
                         print("🛑 Training halted: No improvement in CE during SFT phase.")
                         break
 
+                # Rolling-latest: always persist the true latest state so a resume
+                # continues from where training actually left off (max_to_keep=3
+                # by recency). The best-CE state is preserved separately under
+                # best_mngr so it can never be evicted by the rolling retention.
+                sft_active = sft_phase_event.is_set()
+                save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_tracker.run_id)
                 if monitor.is_new_best:
-                    mngr.save(
-                        step,
-                        args=ocp.args.Composite(
-                            model=ocp.args.StandardSave(nnx.state(model)),
-                            optimizer=ocp.args.StandardSave(nnx.state(optimizer)),
-                            monitor_state=ocp.args.JsonSave({
-                                "ce_history": monitor.ce_history,
-                                "best_ce": monitor.best_ce,
-                                "best_loss": monitor.best_loss,
-                                "best_avg_ce": monitor.best_avg_ce,
-                                "last_improvement_step": monitor.last_improvement_step,
-                                "sft_active": sft_phase_event.is_set(),
-                                "sft_start_step": monitor.sft_start_step,
-                                "run_id": run_tracker.run_id,  # Save run_id inside checkpoint metadata
-                            }),
-                            step=ocp.args.JsonSave(step),
-                        ),
-                    )
-                    mngr.wait_until_finished()
+                    save_checkpoint(best_mngr, step, model, optimizer, monitor, sft_active, run_tracker.run_id)
 
                 accum_loss = 0.0
                 accum_token_loss = 0.0

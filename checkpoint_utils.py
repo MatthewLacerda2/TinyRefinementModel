@@ -37,13 +37,56 @@ def discover_latest_checkpoint_run(runs_root="runs"):
                 print(f"⚠️ Skipping unreadable checkpoint dir {chk_dir}: {e}")
     return None, None
 
+# Sibling subdir of the rolling-latest checkpoints holding the best-CE
+# checkpoints. Kept separate so best-retention never evicts the latest.
+BEST_SUBDIR = "best"
+CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
+
+
+def _make_best_manager(checkpoint_path):
+    """Best-only manager: a sibling 'best/' dir holding the best-CE checkpoints,
+    distinct from the rolling-latest manager so its retention can't drop the
+    state a resume must load."""
+    return ocp.CheckpointManager(
+        os.path.join(checkpoint_path, BEST_SUBDIR),
+        item_names=CHECKPOINT_ITEMS,
+        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+    )
+
+
+def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
+    """Persist the full training state (model + optimizer + monitor + step) under
+    `mngr` at `step`, then block until the write lands. Shared by the
+    rolling-latest and best-only managers — they use one save schema."""
+    mngr.save(
+        step,
+        args=ocp.args.Composite(
+            model=ocp.args.StandardSave(nnx.state(model)),
+            optimizer=ocp.args.StandardSave(nnx.state(optimizer)),
+            monitor_state=ocp.args.JsonSave({
+                "ce_history": monitor.ce_history,
+                "best_ce": monitor.best_ce,
+                "best_loss": monitor.best_loss,
+                "best_avg_ce": monitor.best_avg_ce,
+                "last_improvement_step": monitor.last_improvement_step,
+                "sft_active": sft_active,
+                "sft_start_step": monitor.sft_start_step,
+                "run_id": run_id,  # Save run_id inside checkpoint metadata
+            }),
+            step=ocp.args.JsonSave(step),
+        ),
+    )
+    mngr.wait_until_finished()
+
+
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
     monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
         checkpoint_path,
-        item_names=("model", "optimizer", "monitor_state", "step"),
+        item_names=CHECKPOINT_ITEMS,
         options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
     )
+    best_mngr = _make_best_manager(checkpoint_path)
 
     if not force_new_run and mngr.latest_step() is not None:
         latest_step = mngr.latest_step()
@@ -80,4 +123,4 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
             print("🆕 No checkpoint found, starting from scratch...")
         start_step = 1
 
-    return mngr, monitor, start_step
+    return mngr, best_mngr, monitor, start_step

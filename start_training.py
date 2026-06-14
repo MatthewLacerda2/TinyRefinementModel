@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     model, optimizer = init_model_and_optimizer()
 
-    mngr, monitor, start_step = load_or_create_checkpoint(
+    mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
         model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
@@ -93,4 +93,4 @@ if __name__ == "__main__":
 
     data_queue = setup_data_pipeline(start_step, sft_phase_event, monitor.sft_start_step)
 
-    train_loop(model, optimizer, data_queue, mngr, monitor, start_step, sft_phase_event, run_tracker)
+    train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker)
