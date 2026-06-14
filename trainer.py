@@ -47,6 +47,12 @@ MAX_NONFINITE_STREAK = 50
 VAL_EVERY_OPT_STEPS = 64
 VAL_BATCHES = 4
 VAL_FIXED_DEPTH = 4
+
+# Rolling-latest checkpoint cadence (optimizer steps). The full model+optimizer
+# save blocks the loop (wait_until_finished), so it fires far less often than
+# logging — at the opt-step boundary, NOT nested in the logging block (nesting
+# would multiply the interval by LOG_REAL_STEPS, the bug that hid the probe).
+CHECKPOINT_EVERY_OPT_STEPS = 64
 # Far past any plausible training consumption (an 8k-opt-step run consumes
 # under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
 VAL_SKIP_SAMPLES = 3_000_000
@@ -301,6 +307,15 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         latest_val_ce = val_ce
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
 
+                # Rolling-latest: persist the true latest state on its own cadence
+                # so a resume continues from where training actually left off
+                # (max_to_keep=3 by recency). Kept out of the logging block — the
+                # full-state save blocks, so it must stay rare. The best-CE state
+                # is saved separately below, where monitor.is_new_best is computed.
+                if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
+                    save_checkpoint(mngr, step, model, optimizer, monitor,
+                                    sft_phase_event.is_set(), run_tracker.run_id)
+
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
 
@@ -356,14 +371,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         print("🛑 Training halted: No improvement in CE during SFT phase.")
                         break
 
-                # Rolling-latest: always persist the true latest state so a resume
-                # continues from where training actually left off (max_to_keep=3
-                # by recency). The best-CE state is preserved separately under
-                # best_mngr so it can never be evicted by the rolling retention.
-                sft_active = sft_phase_event.is_set()
-                save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_tracker.run_id)
+                # Best-CE checkpoint: saved here where monitor.is_new_best is
+                # computed (over the windowed accumulators), in a sibling dir so
+                # best-retention and the rolling-latest retention never evict each
+                # other. The rolling-latest save runs separately, above, on
+                # CHECKPOINT_EVERY_OPT_STEPS at the opt-step boundary.
                 if monitor.is_new_best:
-                    save_checkpoint(best_mngr, step, model, optimizer, monitor, sft_active, run_tracker.run_id)
+                    save_checkpoint(best_mngr, step, model, optimizer, monitor,
+                                    sft_phase_event.is_set(), run_tracker.run_id)
 
                 accum_loss = 0.0
                 accum_token_loss = 0.0
