@@ -18,6 +18,9 @@ from config import (
     LATENT_DIM,
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
+    MODEL_ARCH,
+    REFINER_ENCODER_LAYERS,
+    MAX_STEPS_LIMIT,
     resolve_root,
 )
 from model import UniversalReasoner
@@ -135,9 +138,22 @@ optimizer_chain = optax.MultiSteps(
     use_grad_mean=True
 )
 
+def _param_count(model):
+    return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
+
+
 def init_model_and_optimizer():
-    print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    if MODEL_ARCH == "refiner":
+        # Imported lazily so the baseline path never touches Plan A code.
+        from plan_a_trainer import RefinerForTraining
+        print(f"🚀 Initializing Plan A CausalRefiner "
+              f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
+        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    else:
+        print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
+        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+
+    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer

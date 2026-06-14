@@ -62,6 +62,12 @@ class CausalAttention(nnx.Module):
         if pad_bias is not None:
             bias = bias + pad_bias                                  # pad_bias [b, 1, 1, s]
 
+        # q_norm/k_norm run in f32 for stability, so q/k come out f32 while v is in
+        # the compute dtype. Cast q/k back so all three match (dot_product_attention
+        # requires it) and attention takes the tensor-core path. No-op in f32 (CPU /
+        # toy harness); the real-scale f16 run needs it.
+        q = q.astype(x.dtype)
+        k = k.astype(x.dtype)
         out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
         return self.o(out.reshape(b, s, d))
 

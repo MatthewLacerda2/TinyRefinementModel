@@ -33,6 +33,21 @@ VOCAB_SIZE = 100352
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4
 
+# Architecture selector (env-overridable so a run is chosen at launch, not by a
+# code edit):
+#   "reasoner" — UniversalReasoner, the cross-window-hunch baseline (default;
+#                the hunch is proven inert, so this is effectively a vanilla
+#                random-depth transformer and serves as the control).
+#   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence
+#                (docs/findings/2026-06-13-plan-a-depth-recurrence-works.md).
+# A refiner run has a different param tree, so it must start fresh (--new-run);
+# it cannot resume a reasoner checkpoint.
+MODEL_ARCH = os.environ.get("MODEL_ARCH", "reasoner")
+# Plan A: number of causal encoder layers beneath the single shared refine block
+# (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
+# near the reasoner baseline; init prints the actual count for both arches.
+REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
+
 # Training
 MAX_STEPS_LIMIT = 8
 BATCH_SIZE = 1
