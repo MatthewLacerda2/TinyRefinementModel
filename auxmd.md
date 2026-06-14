@@ -131,3 +131,35 @@ Proposed change in `schedules.py` when approved:
    continuing.
 3. 2.1 transcripts while it trains; 2.2/2.3 informed by logs.
 4. Phase 3 before the first long committed run.
+
+---
+
+## Inference snapshot — 2026-06-13 (stopped run, ~3k opt steps)
+
+Checkpoint: `run_20260611_234058` step 384639 (~opt step 3005, train CE ~4.77).
+Tokenizer cl100k_base. `infer_local.py` defaults: temperature 0.5, top_k 50,
+top_p 0.9, max_new_tokens 256, hunch refresh every 4 tokens, fixed depth 8.
+This is a pre-instruction-tuned base model at ~3k steps — it continues text, it
+does not answer. Captured to confirm "how it would've responded," not as a
+quality bar.
+
+**Prompt: "What is the capital of France?"**
+> What is the number of the following? What is the number of the two numbers?
+> ### What is the number of the number?
+> ### How do you answer? ### How do you write?
+> ### What are the number of numbers? [...loops "What is the number of numbers?" to the 256-token cap]
+
+**Prompt: "What are the colors of the American flag?"**
+> The first of the following is the 8th century, with the 8th century, is this
+> is the 8th century, and is the 8th century, which is the 8th century, the 3th
+> century, and the 8th century, which is the 2th century... [...loops "the Nth century" to the cap]
+
+**Prompt: "Peter Piper picked a peck of"**
+> the 1st century, and the 1st century, the 1st century, the 1st century, the 1st
+> century... [...degenerates immediately into "the 1st century" repeated to the cap]
+
+**Read:** no knowledge, no instruction-following, severe repetition/looping, and
+zero recall of the tongue twister. Expected for an undertrained base model — the
+backbone learned local fluency (grammatical fragments, "### " markdown headers
+from web data) but nothing factual or long-range. Nothing here reflects on Plan A
+either way; it's a snapshot of the abandoned architecture's base at 3k steps.
