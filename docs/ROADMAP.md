@@ -93,12 +93,6 @@ to both arms (or only after the verdict). Ordered certain-small-first:
 - **Muon optimizer** — #26: orthogonalized-momentum updates for 2D matrices; strong
   recent sample-efficiency/wall-clock wins — the lever a single-GPU run wants most.
   Validate at tiny scale and in f16 (Newton-Schulz likely needs f32).
-- **multi-token prediction** — #27: auxiliary next-N heads (denser signal, dropped at
-  inference); synergistic with a refinement model. The salvaged half of the (killed)
-  diffusion item.
-- **reactive LR** — #28: plateau-triggered decay on the existing LossMonitor — modest
-  and deterministic, NOT a learned/meta optimizer. Lowest priority (a good schedule +
-  Adam adaptivity already cover most of it).
 
 ## Beyond proof + scale — far future
 - **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
@@ -122,5 +116,11 @@ to both arms (or only after the verdict). Ordered certain-small-first:
 - **diffusion LM**: a different paradigm, not an add-on — adopting it abandons the
   depth-recurrence bet for a second project. (Its useful piece, multi-token
   prediction, was salvaged as #27.)
-- **learned / meta optimizers**: fragile, poor-ROI. The reactive-LR intent behind it
-  is kept in modest, deterministic form as #28.
+- **learned / meta optimizers + reactive LR**: fragile, poor-ROI; reactive global LR
+  also fights golden-run determinism. Frontier pretraining uses fixed schedules
+  (cosine/WSD) + Adam's per-parameter adaptivity — a proper decay schedule covers the
+  real intent. Killed.
+- **multi-token prediction**: NOT a dead-end, but **scale-gated** — the literature
+  (Gloeckle et al.; DeepSeek-V3 at 671B) shows the benefit emerges at ~3B+ and is
+  weak/absent for small models, and its inference-speedup payoff isn't our bottleneck.
+  Out of the roadmap at 79.6M; reconsider only if we ever pass ~1-3B.
