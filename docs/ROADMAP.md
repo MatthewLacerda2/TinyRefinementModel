@@ -80,7 +80,30 @@ Bang-for-buck order; do singly so each gain is attributable.
 - **real batching** (BATCH_SIZE=2, ACCUMULATION=64) — #24: pipeline project, not a
   config flip — each lane is a persistent document stream needing parallel
   loaders + per-lane checkpoint/resume. Needs chunked CE (#19) + freed
-  headroom first. Regenerate the golden-run test (data order changes).
+  headroom first. Regenerate the golden-run test (data order changes). The
+  batch-size-schedule curriculum folds in here; the seq-len-schedule curriculum
+  folds into the context-window step (#23).
+
+## Phase 2 — efficiency & recipe levers (post-proof, from the #10 triage)
+Optimizer/training-recipe improvements. They are NOT architecture, so they would
+**confound the proof if introduced now** — gate all of them behind #16 and apply
+to both arms (or only after the verdict). Ordered certain-small-first:
+- **cautious weight decay** — #25: near-free update mask (sign-agreement); on top of
+  the masked AdamW we already run. Cheapest, try first.
+- **Muon optimizer** — #26: orthogonalized-momentum updates for 2D matrices; strong
+  recent sample-efficiency/wall-clock wins — the lever a single-GPU run wants most.
+  Validate at tiny scale and in f16 (Newton-Schulz likely needs f32).
+- **multi-token prediction** — #27: auxiliary next-N heads (denser signal, dropped at
+  inference); synergistic with a refinement model. The salvaged half of the (killed)
+  diffusion item.
+- **reactive LR** — #28: plateau-triggered decay on the existing LossMonitor — modest
+  and deterministic, NOT a learned/meta optimizer. Lowest priority (a good schedule +
+  Adam adaptivity already cover most of it).
+
+## Beyond proof + scale — far future
+- **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
+  out of sequence — you RL on a base that already has capability to elicit; revisit
+  only after pretraining + scaling produce a base worth aligning.
 
 ## Explicitly NOT planned
 - bf16 *compute*: no tensor-core bf16 on Turing — f16 compute policy stands.
@@ -88,3 +111,16 @@ Bang-for-buck order; do singly so each gain is attributable.
   it twice (see finding); don't throw compute at a mechanism the data refused.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
+
+### Killed in the #10 triage (with reasons, so they stay dead)
+- **per-token halting / ACT**: collapses at small scale — documented dead-end.
+- **MoE / mixture-of-slots**: MoE keeps all experts resident → spends VRAM (scarce on
+  6GB) to save FLOPs (abundant) — backwards for this card; slots are tied to the dead
+  cross-window arch.
+- **logit softcapping**: redundant with the q/k RMSNorm already in place; Gemma-2
+  itself dropped it. Marginal stability knob, not a capability lever.
+- **diffusion LM**: a different paradigm, not an add-on — adopting it abandons the
+  depth-recurrence bet for a second project. (Its useful piece, multi-token
+  prediction, was salvaged as #27.)
+- **learned / meta optimizers**: fragile, poor-ROI. The reactive-LR intent behind it
+  is kept in modest, deterministic form as #28.
