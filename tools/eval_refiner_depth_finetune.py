@@ -108,21 +108,27 @@ def train_eval(model, train, test, depth, steps, batch, lr, seed):
         return loss
 
     @nnx.jit(static_argnames=["depth"])
-    def evaluate(model, depth):
-        te_in, te_tgt, te_mask = test
-        logits = model(te_in, max_steps=depth, training=False).logits
-        pred = logits.argmax(-1)
-        acc = jnp.sum((pred == te_tgt) * te_mask) / jnp.sum(te_mask)
-        ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=te_tgt)
-        ce = jnp.sum(ce * te_mask) / jnp.sum(te_mask)
-        return acc, ce
+    def eval_chunk(model, inp, tgt, mask, depth):
+        # Chunked: the full test pool's logits ([n_test*seq, 100352]) would be tens of
+        # GB; score batch-sized chunks and accumulate masked sums instead.
+        logits = model(inp, max_steps=depth, training=False).logits
+        correct = jnp.sum((logits.argmax(-1) == tgt) * mask)
+        ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask)
+        return correct, ce, jnp.sum(mask)
 
     key = jax.random.PRNGKey(seed)
     for _ in range(steps):
         key, k = jax.random.split(key)
         step(model, opt, k, depth)
-    acc, ce = evaluate(model, depth)
-    return float(acc), float(ce)
+
+    te_in, te_tgt, te_mask = test
+    correct = ce = count = 0.0
+    for i in range(0, te_in.shape[0], batch):
+        c, e, m = eval_chunk(model, te_in[i:i + batch], te_tgt[i:i + batch], te_mask[i:i + batch], depth)
+        correct += float(c)
+        ce += float(e)
+        count += float(m)
+    return correct / count, ce / count
 
 
 def main():
