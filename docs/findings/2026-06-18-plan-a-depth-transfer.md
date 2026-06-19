@@ -1,5 +1,12 @@
 # Plan A depth survives LM pretraining — and is exploited *better* than from scratch
 
+> **Correction (2026-06-19):** the dense 1→8 sweep in
+> `2026-06-19-plan-a-depth-dense-sweep.md` supersedes two conclusions below. Depth
+> does **not** keep climbing at d8 — both arms peak at d7 and plateau by ~d6 (the
+> "still climbing" read was a four-dot artifact), and the pretrained arm is **not**
+> monotonic. What holds: pretraining shifts the curve *left* (same ceiling, fewer
+> loops), not up.
+
 Date: 2026-06-18. Model: the 77.65M `refiner` (CausalRefiner) checkpoint from
 `run_20260615_004107`. Instruments: `tools/eval_refiner_depth_transfer.py` (Stage 1,
 held-out CE by domain) and `tools/eval_refiner_depth_finetune.py` (Stage 2,
