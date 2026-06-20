@@ -9,14 +9,14 @@ import glob
 import time
 import threading
 import queue
-from config import MAX_SEQ_LEN, resolve_root
+from config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
 from dotenv import load_dotenv
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
 load_dotenv()
 
 # Config
-ENC_NAME = "cl100k_base"
+ENC_NAME = TOKENIZER_NAME
 OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization

@@ -47,7 +47,8 @@ from checkpoint_utils import discover_latest_checkpoint_run
 
 # Map the task's symbols onto distinct, arbitrary-but-fixed real token ids, so the
 # pretrained embedding rows and tied head are genuinely exercised (not the unused
-# tail of the 100352-vocab). Generator-choice tokens and state tokens stay disjoint.
+# tail of the model's full vocab). Generator-choice tokens and state tokens stay
+# disjoint; both bases sit well below VOCAB_SIZE for any tokenizer we use.
 INPUT_BASE = 1000
 STATE_BASE = 2000
 
@@ -109,7 +110,7 @@ def train_eval(model, train, test, depth, steps, batch, lr, seed):
 
     @nnx.jit(static_argnames=["depth"])
     def eval_chunk(model, inp, tgt, mask, depth):
-        # Chunked: the full test pool's logits ([n_test*seq, 100352]) would be tens of
+        # Chunked: the full test pool's logits ([n_test*seq, VOCAB_SIZE]) would be tens of
         # GB; score batch-sized chunks and accumulate masked sums instead.
         logits = model(inp, max_steps=depth, training=False).logits
         correct = jnp.sum((logits.argmax(-1) == tgt) * mask)

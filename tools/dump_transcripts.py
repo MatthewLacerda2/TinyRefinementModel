@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from checkpoint_utils import discover_latest_checkpoint_run
+from config import TOKENIZER_NAME
 from tools.common import restore_model
 
 PROMPTS = [
@@ -48,7 +49,7 @@ def main():
             run_dir = os.path.join("runs", run_id)
 
     model, ckpt_step = restore_model(args.checkpoint_path)
-    enc = tiktoken.get_encoding("cl100k_base")
+    enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
     from infer_local import generate_text
 
