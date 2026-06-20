@@ -31,7 +31,11 @@ FINEWEB_MIN_SCORE = 4.0        # educational-score floor. Raised 3.0→4.0: the 
 MIXTURE = [
     {
         "path": "HuggingFaceFW/fineweb-edu",
-        "target_tokens": 4_500_000_000,
+        # Trimmed 4.5B→2.0B: the ≥4 score floor keeps only ~7% of docs, so 4.5B
+        # would take ~13h to stream. 2.0B of ≥4 text + the other sources is ~5.5B
+        # total ≈ 71 tokens/param for the 78M model — still far above Chinchilla,
+        # so quality-over-quantity costs us nothing here.
+        "target_tokens": 2_000_000_000,
         "folder": "pretrain",
         "alias": "fineweb-edu"
     },
