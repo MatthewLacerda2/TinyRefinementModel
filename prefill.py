@@ -21,7 +21,11 @@ OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
-FINEWEB_MIN_SCORE = 3.0        # educational-score filter (matches curation analysis)
+FINEWEB_MIN_SCORE = 4.0        # educational-score floor. Raised 3.0→4.0: the model is
+                               # tiny (~78M), so we trade volume for per-token quality
+                               # density (the phi / TinyStories regime). FineWeb-Edu's
+                               # released set is already ≥3; ≥4 is far denser yet still
+                               # leaves 100B+ tokens — ample for our 4.5B target.
 
 # Targets: 8.05B total for high-performance SOTA corpus
 MIXTURE = [
