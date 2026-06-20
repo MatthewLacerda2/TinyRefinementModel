@@ -21,12 +21,19 @@ Example:
 
 import os
 
-# Must precede the jax import: keep the real BFC allocator (so the number reflects
-# training) but skip preallocation so the stats track true peak usage.
+# Must precede the jax import. The on-demand "platform" allocator (same as
+# tools/bench_train_step.py) sizes each allocation exactly and never pre-grabs, so
+# peak_bytes_in_use is the true high-water mark — and, unlike the default BFC
+# allocator with preallocation off, it does not throw false OOMs from fragmented
+# free space (which made an earlier sweep report spurious failures).
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 # Deliberately NOT setting FORCE_F32_COMPUTE — we want the real f16 GPU footprint.
 
 import argparse
+import subprocess
+import threading
+import time
 
 import jax
 import jax.numpy as jnp
@@ -40,6 +47,39 @@ from grad_step import compute_grad_step, apply_grads
 
 def param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
+
+
+class GpuMemSampler:
+    """Polls nvidia-smi for peak GPU memory. The platform allocator gives no
+    memory_stats(), and it allocates on demand, so the only honest peak is what the
+    driver reports — sampled fast enough to catch the backward/compile spike. Assumes
+    the card is otherwise idle (true here: tokenization is CPU-only)."""
+
+    def __init__(self, interval=0.15):
+        self.interval = interval
+        self.peak_mib = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                    text=True,
+                )
+                self.peak_mib = max(self.peak_mib, max(int(x) for x in out.split()))
+            except Exception:
+                pass
+            time.sleep(self.interval)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=1.0)
 
 
 def main():
@@ -77,19 +117,17 @@ def main():
     )
     doc_boundary = jnp.zeros((args.batch,), dtype=bool)
 
-    dev = jax.devices()[0]
-    for s in range(args.steps):
-        loss, _out, grads, _gn = compute_grad_step(model, batch, s, args.depth, doc_boundary)
-        apply_grads(opt, grads, model)
-    loss.block_until_ready()
+    with GpuMemSampler() as sampler:
+        for s in range(args.steps):
+            loss, _out, grads, _gn = compute_grad_step(model, batch, s, args.depth, doc_boundary)
+            apply_grads(opt, grads, model)
+        loss.block_until_ready()
+        time.sleep(0.3)  # let the sampler catch the final peak
 
-    stats = dev.memory_stats()
-    peak = stats.get("peak_bytes_in_use", 0) / 1e9
-    inuse = stats.get("bytes_in_use", 0) / 1e9
     print(
         f"dim={args.dim} heads={args.heads} enc={args.encoder_layers} batch={args.batch} "
         f"depth={args.depth} bf16mu={args.bf16_mu} | params={param_count(model)/1e6:.1f}M "
-        f"| peak={peak:.2f}GB inuse={inuse:.2f}GB"
+        f"| peak={sampler.peak_mib/1024:.2f}GB"
     )
 
 
