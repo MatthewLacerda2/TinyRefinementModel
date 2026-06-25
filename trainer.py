@@ -132,6 +132,13 @@ optimizer_chain = optax.MultiSteps(
             learning_rate=learning_schedule,
             weight_decay=weight_decay_schedule,
             mask=weight_decay_mask,
+            # Store Adam's first moment in bf16 (upcast to f32 for the update math).
+            # Storage-only, Turing-safe — tensor cores never see bf16. Frees ~2 bytes/
+            # param (~0.23GB at dim960), which is exactly what lets the dim960 / 138.7M
+            # model fit the 6GB card — it OOMs with f32 moments. The variance estimate
+            # (nu) stays f32: bf16 is too coarse near zero there. Verified sound by
+            # tools/bf16_mu_smoke.py (tracks an f32-mu run to 0.06% of loss).
+            mu_dtype=jnp.bfloat16,
         ),
     ),
     every_k_schedule=ACCUMULATION_STEPS,
@@ -171,6 +178,7 @@ def create_sft_optimizer(model, old_state=None):
                 learning_rate=sft_lr_schedule,
                 weight_decay=weight_decay_schedule,
                 mask=weight_decay_mask,
+                mu_dtype=jnp.bfloat16,  # match the base optimizer (see init chain above)
             ),
         ),
         every_k_schedule=ACCUMULATION_STEPS,
