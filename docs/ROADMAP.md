@@ -69,6 +69,57 @@ by confidence/ease within the phase: certain small wins first, the experiment la
 - The verdict is only readable against a known noise floor — #17 (seed-variance)
   establishes what "no effect" looks like before we trust small CE deltas.
 
+## Architecture bet — the latent scratchpad (the next "what does depth carry?")
+Plan A asks whether looping depth helps *at all*. This asks the harder follow-on:
+*what should the loop carry?* It is the redesign of the dead slots, built on the
+one lesson the inert hunch taught.
+
+**The bypass principle (the lesson from the inert hunch).** Anything the model
+can route around, it will. The v1 slots died of exactly this — a side memory the
+within-window attention never *needed*, so the gradient starved it (forget gate
+collapsed by ~step 750; the documented Recurrent-Memory-Transformer failure
+mode). The fix is NOT to *incentivize* using the memory: a soft bonus on the main
+loss is optional, and the optimizer takes the easier within-window basin every
+time (the gate was rejected twice). A latent memory survives only when it is
+**non-bypassable**, and there are exactly two ways to make it so:
+1. **Architecture** — it is the *only* route to the answer; the prediction cannot
+   be computed without reading it.
+2. **A dedicated supervised target** — the slot is graded on its own loss term,
+   one that cannot be minimized unless the slot carries the right content. A
+   grade, not a bonus — the distinction the hunch blurred and died on.
+
+**Core hypothesis — supervised serial latent scratchpad** — #38. Reasoning
+unrolls as a *serial* latent chain: step k's committed state is the *input* to
+step k+1 (feed-the-state-forward, à la Coconut — which proves latent reasoning
+trains at all). The novel turn is **structured decomposition**: not one
+continuous thought but a small ordered set of sub-slots, each written once and
+supervised to carry sub-result k — the latent analogue of "split the question
+into three answers and solve each in turn." Seriality gives the chain an order;
+the per-slot supervised target makes each link non-bypassable (principle #2);
+writing only from earlier steps makes it causal by construction (no future leak —
+the v1 leak that had to be amputated).
+
+- **Proof gate (its own, independent of Plan A's).** A decompose-able toy task
+  whose answer genuinely needs N sequential sub-results (e.g. chained modular
+  arithmetic), against two controls: a **parallel-slot** arm (same slots, read
+  all at once, no induced order) and a **depth-only** arm (Plan A recurrence, no
+  scratchpad). Win = the serial supervised scratchpad beats *both*. **Kill-
+  criterion up front:** the write path collapses like the forget gate did, OR no
+  gap versus the parallel-slot control. Runs on the tiny ablation harness
+  (minutes), so it is a cpu-lane bet, not a real-model run.
+- **Parked refinements — gated behind the proof; adding them now confounds it:**
+  - *Convergence halting* — #39: stop refining when the latent stops moving
+    (cosine of step k vs k-1 below a threshold). This is the Deep-Equilibrium /
+    fixed-point family and the 2025 recurrent-depth line (Geiping et al.), NOT
+    learned per-token halting (ACT, which is killed below). Not novel as a
+    mechanism; worth it for adaptive compute (fewer steps on easy tokens).
+  - *Slot dimensionality / "vagueness"* — a wide continuous slot can hold a soft,
+    under-specified idea (superposition) where a token must commit; the state
+    starts vague and sharpens toward commitment — which is what convergence
+    halting detects. But dimensionality buys *capacity*, not *commitment*: it does
+    not fix bypassability and is no substitute for the supervised target. A knob
+    to sweep once the core works, not a fix on its own.
+
 ## Phase 2 — scaling, AFTER proof, one knob at a time (spend the freed VRAM here)
 Bang-for-buck order; do singly so each gain is attributable.
 
@@ -101,8 +152,12 @@ to both arms (or only after the verdict). Ordered certain-small-first:
 
 ## Explicitly NOT planned
 - bf16 *compute*: no tensor-core bf16 on Turing — f16 compute policy stands.
-- Reviving the cross-window hunch with auxiliary losses: the gradient rejected
-  it twice (see finding); don't throw compute at a mechanism the data refused.
+- Reviving the cross-window hunch with **soft auxiliary bonuses**: a bonus on the
+  main loss for using an *optional* memory is what the gradient rejected twice
+  (see finding); don't throw compute at a mechanism the data refused. The line:
+  a *dedicated supervised target* that cannot be minimized without the slot is
+  NOT this — that's the legitimate non-bypassable path the latent-scratchpad bet
+  (#38) uses. Bonus = dead; grade = allowed.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
 
