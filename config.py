@@ -29,7 +29,11 @@ LATENT_DIM = 512
 NUM_BLOCKS = 8
 SHARED_SLOTS = 32
 MAX_SEQ_LEN = 512
-VOCAB_SIZE = 100352
+# Padded to a multiple of 128 (tensor-core friendly) above the tokenizer's real
+# n_vocab. With r50k_base (50257) that is 50304; this is the model's single biggest
+# VRAM line (embedding + tied LM head), so the smaller vocab is the headline saving.
+# Must be ≥ the tokenizer's n_vocab — update both together if TOKENIZER_NAME changes.
+VOCAB_SIZE = 50304
 NUM_HEADS = 16
 NUM_GROUPS = NUM_HEADS // 4
 
@@ -52,7 +56,18 @@ REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 MAX_STEPS_LIMIT = 8
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
-PAD_TOKEN_ID = 100257
+# Padding reuses the tokenizer's end-of-text id (sequences are eot-separated, so the
+# pad token and the document separator are the same symbol). r50k_base eot = 50256.
+PAD_TOKEN_ID = 50256
+
+# Tokenizer — single source of truth. prefill, inference, and the transcript dump
+# all import this name so the encoding can never drift between tokenizing the corpus
+# and serving the model. Switched cl100k_base → r50k_base (#21): the GPT-2/GPT-3
+# family 50k vocab halves VOCAB_SIZE (100352→50304), freeing the biggest VRAM line
+# for width/data. Trade-off: r50k packs text less tightly than cl100k, so a fixed
+# token budget covers less raw text. Changing this requires re-tokenizing the corpus
+# and updating VOCAB_SIZE/PAD_TOKEN_ID to match the new encoding.
+TOKENIZER_NAME = "r50k_base"
 
 # Seed for data-pipeline randomness (start-offset augmentation, mixture draws).
 # Recorded in run_metadata.json so runs are reproducible.

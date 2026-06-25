@@ -12,6 +12,7 @@ from config import (
     MAX_SEQ_LEN,
     PAD_TOKEN_ID,
     MAX_STEPS_LIMIT,
+    TOKENIZER_NAME,
     resolve_root,
 )
 from model import UniversalReasoner
@@ -108,7 +109,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k
 def run_inference():
     print(f"🔮 Initializing TinyRefinementModel (Dim={LATENT_DIM})...")
 
-    enc = tiktoken.get_encoding("cl100k_base")
+    enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
 

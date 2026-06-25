@@ -9,38 +9,47 @@ import glob
 import time
 import threading
 import queue
-from config import MAX_SEQ_LEN, resolve_root
+from config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
 from dotenv import load_dotenv
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
 load_dotenv()
 
 # Config
-ENC_NAME = "cl100k_base"
+ENC_NAME = TOKENIZER_NAME
 OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
-FINEWEB_MIN_SCORE = 3.0        # educational-score filter (matches curation analysis)
+FINEWEB_MIN_SCORE = 4.0        # educational-score floor. Raised 3.0→4.0: the model is
+                               # small (~139M), so we trade volume for per-token quality
+                               # density (the phi / TinyStories regime). FineWeb-Edu's
+                               # released set is already ≥3; ≥4 is far denser yet still
+                               # leaves 100B+ tokens — ample for our 4.0B fineweb target.
 
-# Targets: 8.05B total for high-performance SOTA corpus
+# Targets: ~10.85B total (10.5B pretrain + 0.35B chat). Doubled from ~5.5B so the
+# 138.7M model (dim960, r50k) trains at ~76 tokens/param — small models reward
+# over-training well past Chinchilla, so we feed it generously rather than starve it.
 MIXTURE = [
     {
         "path": "HuggingFaceFW/fineweb-edu",
-        "target_tokens": 4_500_000_000,
+        # The ≥4 score floor keeps only ~7% of docs (~95k tok/s), so this is the slow
+        # pole — ~12h to stream 4.0B. Worth it: highest-quality general text and the
+        # largest single share of the pretrain mix.
+        "target_tokens": 4_000_000_000,
         "folder": "pretrain",
         "alias": "fineweb-edu"
     },
     {
         "path": "codeparrot/codeparrot-clean",
-        "target_tokens": 2_000_000_000,
+        "target_tokens": 4_000_000_000,
         "folder": "pretrain",
         "alias": "codeparrot"
     },
     {
         "path": "HuggingFaceTB/finemath",
         "config": "finemath-4plus",
-        "target_tokens": 1_200_000_000,
+        "target_tokens": 2_500_000_000,
         "folder": "pretrain",
         "alias": "finemath"
     },
