@@ -1,125 +1,71 @@
 # Tiny Refinement Model
 
-This repository implements the **Universal Reasoner**, a latent reasoning language model designed to demonstrate that continuous latent-space reasoning is highly effective compared to traditional token-level chain-of-thought scratchpads.
+This repository is built to be driven by the **Claude Code CLI**. I SSH into a single
+machine — one **RTX 2060 (6 GB VRAM, Turing, no bfloat16)** — and Claude does the work
+there.
 
-## Architecture
+Claude today is about as capable as a strong AI researcher — but not yet capable of
+originating truly novel ideas; at its best it proposes the ideas a good researcher would.
+That alone is enormously useful: a tireless collaborator that reasons carefully about a
+problem, works programmatically, and pushes back when I forget something or argue against
+what the literature has already settled. So the leverage is in the environment, not the
+model. The point of this repo is to build the tools, guardrails, and infrastructure that
+let Claude work autonomously, in a loop, around the clock — while I supply the ideas,
+which are vetted and revised before they enter the pipeline.
 
-The Universal Reasoner separates sequence-level token processing from reasoning-level representation. Instead of generating human-readable reasoning tokens, the model processes thoughts in a high-dimensional continuous latent space. 
+## Why this exists
 
-The architecture is divided into three specialized transformer blocks:
+I didn't start this to rebuild an ordinary language model — that ground is well covered
+and adds nothing new. The aim is a genuine contribution: to find out how much real
+reasoning ability can be pressed into a very small model on hardware anyone can afford,
+instead of buying capability with scale.
 
-1. **Encoder Stack**: Processes raw input tokens into rich contextual representations using causal self-attention.
-2. **Latent Reasoning Loop**: Operates over a set of private latent slot tokens, representing the model's continuous 'internal scratchpad'. This stack recursively processes the scratchpad over several steps (the depth is randomly sampled during training, fixed at inference). A forget mechanism dynamically updates the scratchpad by blending fresh thoughts with historical memory at each iteration.
-3. **Decoder Stack**: Combines the output of the encoder stack with the scratchpad state the window *started* with — the hunch carried over from previous windows through a gating mechanism. The current window's completed reasoning is never shown to its own decoder (that would leak future tokens into past predictions); it is stored in the hunch cache and benefits the *next* window. Reasoning about what was just read helps predict what comes next.
+## The pipeline
 
-### Information Flow
+Work runs as a pipeline. I come up with ideas; the ones that survive review become
+**GitHub issues**, each a single closeable unit. From there an idea takes the same path
+every time — a smoke test, then an ablation, then a full training run only if it earns
+one — under the conventions below. The issues hold the live state of the project; what
+gets learned is written down as findings; the narrative and the graveyard of discarded
+ideas live in the roadmap. The repository itself is the environment that makes this loop
+safe to run, and its layout comes next.
 
-```
-  [Input Tokens]
-        │
-        ▼
-  [Embedding]
-        │
-        ▼
-┌──────────────────┐
-│  Encoder Stack   │ (Process input context causally)
-└────────┬─────────┘
-         │
-         │   [Hunch Cache] ──► [Hunch Gate] ──► [Initial Scratchpad Slots]
-         │  (from previous      (blend with               │
-         │      window)          fresh slots)             ├──────────────┐
-         │                                                ▼              │
-         │                                  ┌─────────────────────────┐  │
-         ├─────────────────────────────────►│  Reasoning Loop Stack   │  │
-         │     (Attend to context)          │ (N steps; depth random  │  │
-         │                                  │  during training)       │  │
-         │                                  └────────────┬────────────┘  │
-         │                                               │               │
-         │                                  [Forget Gate]│(blend per     │
-         │                                               │ iteration)    │
-         │                                               ▼               │
-         │                                        [Hunch Cache] ──► (next window)
-         ▼                                                               │
-┌──────────────────┐                                                     │
-│  Decoder Stack   │◄────────────────────────────────────────────────────┘
-│ (Blend & Decode) │ (Reads the slots this window STARTED with — strictly
-└────────┬─────────┘  past information; this window's reasoning output
-         │            only reaches the NEXT window via the hunch cache)
-         ▼
-    [LM Head]
-         │
-         ▼
-  [Output logits]
-```
+## Repository architecture & conventions
 
----
+- **`CLAUDE.md`** — the working agreement Claude reads first: how we decide a result is
+  real, the conventions here, and how to navigate the rest.
+- **`config.py`** — the single source of truth for every architecture and training
+  constant, the float16 compute policy, and the architecture selector.
+- **Tracking is split by purpose.** GitHub issues hold per-item state. `docs/ROADMAP.md`
+  holds the narrative and the graveyard of killed ideas. `docs/findings/` holds dated
+  results, one conclusion each. `docs/registry/` holds model cards for kept models.
+  Working plans stay local and gitignored.
+- **Labels.** A *type* — `architecture` (the repo/environment), `tools` (research-support
+  code), `ideas` (things to try on the model), `optimization` (cheaper code, same model),
+  `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
+  serial queue), `blocked` (unmet dependency). Plus `bug`.
+- **Tests** live in `tests/` and run on CPU by default; CI runs them on every push and
+  pull request.
+- **`ablation_harness.py`** is the proof instrument — it trains the real architecture at
+  tiny scale on toy tasks where depth has to do work.
+- **Storage tiers.** The SSD holds live runs and the tokenized corpus under `runs/`; a
+  1 TB HDD is the cold archive for finished runs and champion weights.
 
-## Tech stack
+## The model
 
-* **JAX**: High-performance numerical computing library used for compiling and executing optimized array operations.
-* **Flax NNX**: Modern, module-based neural network library for JAX that simplifies state management and parameter tracking.
-* **Optax**: JAX-native optimization library used to build gradient processing pipelines and decay schedules.
-* **AdamW**: Our primary optimization algorithm (configured with learning rate warmup and weight decay) which updates the model's parameters stably.
-* **Orbax**: High-performance checkpointing library for JAX used to save and load training states and metadata asynchronously.
-* **Hugging Face**: Streamed dataset pipelines used for curriculum training and evaluation.
-* **Tiktoken**: Fast byte-pair encoding tokenizer using the `cl100k_base` encoding vocabulary.
+The model is the **`CausalRefiner`** (`plan_a_model.py`). Tokens are embedded and passed
+through a stack of causal transformer blocks (RoPE positions, RMSNorm on the queries and
+keys, a SwiGLU MLP, pre-norm residuals). A single **shared** block is then looped over
+those representations several times — the *refinement depth* — each pass adding a
+per-step time signal and blending its output into the running state through a gate. The
+loop runs under a causal mask, so position *t* only ever attends to positions ≤ *t* and
+depth refines a prediction without seeing future tokens. The number of refinement steps
+is sampled randomly during training and fixed at inference. A tied LM head reads the
+final state.
 
----
+A second mode, selected with `MODEL_ARCH=reasoner` (`model.py`), is a vanilla
+random-depth transformer kept as a control baseline.
 
-## How to Run
-
-Before running the scripts, activate your virtual environment and ensure you have copied the environment file template:
-```bash
-source venv/bin/activate
-cp .env.example .env  # Update HF_TOKEN inside .env
-```
-
-### 1. Prefill Data Tokenization
-Download and pre-tokenize the FineWeb-Edu, CodeParrot-clean, FineMath, and UltraChat datasets. This processes and chunks tokens into `runs/data/` for high-throughput training:
-```bash
-python prefill.py
-```
-
-### 2. Start or Resume Training
-Initiate the model training loop. The script automatically handles data mixing, curriculum learning, and SFT plateau transitions:
-* **Auto-Resume (Default)**: Automatically detects and resumes the latest training run directory (reusing checkpoints if saved, or beginning from step 1 appending to the same `metrics.csv` if checkpoints do not exist yet):
-  ```bash
-  python start_training.py
-  ```
-* **Force Brand New Run**: Ignore previous checkpoints/runs and start entirely from scratch:
-  ```bash
-  python start_training.py --new-run
-  ```
-* **Custom Checkpoint Folder**: Point to a specific directory containing Orbax checkpoint segments:
-  ```bash
-  python start_training.py --checkpoint-path runs/run_xxxxx/checkpoints
-  ```
-
-### 3. Plot Training History
-Visualize the metrics, resource costs, and optimization health:
-* **Auto-Discover Latest Run**: Analyzes the most recent run's `metrics.csv` inside `runs/` and outputs `reasoning_analytics.png`:
-  ```bash
-  python plot_history.py
-  ```
-* **Specific Run**: Plot a custom log file:
-  ```bash
-  python plot_history.py --log runs/run_xxxxx/metrics.csv
-  ```
-
-### 4. Run Local Inference CLI
-Chat interactively with the trained Universal Reasoner. The CLI automatically loads the latest saved checkpoint weights:
-```bash
-python infer_local.py
-```
-
-### 5. Tests and Diagnostics
-The test suite runs on CPU by default, so it works even while a training run owns the GPU (set `RUN_TESTS_ON_GPU=1` to exercise the real half-precision path on a free GPU):
-```bash
-python -m pytest tests/
-```
-Offline diagnostics, each answering one question against the latest checkpoint:
-```bash
-PYTHONPATH=. python tools/eval_depth_curve.py    # does reasoning about the previous window help the next one?
-PYTHONPATH=. python tools/overfit_smoke.py       # can the training path overfit one batch? (pre-run gate)
-PYTHONPATH=. python tools/dump_transcripts.py    # fixed-prompt transcripts, archived per checkpoint
-```
+Everything runs in float16 on the RTX 2060 (Turing has no bfloat16 tensor cores). The
+tokenizer is `r50k_base`. Exact dimensions, depth limits, and the rest of the constants
+live in `config.py`.

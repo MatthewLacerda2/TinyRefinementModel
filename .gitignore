@@ -11,3 +11,8 @@ auxpy.py
 
 # Working plans stay local; docs/findings/ is tracked and publishable
 docs/plans/
+
+# Regenerable plot outputs at repo root (plot_history.py / eval scripts).
+# The canonical, dated figures we keep live in docs/findings/.
+/depth_curve.png
+/reasoning_analytics.png
