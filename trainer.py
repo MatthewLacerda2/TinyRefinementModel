@@ -374,7 +374,16 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         sft_phase_event.set()
                         monitor.sft_start_step = step
 
-                        old_state = nnx.state(optimizer)
+                        # Pull the optimizer moments to host BEFORE building the SFT
+                        # optimizer. nnx.Optimizer eagerly allocates a fresh full-size
+                        # mu/nu on the GPU, so without this the old (GPU) state and the
+                        # new (GPU) state coexist for an instant — a ~2x optimizer-state
+                        # spike that OOM'd the 6GB card at the phase switch (#30).
+                        # device_get copies the moments to RAM, so the old GPU buffers
+                        # free on the del below and only one full optimizer state is
+                        # resident at the peak. Momentum is preserved: create_sft_
+                        # optimizer copies these host values into the new optimizer.
+                        old_state = jax.device_get(nnx.state(optimizer))
                         del optimizer
                         gc.collect()
 
