@@ -234,9 +234,16 @@ class UniversalReasoner(nnx.Module):
         # 2026-06-10, see docs/PERFORMANCE_PLAN.md P3). Inputs are rounded to f16
         # but products accumulate in f32, so logits stay f32 for the softmax.
         normed = self.seq_norm(z_seq_out).astype(COMPUTE_DTYPE)
-        embed_t = self.embed.embedding.value.astype(COMPUTE_DTYPE).T
-        logits = jnp.matmul(normed, embed_t, preferred_element_type=jnp.float32)
-        
+        if training:
+            # Hand the loss the pre-head states; it projects the LM head per-chunk
+            # (chunked CE, losses.py / #19) so the full [b, s, vocab] f32 logits —
+            # the activation that OOM'd dim960 (#16) — are never materialized.
+            logits, hidden = None, normed
+        else:
+            embed_t = self.embed.embedding.value.astype(COMPUTE_DTYPE).T
+            logits = jnp.matmul(normed, embed_t, preferred_element_type=jnp.float32)
+            hidden = None
+
         total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
         total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
         
@@ -261,6 +268,7 @@ class UniversalReasoner(nnx.Module):
 
         return ReasonerOutput(
             logits=logits,
+            hidden=hidden,
             forget_cost=total_f_cost,
             diversity_loss=total_div_cost,
             diag=diag,

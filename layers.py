@@ -19,6 +19,10 @@ class ReasonerOutput:
     diversity_loss: float
     diag: Dict[str, Any]
     final_shared: jnp.ndarray
+    # Pre-head states [b, s, d], set instead of `logits` when training: the loss
+    # projects the LM head per-chunk (chunked CE, #19) to avoid the full
+    # [b, s, vocab] f32 logit peak. None at inference, where `logits` is filled.
+    hidden: jnp.ndarray = None
 
 def apply_rope(x, cos, sin):
     x1, x2 = jnp.split(x, 2, axis=-1)
