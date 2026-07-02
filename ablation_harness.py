@@ -139,16 +139,9 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 # `memorize` is built per-run (vocab = --mem-pairs), see main().
 
 
-def _masked_acc_ce(logits, tgt, mask):
-    pred = logits.argmax(-1)
-    acc = jnp.sum((pred == tgt) * mask) / jnp.sum(mask)
-    ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask) / jnp.sum(mask)
-    return acc, ce
-
-
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, n_pool=32768, n_test=4096,
-              train_seq=SEQ, test_seq=None):
+              eval_batch=256, train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
     # trains on length train_seq and is evaluated on longer sequences, so it must
     # use RoPE positions it never saw in training. test_seq=None -> same length.
@@ -188,15 +181,27 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         return loss
 
     @nnx.jit(static_argnames=["depth"])
-    def eval_step(model, inp, tgt, mask, depth):
-        return _masked_acc_ce(model(inp, depth=depth), tgt, mask)
+    def eval_chunk_sums(model, inp, tgt, mask, depth):
+        logits = model(inp, depth=depth)
+        pred = logits.argmax(-1)
+        acc_sum = jnp.sum((pred == tgt) * mask)
+        ce_sum = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask)
+        return acc_sum, ce_sum, jnp.sum(mask)
 
     for _ in range(steps):
         key, k = jax.random.split(key)
         step(model, opt, k, tr_inp, tr_tgt, tr_mask, depth)
 
-    acc, ce = eval_step(model, te_inp, te_tgt, te_mask, depth)
-    return float(acc), float(ce), n_params
+    # Eval in fixed-size chunks: a full-pool eval materializes [n_test, seq, vocab]
+    # f32 logits, which OOMs at large --mem-pairs (6.4 GB at N=16384 — already past
+    # the 6 GB card; 51 GB at N=65536). Keep n_test a multiple of eval_batch or
+    # the ragged last chunk pays one extra compile.
+    acc_sum = ce_sum = count = 0.0
+    for i in range(0, te_inp.shape[0], eval_batch):
+        s = slice(i, i + eval_batch)
+        a, c, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], depth)
+        acc_sum, ce_sum, count = acc_sum + float(a), ce_sum + float(c), count + float(m)
+    return acc_sum / count, ce_sum / count, n_params
 
 
 def main():
@@ -206,6 +211,8 @@ def main():
                     help="refiner = one shared block looped `depth` times; vanilla = `depth` distinct blocks (matched FLOPs, ~depth× block params)")
     ap.add_argument("--mem-pairs", type=int, default=1024,
                     help="memorize task: size N of the fixed random key→value dictionary (vocab = N); sweep N to read capacity")
+    ap.add_argument("--dim", type=int, default=96,
+                    help="model width (must divide heads=4 evenly); shrink it to make capacity bind sooner on the memorize probe")
     ap.add_argument("--depths", default="1,2,4,8")
     ap.add_argument("--steps", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=0)
@@ -228,14 +235,14 @@ def main():
     depths = [int(d) for d in args.depths.split(",")]
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
         t0 = time.time()
-        acc, ce, n_params = train_one(task_fn, vocab, d, arch=args.arch, steps=args.steps,
-                                      seed=args.seed, gate_bias=args.gate_bias, lr=args.lr,
-                                      train_seq=args.train_seq, test_seq=test_seq)
+        acc, ce, n_params = train_one(task_fn, vocab, d, arch=args.arch, dim=args.dim,
+                                      steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
+                                      lr=args.lr, train_seq=args.train_seq, test_seq=test_seq)
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
 
