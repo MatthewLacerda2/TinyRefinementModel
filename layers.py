@@ -20,6 +20,10 @@ class ReasonerOutput:
     diversity_loss: float
     diag: Dict[str, Any]
     final_shared: jnp.ndarray
+    # Pre-head states [b, s, d], set instead of `logits` when training: the loss
+    # projects the LM head per-chunk (chunked CE, #19) to avoid the full
+    # [b, s, vocab] f32 logit peak. None at inference, where `logits` is filled.
+    hidden: jnp.ndarray = None
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=4, rngs=None):

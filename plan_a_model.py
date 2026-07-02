@@ -116,7 +116,7 @@ class CausalRefiner(nnx.Module):
             # and diverge (the depth-8 collapse, ablation_results.md run 2).
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, pad_mask=None):
+    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False):
         depth = self.max_depth if depth is None else depth
 
         pad_bias = None
@@ -139,6 +139,10 @@ class CausalRefiner(nnx.Module):
                 z = z_new
 
         z = self.out_norm(z)
+        if return_hidden:
+            # Training path: let the loss project + score the LM head per-chunk
+            # (chunked CE, #19) instead of materializing full [b, s, vocab] logits.
+            return z.astype(self.dtype)
         embed_t = self.embed.embedding[...].astype(self.dtype).T
         logits = jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
         return logits
