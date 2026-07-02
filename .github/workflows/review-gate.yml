@@ -5,9 +5,12 @@ name: Review Gate
 # longer waits on. Runs the .claude/agents/code-reviewer.md review over the PR
 # diff and fails the check on a "block" verdict.
 #
-# Requires the ANTHROPIC_API_KEY repository secret. When the secret is absent
-# (forks, or not yet configured) the job skips gracefully and reports neutral —
-# the pytest CI job remains the hard gate either way.
+# Credentials: the CLAUDE_CODE_OAUTH_TOKEN repository secret (from a Claude
+# Pro/Max subscription — run `claude setup-token` locally and paste the result
+# into Settings → Secrets → Actions). An ANTHROPIC_API_KEY secret also works
+# as the pay-per-token alternative; the OAuth token wins when both exist.
+# When neither secret is set (forks, or not yet configured) the job skips
+# gracefully — the pytest CI job remains the hard gate either way.
 
 on:
   pull_request:
@@ -20,26 +23,41 @@ jobs:
     permissions:
       contents: read
     env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Check reviewer credentials
         id: key
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "cred=oauth" >> "$GITHUB_OUTPUT"
+          elif [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "cred=apikey" >> "$GITHUB_OUTPUT"
           else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ANTHROPIC_API_KEY secret not configured — review gate skipped."
+            echo "cred=none" >> "$GITHUB_OUTPUT"
+            echo "::notice::No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret — review gate skipped."
           fi
 
       - uses: actions/checkout@v4
-        if: steps.key.outputs.present == 'true'
+        if: steps.key.outputs.cred != 'none'
         with:
           # Full history so the reviewer can diff against origin/main.
           fetch-depth: 0
 
-      - name: Run the code-reviewer subagent
-        if: steps.key.outputs.present == 'true'
+      - name: Run the code-reviewer subagent (subscription token)
+        if: steps.key.outputs.cred == 'oauth'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read .claude/agents/code-reviewer.md and perform exactly the review it
+            describes over this PR's diff against origin/main, honoring its verdict
+            contract. When finished, write the verdict to the file review-verdict.json
+            in the repository root with this exact JSON shape:
+            {"verdict": "block" | "comment" | "pass", "findings": ["<file>:<line> — <finding> [severity: ...]", ...]}
+
+      - name: Run the code-reviewer subagent (API key)
+        if: steps.key.outputs.cred == 'apikey'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -51,7 +69,7 @@ jobs:
             {"verdict": "block" | "comment" | "pass", "findings": ["<file>:<line> — <finding> [severity: ...]", ...]}
 
       - name: Enforce verdict
-        if: steps.key.outputs.present == 'true'
+        if: steps.key.outputs.cred != 'none'
         run: |
           if [ ! -f review-verdict.json ]; then
             echo "::error::Reviewer produced no verdict file — failing closed."
