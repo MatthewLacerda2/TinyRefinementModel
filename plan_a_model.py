@@ -149,6 +149,6 @@ class CausalRefiner(nnx.Module):
                 z = z_new
 
         z = self.out_norm(z)
-        embed_t = self.embed.embedding.value.astype(self.dtype).T
+        embed_t = self.embed.embedding[...].astype(self.dtype).T
         logits = jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
         return logits

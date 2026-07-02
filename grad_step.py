@@ -69,7 +69,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    current_hunch = model.hunch_cache.value
+    current_hunch = model.hunch_cache[...]
     cleared_hunch = jnp.zeros_like(current_hunch)
     
     # After the step, carry the hunch forward UNLESS a document boundary was hit
@@ -79,7 +79,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         lambda: jax.lax.stop_gradient(current_hunch)
     )
     
-    model.hunch_cache.value = carried_hunch
+    model.hunch_cache[...] = carried_hunch
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))

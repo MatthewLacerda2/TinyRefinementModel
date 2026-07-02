@@ -14,7 +14,7 @@ machinery the trainer threads through degrades to honest no-ops:
   - the two training windows are independent (no carried state), so should_refresh
     is ignored — each window is a standalone causal LM prediction;
   - hunch_cache is a vestigial zero buffer, never read in the forward, kept only so
-    the trainer's `model.hunch_cache.value` bookkeeping writes stay valid.
+    the trainer's `model.hunch_cache[...]` bookkeeping writes stay valid.
 `max_steps` maps to the refinement depth (sampled per step in training, fixed at
 inference) — the one dial Plan A actually uses.
 """
