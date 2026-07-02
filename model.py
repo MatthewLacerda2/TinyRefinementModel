@@ -140,7 +140,7 @@ class UniversalReasoner(nnx.Module):
             else:
                 forget_val = jnp.zeros((batch_size,))
 
-            tau = jax.nn.softplus(raw_tau_param.value) + 1e-4
+            tau = jax.nn.softplus(raw_tau_param[...]) + 1e-4
 
             step_div = calculate_slot_stability_loss(new_shared, curr_shared, tau)
 
@@ -172,15 +172,15 @@ class UniversalReasoner(nnx.Module):
 
     def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
         batch_size = tokens.shape[0]
-        assert batch_size == self.hunch_cache.value.shape[0], (
+        assert batch_size == self.hunch_cache[...].shape[0], (
             f"Batch size {batch_size} does not match the hunch cache built for batch "
-            f"size {self.hunch_cache.value.shape[0]}; construct UniversalReasoner with "
+            f"size {self.hunch_cache[...].shape[0]}; construct UniversalReasoner with "
             f"batch_size={batch_size}."
         )
 
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens, training=training)
 
-        z_shared_base = jnp.tile(self.shared_token.value, (batch_size, 1, 1))
+        z_shared_base = jnp.tile(self.shared_token[...], (batch_size, 1, 1))
         
         def get_fresh():
             return z_shared_base
@@ -190,7 +190,7 @@ class UniversalReasoner(nnx.Module):
             # window's content must not enter here: these slots feed the decoder at
             # every position, so conditioning on the window mean (as this once did)
             # leaks future tokens into past predictions.
-            current_hunch = self.hunch_cache.value
+            current_hunch = self.hunch_cache[...]
             gate_in = jnp.concatenate([self.hunch_norm(current_hunch), self.hunch_norm(z_shared_base)], axis=-1)
             gate = jax.nn.sigmoid(self.hunch_gate(gate_in))
             return gate * current_hunch + (1.0 - gate) * z_shared_base
@@ -240,7 +240,7 @@ class UniversalReasoner(nnx.Module):
             # the activation that OOM'd dim960 (#16) — are never materialized.
             logits, hidden = None, normed
         else:
-            embed_t = self.embed.embedding.value.astype(COMPUTE_DTYPE).T
+            embed_t = self.embed.embedding[...].astype(COMPUTE_DTYPE).T
             logits = jnp.matmul(normed, embed_t, preferred_element_type=jnp.float32)
             hidden = None
 
@@ -260,11 +260,11 @@ class UniversalReasoner(nnx.Module):
         diag = {
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
-            'tau': jax.nn.softplus(self.raw_tau.value) + 1e-4,
+            'tau': jax.nn.softplus(self.raw_tau[...]) + 1e-4,
         }
 
         # Carry the final slot state forward as the next segment's hunch.
-        self.hunch_cache.value = final_shared
+        self.hunch_cache[...] = final_shared
 
         return ReasonerOutput(
             logits=logits,

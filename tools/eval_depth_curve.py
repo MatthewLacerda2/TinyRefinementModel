@@ -77,7 +77,7 @@ def main():
         window1 = batch[:, :MAX_SEQ_LEN]
         hard_mask = None
         for cond in conditions:
-            model.hunch_cache.value = jnp.zeros_like(model.hunch_cache.value)
+            model.hunch_cache[...] = jnp.zeros_like(model.hunch_cache[...])
             if cond == "fresh":
                 token_ce, mask = score_window2(model, batch, use_hunch=False)
             else:

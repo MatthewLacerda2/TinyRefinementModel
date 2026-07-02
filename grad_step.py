@@ -41,7 +41,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         # Training models return pre-head states (out.hidden), not full logits, so the
         # CE is scored chunk-by-chunk through the tied embedding (chunked_cross_entropy,
         # #19) — this is what keeps the [b, s, vocab] f32 logit peak off the card.
-        embedding = model.embed.embedding.value
+        embedding = model.embed.embedding[...]
 
         def ce_of(out, targets):
             return chunked_cross_entropy(out.hidden, embedding, targets, PAD_TOKEN_ID)
@@ -73,7 +73,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    current_hunch = model.hunch_cache.value
+    current_hunch = model.hunch_cache[...]
     cleared_hunch = jnp.zeros_like(current_hunch)
     
     # After the step, carry the hunch forward UNLESS a document boundary was hit
@@ -83,7 +83,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         lambda: jax.lax.stop_gradient(current_hunch)
     )
     
-    model.hunch_cache.value = carried_hunch
+    model.hunch_cache[...] = carried_hunch
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))

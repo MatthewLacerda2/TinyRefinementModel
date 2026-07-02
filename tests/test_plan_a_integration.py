@@ -55,7 +55,7 @@ def test_adapter_interface_and_zero_regularizers():
     assert float(out.forget_cost) == 0.0
     assert float(out.diversity_loss) == 0.0
     # Vestigial buffer exists for the trainer's bookkeeping writes.
-    assert m.hunch_cache.value.shape == (1, 1, DIM)
+    assert m.hunch_cache[...].shape == (1, 1, DIM)
 
 
 def test_grad_step_runs_and_reduces_loss():
