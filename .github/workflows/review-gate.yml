@@ -1,0 +1,68 @@
+name: Review Gate
+
+# The code-review subagent as a merge gate (#46): an adversarial second opinion
+# with fresh context, in place of the human reviewer the unattended loop no
+# longer waits on. Runs the .claude/agents/code-reviewer.md review over the PR
+# diff and fails the check on a "block" verdict.
+#
+# Requires the ANTHROPIC_API_KEY repository secret. When the secret is absent
+# (forks, or not yet configured) the job skips gracefully and reports neutral —
+# the pytest CI job remains the hard gate either way.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  review:
+    name: code-reviewer verdict
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Check reviewer credentials
+        id: key
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ANTHROPIC_API_KEY secret not configured — review gate skipped."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          # Full history so the reviewer can diff against origin/main.
+          fetch-depth: 0
+
+      - name: Run the code-reviewer subagent
+        if: steps.key.outputs.present == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Read .claude/agents/code-reviewer.md and perform exactly the review it
+            describes over this PR's diff against origin/main, honoring its verdict
+            contract. When finished, write the verdict to the file review-verdict.json
+            in the repository root with this exact JSON shape:
+            {"verdict": "block" | "comment" | "pass", "findings": ["<file>:<line> — <finding> [severity: ...]", ...]}
+
+      - name: Enforce verdict
+        if: steps.key.outputs.present == 'true'
+        run: |
+          if [ ! -f review-verdict.json ]; then
+            echo "::error::Reviewer produced no verdict file — failing closed."
+            exit 1
+          fi
+          echo "--- review-verdict.json ---"
+          cat review-verdict.json
+          verdict=$(python3 -c "import json; print(json.load(open('review-verdict.json'))['verdict'])")
+          case "$verdict" in
+            pass)    echo "Reviewer verdict: pass" ;;
+            comment) echo "::warning::Reviewer verdict: comment — non-blocking findings above." ;;
+            block)   echo "::error::Reviewer verdict: BLOCK — see findings above."; exit 1 ;;
+            *)       echo "::error::Unrecognized verdict '$verdict' — failing closed."; exit 1 ;;
+          esac
