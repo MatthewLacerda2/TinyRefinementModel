@@ -5,6 +5,7 @@ from flax import nnx, struct
 from typing import Dict, Any
 
 from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS, COMPUTE_DTYPE
+from rope import rope_tables, apply_rope
 
 @struct.dataclass
 class ScanStepOutput:
@@ -20,28 +21,17 @@ class ReasonerOutput:
     diag: Dict[str, Any]
     final_shared: jnp.ndarray
 
-def apply_rope(x, cos, sin):
-    x1, x2 = jnp.split(x, 2, axis=-1)
-    
-    x_complex = jax.lax.complex(x1, x2)
-    rope_complex = jax.lax.complex(cos, sin)
-    rotated = x_complex * rope_complex
-    
-    return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
-
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=4, rngs=None):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
 
-        inv_freq = 1.0 / (10000 ** (jnp.arange(0, self.head_dim, 2) / self.head_dim))
         # Extended to cover MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS positions
         # so that slot query positions can advance with each reasoning iteration
-        t = jnp.arange(MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS)
-        freqs = jnp.outer(t, inv_freq)
-        self.sin_cached = jnp.sin(freqs)
-        self.cos_cached = jnp.cos(freqs)
+        self.cos_cached, self.sin_cached = rope_tables(
+            MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS, self.head_dim
+        )
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=COMPUTE_DTYPE)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
