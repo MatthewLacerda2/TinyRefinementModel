@@ -111,14 +111,14 @@ class ValidationProbe:
             self._batches = self._load()
         if not self._batches:
             return None
-        saved_hunch = model.hunch_cache.value
+        saved_hunch = model.hunch_cache[...]
         total, count = 0.0, 0
         for batch in self._batches:
-            model.hunch_cache.value = jnp.zeros_like(saved_hunch)
+            model.hunch_cache[...] = jnp.zeros_like(saved_hunch)
             ce_sum, ce_count = _val_ce_sums(model, batch)
             total += float(ce_sum)
             count += int(ce_count)
-        model.hunch_cache.value = saved_hunch
+        model.hunch_cache[...] = saved_hunch
         return total / max(count, 1)
 
 
@@ -297,7 +297,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     f"⚠️ Non-finite loss/grad at micro-step {step} "
                     f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — skipping update."
                 )
-                model.hunch_cache.value = jnp.zeros_like(model.hunch_cache.value)
+                model.hunch_cache[...] = jnp.zeros_like(model.hunch_cache[...])
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
                     raise RuntimeError(
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
