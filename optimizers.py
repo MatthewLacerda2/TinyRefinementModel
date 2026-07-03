@@ -45,9 +45,12 @@ optimizer_chain = _make_chain(learning_schedule)
 
 
 def create_sft_optimizer(model, old_state=None):
-    """The SFT-phase optimizer: same chain at 10% LR. Pass `old_state` (moments
-    pulled to HOST first — see the #30 OOM note at the call sites) to preserve
-    momentum across the swap."""
+    """The SFT-phase optimizer: same chain at 10% LR. Pass `old_state` to
+    preserve momentum across the swap. VRAM note (#30): the mid-training call
+    site (trainer.train_loop) must stage the moments to HOST before calling —
+    building this optimizer allocates fresh full-size mu/nu on the GPU. The
+    startup resume path (start_training) may pass device state: nothing else
+    holds VRAM yet, so the transient double-state is harmless there."""
     print("📉 Recreating optimizer with LR reduced to 10% for SFT phase...")
 
     def sft_lr_schedule(step):

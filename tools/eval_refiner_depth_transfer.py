@@ -94,7 +94,7 @@ def load_domain_batches(source, num_batches, skip):
 @nnx.jit(static_argnames=["depth"])
 def _ce_sums(model, batch, depth):
     """Masked next-token CE sum + token count over both windows at a fixed depth —
-    mirrors trainer._val_ce_sums, but depth is the swept argument here."""
+    mirrors validation._val_ce_sums, but depth is the swept argument here."""
     seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
     seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
     out1 = model(seq1_in, max_steps=depth, training=False)
