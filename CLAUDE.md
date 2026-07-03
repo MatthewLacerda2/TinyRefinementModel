@@ -190,7 +190,7 @@ experiment (the arch behind the flag):
 | **Config (single source of truth)** | `config.py` — every architecture/training constant, the dtype policy, the arch selector |
 | **Model — live** | `plan_a_model.py` (CausalRefiner), `layers.py` |
 | **Model — control/graveyard** | `model.py` (UniversalReasoner) |
-| **Training loop** | `trainer.py` (+ `plan_a_trainer.py` adapter), `start_training.py` (entry), `grad_step.py`, `schedules.py` |
+| **Training loop** | `trainer.py` (loop + data pipeline; + `plan_a_trainer.py` adapter), `start_training.py` (entry), `grad_step.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
 | **Data** | `prefill.py` (tokenize corpus → `runs/data/`), `data_loaders.py`, `tools/data_curation/` |
 | **Persistence & run state** | `checkpoint_utils.py`, `run_tracker.py`, `metrics_logger.py`, `monitor.py` |
 | **Proof instrument** | `ablation_harness.py` — tiny toy-task depth ablations (parity / cumsum / state-tracking) at the *exact* arch we'd ship |

@@ -1,7 +1,7 @@
 """The in-loop validation probe: scores held-out data without touching training.
 
-Also serves as the import canary for trainer.py — a syntax or wiring error
-there would otherwise only surface at the next training launch.
+Also serves as the import canary for trainer.py and its split-out modules — a
+syntax or wiring error there would otherwise only surface at the next launch.
 """
 
 import jax.numpy as jnp
@@ -11,16 +11,19 @@ import pytest
 
 def test_trainer_imports():
     import trainer  # noqa: F401
+    import optimizers  # noqa: F401
+    import validation  # noqa: F401
 
 
 def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkeypatch):
     import trainer
+    import validation
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
-    monkeypatch.setattr(trainer, "VAL_BATCHES", 1)
+    monkeypatch.setattr(validation, "VAL_BATCHES", 1)
 
-    probe = trainer.ValidationProbe()
+    probe = validation.ValidationProbe(trainer.DATA_ROOT)
     sentinel = jnp.ones_like(tiny_model.hunch_cache[...]) * 0.123
     tiny_model.hunch_cache[...] = sentinel
 

@@ -14,9 +14,9 @@ import multiprocessing as mp
 
 from flax import nnx
 
+from optimizers import create_sft_optimizer
 from trainer import (
     init_model_and_optimizer,
-    create_sft_optimizer,
     setup_data_pipeline,
     train_loop,
 )

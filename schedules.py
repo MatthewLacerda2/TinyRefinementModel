@@ -41,6 +41,9 @@ CURRICULUM_STEPS = 10000.0
 # Endpoints over the (web, code, math) sources, in DataMixer source order.
 CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
 CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]
+# SFT-phase mixture over (chat, web, code, math) — chat-led with pretrain replay.
+# Single source of truth: the trainer builds its mixer AND prints from this list.
+SFT_MIX_WEIGHTS = [0.70, 0.15, 0.10, 0.05]
 
 def get_curriculum_weights(loader_step):
     step = float(loader_step)
