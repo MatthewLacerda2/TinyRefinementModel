@@ -31,10 +31,12 @@ r_k = (r_{k-1} * a_k + b_k) mod m                  (k = 1..K)
 
 - **Sub-result targets:** r_1 .. r_K (one per slot).
 - **Final target:** r_K, predicted at the last input position.
-- Composition of affine maps mod m is non-commutative and has no constant-depth
-  shortcut (the cumulative-product regime, same family as statetrack) — getting
-  r_K right genuinely requires the chain, and the chain decomposes exactly into
-  the K sub-results. Chance = 1/m.
+- Composition of affine maps mod m is non-commutative, so no *order-free*
+  shortcut exists (swapping pairs changes the answer) — getting r_K right
+  genuinely requires respecting the chain's order, and the chain decomposes
+  exactly into the K sub-results. Chance = 1/m. (No stronger no-constant-depth
+  claim: the affine group mod 7 is solvable, so shallow shortcut solutions can
+  exist in principle — the empirical controls are what carry the argument.)
 - Token values a (nonzero) and b share the vocab {0..m-1}; the model never sees
   r_k as an input token.
 

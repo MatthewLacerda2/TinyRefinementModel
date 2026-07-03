@@ -1,8 +1,8 @@
-# The supervised serial latent scratchpad beats both controls — order plus per-slot grades turn an unlearnable composition task into a solved one
+# The supervised serial latent scratchpad beats both controls — with identical parameters, slot order alone takes a composition task from near-chance to solved
 
 Status: toy-proof (win at the #38 gate; no LM-scale claim)
 Date: 2026-07-03
-Commit: claude/project-code-quality-5r6pbn-38 @ HEAD  Run: tiny-config ablation (synthetic, no runs/ id)  Measured with: `python scratchpad_harness.py --arms serial,parallel,depthonly --seeds 0,1,2 --K 4 --m 7 --steps 2500` (CPU, FORCE_F32_COMPUTE=1)
+Commit: 7b04d073f8009ccd59f6cbb1d3a6667a316e8927  Run: tiny-config ablation (synthetic, no runs/ id)  Measured with: `python scratchpad_harness.py --arms serial,parallel,depthonly --seeds 0,1,2 --K 4 --m 7 --steps 2500` (CPU, FORCE_F32_COMPUTE=1; independently re-run to identical numbers by the code-reviewer agent)
 
 ## Setup
 
@@ -51,9 +51,17 @@ Per-slot accuracies are the mechanism made visible:
 Parallel slots nail r₁ and r₂ (shallow token functions: r₁ = b₁,
 r₂ = b₁a₂ + b₂) then collapse to near-chance exactly where composition of a
 prior *latent* result becomes unavoidable. With the identical parameters, giving
-slot k read-access to slots < k carries the chain to the end. Depth-only at
-chance says undecomposed depth-4 recurrence cannot learn K=4 affine chains here
-at all — the win is not "the task was easy".
+slot k read-access to slots < k carries the chain to the end.
+
+**Reading the depth-only control precisely:** it sat at chance after 2500 steps
+with final-only supervision — so the win is not "the task was easy", and depth
+*without decomposition supervision* did not learn it in this budget. Note this
+control differs from serial in two ways (no slots AND no intermediate
+supervision), so it does not isolate slot structure against dense intermediate
+supervision on a plain refiner — statetrack shows a densely-supervised refiner
+CAN learn non-commutative composition. The clean one-variable claim is
+serial-vs-parallel; a "dense supervision, no slots" arm is the sharpening
+follow-up.
 
 ## Relation to prior work
 

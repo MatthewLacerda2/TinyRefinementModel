@@ -43,25 +43,31 @@ def test_slot_order_flow_is_the_one_variable():
     grade logits."""
     tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(1), 4)
 
-    def slot1_sum_wrt_slot0_embed(serial):
+    def slot_grad(serial, of_slot, wrt_row):
+        """grad of sum(slot_logits[:, of_slot]) w.r.t. slot_index embedding row."""
         model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
                               serial=serial, rngs=nnx.Rngs(0))
         graph, state = nnx.split(model)
 
-        def f(emb_row0):
+        def f(emb_row):
             st = jax.tree_util.tree_map(lambda x: x, state)  # shallow copy
             emb = st["slot_index"]["embedding"][...]
-            st["slot_index"]["embedding"][...] = emb.at[0].set(emb_row0)
+            st["slot_index"]["embedding"][...] = emb.at[wrt_row].set(emb_row)
             _, slot_logits = nnx.merge(graph, st)(tokens)
-            return jnp.sum(slot_logits[:, 1])
+            return jnp.sum(slot_logits[:, of_slot])
 
-        emb0 = nnx.state(model)["slot_index"]["embedding"][...][0]
-        return jax.grad(f)(emb0)
+        row = nnx.state(model)["slot_index"]["embedding"][...][wrt_row]
+        return float(jnp.abs(jax.grad(f)(row)).max())
 
-    g_serial = slot1_sum_wrt_slot0_embed(serial=True)
-    g_parallel = slot1_sum_wrt_slot0_embed(serial=False)
-    assert float(jnp.abs(g_serial).max()) > 0.0, "serial: slot 1 must depend on slot 0"
-    assert float(jnp.abs(g_parallel).max()) == 0.0, "parallel: slots must be independent"
+    assert slot_grad(serial=True, of_slot=1, wrt_row=0) > 0.0, \
+        "serial: slot 1 must depend on slot 0"
+    assert slot_grad(serial=False, of_slot=1, wrt_row=0) == 0.0, \
+        "parallel: slots must be independent"
+    # The reverse direction must NEVER flow, in either mode — an earlier slot
+    # depending on a later one would be a future-slot leak (guards refactors of
+    # the write loop; currently impossible by construction).
+    assert slot_grad(serial=True, of_slot=0, wrt_row=1) == 0.0, \
+        "serial: slot 0 must not depend on slot 1"
 
 
 def test_all_arms_train_and_beat_nothing_burns():
