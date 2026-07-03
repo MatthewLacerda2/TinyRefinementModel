@@ -21,6 +21,8 @@ from config import (
     MODEL_ARCH,
     REFINER_ENCODER_LAYERS,
     MAX_STEPS_LIMIT,
+    DATA_SEED,
+    MODEL_SEED,
     resolve_root,
 )
 from model import UniversalReasoner
@@ -155,12 +157,13 @@ def init_model_and_optimizer():
         from plan_a_trainer import RefinerForTraining
         print(f"🚀 Initializing Plan A CausalRefiner "
               f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
-        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(MODEL_SEED))
     else:
         print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(MODEL_SEED))
 
-    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters")
+    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
+          f"(MODEL_SEED={MODEL_SEED}, DATA_SEED={DATA_SEED})")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer
