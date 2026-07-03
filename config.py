@@ -69,6 +69,12 @@ PAD_TOKEN_ID = 50256
 # and updating VOCAB_SIZE/PAD_TOKEN_ID to match the new encoding.
 TOKENIZER_NAME = "r50k_base"
 
-# Seed for data-pipeline randomness (start-offset augmentation, mixture draws).
-# Recorded in run_metadata.json so runs are reproducible.
-DATA_SEED = 42
+# Seeds — env-overridable per run (#17: the seed-variance noise floor needs
+# same-config runs differing ONLY in seed). Both are recorded in
+# run_metadata.json so every run stays reproducible.
+#   DATA_SEED  — data-pipeline randomness (start-offset augmentation, mixture
+#                draws, per-step depth sampling).
+#   MODEL_SEED — parameter initialization (the nnx.Rngs the trainer builds
+#                the model with).
+DATA_SEED = int(os.environ.get("DATA_SEED", "42"))
+MODEL_SEED = int(os.environ.get("MODEL_SEED", "42"))

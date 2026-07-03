@@ -18,6 +18,7 @@ from config import (
     NUM_HEADS,
     NUM_GROUPS,
     DATA_SEED,
+    MODEL_SEED,
 )
 
 class RunTracker:
@@ -70,6 +71,7 @@ class RunTracker:
             "NUM_HEADS": NUM_HEADS,
             "NUM_GROUPS": NUM_GROUPS,
             "DATA_SEED": DATA_SEED,
+            "MODEL_SEED": MODEL_SEED,
         }
 
     def _check_compatibility(self, metadata_path):
