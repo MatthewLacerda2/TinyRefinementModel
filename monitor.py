@@ -14,7 +14,24 @@ class LossMonitor:
         # Step at which the SFT phase began; None while still pretraining.
         self.sft_start_step = None
 
+    def reset_for_new_phase(self, step):
+        """Forget the previous phase's plateau state so the new phase gets a
+        fresh patience window and fresh bests. The attribute set must stay
+        stable — checkpoint_utils serializes these fields by name."""
+        self.ce_history = []
+        self.best_ce = float("inf")
+        self.best_loss = float("inf")
+        self.best_avg_ce = float("inf")
+        self.last_improvement_step = step
+
     def push(self, step, ce_loss, total_loss):
+        """Record one logging-window observation.
+
+        Returns True when the windowed CE average has not improved for
+        `patience` steps — the plateau signal the trainer acts on (switch to
+        SFT, or halt if already there). Side effect: sets `is_new_best`, which
+        the trainer reads for best-CE checkpointing.
+        """
         self.ce_history.append(ce_loss)
         if len(self.ce_history) > self.window:
             self.ce_history.pop(0)
