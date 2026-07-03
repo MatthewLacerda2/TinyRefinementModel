@@ -1,7 +1,7 @@
 """The in-loop validation probe: scores held-out data without touching training.
 
-Also serves as the import canary for trainer.py — a syntax or wiring error
-there would otherwise only surface at the next training launch.
+Also serves as the import canary for trainer.py and its split-out modules — a
+syntax or wiring error there would otherwise only surface at the next launch.
 """
 
 import jax.numpy as jnp
@@ -11,24 +11,27 @@ import pytest
 
 def test_trainer_imports():
     import trainer  # noqa: F401
+    import optimizers  # noqa: F401
+    import validation  # noqa: F401
 
 
 def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkeypatch):
     import trainer
+    import validation
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
-    monkeypatch.setattr(trainer, "VAL_BATCHES", 1)
+    monkeypatch.setattr(validation, "VAL_BATCHES", 1)
 
-    probe = trainer.ValidationProbe()
-    sentinel = jnp.ones_like(tiny_model.hunch_cache.value) * 0.123
-    tiny_model.hunch_cache.value = sentinel
+    probe = validation.ValidationProbe(trainer.DATA_ROOT)
+    sentinel = jnp.ones_like(tiny_model.hunch_cache[...]) * 0.123
+    tiny_model.hunch_cache[...] = sentinel
 
     val_ce = probe.run(tiny_model)
 
     assert val_ce is not None and np.isfinite(val_ce), f"validation CE not finite: {val_ce}"
     assert 0.0 < val_ce < 20.0, f"validation CE out of any plausible range: {val_ce}"
     np.testing.assert_array_equal(
-        np.asarray(tiny_model.hunch_cache.value), np.asarray(sentinel),
+        np.asarray(tiny_model.hunch_cache[...]), np.asarray(sentinel),
         err_msg="validation perturbed the training stream's carried hunch",
     )

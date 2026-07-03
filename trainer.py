@@ -1,3 +1,7 @@
+"""The training loop and its data pipeline. The pieces the loop *uses* live in
+their own modules: held-out scoring in validation.py, the optimizer chains in
+optimizers.py, schedules and mixture policies in schedules.py."""
+
 import os
 import gc
 import time
@@ -6,7 +10,6 @@ import queue
 
 import jax
 import jax.numpy as jnp
-import optax
 from flax import nnx
 from dotenv import load_dotenv
 
@@ -16,23 +19,25 @@ from config import (
     BATCH_SIZE,
     ACCUMULATION_STEPS,
     LATENT_DIM,
-    MAX_SEQ_LEN,
-    PAD_TOKEN_ID,
     MODEL_ARCH,
     REFINER_ENCODER_LAYERS,
     MAX_STEPS_LIMIT,
+    DATA_SEED,
+    MODEL_SEED,
     resolve_root,
 )
 from model import UniversalReasoner
 from checkpoint_utils import save_checkpoint
 from grad_step import compute_grad_step, apply_grads
+from optimizers import optimizer_chain, create_sft_optimizer
 from schedules import (
-    learning_schedule,
-    weight_decay_schedule,
+    CURRICULUM_START_WEIGHTS,
+    SFT_MIX_WEIGHTS,
     get_curriculum_weights,
     get_average_curriculum_weights,
     sample_reasoning_depth,
 )
+from validation import ValidationProbe
 from metrics_logger import MetricsLogger
 from data_loaders import TextDataGenerator, DataMixer
 
@@ -44,21 +49,12 @@ PREFETCH_SIZE = 128
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
 
-# Held-out validation: the same fixed batches, scored the same deterministic way,
-# every VAL_EVERY_OPT_STEPS optimizer steps. Train CE cannot see overfitting or
-# data drift; this curve is the one decisions should read.
+# Cadences, in optimizer steps, both firing at the opt-step boundary — NOT
+# nested in the logging block (nesting would multiply the interval by
+# LOG_REAL_STEPS, the bug that hid the probe). The full-state checkpoint save
+# blocks the loop (wait_until_finished), so it must stay rare.
 VAL_EVERY_OPT_STEPS = 64
-VAL_BATCHES = 4
-VAL_FIXED_DEPTH = 4
-
-# Rolling-latest checkpoint cadence (optimizer steps). The full model+optimizer
-# save blocks the loop (wait_until_finished), so it fires far less often than
-# logging — at the opt-step boundary, NOT nested in the logging block (nesting
-# would multiply the interval by LOG_REAL_STEPS, the bug that hid the probe).
 CHECKPOINT_EVERY_OPT_STEPS = 64
-# Far past any plausible training consumption (an 8k-opt-step run consumes
-# under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
-VAL_SKIP_SAMPLES = 3_000_000
 
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 if DATA_ROOT:
@@ -66,84 +62,6 @@ if DATA_ROOT:
 else:
     print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
 
-
-@nnx.jit
-def _val_ce_sums(model, batch):
-    """Masked CE sums over both windows, mirroring the training segment structure
-    (window 1 fresh, window 2 on the carried hunch) at a fixed depth."""
-    seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
-    seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
-    out1 = model(seq1_in, max_steps=VAL_FIXED_DEPTH, training=False, should_refresh=True)
-    out2 = model(seq2_in, max_steps=VAL_FIXED_DEPTH, training=False, should_refresh=False)
-    total = jnp.array(0.0)
-    count = jnp.array(0)
-    for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
-        mask = targets != PAD_TOKEN_ID
-        ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
-        total += jnp.sum(ce * mask)
-        count += jnp.sum(mask)
-    return total, count
-
-
-class ValidationProbe:
-    """Loads VAL_BATCHES fixed held-out batches once, then scores them on demand.
-    Restores the training stream's carried hunch afterwards, so validating never
-    perturbs training."""
-
-    def __init__(self):
-        self._batches = None
-
-    def _load(self):
-        gen = TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu")
-        gen.skip_count = VAL_SKIP_SAMPLES
-        batches = []
-        while len(batches) < VAL_BATCHES:
-            batch, _ = gen.get_batch(BATCH_SIZE)
-            if batch is None:
-                break
-            batches.append(batch)
-        if not batches:
-            print("⚠️ Validation disabled: no held-out data available past the skip range.")
-        return batches
-
-    def run(self, model):
-        if self._batches is None:
-            self._batches = self._load()
-        if not self._batches:
-            return None
-        saved_hunch = model.hunch_cache.value
-        total, count = 0.0, 0
-        for batch in self._batches:
-            model.hunch_cache.value = jnp.zeros_like(saved_hunch)
-            ce_sum, ce_count = _val_ce_sums(model, batch)
-            total += float(ce_sum)
-            count += int(ce_count)
-        model.hunch_cache.value = saved_hunch
-        return total / max(count, 1)
-
-
-def weight_decay_mask(params):
-    return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
-
-optimizer_chain = optax.MultiSteps(
-    optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.adamw(
-            learning_rate=learning_schedule,
-            weight_decay=weight_decay_schedule,
-            mask=weight_decay_mask,
-            # Store Adam's first moment in bf16 (upcast to f32 for the update math).
-            # Storage-only, Turing-safe — tensor cores never see bf16. Frees ~2 bytes/
-            # param (~0.23GB at dim960), which is exactly what lets the dim960 / 138.7M
-            # model fit the 6GB card — it OOMs with f32 moments. The variance estimate
-            # (nu) stays f32: bf16 is too coarse near zero there. Verified sound by
-            # tools/bf16_mu_smoke.py (tracks an f32-mu run to 0.06% of loss).
-            mu_dtype=jnp.bfloat16,
-        ),
-    ),
-    every_k_schedule=ACCUMULATION_STEPS,
-    use_grad_mean=True
-)
 
 def _param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
@@ -155,42 +73,16 @@ def init_model_and_optimizer():
         from plan_a_trainer import RefinerForTraining
         print(f"🚀 Initializing Plan A CausalRefiner "
               f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
-        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(MODEL_SEED))
     else:
         print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(MODEL_SEED))
 
-    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters")
+    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
+          f"(MODEL_SEED={MODEL_SEED}, DATA_SEED={DATA_SEED})")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer
-
-def create_sft_optimizer(model, old_state=None):
-    print("📉 Recreating optimizer with LR reduced to 10% for SFT phase...")
-
-    def sft_lr_schedule(step):
-        return learning_schedule(step) * 0.1
-
-    sft_chain = optax.MultiSteps(
-        optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(
-                learning_rate=sft_lr_schedule,
-                weight_decay=weight_decay_schedule,
-                mask=weight_decay_mask,
-                mu_dtype=jnp.bfloat16,  # match the base optimizer (see init chain above)
-            ),
-        ),
-        every_k_schedule=ACCUMULATION_STEPS,
-        use_grad_mean=True
-    )
-
-    new_opt = nnx.Optimizer(model, sft_chain, wrt=nnx.Param)
-    if old_state is not None:
-        nnx.update(new_opt, old_state)
-
-    gc.collect()
-    return new_opt
 
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
     print("🚀 Initializing Dynamic Data Phases...")
@@ -199,8 +91,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
         TextDataGenerator(f"{DATA_ROOT}/pretrain/codeparrot"),
         TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
     ]
-    pretrain_weights = [0.85, 0.10, 0.05]
-    pretrain_mixer = DataMixer(pretrain_sources, pretrain_weights)
+    pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
     sft_sources = [
         TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat"),
@@ -208,8 +99,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
         pretrain_sources[1],
         pretrain_sources[2],
     ]
-    sft_weights = [0.70, 0.15, 0.10, 0.05]
-    sft_mixer = DataMixer(sft_sources, sft_weights)
+    sft_mixer = DataMixer(sft_sources, SFT_MIX_WEIGHTS)
 
     if start_step > 1:
         start_opt_step = start_step // ACCUMULATION_STEPS
@@ -228,7 +118,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
 
             # 2. Add SFT usage for all blended sources (Chat + Replay)
             total_sft_seen = (start_step - sft_start_step)
-            for gen, weight in zip(sft_sources, sft_weights):
+            for gen, weight in zip(sft_sources, SFT_MIX_WEIGHTS):
                 gen.skip_count += int(total_sft_seen * weight)
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
@@ -259,7 +149,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # (start_step == 1) appends to any existing CSV untouched.
     start_opt_step = start_step // ACCUMULATION_STEPS if start_step > 1 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
-    val_probe = ValidationProbe()
+    val_probe = ValidationProbe(DATA_ROOT)
     step = start_step
 
     accum_loss = 0.0
@@ -297,7 +187,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     f"⚠️ Non-finite loss/grad at micro-step {step} "
                     f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — skipping update."
                 )
-                model.hunch_cache.value = jnp.zeros_like(model.hunch_cache.value)
+                model.hunch_cache[...] = jnp.zeros_like(model.hunch_cache[...])
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
                     raise RuntimeError(
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
@@ -364,45 +254,39 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
                     )
                 else:
-                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | Weights (Chat/Web/Code/Math): [0.70, 0.15, 0.10, 0.05]")
+                    sft_w = " / ".join(f"{w:.2f}" for w in SFT_MIX_WEIGHTS)
+                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | Weights (Chat/Web/Code/Math): {sft_w}")
 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()
 
-                if monitor.push(opt_step, float(accum_token_loss), float(accum_loss)):
-                    if not sft_phase_event.is_set():
-                        sft_phase_event.set()
-                        monitor.sft_start_step = step
-
-                        # Pull the optimizer moments to host BEFORE building the SFT
-                        # optimizer. nnx.Optimizer eagerly allocates a fresh full-size
-                        # mu/nu on the GPU, so without this the old (GPU) state and the
-                        # new (GPU) state coexist for an instant — a ~2x optimizer-state
-                        # spike that OOM'd the 6GB card at the phase switch (#30).
-                        # device_get copies the moments to RAM, so the old GPU buffers
-                        # free on the del below and only one full optimizer state is
-                        # resident at the peak. Momentum is preserved: create_sft_
-                        # optimizer copies these host values into the new optimizer.
-                        old_state = jax.device_get(nnx.state(optimizer))
-                        del optimizer
-                        gc.collect()
-
-                        optimizer = create_sft_optimizer(model, old_state)
-                        del old_state
-                        gc.collect()
-
-                        print("\n" + "🔄"*30)
-                        print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
-                        print("🔄"*30 + "\n")
-
-                        monitor.ce_history = []
-                        monitor.best_ce = float("inf")
-                        monitor.best_loss = float("inf")
-                        monitor.best_avg_ce = float("inf")
-                        monitor.last_improvement_step = opt_step
-                    else:
+                plateaued = monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
+                if plateaued:
+                    if sft_phase_event.is_set():
                         print("🛑 Training halted: No improvement in CE during SFT phase.")
                         break
+
+                    print("\n" + "🔄"*30)
+                    print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
+                    print("🔄"*30 + "\n")
+                    sft_phase_event.set()
+                    monitor.sft_start_step = step
+
+                    # OOM-critical ordering (#30): pull the optimizer moments to
+                    # host, then free the old optimizer IN THIS SCOPE, before
+                    # nnx.Optimizer eagerly allocates the new full-size mu/nu on
+                    # the GPU — otherwise both states coexist for an instant, a
+                    # ~2x spike that OOM'd the 6GB card. (This block must stay
+                    # inline: a helper's `del` cannot release the loop's local
+                    # reference.) Momentum survives via the host copy.
+                    old_state = jax.device_get(nnx.state(optimizer))
+                    del optimizer
+                    gc.collect()
+                    optimizer = create_sft_optimizer(model, old_state)
+                    del old_state
+                    gc.collect()
+
+                    monitor.reset_for_new_phase(opt_step)
 
                 # Best-CE checkpoint: saved here where monitor.is_new_best is
                 # computed (over the windowed accumulators), in a sibling dir so

@@ -44,12 +44,18 @@ def test_adapter_interface_and_zero_regularizers():
     tokens = _fixed_batch()[:, :MAX_SEQ_LEN]
     out = m(tokens, max_steps=4, training=True, should_refresh=True)
 
-    assert out.logits.shape == (1, MAX_SEQ_LEN, VOCAB)
-    assert np.isfinite(np.asarray(out.logits)).all()
+    # Training returns pre-head states (logits=None); the loss does the chunked
+    # LM-head projection (#19). Inference still returns full logits (checked below).
+    assert out.logits is None
+    assert out.hidden.shape == (1, MAX_SEQ_LEN, DIM)
+    assert np.isfinite(np.asarray(out.hidden)).all()
+    infer_out = m(tokens, max_steps=4, training=False, should_refresh=True)
+    assert infer_out.logits.shape == (1, MAX_SEQ_LEN, VOCAB)
+    assert np.isfinite(np.asarray(infer_out.logits)).all()
     assert float(out.forget_cost) == 0.0
     assert float(out.diversity_loss) == 0.0
     # Vestigial buffer exists for the trainer's bookkeeping writes.
-    assert m.hunch_cache.value.shape == (1, 1, DIM)
+    assert m.hunch_cache[...].shape == (1, 1, DIM)
 
 
 def test_grad_step_runs_and_reduces_loss():

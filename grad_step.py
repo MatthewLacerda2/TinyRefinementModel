@@ -1,5 +1,4 @@
 import jax
-import optax
 from flax import nnx
 import jax.numpy as jnp
 
@@ -12,6 +11,7 @@ from schedules import (
     forget_lambda_schedule,
     diversity_lambda_schedule,
 )
+from losses import chunked_cross_entropy
 
 def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda):
     """Assembles the full training loss from both segments' outputs.
@@ -38,18 +38,22 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
     should_refresh = jnp.any(doc_boundary).squeeze()
 
     def loss_fn(model):
-        def compute_ce(logits, targets):
-            mask = targets != PAD_TOKEN_ID
-            return jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets) * mask) / jnp.sum(mask).clip(min=1)
+        # Training models return pre-head states (out.hidden), not full logits, so the
+        # CE is scored chunk-by-chunk through the tied embedding (chunked_cross_entropy,
+        # #19) — this is what keeps the [b, s, vocab] f32 logit peak off the card.
+        embedding = model.embed.embedding[...]
+
+        def ce_of(out, targets):
+            return chunked_cross_entropy(out.hidden, embedding, targets, PAD_TOKEN_ID)
 
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
         out1 = model(seq1_in, max_steps=max_steps, training=True, should_refresh=should_refresh)
-        ce1 = compute_ce(out1.logits, seq1_out)
-        
+        ce1 = ce_of(out1, seq1_out)
+
         out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
-        ce2 = compute_ce(out2.logits, seq2_out)
+        ce2 = ce_of(out2, seq2_out)
 
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
@@ -64,12 +68,12 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
             'seg1_ce': jax.lax.stop_gradient(ce1),
             'token_loss': jax.lax.stop_gradient(ce2),
         }
-        out2 = out2.replace(logits=None, diag=new_diag)
+        out2 = out2.replace(logits=None, hidden=None, diag=new_diag)
         return total_loss, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
     
-    current_hunch = model.hunch_cache.value
+    current_hunch = model.hunch_cache[...]
     cleared_hunch = jnp.zeros_like(current_hunch)
     
     # After the step, carry the hunch forward UNLESS a document boundary was hit
@@ -79,7 +83,7 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         lambda: jax.lax.stop_gradient(current_hunch)
     )
     
-    model.hunch_cache.value = carried_hunch
+    model.hunch_cache[...] = carried_hunch
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))

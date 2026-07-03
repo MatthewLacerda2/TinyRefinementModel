@@ -14,7 +14,7 @@ machinery the trainer threads through degrades to honest no-ops:
   - the two training windows are independent (no carried state), so should_refresh
     is ignored — each window is a standalone causal LM prediction;
   - hunch_cache is a vestigial zero buffer, never read in the forward, kept only so
-    the trainer's `model.hunch_cache.value` bookkeeping writes stay valid.
+    the trainer's `model.hunch_cache[...]` bookkeeping writes stay valid.
 `max_steps` maps to the refinement depth (sampled per step in training, fixed at
 inference) — the one dial Plan A actually uses.
 """
@@ -59,10 +59,25 @@ class RefinerForTraining(nnx.Module):
         # training / should_refresh are part of the baseline interface and have no
         # effect here (no dropout, no carried state) — accepted and ignored.
         pad_mask = tokens != self.pad_token_id
-        logits = self.refiner(tokens, depth=max_steps, pad_mask=pad_mask)
         zero = jnp.array(0.0)
         diag = {"temporal_drift": zero, "forget_density": zero, "tau": zero}
+        if training:
+            # Return pre-head states; the loss does the chunked LM-head projection
+            # (#19), avoiding the full [b, s, vocab] f32 logit peak.
+            hidden = self.refiner(tokens, depth=max_steps, pad_mask=pad_mask, return_hidden=True)
+            return ReasonerOutput(
+                logits=None, hidden=hidden, forget_cost=zero, diversity_loss=zero,
+                diag=diag, final_shared=None,
+            )
+        logits = self.refiner(tokens, depth=max_steps, pad_mask=pad_mask)
         return ReasonerOutput(
             logits=logits, forget_cost=zero, diversity_loss=zero,
             diag=diag, final_shared=None,
         )
+
+    @property
+    def embed(self):
+        # Uniform accessor so grad_step's chunked CE reaches the tied embedding the
+        # same way for both arches. A property (not a stored attribute) so nnx does
+        # not see a duplicate of the refiner's embedding in the param tree.
+        return self.refiner.embed

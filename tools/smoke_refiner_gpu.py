@@ -25,7 +25,7 @@ from flax import nnx
 from config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from grad_step import compute_grad_step, apply_grads
 from plan_a_trainer import RefinerForTraining
-from trainer import optimizer_chain
+from optimizers import optimizer_chain
 
 
 def main():

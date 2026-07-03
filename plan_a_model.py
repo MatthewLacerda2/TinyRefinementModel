@@ -6,7 +6,7 @@ only to positions <= t on every iteration, so depth refines the prediction with 
 future-token leak (contrast docs/findings/2026-06-13-cross-window-hunch-inert.md,
 where the loop could only reach the next window and the gradient killed it).
 
-Self-contained and fully parametrized (dim, vocab, heads, depth, seq) so the exact
+Config-free and fully parametrized (dim, vocab, heads, depth, seq) so the exact
 same architecture runs at tiny toy-task scale and at real scale — the ablation
 harness tests the thing we'd ship, not a stand-in. See docs/design/plan-a.md.
 """
@@ -15,17 +15,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-
-def _rope_tables(max_pos, head_dim):
-    inv_freq = 1.0 / (10000 ** (jnp.arange(0, head_dim, 2) / head_dim))
-    freqs = jnp.outer(jnp.arange(max_pos), inv_freq)
-    return jnp.cos(freqs), jnp.sin(freqs)
-
-
-def apply_rope(x, cos, sin):
-    x1, x2 = jnp.split(x, 2, axis=-1)
-    rotated = jax.lax.complex(x1, x2) * jax.lax.complex(cos, sin)
-    return jnp.concatenate([rotated.real, rotated.imag], axis=-1).astype(x.dtype)
+from rope import rope_tables, apply_rope
 
 
 class CausalAttention(nnx.Module):
@@ -42,7 +32,7 @@ class CausalAttention(nnx.Module):
         self.o = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
-        cos, sin = _rope_tables(max_pos, self.head_dim)
+        cos, sin = rope_tables(max_pos, self.head_dim)
         self.cos, self.sin = cos, sin
 
     def __call__(self, x, pad_bias=None):
@@ -126,7 +116,7 @@ class CausalRefiner(nnx.Module):
             # and diverge (the depth-8 collapse, ablation_results.md run 2).
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, pad_mask=None):
+    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False):
         depth = self.max_depth if depth is None else depth
 
         pad_bias = None
@@ -149,6 +139,10 @@ class CausalRefiner(nnx.Module):
                 z = z_new
 
         z = self.out_norm(z)
-        embed_t = self.embed.embedding.value.astype(self.dtype).T
+        if return_hidden:
+            # Training path: let the loss project + score the LM head per-chunk
+            # (chunked CE, #19) instead of materializing full [b, s, vocab] logits.
+            return z.astype(self.dtype)
+        embed_t = self.embed.embedding[...].astype(self.dtype).T
         logits = jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
         return logits
