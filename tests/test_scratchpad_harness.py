@@ -70,10 +70,50 @@ def test_slot_order_flow_is_the_one_variable():
         "serial: slot 0 must not depend on slot 1"
 
 
+def test_slotsonly_readout_cannot_see_token_states():
+    """#62 wiring guard, same style as the order-flow guard: the slots-only
+    readout must have exactly zero gradient from the token states it was
+    blinded to — otherwise the ablation isn't measuring what it claims —
+    while the tokens+slots readout must have a live token path."""
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(2), 4)
+
+    def token_grad_into_answer(read_tokens):
+        model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                              serial=True, read_tokens=read_tokens, rngs=nnx.Rngs(0))
+        h = model.embed(tokens)
+        for blk in model.encoder:
+            h = blk(h)
+        queries = model.slot_index(jnp.arange(K))[None].repeat(4, axis=0)
+        slots = []
+        for k in range(K):
+            ctx = jnp.concatenate([h] + slots, axis=1) if slots else h
+            slots.append(model.write_block(queries[:, k:k + 1], ctx))
+        slots = jnp.concatenate(slots, axis=1)
+        # Differentiate the answer w.r.t. the token states AT THE READOUT ONLY
+        # (slots held fixed): any nonzero grad is a direct token->answer path.
+        g = jax.grad(lambda hh: jnp.sum(model.readout(hh, slots)))(h)
+        return float(jnp.abs(g).max())
+
+    assert token_grad_into_answer(read_tokens=False) == 0.0, \
+        "slotsonly: the readout must be blind to token states"
+    assert token_grad_into_answer(read_tokens=True) > 0.0, \
+        "serial: the tokens+slots readout must actually read the tokens"
+
+
+def test_slotsonly_shares_the_serial_param_tree():
+    serial = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                           serial=True, read_tokens=True, rngs=nnx.Rngs(0))
+    blind = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                          serial=True, read_tokens=False, rngs=nnx.Rngs(0))
+    for sl, bl in zip(jax.tree_util.tree_leaves(nnx.state(serial, nnx.Param)),
+                      jax.tree_util.tree_leaves(nnx.state(blind, nnx.Param))):
+        np.testing.assert_array_equal(np.asarray(sl), np.asarray(bl))
+
+
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly"):
+    for arm in ("serial", "parallel", "depthonly", "slotsonly"):
         acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
                                               batch=64, n_pool=512, n_test=128, seed=0)
         assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
