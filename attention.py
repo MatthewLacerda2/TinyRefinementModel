@@ -8,8 +8,11 @@ probabilities for the backward; at seq 512 / depth 8 those transients dominate
 the compiled grad step (the 1.9 GiB peak mem_profile names, and what OOM'd the
 dim960 fit-test). Here one query block's [heads, block_q, s] scores exist at a
 time, and the backward saves NO probabilities — it recomputes each block from
-(q, k, v), flash-attention's memory story in pure XLA (no Ampere kernels, so it
-runs on the Turing card and the CPU test lane alike).
+(q, k, v). Memory-wise this is flash-attention's story in pure XLA (no Ampere
+kernels, so it runs on the Turing card and the CPU test lane alike); mechanically
+it is simpler: blocking is over QUERIES only, each block softmaxes over the full
+key axis in one shot, so there is no online-softmax / running log-sum-exp state
+to maintain — don't go hunting for it.
 
 Numerics match the stock path: scores accumulate in f32 (``preferred_element_
 type``), softmax runs in f32, the causal mask and additive pad bias apply to

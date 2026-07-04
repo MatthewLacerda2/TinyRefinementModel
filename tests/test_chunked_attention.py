@@ -6,6 +6,7 @@ CausalRefiner must preserve the no-future-leak invariant."""
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from flax import nnx
 
 from attention import chunked_causal_attention
@@ -69,6 +70,50 @@ def test_chunked_refiner_matches_stock_refiner():
     gc = jax.tree_util.tree_leaves(nnx.grad(loss)(chunked))
     for a, b in zip(gc, gs):
         np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-3, atol=1e-6)
+
+
+def test_chunked_refiner_multiblock_with_padding():
+    """Model-level parity where the chunked path actually crosses a block
+    boundary (seq 160 > DEFAULT_BLOCK_Q=128) AND threads a real pad mask —
+    the two conditions the small model tests above never exercise together."""
+    kw = dict(dim=32, vocab_size=17, num_heads=4, num_encoder_layers=1,
+              max_depth=2, max_seq_len=160)
+    stock = CausalRefiner(**kw, chunked_attention=False, rngs=nnx.Rngs(3))
+    chunked = CausalRefiner(**kw, chunked_attention=True, rngs=nnx.Rngs(3))
+
+    rng = np.random.default_rng(11)
+    tokens = jnp.asarray(rng.integers(0, 17, size=(2, 160)), jnp.int32)
+    pad_mask = jnp.asarray(np.arange(160) < 149)[None, :]          # last 11 padded
+    pad_mask = jnp.broadcast_to(pad_mask, (2, 160))
+
+    out_s = stock(tokens, depth=2, pad_mask=pad_mask)
+    out_c = chunked(tokens, depth=2, pad_mask=pad_mask)
+    np.testing.assert_allclose(np.asarray(out_c), np.asarray(out_s), rtol=1e-4, atol=1e-5)
+
+    def loss(m):
+        return jnp.mean(m(tokens, depth=2, pad_mask=pad_mask) ** 2)
+
+    for a, b in zip(jax.tree_util.tree_leaves(nnx.grad(loss)(chunked)),
+                    jax.tree_util.tree_leaves(nnx.grad(loss)(stock))):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-3, atol=1e-6)
+
+
+@pytest.mark.gpu
+def test_chunked_attention_f16_parity_gpu():
+    """Pin the PRODUCTION dtype path: on the GPU lane (RUN_TESTS_ON_GPU=1,
+    f16 compute) chunked and stock attention must agree within f16 headroom.
+    CPU CI skips this — the CPU lane forces f32 (see conftest)."""
+    s, block_q = 160, 128
+    rng = np.random.default_rng(23)
+    mk = lambda: jnp.asarray(rng.normal(size=(B, s, H, D)), jnp.float16)
+    q, k, v = mk(), mk(), mk()
+    pad_cols = jnp.broadcast_to(
+        jnp.where(jnp.arange(s) < s - 5, 0.0, -1e9)[None, :].astype(jnp.float32), (B, s))
+
+    out_c = chunked_causal_attention(q, k, v, pad_cols, block_q)
+    out_s = _stock(q, k, v, pad_cols)
+    assert np.isfinite(np.asarray(out_c)).all()
+    np.testing.assert_allclose(np.asarray(out_c), np.asarray(out_s), rtol=2e-2, atol=2e-3)
 
 
 def test_chunked_path_has_no_future_leak():
