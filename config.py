@@ -47,6 +47,11 @@ NUM_GROUPS = NUM_HEADS // 4
 # A refiner run has a different param tree, so it must start fresh (--new-run);
 # it cannot resume a reasoner checkpoint.
 MODEL_ARCH = os.environ.get("MODEL_ARCH", "reasoner")
+# Blockwise memory-lean attention for the refiner (#66): removes the O(seq²)
+# score/probability transients that dominate the grad-step peak (mem_profile).
+# Opt-in until the dim960 GPU fit-test + wall-clock bench pass on the box;
+# same math as stock attention up to float summation order.
+CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 # Plan A: number of causal encoder layers beneath the single shared refine block
 # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
 # near the reasoner baseline; init prints the actual count for both arches.

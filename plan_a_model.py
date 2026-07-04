@@ -15,15 +15,22 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from attention import chunked_causal_attention
 from rope import rope_tables, apply_rope
 
 
 class CausalAttention(nnx.Module):
-    """Multi-head self-attention, RoPE, causal mask folded into an additive bias."""
+    """Multi-head self-attention, RoPE, causal mask folded into an additive bias.
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32):
+    chunked=True swaps the stock dot_product_attention for the blockwise
+    memory-lean path (attention.py, #66): same math up to float summation
+    order, but no [s, s] score/probability tensor is ever materialized or
+    saved for the backward — the O(seq²) activation wall goes away."""
+
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, chunked=False):
         assert dim % num_heads == 0, "dim must divide num_heads"
         self.num_heads = num_heads
+        self.chunked = chunked
         self.head_dim = dim // num_heads
         assert self.head_dim % 2 == 0, "head_dim must be even for RoPE"
         self.q = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
@@ -46,27 +53,34 @@ class CausalAttention(nnx.Module):
         q = apply_rope(q, cos, sin)
         k = apply_rope(k, cos, sin)
 
-        pos = jnp.arange(s)
-        causal = pos[:, None] >= pos[None, :]                       # [s, s], True = allowed
-        bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]       # [1, 1, s, s]
-        if pad_bias is not None:
-            bias = bias + pad_bias                                  # pad_bias [b, 1, 1, s]
-
         # q_norm/k_norm run in f32 for stability, so q/k come out f32 while v is in
         # the compute dtype. Cast q/k back so all three match (dot_product_attention
         # requires it) and attention takes the tensor-core path. No-op in f32 (CPU /
         # toy harness); the real-scale f16 run needs it.
         q = q.astype(x.dtype)
         k = k.astype(x.dtype)
-        out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
+
+        if self.chunked:
+            # Blockwise path (#66): causal mask built per query block inside the
+            # scan; only the key-padding bias is passed, as additive [b, s].
+            pad_cols = (pad_bias[:, 0, 0, :] if pad_bias is not None
+                        else jnp.zeros((b, s), jnp.float32))
+            out = chunked_causal_attention(q, k, v, pad_cols)
+        else:
+            pos = jnp.arange(s)
+            causal = pos[:, None] >= pos[None, :]                   # [s, s], True = allowed
+            bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
+            if pad_bias is not None:
+                bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
+            out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
         return self.o(out.reshape(b, s, d))
 
 
 class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32):
-        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, chunked_attention=False):
+        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, chunked=chunked_attention)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         hidden = ((int(8 * dim / 3) + 63) // 64) * 64
@@ -90,7 +104,8 @@ class CausalRefiner(nnx.Module):
     """
 
     def __init__(self, *, dim, vocab_size, num_heads=4, num_encoder_layers=2,
-                 max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0, rngs, dtype=jnp.float32):
+                 max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0,
+                 chunked_attention=False, rngs, dtype=jnp.float32):
         self.dim = dim
         self.vocab_size = vocab_size
         self.max_depth = max_depth
@@ -101,9 +116,11 @@ class CausalRefiner(nnx.Module):
         self.time_embed = nnx.Embed(max_depth + 1, dim, rngs=rngs, dtype=dtype)
 
         self.encoder = nnx.List([
-            Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
+            Block(dim, num_heads, max_seq_len, rngs, dtype, chunked_attention=chunked_attention)
+            for _ in range(num_encoder_layers)
         ])
-        self.refine_block = Block(dim, num_heads, max_seq_len, rngs, dtype)  # shared, looped
+        self.refine_block = Block(dim, num_heads, max_seq_len, rngs, dtype,
+                                  chunked_attention=chunked_attention)  # shared, looped
 
         self.time_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
