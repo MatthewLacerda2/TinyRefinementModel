@@ -9,10 +9,20 @@ import os
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from config import LATENT_DIM, BATCH_SIZE, resolve_root
+from config import LATENT_DIM, BATCH_SIZE, MODEL_ARCH, resolve_root
 from model import UniversalReasoner
 from data_loaders import TextDataGenerator
 from checkpoint_utils import discover_latest_checkpoint_run
+
+
+def build_model():
+    """Fresh model matching MODEL_ARCH. The two arches have different param
+    trees, so a restore must build the same arch the checkpoint was trained as
+    (select it at launch, e.g. MODEL_ARCH=refiner)."""
+    if MODEL_ARCH == "refiner":
+        from plan_a_trainer import RefinerForTraining
+        return RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    return UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
 
 
 def restore_model(checkpoint_path=None):
@@ -24,7 +34,7 @@ def restore_model(checkpoint_path=None):
         print(f"🔎 Using latest checkpointed run: {run_id}")
     checkpoint_path = os.path.abspath(checkpoint_path)
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+    model = build_model()
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=("model", "optimizer", "monitor_state", "step"),

@@ -26,7 +26,7 @@ import optax
 from flax import nnx
 from dotenv import load_dotenv
 
-from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, PAD_TOKEN_ID
+from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, MODEL_ARCH, PAD_TOKEN_ID
 
 load_dotenv()
 
@@ -58,6 +58,12 @@ def main():
     parser.add_argument("--skip", type=int, default=3_000_000, help="samples to skip so eval data is past the trained range")
     parser.add_argument("--source", type=str, default="pretrain/fineweb-edu", help="data subdirectory under DATA_ROOT")
     args = parser.parse_args()
+
+    if MODEL_ARCH == "refiner":
+        raise SystemExit(
+            "eval_depth_curve probes the reasoner's cross-window hunch; the refiner has none "
+            "(its hunch_cache is a vestigial zero buffer). Use tools/eval_refiner_depth_transfer.py instead."
+        )
 
     model, ckpt_step = restore_model(args.checkpoint_path)
     batches = load_eval_batches(args.source, args.batches, args.skip)
