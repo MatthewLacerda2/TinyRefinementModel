@@ -7,6 +7,21 @@ Everything here must be reproducible from what the entry records: the commit has
 the run id, and the measurement command. If a claim can't be traced to those three
 things, it doesn't go in this folder.
 
+## Entries
+
+- `2026-06-11-slot-future-leak.md` — latent-scratchpad memory slots leaked future tokens into past predictions
+- `2026-06-13-cross-window-hunch-inert.md` — the cross-window "hunch" gives no next-window benefit (graveyard)
+- `2026-06-13-plan-a-depth-recurrence-works.md` — Plan A depth recurrence earns its compute on state-tracking (#16)
+- `2026-06-14-plan-a-integrated-into-trainer.md` — CausalRefiner integrated into the production trainer
+- `2026-06-16-plan-a-depth-ablation.md` — Plan A depth ablation on the toy tasks
+- `2026-06-18-plan-a-depth-transfer.md` — Plan A depth survives LM pretraining, exploited better than from scratch
+- `2026-06-19-plan-a-depth-dense-sweep.md` — dense sweep corrects the d8 read: depth plateaus by ~d6
+- `2026-07-03-serial-scratchpad-beats-controls.md` — #38: graded serial slots beat both controls, order is the variable
+- `2026-07-03-weight-tying-memorization-null.md` — weight-tying memorization/generalization trade: null both ways
+- `2026-07-04-gpt2-yardstick-calibrated.md` — the GPT-2-small yardstick reproduces the reference reading (#48)
+- `2026-07-04-slots-only-readout-compression-real.md` — #62: a readout blinded to tokens stays within noise; compression real
+- `2026-07-04-final-only-supervision-decomposition-is-taught.md` — #67: without the per-slot grade the scratchpad sits at chance; the decomposition is taught, not emergent
+
 ## Entry template
 
 ```markdown
