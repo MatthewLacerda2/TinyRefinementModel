@@ -10,6 +10,11 @@ Three arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               matched control: exactly one variable removed.
   depthonly — CausalRefiner at depth K, final-answer supervision only. The
               is-it-just-depth control.
+  slotsonly — serial arm, but the answer readout sees ONLY the slots (tokens
+              removed from its context; identical parameters again). The #62
+              compression probe: if the slots really carry the computation, a
+              readout blinded to the tokens costs nothing; if accuracy
+              collapses, the readout was secretly re-reading the problem.
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
@@ -91,14 +96,17 @@ class ScratchpadNet(nnx.Module):
     serial=True:  slot k's write context is tokens + slots 1..k-1 (order by
                   construction; each slot written exactly once, then frozen).
     serial=False: all K slots written in ONE call, context is tokens only.
-    Both modes share the identical parameter tree — `serial` only changes the
-    data flow, which is what makes serial-vs-parallel a one-variable ablation.
+    read_tokens=False: the answer readout's context is the slots alone — token
+                  states never reach it (#62).
+    All modes share the identical parameter tree — the flags only change the
+    data flow, which is what makes each comparison a one-variable ablation.
     """
 
     def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
-                 max_seq_len=64, serial=True, rngs, dtype=jnp.float32):
+                 max_seq_len=64, serial=True, read_tokens=True, rngs, dtype=jnp.float32):
         self.num_slots = num_slots
         self.serial = serial
+        self.read_tokens = read_tokens
         self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
@@ -129,10 +137,16 @@ class ScratchpadNet(nnx.Module):
             slots = self.write_block(queries, h)                            # one step, tokens only
 
         slot_logits = self.slot_readout(slots)                              # [B, K, m]
+        return self.readout(h, slots), slot_logits
+
+    def readout(self, h, slots):
+        """Answer logits from the readout context. A separate method so the #62
+        wiring guard can probe it directly: with read_tokens=False the token
+        states must be unable to influence the answer except through slots."""
+        bsz = h.shape[0]
+        ctx = jnp.concatenate([h, slots], axis=1) if self.read_tokens else slots
         aq = jnp.broadcast_to(self.answer_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
-        a = self.read_block(aq, jnp.concatenate([h, slots], axis=1))
-        answer_logits = self.answer_head(a)[:, 0]                           # [B, m]
-        return answer_logits, slot_logits
+        return self.answer_head(self.read_block(aq, ctx))[:, 0]            # [B, m]
 
 
 def n_params(model):
@@ -154,7 +168,8 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
     else:
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
-                              serial=(arm == "serial"), rngs=nnx.Rngs(seed))
+                              serial=(arm in ("serial", "slotsonly")),
+                              read_tokens=(arm != "slotsonly"), rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
     def losses(mdl, tok, sub):
@@ -197,7 +212,8 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arms", default="serial,parallel,depthonly")
+    ap.add_argument("--arms", default="serial,parallel,depthonly",
+                    help="any of serial,parallel,depthonly,slotsonly (#62)")
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--K", type=int, default=4, help="number of chained sub-steps = number of slots")
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")
