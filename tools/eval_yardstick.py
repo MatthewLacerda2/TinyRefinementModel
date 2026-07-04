@@ -36,7 +36,7 @@ from flax import nnx
 from dotenv import load_dotenv
 
 from config import BATCH_SIZE, MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME, MODEL_ARCH
-from tools.common import restore_model, restore_refiner
+from tools.common import restore_reasoner, restore_refiner
 from tools.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
@@ -111,7 +111,7 @@ def main():
         # BATCH_SIZE; its forward asserts on any other leading dim.
         print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {BATCH_SIZE}.")
         args.batch = BATCH_SIZE
-    restore = {"reasoner": restore_model, "refiner": restore_refiner}[args.arch]
+    restore = {"reasoner": restore_reasoner, "refiner": restore_refiner}[args.arch]
     model, step = restore(args.checkpoint_path)
 
     path = args.data_path or fetch_lambada()

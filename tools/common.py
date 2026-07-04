@@ -9,7 +9,7 @@ import os
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from config import LATENT_DIM, BATCH_SIZE, resolve_root
+from config import LATENT_DIM, BATCH_SIZE, MODEL_ARCH, resolve_root
 from model import UniversalReasoner
 from data_loaders import TextDataGenerator
 from checkpoint_utils import discover_latest_checkpoint_run
@@ -40,8 +40,25 @@ def _restore_into(model, checkpoint_path):
     return model, latest
 
 
+def build_model():
+    """Fresh skeleton matching MODEL_ARCH. The two arches have different param
+    trees, so a restore must build the same arch the checkpoint was trained as
+    (select it at launch, e.g. MODEL_ARCH=refiner)."""
+    if MODEL_ARCH == "refiner":
+        from plan_a_trainer import RefinerForTraining
+        return RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    return UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
+
+
 def restore_model(checkpoint_path=None):
-    """Model-only restore from a checkpoint dir, defaulting to the latest run's."""
+    """Model-only restore from a checkpoint dir, defaulting to the latest run's.
+    Builds the skeleton per MODEL_ARCH; use restore_reasoner/restore_refiner to
+    pin an arch explicitly (e.g. eval_yardstick's --arch override)."""
+    return _restore_into(build_model(), checkpoint_path)
+
+
+def restore_reasoner(checkpoint_path=None):
+    """Reasoner restore regardless of MODEL_ARCH, for explicit --arch overrides."""
     return _restore_into(UniversalReasoner(LATENT_DIM, nnx.Rngs(42)), checkpoint_path)
 
 
