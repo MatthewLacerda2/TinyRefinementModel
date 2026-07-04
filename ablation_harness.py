@@ -140,8 +140,8 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
-              batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, n_pool=32768, n_test=4096,
-              eval_batch=256, train_seq=SEQ, test_seq=None):
+              batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
+              n_pool=32768, n_test=4096, eval_batch=256, train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
     # trains on length train_seq and is evaluated on longer sequences, so it must
     # use RoPE positions it never saw in training. test_seq=None -> same length.
@@ -168,12 +168,18 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
+    # Truncated backprop (#64): grad_last=j backprops through only the last j
+    # refinement iterations (refiner arm only — vanilla has no recurrence to cut).
+    # Training-only; eval has no backward pass, so it is untouched. grad_last is
+    # closed over, so it is static at trace time like `depth`.
+    model_kwargs = {} if arch == "vanilla" else {"grad_last": grad_last}
+
     @nnx.jit(static_argnames=["depth"])
     def step(model, opt, key, inp_all, tgt_all, mask_all, depth):
         idx = jax.random.randint(key, (batch,), 0, inp_all.shape[0])
         inp, tgt, mask = inp_all[idx], tgt_all[idx], mask_all[idx]
         def loss_fn(m):
-            logits = m(inp, depth=depth)
+            logits = m(inp, depth=depth, **model_kwargs)
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt)
             return jnp.sum(ce * mask) / jnp.sum(mask)
         loss, grads = nnx.value_and_grad(loss_fn)(model)
@@ -218,6 +224,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--gate-bias", type=float, default=0.0,
                     help="init bias of the update gate; negative = retention-biased (stabilizes deep recurrence). refiner-only.")
+    ap.add_argument("--grad-last", type=int, default=None,
+                    help="backprop through only the last J refinement iterations (truncated backprop, #64); default = full backprop. refiner-only.")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--train-seq", type=int, default=SEQ)
     ap.add_argument("--test-seq", type=int, default=None,
@@ -235,14 +243,15 @@ def main():
     depths = [int(d) for d in args.depths.split(",")]
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
         t0 = time.time()
         acc, ce, n_params = train_one(task_fn, vocab, d, arch=args.arch, dim=args.dim,
                                       steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
-                                      lr=args.lr, train_seq=args.train_seq, test_seq=test_seq)
+                                      grad_last=args.grad_last, lr=args.lr,
+                                      train_seq=args.train_seq, test_seq=test_seq)
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
 

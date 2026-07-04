@@ -71,6 +71,40 @@ def test_overfit_single_batch():
     assert last < 0.15 * first, f"failed to overfit: {first:.3f} -> {last:.3f}"
 
 
+@pytest.mark.parametrize("grad_last", [1, 2])
+def test_truncated_backprop_gradient_routing(grad_last):
+    """Truncated backprop through depth (#64): grad_last=j must (a) leave the
+    forward pass numerically unchanged — the cut computes z_enc + (z - z_enc),
+    which only re-associates float addition, so equal up to ~1e-6, not bit-exact —
+    (b) zero the gradient of every time-embedding row used before the cut (those
+    steps live inside the detached prefix), (c) keep a nonzero gradient on the
+    last j rows and on the encoder (the identity bypass)."""
+    depth = 8
+    m = _tiny()
+    tok = jax.random.randint(jax.random.PRNGKey(3), (2, 16), 0, 37)
+    tgt = jax.random.randint(jax.random.PRNGKey(4), (2, 16), 0, 37)
+
+    def loss(mm, gl):
+        lg = mm(tok, depth=depth, grad_last=gl)
+        return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=lg, labels=tgt))
+
+    full = np.asarray(m(tok, depth=depth))
+    trunc = np.asarray(m(tok, depth=depth, grad_last=grad_last))
+    np.testing.assert_allclose(trunc, full, atol=1e-5, rtol=0,
+                               err_msg="stop_gradient changed the forward pass")
+
+    grads = nnx.grad(loss)(m, grad_last)
+    t_grad = np.asarray(grads["time_embed"]["embedding"][...])
+    cut = depth - grad_last
+    pre_norm = np.abs(t_grad[:cut]).max()
+    post_norm = np.abs(t_grad[cut:depth]).max()
+    assert pre_norm == 0.0, f"time-embed rows before the cut got gradient ({pre_norm})"
+    assert post_norm > 0.0, "time-embed rows after the cut got no gradient"
+
+    enc_norm = max(float(jnp.abs(x).max()) for x in jax.tree_util.tree_leaves(grads["encoder"]))
+    assert enc_norm > 0.0, "encoder lost its gradient path under truncated backprop"
+
+
 def test_depth_is_static_and_varies_output():
     """Different depths produce different logits (the loop actually does something)."""
     m = _tiny()
