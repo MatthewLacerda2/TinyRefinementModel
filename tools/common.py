@@ -15,8 +15,8 @@ from data_loaders import TextDataGenerator
 from checkpoint_utils import discover_latest_checkpoint_run
 
 
-def restore_model(checkpoint_path=None):
-    """Model-only restore from a checkpoint dir, defaulting to the latest run's."""
+def _restore_into(model, checkpoint_path):
+    """Model-only Orbax restore into an already-built model skeleton."""
     if checkpoint_path is None:
         checkpoint_path, run_id = discover_latest_checkpoint_run()
         if checkpoint_path is None:
@@ -24,7 +24,6 @@ def restore_model(checkpoint_path=None):
         print(f"🔎 Using latest checkpointed run: {run_id}")
     checkpoint_path = os.path.abspath(checkpoint_path)
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(42))
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=("model", "optimizer", "monitor_state", "step"),
@@ -39,6 +38,20 @@ def restore_model(checkpoint_path=None):
     )
     nnx.update(model, restored["model"])
     return model, latest
+
+
+def restore_model(checkpoint_path=None):
+    """Model-only restore from a checkpoint dir, defaulting to the latest run's."""
+    return _restore_into(UniversalReasoner(LATENT_DIM, nnx.Rngs(42)), checkpoint_path)
+
+
+def restore_refiner(checkpoint_path=None):
+    """Refiner restore into the production wrapper (RefinerForTraining), so the
+    checkpoint's saved 'model' state loads with matching structure. Imported
+    lazily: reasoner-only tools shouldn't pay for the Plan A import."""
+    from plan_a_trainer import RefinerForTraining
+
+    return _restore_into(RefinerForTraining(LATENT_DIM, nnx.Rngs(42)), checkpoint_path)
 
 
 def load_eval_batches(source="pretrain/fineweb-edu", num_batches=16, skip=3_000_000):
