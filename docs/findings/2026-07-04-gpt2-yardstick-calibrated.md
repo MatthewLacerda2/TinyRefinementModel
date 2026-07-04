@@ -2,7 +2,7 @@
 
 Status: confirmed
 Date: 2026-07-04
-Commit: TBD  Run: — (instrument calibration, no training run)  Measured with: `PYTHONPATH=. python tools/calibrate_yardstick_gpt2.py`
+Commit: fec1567  Run: — (instrument calibration, no training run)  Measured with: `PYTHONPATH=. python tools/calibrate_yardstick_gpt2.py`
 
 ## Setup
 
@@ -22,8 +22,13 @@ core, on the full test set (CPU, torch).
 
 | metric | this instrument (gpt2 124M) | lm-eval-harness reference | delta |
 |---|---|---|---|
-| LAMBADA last-word acc | TBD | 0.3256 | TBD |
-| LAMBADA ppl | TBD | 40.06 | TBD |
+| LAMBADA last-word acc | **0.3256** | 0.3256 | +0.0000 |
+| LAMBADA ppl | **40.06** | 40.06 | −0.00 |
+
+Full 5153-example set, mean 1.28 target tokens/example. The instrument
+reproduces the published reference to every digit lm-eval reports — the
+protocol (split, tokenization, greedy match, per-word ppl) is byte-equivalent,
+not merely close.
 
 A sanity floor from the other direction: a random-init refiner reads
 acc 0.0000 / ppl ≈ 4.1e5 through the same pipeline — the instrument separates

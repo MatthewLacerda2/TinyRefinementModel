@@ -43,13 +43,14 @@ LAMBADA_SHA256 = "4aa8d02cd17c719165fc8a7887fddd641f43fcafa4b1c806ca8abc31fabdb2
 LAMBADA_CACHE = "runs/data/eval/lambada_test.jsonl"
 
 # The like-for-like bar: GPT-2-small (124M) measured by THIS instrument
-# (tools/calibrate_yardstick_gpt2.py on the full 5153-example set). External
-# cross-check: lm-eval-harness reports acc 0.3256 / ppl 40.06 for gpt2 on
-# lambada_openai under the same greedy, unfiltered protocol.
+# (tools/calibrate_yardstick_gpt2.py, full 5153-example set, 2026-07-04):
+# acc 0.3256 / ppl 40.06 — matching lm-eval-harness's gpt2 lambada_openai
+# reading to every published digit (delta 0.0000 / -0.00).
+# Findings: docs/findings/2026-07-04-gpt2-yardstick-calibrated.md.
 GPT2_SMALL_REFERENCE = {
     "lambada_acc": 0.3256,
     "lambada_ppl": 40.06,
-    "source": "lm-eval-harness lambada_openai, gpt2 (124M); pending in-repo calibration",
+    "source": "calibrated in-repo on HF gpt2 (124M), 2026-07-04; exact match to lm-eval-harness lambada_openai",
 }
 
 
