@@ -134,7 +134,7 @@ class CausalRefiner(nnx.Module):
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None):
+                 grad_last=None, islands=False, return_all_iters=False):
         depth = self.max_depth if depth is None else depth
 
         pad_bias = None
@@ -154,11 +154,22 @@ class CausalRefiner(nnx.Module):
         # encoder output; the encoder itself keeps an identity gradient path, since
         # a full detach would leave it with no training signal at all.
         assert grad_last is None or grad_last >= 1, "grad_last must be >= 1 (or None for full backprop)"
+        assert not (islands and grad_last is not None), "islands and grad_last are different cuts — pick one"
         z_enc = z
         cut = None if grad_last is None else depth - grad_last
 
+        # islands (#75): cut the trajectory gradient at EVERY pass boundary, so
+        # each iteration is graded only by its own loss (pair with per-pass
+        # supervision — with a final-only loss this is just grad_last=1). Same
+        # deviation-only detach as grad_last: the encoder keeps its identity path.
+        # return_all_iters (#75): also return every pass's logits (toy scale only
+        # — [depth, b, s, vocab] is cheap here, unaffordable at real vocab) plus
+        # each pass's mean gate openness, for per-pass supervision and readouts.
+        all_z, gate_means = [], []
         for step in range(depth):
-            if cut is not None and step == cut and cut > 0:
+            if islands and step > 0:
+                z = z_enc + jax.lax.stop_gradient(z - z_enc)
+            elif cut is not None and step == cut and cut > 0:
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
             t_signal = self.time_embed(jnp.asarray(step))
             z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
@@ -166,8 +177,19 @@ class CausalRefiner(nnx.Module):
             if self.use_gate:
                 g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))
                 z = g * z_new + (1.0 - g) * z
+                gate_means.append(jnp.mean(g))
             else:
                 z = z_new
+            if return_all_iters:
+                all_z.append(z)
+
+        if return_all_iters:
+            z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
+            embed_t = self.embed.embedding[...].astype(self.dtype).T
+            logits_all = jnp.matmul(z_all.astype(self.dtype), embed_t,
+                                    preferred_element_type=jnp.float32)
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            return logits_all, gates
 
         z = self.out_norm(z)
         if return_hidden:
