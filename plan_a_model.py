@@ -133,7 +133,8 @@ class CausalRefiner(nnx.Module):
             # and diverge (the depth-8 collapse, ablation_results.md run 2).
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False):
+    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
+                 grad_last=None):
         depth = self.max_depth if depth is None else depth
 
         pad_bias = None
@@ -145,7 +146,20 @@ class CausalRefiner(nnx.Module):
         for blk in self.encoder:
             z = blk(z, pad_bias)
 
+        # Truncated backprop through the refinement depth (#64): with grad_last=j,
+        # gradient flows through only the last j refinement iterations — the
+        # trajectory before the cut runs forward-only, so its activations need not
+        # be kept for the backward (~O(1) activation memory in depth instead of
+        # O(depth)). The cut detaches only the loop state's *deviation* from the
+        # encoder output; the encoder itself keeps an identity gradient path, since
+        # a full detach would leave it with no training signal at all.
+        assert grad_last is None or grad_last >= 1, "grad_last must be >= 1 (or None for full backprop)"
+        z_enc = z
+        cut = None if grad_last is None else depth - grad_last
+
         for step in range(depth):
+            if cut is not None and step == cut and cut > 0:
+                z = z_enc + jax.lax.stop_gradient(z - z_enc)
             t_signal = self.time_embed(jnp.asarray(step))
             z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
             z_new = self.refine_block(z_in, pad_bias)
