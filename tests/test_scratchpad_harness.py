@@ -11,7 +11,8 @@ import numpy as np
 import optax
 from flax import nnx
 
-from scratchpad_harness import ScratchpadNet, affine_chain_task, n_params, train_one_arm
+from scratchpad_harness import (BudgetScratchpadNet, ScratchpadNet, affine_chain_task,
+                                n_params, train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -149,3 +150,87 @@ def test_all_arms_train_and_beat_nothing_burns():
         assert params > 0
         if arm != "depthonly":
             assert len(slot_acc) == K and all(np.isfinite(a) for a in slot_acc)
+
+
+def test_budget_one_addr_is_forced_to_one():
+    """#63: softmax over a size-1 axis is identically 1 regardless of the
+    learned addr_head's weights -- num_slots=1 has literally no addressing
+    degree of freedom, so every write is a full overwrite by construction,
+    not by anything the optimizer had to discover."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+    addr_in = jax.random.normal(jax.random.PRNGKey(1), (5, 2 * DIM)) * 50.0  # extreme logits
+    addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+    np.testing.assert_allclose(np.asarray(addr), np.ones((5, 1)), atol=1e-6)
+
+
+def test_budget_two_addr_is_a_real_distribution_over_slots():
+    """num_slots=2: the address is a genuine 2-way softmax (sums to 1, neither
+    entry pinned) -- the addressing wiring that phase 2 needs a policy to
+    emerge over, as opposed to the num_slots=1 degenerate case above."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+    addr_in = jax.random.normal(jax.random.PRNGKey(2), (5, 2 * DIM))
+    addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+    np.testing.assert_allclose(np.asarray(addr.sum(axis=-1)), np.ones(5), atol=1e-6)
+    assert np.asarray(addr).std() > 0.0, "addressing must vary with input, not collapse to a constant"
+
+
+def test_budget_scratchpad_grade_is_live_on_write_block():
+    """The per-step grade on v_k must still reach write_block -- the same
+    non-bypassable-supervision property #38's finalonly test guards for
+    ScratchpadNet, checked here for the new memory-addressed architecture."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+
+    def slot_ce(mdl):
+        _, slot_logits = mdl(tokens)
+        return optax.softmax_cross_entropy_with_integer_labels(slot_logits, subs).mean()
+
+    grads = nnx.to_flat_state(nnx.grad(slot_ce)(model))
+    assert any(path[0] == "write_block" and float(jnp.abs(leaf[...]).max()) > 0.0
+               for path, leaf in grads), "slot grade must teach the write block"
+
+
+def test_budget_recall_readout_cannot_see_token_states():
+    """The recall-task arms (#63 phase 2) force read_tokens=False so a correct
+    answer can only come from memory, not from re-deriving r_1 out of the
+    (invertible, since m is prime) affine chain directly from tokens -- the
+    same #62 guard, applied to BudgetScratchpadNet's readout."""
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(4), 4)
+
+    def token_grad_into_answer(read_tokens):
+        model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                    max_seq_len=2 * K, read_tokens=read_tokens,
+                                    rngs=nnx.Rngs(0))
+        h = model.embed(tokens)
+        for blk in model.encoder:
+            h = blk(h)
+        bsz = tokens.shape[0]
+        memory = jnp.broadcast_to(model.mem_init[...].astype(h.dtype),
+                                  (bsz, model.num_slots, h.shape[-1]))
+        for k in range(K):
+            q_k = jnp.broadcast_to(model.step_index(jnp.array([k]))[None, :, :],
+                                   (bsz, 1, h.shape[-1]))
+            v_k = model.write_block(q_k, jnp.concatenate([h, memory], axis=1))
+            addr_in = jnp.concatenate([q_k[:, 0], memory.mean(axis=1)], axis=-1)
+            addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+            memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
+        g = jax.grad(lambda hh: jnp.sum(model.readout(hh, memory)))(h)
+        return float(jnp.abs(g).max())
+
+    assert token_grad_into_answer(read_tokens=False) == 0.0, \
+        "recall arms: the readout must be blind to token states"
+    assert token_grad_into_answer(read_tokens=True) > 0.0, \
+        "sanity: a tokens+memory readout must actually read the tokens"
+
+
+def test_budget_arms_train_and_beat_nothing_burns():
+    """#63: full train/eval path for the four new arms at toy size."""
+    for arm in ("overwrite", "budget1", "budget2", "unlimited"):
+        acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
+                                              batch=64, n_pool=512, n_test=128, seed=0)
+        assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
+        assert params > 0
+        assert len(slot_acc) == K and all(np.isfinite(a) for a in slot_acc)
