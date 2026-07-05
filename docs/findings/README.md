@@ -22,6 +22,7 @@ things, it doesn't go in this folder.
 - `2026-07-04-slots-only-readout-compression-real.md` — #62: a readout blinded to tokens stays within noise; compression real
 - `2026-07-04-final-only-supervision-decomposition-is-taught.md` — #67: without the per-slot grade the scratchpad sits at chance; the decomposition is taught, not emergent
 - `2026-07-05-budget-scratchpad-overwrite-carries-chain.md` — #63 phase 1: a single physically-overwritten slot matches K append-only slots
+- `2026-07-05-budget-scratchpad-recall-inconclusive-readout-confound.md` — #63 phase 2: the unlimited-memory ceiling also sits at chance, so the retention test is confounded, not decided
 
 ## Entry template
 
