@@ -105,6 +105,48 @@ def test_truncated_backprop_gradient_routing(grad_last):
     assert enc_norm > 0.0, "encoder lost its gradient path under truncated backprop"
 
 
+def test_return_all_iters_last_pass_matches_standard_forward():
+    """The per-pass logits path (#75) must be a pure readout: pass k's logits for
+    k = depth-1 equal the standard __call__ output, and gate means land in (0,1)."""
+    m = _tiny()
+    tok = jnp.arange(1, 17)[None, :]
+    logits_all, gates = m(tok, depth=4, return_all_iters=True)
+    std = m(tok, depth=4)
+    assert logits_all.shape == (4,) + std.shape
+    np.testing.assert_allclose(np.asarray(logits_all[-1]), np.asarray(std), atol=1e-5, rtol=0)
+    assert gates.shape == (4,) and float(gates.min()) > 0.0 and float(gates.max()) < 1.0
+
+
+def test_islands_gradient_routing():
+    """Gradient islands (#75): with per-pass supervision every pass's time-embed
+    row gets gradient (each island has its own test); with a final-only loss the
+    islands cut reduces to last-pass-only credit. Encoder stays live in both."""
+    depth = 8
+    m = _tiny()
+    tok = jax.random.randint(jax.random.PRNGKey(5), (2, 16), 0, 37)
+    tgt = jax.random.randint(jax.random.PRNGKey(6), (2, 16), 0, 37)
+
+    def per_pass_loss(mm):
+        lg, _ = mm(tok, depth=depth, islands=True, return_all_iters=True)
+        labels = jnp.broadcast_to(tgt, (depth,) + tgt.shape)
+        return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=lg, labels=labels))
+
+    def final_only_loss(mm):
+        lg, _ = mm(tok, depth=depth, islands=True, return_all_iters=True)
+        return jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=lg[-1], labels=tgt))
+
+    g_pp = nnx.grad(per_pass_loss)(m)
+    rows = np.abs(np.asarray(g_pp["time_embed"]["embedding"][...])[:depth]).max(axis=1)
+    assert (rows > 0.0).all(), "per-pass supervision left some pass without gradient"
+    enc_norm = max(float(jnp.abs(x).max()) for x in jax.tree_util.tree_leaves(g_pp["encoder"]))
+    assert enc_norm > 0.0, "encoder lost its gradient path under islands"
+
+    g_fo = nnx.grad(final_only_loss)(m)
+    rows = np.abs(np.asarray(g_fo["time_embed"]["embedding"][...])[:depth]).max(axis=1)
+    assert (rows[:-1] == 0.0).all(), "islands + final-only loss leaked credit into earlier passes"
+    assert rows[-1] > 0.0
+
+
 def test_depth_is_static_and_varies_output():
     """Different depths produce different logits (the loop actually does something)."""
     m = _tiny()
