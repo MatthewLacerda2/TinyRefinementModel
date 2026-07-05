@@ -1,6 +1,6 @@
-"""Toy proof harness for the supervised serial latent scratchpad (#38).
+"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67).
 
-Three arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
+Five arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
 
   serial    — K ordered sub-slots, each written ONCE by a shared cross-attention
               write block reading tokens + EARLIER slots only, each graded
@@ -15,6 +15,10 @@ Three arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               compression probe: if the slots really carry the computation, a
               readout blinded to the tokens costs nothing; if accuracy
               collapses, the readout was secretly re-reading the problem.
+  finalonly — serial wiring and parameters, but the slot grade is detached
+              (stop-gradient probe): the model is taught by final-answer CE
+              only, while the readout head still measures what each slot
+              carries. The does-the-decomposition-emerge ablation (#67).
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
@@ -98,15 +102,23 @@ class ScratchpadNet(nnx.Module):
     serial=False: all K slots written in ONE call, context is tokens only.
     read_tokens=False: the answer readout's context is the slots alone — token
                   states never reach it (#62).
+    probe_only=True: the slot grade becomes a diagnostic-only linear probe —
+                  the slots are stop-gradiented before the readout, so the
+                  slot CE can fit the readout head but can never teach the
+                  slots. Final-answer CE becomes the model's only supervision
+                  (#67), with the slot-by-slot readout kept as the instrument
+                  that shows whether the decomposition emerged anyway.
     All modes share the identical parameter tree — the flags only change the
     data flow, which is what makes each comparison a one-variable ablation.
     """
 
     def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
-                 max_seq_len=64, serial=True, read_tokens=True, rngs, dtype=jnp.float32):
+                 max_seq_len=64, serial=True, read_tokens=True, probe_only=False,
+                 rngs, dtype=jnp.float32):
         self.num_slots = num_slots
         self.serial = serial
         self.read_tokens = read_tokens
+        self.probe_only = probe_only
         self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
@@ -136,7 +148,8 @@ class ScratchpadNet(nnx.Module):
         else:
             slots = self.write_block(queries, h)                            # one step, tokens only
 
-        slot_logits = self.slot_readout(slots)                              # [B, K, m]
+        graded = jax.lax.stop_gradient(slots) if self.probe_only else slots
+        slot_logits = self.slot_readout(graded)                             # [B, K, m]
         return self.readout(h, slots), slot_logits
 
     def readout(self, h, slots):
@@ -168,8 +181,9 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
     else:
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
-                              serial=(arm in ("serial", "slotsonly")),
-                              read_tokens=(arm != "slotsonly"), rngs=nnx.Rngs(seed))
+                              serial=(arm != "parallel"),
+                              read_tokens=(arm != "slotsonly"),
+                              probe_only=(arm == "finalonly"), rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
     def losses(mdl, tok, sub):
@@ -180,7 +194,10 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
             return ce_final, (logits, None)
         answer_logits, slot_logits = mdl(tok)
         ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
-        # The grade: λ fixed at 1.0 (pre-registered — see the design doc).
+        # The grade: λ fixed at 1.0 (pre-registered — see the design doc). In
+        # the finalonly arm the slots are stop-gradiented inside the model, so
+        # this same term only fits the diagnostic probe head — the model's
+        # sole teacher there is ce_final (#67).
         ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
         return ce_final + slot_lambda * ce_slots, (answer_logits, slot_logits)
 
@@ -213,7 +230,7 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
-                    help="any of serial,parallel,depthonly,slotsonly (#62)")
+                    help="any of serial,parallel,depthonly,slotsonly (#62),finalonly (#67)")
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--K", type=int, default=4, help="number of chained sub-steps = number of slots")
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")

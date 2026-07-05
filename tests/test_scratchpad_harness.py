@@ -8,6 +8,7 @@ live gradient path — not a bonus the optimizer can ignore."""
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 from flax import nnx
 
 from scratchpad_harness import ScratchpadNet, affine_chain_task, n_params, train_one_arm
@@ -110,10 +111,38 @@ def test_slotsonly_shares_the_serial_param_tree():
         np.testing.assert_array_equal(np.asarray(sl), np.asarray(bl))
 
 
+def test_finalonly_grade_is_a_detached_probe():
+    """finalonly (#67): the slot CE must reach ONLY the readout head — every
+    parameter upstream of the slots (write block, encoder, slot indices) gets
+    zero gradient from the grade, so final-answer CE is the model's sole
+    teacher. The graded serial arm must keep the grade live, unchanged."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(2), 8)
+
+    def slot_ce_grads(probe_only):
+        model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                              serial=True, probe_only=probe_only, rngs=nnx.Rngs(0))
+
+        def slot_ce(mdl):
+            _, slot_logits = mdl(tokens)
+            return optax.softmax_cross_entropy_with_integer_labels(slot_logits, subs).mean()
+
+        return nnx.to_flat_state(nnx.grad(slot_ce)(model))
+
+    for path, leaf in slot_ce_grads(probe_only=True):
+        mx = float(jnp.abs(leaf[...]).max())
+        if path[0] == "slot_readout":
+            assert mx > 0.0, "probe head itself must still train"
+        else:
+            assert mx == 0.0, f"grade leaked upstream into {'/'.join(map(str, path))}"
+    assert any(path[0] == "write_block" and float(jnp.abs(leaf[...]).max()) > 0.0
+               for path, leaf in slot_ce_grads(probe_only=False)), \
+        "graded arm: slot CE must still teach the write block"
+
+
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly", "slotsonly"):
+    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly"):
         acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
                                               batch=64, n_pool=512, n_test=128, seed=0)
         assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
