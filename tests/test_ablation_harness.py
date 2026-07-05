@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 import numpy as np
+import pytest
 
 from ablation_harness import VanillaTransformer, memorize_task, train_one
 from plan_a_model import CausalRefiner
@@ -52,3 +53,31 @@ def test_train_one_runs_both_arms_on_memorize():
         assert np.isfinite(ce), f"{arch}: CE not finite"
         assert n_params > 0
         assert acc > 1.0 / 8, f"{arch}: recall {acc} not above chance"
+
+
+def test_per_depth_loss_requires_refiner_arm():
+    """The vanilla arm has distinct, non-shared blocks per depth — there is no
+    single K-loop to grade at every iteration, so #74's per-depth loss must
+    refuse to run on it rather than silently doing something ill-defined."""
+    fn = memorize_task(8)
+    with pytest.raises(AssertionError):
+        train_one(fn, 8, 2, arch="vanilla", per_depth_loss=True, dim=32, heads=4,
+                 enc=1, steps=1, batch=64, n_pool=512, n_test=128, train_seq=8)
+
+
+def test_per_depth_loss_trains_and_reports_depth_curve():
+    """#74 wiring: --per-depth-loss trains without error and beats chance, and
+    --depth-curve reports one finite accuracy per intermediate depth for both
+    the final-only and per-depth-loss arms."""
+    fn = memorize_task(8)
+    depth = 3
+    for per_depth_loss in (False, True):
+        out = train_one(fn, 8, depth, arch="refiner", per_depth_loss=per_depth_loss,
+                        depth_curve=True, dim=32, heads=4, enc=1, steps=80, batch=64,
+                        n_pool=512, n_test=128, train_seq=8)
+        acc, ce, n_params, curve = out
+        assert np.isfinite(ce)
+        assert acc > 1.0 / 8, f"per_depth_loss={per_depth_loss}: recall {acc} not above chance"
+        assert [d for d, _, _ in curve] == list(range(1, depth + 1))
+        assert all(np.isfinite(a) and np.isfinite(c) for _, a, c in curve)
+        assert curve[-1][1] == pytest.approx(acc), "depth-curve's last point must match the top-level eval at full depth"

@@ -133,19 +133,15 @@ class CausalRefiner(nnx.Module):
             # and diverge (the depth-8 collapse, ablation_results.md run 2).
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None):
-        depth = self.max_depth if depth is None else depth
+    def _refine(self, z, depth, pad_bias, grad_last, collect_all=False):
+        """The shared K-loop: one `refine_block` applied `depth` times, gated
+        against the running state. Factored out so `__call__` and
+        `all_depth_logits` (#74, per-depth loss) run the identical trajectory —
+        the two must never be allowed to drift apart.
 
-        pad_bias = None
-        if pad_mask is not None:
-            pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
-            pad_bias = pad_bias[:, None, None, :]
-
-        z = self.embed(tokens)
-        for blk in self.encoder:
-            z = blk(z, pad_bias)
-
+        collect_all=True additionally returns the post-gate state after every
+        iteration (pre-`out_norm`), so a caller can grade each refinement step,
+        not just the last."""
         # Truncated backprop through the refinement depth (#64): with grad_last=j,
         # gradient flows through only the last j refinement iterations — the
         # trajectory before the cut runs forward-only, so its activations need not
@@ -156,6 +152,7 @@ class CausalRefiner(nnx.Module):
         assert grad_last is None or grad_last >= 1, "grad_last must be >= 1 (or None for full backprop)"
         z_enc = z
         cut = None if grad_last is None else depth - grad_last
+        states = [] if collect_all else None
 
         for step in range(depth):
             if cut is not None and step == cut and cut > 0:
@@ -168,12 +165,47 @@ class CausalRefiner(nnx.Module):
                 z = g * z_new + (1.0 - g) * z
             else:
                 z = z_new
+            if collect_all:
+                states.append(z)
+
+        return z, states
+
+    def _project(self, z):
+        embed_t = self.embed.embedding[...].astype(self.dtype).T
+        return jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
+
+    def _encode(self, tokens, pad_mask):
+        pad_bias = None
+        if pad_mask is not None:
+            pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
+            pad_bias = pad_bias[:, None, None, :]
+
+        z = self.embed(tokens)
+        for blk in self.encoder:
+            z = blk(z, pad_bias)
+        return z, pad_bias
+
+    def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
+                 grad_last=None):
+        depth = self.max_depth if depth is None else depth
+        z, pad_bias = self._encode(tokens, pad_mask)
+        z, _ = self._refine(z, depth, pad_bias, grad_last)
 
         z = self.out_norm(z)
         if return_hidden:
             # Training path: let the loss project + score the LM head per-chunk
             # (chunked CE, #19) instead of materializing full [b, s, vocab] logits.
             return z.astype(self.dtype)
-        embed_t = self.embed.embedding[...].astype(self.dtype).T
-        logits = jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
-        return logits
+        return self._project(z)
+
+    def all_depth_logits(self, tokens, depth=None, pad_mask=None, grad_last=None):
+        """Per-depth loss plumbing (#74): project the post-gate state after
+        EVERY refinement iteration through the tied head, not just the last.
+        Returns logits stacked as [depth, batch, seq, vocab] — index d is the
+        prediction after d+1 loop iterations, identical to what
+        `__call__(tokens, depth=d+1, ...)` would return (same trajectory, same
+        weights), just computed once instead of `depth` separate forward passes."""
+        depth = self.max_depth if depth is None else depth
+        z, pad_bias = self._encode(tokens, pad_mask)
+        _, states = self._refine(z, depth, pad_bias, grad_last, collect_all=True)
+        return jnp.stack([self._project(self.out_norm(s)) for s in states], axis=0)

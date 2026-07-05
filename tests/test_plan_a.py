@@ -112,3 +112,41 @@ def test_depth_is_static_and_varies_output():
     d1 = np.asarray(m(tok, depth=1))
     d8 = np.asarray(m(tok, depth=8))
     assert np.max(np.abs(d1 - d8)) > 1e-3, "depth had no effect on the output"
+
+
+def test_all_depth_logits_matches_call_at_every_depth():
+    """all_depth_logits (#74, per-depth loss) must reproduce, in one shared-loop
+    pass, exactly what depth-truncated __call__ invocations give one at a time —
+    same weights, same trajectory, just read out at every step instead of once."""
+    depth = 6
+    m = _tiny()
+    tok = jax.random.randint(jax.random.PRNGKey(5), (2, 16), 0, 37)
+
+    stacked = np.asarray(m.all_depth_logits(tok, depth=depth))
+    assert stacked.shape == (depth, 2, 16, 37)
+
+    for d in range(1, depth + 1):
+        truncated = np.asarray(m(tok, depth=d))
+        np.testing.assert_allclose(stacked[d - 1], truncated, atol=1e-5, rtol=0,
+                                   err_msg=f"all_depth_logits[{d - 1}] diverged from __call__(depth={d})")
+
+
+def test_all_depth_logits_gradient_reaches_every_depth():
+    """A mean-CE loss over all depths must give every time-embedding row (one per
+    iteration) a nonzero gradient — the point of per-depth loss is that early
+    iterations get direct signal, not just whatever survives the remaining steps."""
+    depth = 4
+    m = _tiny(vocab=17, seq=16)
+    tok = jax.random.randint(jax.random.PRNGKey(6), (2, 16), 0, 17)
+    tgt = jax.random.randint(jax.random.PRNGKey(7), (2, 16), 0, 17)
+
+    def loss(mm):
+        logits_all = mm.all_depth_logits(tok, depth=depth)  # [depth, b, s, vocab]
+        ce = optax.softmax_cross_entropy_with_integer_labels(
+            logits=logits_all, labels=jnp.broadcast_to(tgt, logits_all.shape[:-1]))
+        return jnp.mean(ce)
+
+    grads = nnx.grad(loss)(m)
+    t_grad = np.asarray(grads["time_embed"]["embedding"][...])
+    for step in range(depth):
+        assert np.abs(t_grad[step]).max() > 0.0, f"time-embed row {step} got no gradient from per-depth loss"

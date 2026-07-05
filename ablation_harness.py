@@ -141,7 +141,10 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
-              n_pool=32768, n_test=4096, eval_batch=256, train_seq=SEQ, test_seq=None):
+              per_depth_loss=False, depth_curve=False, n_pool=32768, n_test=4096,
+              eval_batch=256, train_seq=SEQ, test_seq=None):
+    assert not per_depth_loss or arch == "refiner", \
+        "per_depth_loss grades the shared K-loop's iterations; the vanilla arm has no shared loop to grade"
     # When test_seq > train_seq this is a length-generalization probe: the model
     # trains on length train_seq and is evaluated on longer sequences, so it must
     # use RoPE positions it never saw in training. test_seq=None -> same length.
@@ -179,6 +182,16 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         idx = jax.random.randint(key, (batch,), 0, inp_all.shape[0])
         inp, tgt, mask = inp_all[idx], tgt_all[idx], mask_all[idx]
         def loss_fn(m):
+            if per_depth_loss:
+                # #74: grade every iteration of the K-loop, not just the last.
+                # Same target at every depth (it comes free — no per-step human
+                # labels needed); uniform weight across depths, masked mean per
+                # depth so padding is handled identically to the final-only arm.
+                logits_all = m.all_depth_logits(inp, depth=depth, **model_kwargs)
+                tgt_all_d = jnp.broadcast_to(tgt, logits_all.shape[:-1])
+                mask_all_d = jnp.broadcast_to(mask, logits_all.shape[:-1])
+                ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits_all, labels=tgt_all_d)
+                return jnp.mean(jnp.sum(ce * mask_all_d, axis=(1, 2)) / jnp.sum(mask_all_d, axis=(1, 2)))
             logits = m(inp, depth=depth, **model_kwargs)
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt)
             return jnp.sum(ce * mask) / jnp.sum(mask)
@@ -202,12 +215,27 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     # f32 logits, which OOMs at large --mem-pairs (6.4 GB at N=16384 — already past
     # the 6 GB card; 51 GB at N=65536). Keep n_test a multiple of eval_batch or
     # the ragged last chunk pays one extra compile.
-    acc_sum = ce_sum = count = 0.0
-    for i in range(0, te_inp.shape[0], eval_batch):
-        s = slice(i, i + eval_batch)
-        a, c, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], depth)
-        acc_sum, ce_sum, count = acc_sum + float(a), ce_sum + float(c), count + float(m)
-    return acc_sum / count, ce_sum / count, n_params
+    def eval_at(d):
+        acc_sum = ce_sum = count = 0.0
+        for i in range(0, te_inp.shape[0], eval_batch):
+            s = slice(i, i + eval_batch)
+            a, c, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], d)
+            acc_sum, ce_sum, count = acc_sum + float(a), ce_sum + float(c), count + float(m)
+        return acc_sum / count, ce_sum / count
+
+    acc, ce = eval_at(depth)
+    if not depth_curve:
+        return acc, ce, n_params
+
+    # Diagnostic (#74): accuracy at every intermediate depth, for BOTH the
+    # final-only and per-depth-loss arms. depth=d truncates the loop to d
+    # iterations — same trajectory a d-deep read of a depth-`depth` forward pass
+    # would give (shared weights, no depth-dependent behavior) — so this reads
+    # off "how good is the prediction after d refinement steps" without any
+    # trainer changes. Tells us WHERE a per-depth win comes from: earlier steps
+    # becoming independently correct vs. the final step just converging faster.
+    curve = [(d,) + eval_at(d) for d in range(1, depth + 1)]
+    return acc, ce, n_params, curve
 
 
 def main():
@@ -226,6 +254,10 @@ def main():
                     help="init bias of the update gate; negative = retention-biased (stabilizes deep recurrence). refiner-only.")
     ap.add_argument("--grad-last", type=int, default=None,
                     help="backprop through only the last J refinement iterations (truncated backprop, #64); default = full backprop. refiner-only.")
+    ap.add_argument("--per-depth-loss", action="store_true",
+                    help="grade every iteration of the K-loop with mean CE, not just the last (#74); refiner-only.")
+    ap.add_argument("--depth-curve", action="store_true",
+                    help="also report held-out accuracy at every intermediate depth (#74 diagnostic: where does a per-depth win come from)")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--train-seq", type=int, default=SEQ)
     ap.add_argument("--test-seq", type=int, default=None,
@@ -243,17 +275,22 @@ def main():
     depths = [int(d) for d in args.depths.split(",")]
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_depth_loss={args.per_depth_loss} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
         t0 = time.time()
-        acc, ce, n_params = train_one(task_fn, vocab, d, arch=args.arch, dim=args.dim,
-                                      steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
-                                      grad_last=args.grad_last, lr=args.lr,
-                                      train_seq=args.train_seq, test_seq=test_seq)
+        out = train_one(task_fn, vocab, d, arch=args.arch, dim=args.dim,
+                        steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
+                        grad_last=args.grad_last, per_depth_loss=args.per_depth_loss,
+                        depth_curve=args.depth_curve, lr=args.lr,
+                        train_seq=args.train_seq, test_seq=test_seq)
+        acc, ce, n_params = out[0], out[1], out[2]
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
+        if args.depth_curve:
+            curve = out[3]
+            print("        per-depth curve:", "  ".join(f"d{dd}={a:.4f}" for dd, a, _ in curve))
 
     base_acc = results[depths[0]][0]
     best_d = max(results, key=lambda d: results[d][0])
