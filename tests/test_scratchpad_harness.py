@@ -139,10 +139,34 @@ def test_finalonly_grade_is_a_detached_probe():
         "graded arm: slot CE must still teach the write block"
 
 
+def test_densedepth_grade_teaches_the_trunk():
+    """#79 wiring guard: the intermediate per-step grades (passes k < K, graded
+    at the answer position against r_k through the dedicated head) must be a
+    live gradient path into the shared refine block and the encoder — dense
+    supervision has to teach the trunk, or the arm would just be depthonly
+    with a decorative loss term."""
+    from scratchpad_harness import DenseDepthNet
+
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = DenseDepthNet(dim=DIM, vocab=M, K=K, rngs=nnx.Rngs(0))
+
+    def intermediate_ce(mdl):
+        _, step_logits = mdl(tokens)                        # [K, B, m]
+        return optax.softmax_cross_entropy_with_integer_labels(
+            step_logits[:K - 1], subs.T[:K - 1]).mean()     # intermediate passes only
+
+    grads = nnx.to_flat_state(nnx.grad(intermediate_ce)(model))
+    live = {path[:2] for path, leaf in grads if float(jnp.abs(leaf[...]).max()) > 0.0}
+    assert ("refiner", "refine_block") in live, "per-step grade must teach the shared refine block"
+    assert ("refiner", "encoder") in live, "per-step grade must reach the encoder"
+    assert any(p[0] == "step_readout" for p in live), "the grade head itself must train"
+
+
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly"):
+    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly",
+                "densedepth", "densedepth_tied"):
         acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
                                               batch=64, n_pool=512, n_test=128, seed=0)
         assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
