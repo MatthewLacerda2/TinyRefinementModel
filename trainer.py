@@ -247,6 +247,15 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = None
 
+                # Underflow instrument (#82): per-group exactly-zero gradient
+                # fraction from the last micro-step in this window. The
+                # embedding group reads high by design (see grad_step.py);
+                # watch the dense-kernel groups for a rising trend instead.
+                zero_frac = out.diag.get('grad_zero_frac', {})
+                if zero_frac:
+                    frac_str = " | ".join(f"{g}: {float(f):.4f}" for g, f in sorted(zero_frac.items()))
+                    print(f"🧊 [Grad Zero-Frac] Opt Step: {opt_step} | {frac_str}")
+
                 if not sft_phase_event.is_set():
                     curr_weights = get_curriculum_weights(opt_step)
                     print(

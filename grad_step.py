@@ -13,6 +13,28 @@ from schedules import (
 )
 from losses import chunked_cross_entropy
 
+def zero_fraction_by_group(grad_tree):
+    """Fraction of exactly-zero entries in `grad_tree`, one value per top-level
+    param group (the model's top-level attributes: 'embed', 'encoder_stack',
+    'reasoning_stack', ...).
+
+    Instrument for #82: f16 gradient underflow rounds entries to exactly zero
+    without ever going non-finite, so it's invisible to the NaN-streak abort
+    and to the global grad norm. Reported per group, not as one number,
+    because the embedding's zero-fraction is legitimately huge (only tokens
+    present in the micro-batch get a gradient row) — the signal to watch
+    lives in the dense-kernel groups (attention projections, MLP, norms),
+    which should read ~0 in healthy f16 training.
+    """
+    zero_counts = {}
+    sizes = {}
+    for path, leaf in jax.tree_util.tree_flatten_with_path(grad_tree)[0]:
+        group = str(getattr(path[0], 'key', path[0]))
+        zero_counts[group] = zero_counts.get(group, 0) + jnp.sum(leaf == 0)
+        sizes[group] = sizes.get(group, 0) + leaf.size
+    return {group: zero_counts[group] / sizes[group] for group in zero_counts}
+
+
 def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda):
     """Assembles the full training loss from both segments' outputs.
 
@@ -87,7 +109,12 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
-    
+
+    # Carried on the aux (not the return tuple) so this instrument doesn't
+    # force every one of the ~15 call sites that unpack this function's
+    # 4-tuple to change.
+    out = out.replace(diag={**out.diag, 'grad_zero_frac': zero_fraction_by_group(grads)})
+
     return loss, out, grads, grad_norm
 
 
