@@ -39,14 +39,16 @@ NUM_GROUPS = NUM_HEADS // 4
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
-#   "reasoner" — UniversalReasoner, the cross-window-hunch baseline (default;
-#                the hunch is proven inert, so this is effectively a vanilla
-#                random-depth transformer and serves as the control).
-#   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence
-#                (docs/findings/2026-06-13-plan-a-depth-recurrence-works.md).
-# A refiner run has a different param tree, so it must start fresh (--new-run);
-# it cannot resume a reasoner checkpoint.
-MODEL_ARCH = os.environ.get("MODEL_ARCH", "reasoner")
+#   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence.
+#                The default: it is the live bet, proven on the toy gate and
+#                through pretraining (findings 2026-06-13 / 06-16 / 06-18).
+#   "reasoner" — UniversalReasoner, the cross-window-hunch baseline. The hunch
+#                is proven inert (finding 2026-06-13), so this is effectively a
+#                vanilla random-depth transformer, kept as the control —
+#                select it explicitly (MODEL_ARCH=reasoner) for control runs.
+# The two arches have different param trees, so a checkpoint from one cannot be
+# resumed by the other — resuming an old reasoner run now requires the env var.
+MODEL_ARCH = os.environ.get("MODEL_ARCH", "refiner")
 # Blockwise memory-lean attention for the refiner (#66): removes the O(seq²)
 # score/probability transients that dominate the grad-step peak (mem_profile).
 # Opt-in until the dim960 GPU fit-test + wall-clock bench pass on the box;
