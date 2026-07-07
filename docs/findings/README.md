@@ -21,6 +21,9 @@ things, it doesn't go in this folder.
 - `2026-07-04-gpt2-yardstick-calibrated.md` — the GPT-2-small yardstick reproduces the reference reading (#48)
 - `2026-07-04-slots-only-readout-compression-real.md` — #62: a readout blinded to tokens stays within noise; compression real
 - `2026-07-04-final-only-supervision-decomposition-is-taught.md` — #67: without the per-slot grade the scratchpad sits at chance; the decomposition is taught, not emergent
+- `2026-07-05-truncated-backprop-depth-kill.md` — #64: truncated backprop through refinement depth collapses state-tracking; the trajectory gradient is load-bearing
+- `2026-07-05-per-pass-supervision-islands.md` — #75: per-pass grades can't replace the trajectory gradient (islands killed), but they stabilize deep recurrence
+- `2026-07-07-dense-supervision-without-slots-collapses.md` — #79: the serial arm's exact supervision without slots collapses at the composition point; the offload is load-bearing
 
 ## Entry template
 
