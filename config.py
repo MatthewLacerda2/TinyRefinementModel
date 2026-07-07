@@ -57,6 +57,15 @@ CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 # near the reasoner baseline; init prints the actual count for both arches.
 REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 
+# Refiner serving depth. The dense 1→8 sweep
+# (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
+# plateau at ~d6 (peak d7; d6–d8 inside seed noise), and pretraining shifts the
+# curve LEFT — the same ceiling in fewer loops. Loops past the knee buy nothing
+# measurable and cost a full pass of the shared block each, so inference/eval
+# tooling defaults here. Training is a separate decision and still samples up to
+# MAX_STEPS_LIMIT (pre-registered with the sweep: "MAX_STEPS_LIMIT=8 stays").
+INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
+
 # Training
 MAX_STEPS_LIMIT = 8
 BATCH_SIZE = 1
