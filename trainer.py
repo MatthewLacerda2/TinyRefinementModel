@@ -24,6 +24,8 @@ from config import (
     MAX_STEPS_LIMIT,
     DATA_SEED,
     MODEL_SEED,
+    TOKENS_PER_OPT_STEP,
+    TRAIN_TOKEN_BUDGET,
     resolve_root,
 )
 from model import UniversalReasoner
@@ -33,6 +35,8 @@ from optimizers import optimizer_chain, create_sft_optimizer
 from schedules import (
     CURRICULUM_START_WEIGHTS,
     SFT_MIX_WEIGHTS,
+    DECAY_STEPS,
+    WARMUP_STEPS,
     get_curriculum_weights,
     get_average_curriculum_weights,
     sample_reasoning_depth,
@@ -80,6 +84,14 @@ def init_model_and_optimizer():
 
     print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
           f"(MODEL_SEED={MODEL_SEED}, DATA_SEED={DATA_SEED})")
+    # The resolved LR horizon must be visible at launch (#83): an anneal that
+    # bottoms out before the budget ends is undertraining masquerading as an
+    # architecture problem.
+    budget_note = (f"TRAIN_TOKEN_BUDGET={TRAIN_TOKEN_BUDGET:,}" if TRAIN_TOKEN_BUDGET is not None
+                   else "TRAIN_TOKEN_BUDGET unset — historical default")
+    print(f"🗓️ LR horizon: DECAY_STEPS={DECAY_STEPS:,} opt steps "
+          f"(warmup {WARMUP_STEPS:,}) ≈ {DECAY_STEPS * TOKENS_PER_OPT_STEP / 1e9:.2f}B "
+          f"target tokens ({budget_note})")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer
