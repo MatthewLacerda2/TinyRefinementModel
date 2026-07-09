@@ -10,12 +10,14 @@ class MetricsLogger:
         self.diag_keys = [
             'temporal_drift', 'forget_density',
             'diversity_loss', 'tau',
+            'out_entropy', 'logz_mean', 'max_abs_logit',
         ]
         # Full set of fields for CSV
         self.fields = [
             "step", "ce", "loss", "seg1_ce",
             "grad_norm_avg", "avg_forget_cost",
             "diversity_loss", "temporal_drift", "forget_density", "tau",
+            "out_entropy", "logz_mean", "max_abs_logit",
             "depth_avg", "val_ce",
         ]
         # Warn once per metric name when a non-finite value shows up, so a broken
@@ -68,6 +70,9 @@ class MetricsLogger:
             f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | "
             f"Tau: {diag_dict.get('tau', 0):.4f} | Depth: {depth_avg:.2f}\n"
             f"      Loss: {loss:.4f} | Drift: {diag_dict.get('temporal_drift', 0):.6f} | "
+            f"H: {diag_dict.get('out_entropy', 0):.3f} | "
+            f"logZ: {diag_dict.get('logz_mean', 0):.2f} | "
+            f"max|logit|: {diag_dict.get('max_abs_logit', 0):.1f} | "
             f"Compute: {compute_time:.3f}s"
         )
 
@@ -96,6 +101,9 @@ class MetricsLogger:
                 "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.6f}",
                 "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
                 "tau": f"{diag_dict.get('tau', 0):.6f}",
+                "out_entropy": f"{diag_dict.get('out_entropy', 0):.4f}",
+                "logz_mean": f"{diag_dict.get('logz_mean', 0):.4f}",
+                "max_abs_logit": f"{diag_dict.get('max_abs_logit', 0):.2f}",
                 "depth_avg": f"{depth_avg:.4f}" if depth_avg is not None else "",
                 "val_ce": f"{val_ce:.4f}" if val_ce is not None else "",
             }

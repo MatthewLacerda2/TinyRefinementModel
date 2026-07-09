@@ -26,6 +26,12 @@ independent of XLA's rematerialization heuristics or the allocator's budget.
 The per-token loss and its gradients are identical to the naive full-logit CE (the vocab
 axis is never chunked); only the float32 sum over positions reorders, so a golden-run
 re-record is expected. The unit test asserts value AND gradient parity.
+
+The scan also accumulates logit-scale telemetry (#80) — mean softmax entropy, mean
+log Z, max |logit|, all over non-pad positions — since each chunk's full-vocab f32
+logits are already in hand here and nowhere else. Measurement only: the stats ride
+back as a second output whose cotangent the backward ignores, so they can never leak
+gradient into training.
 """
 
 from functools import partial
@@ -51,23 +57,45 @@ def _to_chunks(hidden, targets, pad_id, chunk_size):
 
 
 def _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size):
-    """Scalar loss, scored chunk-by-chunk via scan so the forward never holds the full
-    vocab-wide logits. Shared by the custom_vjp primal and its forward rule."""
+    """Scalar loss plus logit-scale stats, scored chunk-by-chunk via scan so the
+    forward never holds the full vocab-wide logits. Shared by the custom_vjp primal
+    and its forward rule. Returns ``(loss, stats)`` where stats holds ``out_entropy``,
+    ``logz_mean`` and ``max_abs_logit``, each masked to non-pad positions."""
     embed_t = embedding.astype(hidden.dtype).T  # [d, vocab]
     h_steps, t_steps, _, _ = _to_chunks(hidden, targets, pad_id, chunk_size)
 
     def step(carry, xs):
-        loss_sum, count = carry
+        loss_sum, count, ent_sum, logz_sum, max_abs = carry
         h, t = xs
         # f32 logits accumulation matches the original head (preferred_element_type).
         logits = jnp.matmul(h, embed_t, preferred_element_type=jnp.float32)
         ce = optax.softmax_cross_entropy_with_integer_labels(logits, t)
         mask = (t != pad_id).astype(ce.dtype)
-        return (loss_sum + jnp.sum(ce * mask), count + jnp.sum(mask)), None
+        # Logit-scale telemetry (#80): a few reductions on logits already in hand.
+        # H = log Z − Σ p·logits (softmax entropy), per position.
+        logz = jax.nn.logsumexp(logits, axis=-1)
+        entropy = logz - jnp.sum(jax.nn.softmax(logits, axis=-1) * logits, axis=-1)
+        pos_max_abs = jnp.max(jnp.abs(logits), axis=-1)
+        carry = (
+            loss_sum + jnp.sum(ce * mask),
+            count + jnp.sum(mask),
+            ent_sum + jnp.sum(entropy * mask),
+            logz_sum + jnp.sum(logz * mask),
+            jnp.maximum(max_abs, jnp.max(jnp.where(mask > 0, pos_max_abs, 0.0))),
+        )
+        return carry, None
 
-    init = (jnp.asarray(0.0, jnp.float32), jnp.asarray(0.0, jnp.float32))
-    (loss_sum, count), _ = jax.lax.scan(step, init, (h_steps, t_steps))
-    return loss_sum / count.clip(min=1.0)
+    zero = jnp.asarray(0.0, jnp.float32)
+    init = (zero, zero, zero, zero, zero)
+    (loss_sum, count, ent_sum, logz_sum, max_abs), _ = jax.lax.scan(
+        step, init, (h_steps, t_steps))
+    denom = count.clip(min=1.0)
+    stats = {
+        'out_entropy': ent_sum / denom,
+        'logz_mean': logz_sum / denom,
+        'max_abs_logit': max_abs,
+    }
+    return loss_sum / denom, stats
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(3, 4))
@@ -85,8 +113,13 @@ def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128):
                    penalty, so smaller is strictly leaner.
 
     Returns:
-        Scalar ``sum(CE * mask) / sum(mask)`` — identical to the naive computation (value
-        and gradients) up to float32 summation order.
+        ``(loss, stats)``:
+        loss  — scalar ``sum(CE * mask) / sum(mask)`` — identical to the naive
+                computation (value and gradients) up to float32 summation order.
+        stats — logit-scale telemetry over non-pad positions (#80): ``out_entropy``
+                (mean softmax entropy), ``logz_mean`` (mean log Z), ``max_abs_logit``.
+                Measurement only — the backward ignores their cotangent, so no
+                gradient can flow through them.
     """
     return _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size)
 
@@ -95,12 +128,15 @@ def _cce_fwd(hidden, embedding, targets, pad_id, chunk_size):
     # Residuals are just the inputs — no logits saved, so the forward stays bounded.
     # targets is integer (non-differentiable) but can't be a nondiff_argnum because it is
     # a tracer; it rides in the residuals and gets a None cotangent in _cce_bwd.
-    loss = _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size)
-    return loss, (hidden, embedding, targets)
+    out = _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size)
+    return out, (hidden, embedding, targets)
 
 
 def _cce_bwd(pad_id, chunk_size, residuals, g):
     hidden, embedding, targets = residuals
+    # g mirrors the (loss, stats) output; the stats cotangent is dropped — they are
+    # diagnostics, structurally outside the training gradient.
+    g, _ = g
     b, s, d = hidden.shape
     vocab = embedding.shape[0]
     embed_t = embedding.astype(hidden.dtype).T  # [d, vocab]
