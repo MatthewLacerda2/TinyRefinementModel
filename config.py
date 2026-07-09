@@ -61,6 +61,19 @@ REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 MAX_STEPS_LIMIT = 8
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
+# Target tokens consumed per optimizer step: each micro-step scores two
+# MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
+TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
+
+# Planned token budget for the run (#83) — env-overridable per run like the seeds,
+# recorded in run_metadata.json. Drives schedules.DECAY_STEPS so the LR cosine
+# bottoms out when training ends instead of at a constant chosen for past short
+# runs (15000 opt steps ≈ 2.0B tokens — an anneal that would sit frozen at the
+# 1e-6 floor for most of a longer run). Accepts plain ints or scientific notation
+# ("2e9"). Unset → the historical 15000-step horizon, so existing configs and the
+# golden run resolve unchanged.
+_TOKEN_BUDGET_ENV = os.environ.get("TRAIN_TOKEN_BUDGET")
+TRAIN_TOKEN_BUDGET = int(float(_TOKEN_BUDGET_ENV)) if _TOKEN_BUDGET_ENV else None
 # Padding reuses the tokenizer's end-of-text id (sequences are eot-separated, so the
 # pad token and the document separator are the same symbol). r50k_base eot = 50256.
 PAD_TOKEN_ID = 50256
