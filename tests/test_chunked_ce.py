@@ -36,7 +36,7 @@ def test_value_matches_naive(chunk_size):
     hidden, embedding, targets = _fixture()
     pad_id = 0  # mask out the zero-token positions too, exercising the mask path
     naive = _naive_ce(hidden, embedding, targets, pad_id)
-    chunked = chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=chunk_size)
+    chunked, _ = chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=chunk_size)
     assert jnp.allclose(naive, chunked, rtol=1e-5, atol=1e-6), (float(naive), float(chunked))
 
 
@@ -46,7 +46,7 @@ def test_gradients_match_naive(chunk_size):
     pad_id = 0
 
     naive_g = jax.grad(lambda h, e: _naive_ce(h, e, targets, pad_id), argnums=(0, 1))(hidden, embedding)
-    chunk_g = jax.grad(lambda h, e: chunked_cross_entropy(h, e, targets, pad_id, chunk_size=chunk_size),
+    chunk_g = jax.grad(lambda h, e: chunked_cross_entropy(h, e, targets, pad_id, chunk_size=chunk_size)[0],
                        argnums=(0, 1))(hidden, embedding)
 
     assert jnp.allclose(naive_g[0], chunk_g[0], rtol=1e-4, atol=1e-6), "grad wrt hidden differs"
@@ -54,8 +54,11 @@ def test_gradients_match_naive(chunk_size):
 
 
 def test_all_padding_is_safe():
-    """A window that is entirely padding must not divide by zero."""
+    """A window that is entirely padding must not divide by zero — neither the loss
+    nor any of the telemetry stats."""
     hidden, embedding, _ = _fixture(seed=2)
     targets = jnp.zeros((2, 40), dtype=jnp.int32)
-    out = chunked_cross_entropy(hidden, embedding, targets, pad_id=0, chunk_size=16)
-    assert jnp.isfinite(out)
+    loss, stats = chunked_cross_entropy(hidden, embedding, targets, pad_id=0, chunk_size=16)
+    assert jnp.isfinite(loss)
+    for name, value in stats.items():
+        assert jnp.isfinite(value), name
