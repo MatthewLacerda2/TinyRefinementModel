@@ -72,7 +72,12 @@ class CausalAttention(nnx.Module):
             bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
             if pad_bias is not None:
                 bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
-            out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
+            # The bias must stay f32: cast to f16 turns -1e9 into -inf (f16 max
+            # ~65504), and a fully-masked row would softmax to NaN (#84).
+            # dot_product_attention adds the bias to its f32 logits, so f16
+            # q/k/v keep the tensor-core path — same contract as the chunked
+            # branch, whose bias also stays f32.
+            out = jax.nn.dot_product_attention(q, k, v, bias=bias)
         return self.o(out.reshape(b, s, d))
 
 
