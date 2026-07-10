@@ -314,13 +314,19 @@ def eval_halting(model, tokens, subs, thresholds=HALT_THRESHOLDS):
         per_tau.append((tau, float(jnp.mean(pred == final)), float(jnp.mean(n))))
 
     converged = subs[:, 1:] == subs[:, :-1]                        # aligns with cos columns
-    def _stats(mask):
-        vals, msk = cos.ravel(), mask.ravel()
+    def _stats(vals, mask):
+        vals, msk = vals.ravel(), mask.ravel()
         cnt = jnp.sum(msk)
         mean = jnp.sum(jnp.where(msk, vals, 0)) / jnp.maximum(cnt, 1)
         var = jnp.sum(jnp.where(msk, (vals - mean) ** 2, 0)) / jnp.maximum(cnt, 1)
         return float(mean), float(jnp.sqrt(var)), int(cnt)
-    mechanism = {"converged": _stats(converged), "computing": _stats(~converged)}
+    # diagnostic-only secondary (pre-registered, no claim): the same signal on
+    # the slot grade logits — semantic commitment, immune to whatever the
+    # slot-index embedding contributes to the raw latents
+    lcos = slot_cosines(model.slot_readout(slots))
+    mechanism = {"converged": _stats(cos, converged), "computing": _stats(cos, ~converged),
+                 "logit_converged": _stats(lcos, converged),
+                 "logit_computing": _stats(lcos, ~converged)}
     return fixed_acc, per_tau, mechanism
 
 
@@ -344,9 +350,11 @@ def run_halting(seeds, *, K=4, m=7, dim=64, steps=2500, n_test=4096):
             fixed_acc, per_tau, mech = eval_halting(model, te_tok, te_sub)
             results[split].append((seed, fixed_acc, per_tau, mech))
             c, s = mech["converged"], mech["computing"]
+            lc, ls = mech["logit_converged"], mech["logit_computing"]
             print(f"   {split:>8}: fixed-K acc {fixed_acc:.4f} | cosine at "
                   f"converged steps {c[0]:.4f}±{c[1]:.4f} (n={c[2]}) vs "
-                  f"computing {s[0]:.4f}±{s[1]:.4f} (n={s[2]})", flush=True)
+                  f"computing {s[0]:.4f}±{s[1]:.4f} (n={s[2]}) | grade-logit "
+                  f"cosine {lc[0]:.4f}±{lc[1]:.4f} vs {ls[0]:.4f}±{ls[1]:.4f}", flush=True)
             for tau, acc, writes in per_tau:
                 print(f"     tau={tau:<6} acc {acc:.4f}  mean writes {writes:.3f}", flush=True)
 
