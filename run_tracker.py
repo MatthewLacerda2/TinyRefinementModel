@@ -20,6 +20,7 @@ from config import (
     DATA_SEED,
     MODEL_SEED,
     TRAIN_TOKEN_BUDGET,
+    REFINER_TIME_SIGNAL,
 )
 from schedules import DECAY_STEPS
 
@@ -77,6 +78,9 @@ class RunTracker:
             # The run's recipe horizon (#83): budget in, resolved anneal out.
             "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
             "DECAY_STEPS": DECAY_STEPS,
+            # Refiner-only; recorded even for reasoner runs (harmless) so cards
+            # always answer "which time signal was this?" (#86).
+            "REFINER_TIME_SIGNAL": REFINER_TIME_SIGNAL,
         }
 
     def _check_compatibility(self, metadata_path):

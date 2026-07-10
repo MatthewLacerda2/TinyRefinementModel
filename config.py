@@ -56,6 +56,15 @@ CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
 # near the reasoner baseline; init prints the actual count for both arches.
 REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
+# The refine loop's "which pass am I on" signal (#86). Default sinusoidal:
+# matched the learned table at every trained depth (within 0.5σ) and converted
+# never-trained extra depth into accuracy (+5σ over the clamped table at d12/d16
+# on the length-shift split), so inference depth is an open dial instead of a
+# ceiling baked into the checkpoint. "learned" restores the table (control runs);
+# "none" is the time-blind arm (unstable at depth 8 — 1/3 seeds collapsed; see
+# docs/findings/2026-07-10-sinusoidal-time-signal-opens-the-depth-dial.md).
+# The param tree is identical in all modes, so checkpoints are interchangeable.
+REFINER_TIME_SIGNAL = os.environ.get("REFINER_TIME_SIGNAL", "sinusoidal")
 
 # Training
 MAX_STEPS_LIMIT = 8

@@ -198,6 +198,19 @@ def test_sinusoidal_signal_extends_past_max_depth():
     np.testing.assert_array_equal(codes[12], np.asarray(sinusoidal_step_encoding(12, dim)))
 
 
+def test_production_default_is_sinusoidal():
+    """The #86 decision, pinned: the production adapter threads config's
+    REFINER_TIME_SIGNAL into the refiner, and the shipped default is sinusoidal
+    (the class default stays 'learned' so the harness's historical comparisons
+    remain reproducible)."""
+    from config import REFINER_TIME_SIGNAL
+    from plan_a_trainer import RefinerForTraining
+    assert REFINER_TIME_SIGNAL == "sinusoidal"
+    m = RefinerForTraining(32, nnx.Rngs(0), vocab_size=11, num_heads=4,
+                           encoder_layers=1, max_depth=2, max_seq_len=16)
+    assert m.refiner.time_signal == REFINER_TIME_SIGNAL
+
+
 @pytest.mark.parametrize("time_signal", ["sinusoidal", "none"])
 def test_alternative_arms_ignore_the_table(time_signal):
     """Wiring check: in the sinusoidal/time-blind arms the table must be inert —

@@ -30,6 +30,7 @@ from config import (
     PAD_TOKEN_ID,
     COMPUTE_DTYPE,
     REFINER_ENCODER_LAYERS,
+    REFINER_TIME_SIGNAL,
     CHUNKED_ATTENTION,
 )
 from layers import ReasonerOutput
@@ -46,13 +47,13 @@ class RefinerForTraining(nnx.Module):
     def __init__(self, latent_dim, rngs, *, vocab_size=VOCAB_SIZE, num_heads=NUM_HEADS,
                  encoder_layers=REFINER_ENCODER_LAYERS, max_depth=MAX_STEPS_LIMIT,
                  max_seq_len=MAX_SEQ_LEN, pad_token_id=PAD_TOKEN_ID, dtype=COMPUTE_DTYPE,
-                 chunked_attention=CHUNKED_ATTENTION):
+                 chunked_attention=CHUNKED_ATTENTION, time_signal=REFINER_TIME_SIGNAL):
         self.pad_token_id = pad_token_id
         self.refiner = CausalRefiner(
             dim=latent_dim, vocab_size=vocab_size, num_heads=num_heads,
             num_encoder_layers=encoder_layers, max_depth=max_depth,
             max_seq_len=max_seq_len, dtype=dtype, rngs=rngs,
-            chunked_attention=chunked_attention,
+            chunked_attention=chunked_attention, time_signal=time_signal,
         )
         # Vestigial: written by the trainer's hunch bookkeeping, never read here.
         # Kept tiny ([1, 1, dim]) since it carries no information.
