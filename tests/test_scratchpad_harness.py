@@ -11,7 +11,9 @@ import numpy as np
 import optax
 from flax import nnx
 
-from scratchpad_harness import ScratchpadNet, affine_chain_task, n_params, train_one_arm
+from scratchpad_harness import (ScratchpadNet, affine_chain_task,
+                                affine_chain_varlen_task, halt_indices,
+                                n_params, slot_cosines, train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -137,6 +139,58 @@ def test_finalonly_grade_is_a_detached_probe():
     assert any(path[0] == "write_block" and float(jnp.abs(leaf[...]).max()) > 0.0
                for path, leaf in slot_ce_grads(probe_only=False)), \
         "graded arm: slot CE must still teach the write block"
+
+
+def test_varlen_task_identity_tail():
+    """#39 split: the trailing (a=1, b=0) pairs must leave the sub-results
+    frozen (r_k = r_L past the effective length), the live prefix must follow
+    the same recurrence as the base task, and every effective length 1..K must
+    actually occur in a reasonable sample."""
+    tokens, subs = affine_chain_varlen_task(K, M)(jax.random.PRNGKey(0), 512)
+    a, b = np.asarray(tokens[:, 0::2]), np.asarray(tokens[:, 1::2])
+    assert (a >= 1).all()
+    r = np.zeros(512, dtype=np.int64)
+    for k in range(K):
+        r = (r * a[:, k] + b[:, k]) % M
+        np.testing.assert_array_equal(np.asarray(subs[:, k]), r)
+    # identity tail: once a step is (1, 0) every later step is too, and the
+    # sub-result stops moving there
+    identity = (a == 1) & (b == 0)
+    # tail[k] True iff steps k..K-1 are ALL identity (the trailing identity block)
+    tail = np.maximum.accumulate(~identity[:, ::-1], axis=1)[:, ::-1] == 0
+    sub_np = np.asarray(subs)
+    frozen = sub_np[:, 1:] == sub_np[:, :-1]
+    assert frozen[tail[:, 1:]].all(), "sub-results must be frozen on the identity tail"
+    lengths = K - tail.sum(axis=1)     # live prefix; coincidental (1,0) live steps can shorten it
+    assert lengths.min() <= 1 and lengths.max() == K and len(np.unique(lengths)) >= K
+
+
+def test_write_slots_truncation_is_early_stopping():
+    """The property cosine halting stands on: because slots are write-once and
+    causal, the first n slots of a full run must be bit-identical to a run
+    stopped after n writes."""
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                          serial=True, rngs=nnx.Rngs(0))
+    h = model.encode(tokens)
+    full = model.write_slots(h)
+    for n in range(1, K + 1):
+        stopped = model.write_slots(h, upto=n)
+        np.testing.assert_array_equal(np.asarray(stopped), np.asarray(full[:, :n]))
+
+
+def test_halt_rule_on_handbuilt_signal():
+    """halt_indices must pick the FIRST write whose cosine clears tau, else K;
+    slot_cosines must be an exact cosine on hand-built vectors."""
+    # cos rows: [c_2, c_3, c_4] (signal after writing slots 2, 3, 4), K=4
+    cos = jnp.array([[0.99, 0.10, 0.10],    # halts at write 2
+                     [0.10, 0.99, 0.995],   # halts at write 3 (first crossing)
+                     [0.10, 0.20, 0.30]])   # never halts -> K
+    np.testing.assert_array_equal(np.asarray(halt_indices(cos, 0.9, 4)), [2, 3, 4])
+    np.testing.assert_array_equal(np.asarray(halt_indices(cos, 0.0, 4)), [2, 2, 2])
+    np.testing.assert_array_equal(np.asarray(halt_indices(cos, 1.0, 4)), [4, 4, 4])
+    slots = jnp.array([[[1.0, 0.0], [2.0, 0.0], [0.0, 1.0]]])   # parallel, then orthogonal
+    np.testing.assert_allclose(np.asarray(slot_cosines(slots))[0], [1.0, 0.0], atol=1e-6)
 
 
 def test_all_arms_train_and_beat_nothing_burns():
