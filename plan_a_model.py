@@ -19,6 +19,18 @@ from attention import chunked_causal_attention
 from rope import rope_tables, apply_rope
 
 
+def sinusoidal_step_encoding(step, dim, base=10000.0):
+    """Continuous "which pass am I on" signal (#86): sin/cos of the step index at
+    dim/2 geometrically spaced frequencies — the transformer positional-encoding /
+    diffusion-timestep construction. A formula, not a table: defined for ANY step
+    (nothing to clamp past max_depth) and smooth in step, so pass 9 gets a
+    near-neighbor of pass 8's signal instead of an alien input."""
+    half = dim // 2
+    freqs = base ** (-jnp.arange(half, dtype=jnp.float32) / half)
+    angles = jnp.asarray(step, jnp.float32) * freqs
+    return jnp.concatenate([jnp.sin(angles), jnp.cos(angles)])
+
+
 class CausalAttention(nnx.Module):
     """Multi-head self-attention, RoPE, causal mask folded into an additive bias.
 
@@ -105,12 +117,24 @@ class CausalRefiner(nnx.Module):
 
     def __init__(self, *, dim, vocab_size, num_heads=4, num_encoder_layers=2,
                  max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0,
-                 chunked_attention=False, rngs, dtype=jnp.float32):
+                 chunked_attention=False, time_signal="learned", rngs, dtype=jnp.float32):
+        assert time_signal in ("learned", "sinusoidal", "none"), time_signal
+        assert dim % 2 == 0, "dim must be even for the sinusoidal step encoding"
         self.dim = dim
         self.vocab_size = vocab_size
         self.max_depth = max_depth
         self.use_gate = use_gate
         self.dtype = dtype
+        # Which "pass k" signal the refine loop receives (#86):
+        #   learned    — per-depth embedding table (today's default). max_depth + 1
+        #                rows; a depth overrun silently clamps onto the last row.
+        #   sinusoidal — computed from the step index; no ceiling to bake in.
+        #   none       — time-blind: the block conditions only on the state it is
+        #                refining. No step counter at all.
+        # The table and its norm are created in EVERY mode so all three arms share
+        # an identical param tree and init stream — the matched-pair requirement —
+        # and so the default arm's checkpoints are untouched by this knob existing.
+        self.time_signal = time_signal
 
         self.embed = nnx.Embed(vocab_size, dim, rngs=rngs, dtype=dtype)
         self.time_embed = nnx.Embed(max_depth + 1, dim, rngs=rngs, dtype=dtype)
@@ -171,8 +195,17 @@ class CausalRefiner(nnx.Module):
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
             elif cut is not None and step == cut and cut > 0:
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
-            t_signal = self.time_embed(jnp.asarray(step))
-            z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
+            if self.time_signal == "none":
+                z_in = self.time_norm(z)
+            else:
+                # Explicit clamp on the table (#86): past max_depth the table's best
+                # effort is to reuse its last row. Without this, the out-of-range
+                # gather NaN-fills on this JAX version and silently poisons every
+                # depth-overrun eval (the pre-#86 transfer probes' d10+ readings).
+                t_signal = (self.time_embed(jnp.asarray(min(step, self.max_depth)))
+                            if self.time_signal == "learned"
+                            else sinusoidal_step_encoding(step, self.dim).astype(self.dtype))
+                z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
             z_new = self.refine_block(z_in, pad_bias)
             if self.use_gate:
                 g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))

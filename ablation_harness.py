@@ -141,8 +141,9 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
-              per_pass_loss=False, islands=False, readouts=False,
-              n_pool=32768, n_test=4096, eval_batch=256, train_seq=SEQ, test_seq=None):
+              per_pass_loss=False, islands=False, readouts=False, time_signal="learned",
+              eval_depths=None, n_pool=32768, n_test=4096, eval_batch=256,
+              train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
     # trains on length train_seq and is evaluated on longer sequences, so it must
     # use RoPE positions it never saw in training. test_seq=None -> same length.
@@ -165,7 +166,8 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     else:
         model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                               num_encoder_layers=enc, max_depth=max(depth, 1),
-                              max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias, rngs=nnx.Rngs(seed))
+                              max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias,
+                              time_signal=time_signal, rngs=nnx.Rngs(seed))
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
@@ -217,15 +219,30 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         a, c, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], depth)
         acc_sum, ce_sum, count = acc_sum + float(a), ce_sum + float(c), count + float(m)
 
+    # Depth-transfer eval (#86): score the trained model at OTHER depths on the
+    # full held-out pool. Past the model's max_depth the learned time signal
+    # clamps to its last row by construction; the sinusoidal/none arms have no
+    # ceiling — measuring whether extra loops convert into accuracy is the point.
+    extra_depth_acc = {}
+    for d in (eval_depths or []):
+        a_sum = m_sum = 0.0
+        for i in range(0, te_inp.shape[0], eval_batch):
+            s = slice(i, i + eval_batch)
+            a, _, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], d)
+            a_sum, m_sum = a_sum + float(a), m_sum + float(m)
+        extra_depth_acc[d] = a_sum / m_sum
+
     if not readouts:
+        if eval_depths:
+            return acc_sum / count, ce_sum / count, n_params, {"eval_depths": extra_depth_acc}
         return acc_sum / count, ce_sum / count, n_params
 
     # #75 readouts (refiner only) — how each part of the model reacts:
     #   per-pass accuracy: is every pass improving the draft, or does the work
     #     happen late? gate openness: do early passes make real updates?
     #   depth transfer: trained at `depth`, evaled at 1..12 — past max_depth the
-    #     time embedding saturates (jnp.take clips the row index), so passes
-    #     beyond training depth reuse the last time signal.
+    #     learned time embedding reuses its last row (explicit clamp in the model,
+    #     #86), so passes beyond training depth repeat the final time signal.
     @nnx.jit(static_argnames=["depth"])
     def eval_passes(model, inp, tgt, mask, depth):
         logits_all, gates = model(inp, depth=depth, return_all_iters=True)
@@ -243,6 +260,8 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         "gate_open": None if gate_open is None else [float(x) for x in gate_open],
         "transfer": transfer,
     }
+    if eval_depths:
+        extras["eval_depths"] = extra_depth_acc
     return acc_sum / count, ce_sum / count, n_params, extras
 
 
@@ -268,6 +287,12 @@ def main():
                     help="cut the gradient chain at every pass boundary (#75) — pair with --per-pass-loss. refiner-only.")
     ap.add_argument("--readouts", action="store_true",
                     help="print #75 readouts: per-pass accuracy, gate openness per pass, depth-transfer curve (eval at depths 1..12). refiner-only.")
+    ap.add_argument("--time-signal", default="learned", choices=["learned", "sinusoidal", "none"],
+                    help="the refine loop's 'which pass am I on' signal (#86): learned table (today), "
+                         "sinusoidal step encoding (no depth ceiling), or none (time-blind). refiner-only.")
+    ap.add_argument("--eval-depths", default=None,
+                    help="after training, also eval the model at these depths on the full held-out pool "
+                         "(comma list, e.g. 12,16) — the #86 extensibility read. refiner-only.")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--train-seq", type=int, default=SEQ)
     ap.add_argument("--test-seq", type=int, default=None,
@@ -283,9 +308,10 @@ def main():
         vocab = VOCAB[args.task]
         task_desc = args.task
     depths = [int(d) for d in args.depths.split(",")]
+    eval_depths = None if args.eval_depths is None else [int(d) for d in args.eval_depths.split(",")]
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
@@ -294,16 +320,19 @@ def main():
                         steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
                         grad_last=args.grad_last, per_pass_loss=args.per_pass_loss,
                         islands=args.islands, readouts=args.readouts, lr=args.lr,
+                        time_signal=args.time_signal, eval_depths=eval_depths,
                         train_seq=args.train_seq, test_seq=test_seq)
         acc, ce, n_params = out[:3]
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
+        extras = out[3] if len(out) > 3 else {}
         if args.readouts:
-            extras = out[3]
             print("  pass_acc: " + " ".join(f"{a:.4f}" for a in extras["pass_acc"]))
             if extras["gate_open"] is not None:
                 print("  gate_open: " + " ".join(f"{g:.4f}" for g in extras["gate_open"]))
             print("  transfer: " + " ".join(f"d{k}={v:.4f}" for k, v in extras["transfer"].items()))
+        if "eval_depths" in extras:
+            print("  eval_depths: " + " ".join(f"d{k}={v:.4f}" for k, v in extras["eval_depths"].items()))
 
     base_acc = results[depths[0]][0]
     best_d = max(results, key=lambda d: results[d][0])
