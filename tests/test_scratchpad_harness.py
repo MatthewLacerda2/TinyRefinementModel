@@ -11,7 +11,8 @@ import numpy as np
 import optax
 from flax import nnx
 
-from scratchpad_harness import ScratchpadNet, affine_chain_task, n_params, train_one_arm
+from scratchpad_harness import (ScratchpadNet, affine_chain_task, arm_losses,
+                                grade_lambda, n_params, train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -139,13 +140,53 @@ def test_finalonly_grade_is_a_detached_probe():
         "graded arm: slot CE must still teach the write block"
 
 
+def test_grade_lambda_matches_the_preregistered_schedule():
+    """#73 pre-registration at 2500 steps: grade fully on for 0–1000, linear
+    decay 1000–1500, exactly zero for 1500–2500. The schedule is written in
+    fractions of the budget so the toy-sized test runs exercise it too."""
+    S = 2500
+    assert grade_lambda(0, S) == 1.0
+    assert grade_lambda(999, S) == 1.0
+    assert grade_lambda(1250, S) == 0.5
+    assert grade_lambda(1500, S) == 0.0
+    assert grade_lambda(2499, S) == 0.0
+    lams = [grade_lambda(i, S) for i in range(S)]
+    assert all(b <= a for a, b in zip(lams, lams[1:])), "λ must never rise"
+
+
+def test_annealed_lambda_zero_kills_the_grade_gradient():
+    """annealed (#73): once λ_slot hits zero the slot grade must teach nothing
+    — the grade head gets exactly zero gradient (its only loss path is the
+    slot CE) — while final-answer CE keeps teaching the write block. That is
+    what makes the post-anneal stretch a true final-only regime (#67's regime,
+    warm-started from a formed chain)."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                          serial=True, rngs=nnx.Rngs(0))
+
+    def total_loss(mdl, lam):
+        loss, _ = arm_losses("annealed", mdl, tokens, subs, lam, K)
+        return loss
+
+    grads = nnx.to_flat_state(nnx.grad(lambda mm: total_loss(mm, 0.0))(model))
+    by_top = {}
+    for path, leaf in grads:
+        mx = float(jnp.abs(leaf[...]).max())
+        by_top[path[0]] = max(by_top.get(path[0], 0.0), mx)
+    assert by_top["slot_readout"] == 0.0, "λ=0: the grade head must be frozen"
+    assert by_top["write_block"] > 0.0, "λ=0: final CE must still teach the write block"
+
+
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly"):
-        acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
-                                              batch=64, n_pool=512, n_test=128, seed=0)
+    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly", "annealed"):
+        r = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
+                          batch=64, n_pool=512, n_test=128, seed=0)
+        acc = r["final_acc"]
         assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
-        assert params > 0
+        assert np.isfinite(r["cut_final_acc"]), f"{arm}: missing grade-off checkpoint"
+        assert r["params"] > 0
         if arm != "depthonly":
-            assert len(slot_acc) == K and all(np.isfinite(a) for a in slot_acc)
+            for accs in (r["slot_acc"], r["cut_slot_acc"]):
+                assert len(accs) == K and all(np.isfinite(a) for a in accs)
