@@ -200,9 +200,15 @@ def grade_lambda(step, total_steps, onset=0.4, decay=0.2, floor=0.0):
 
 def parse_arm_spec(spec):
     """'annealed@0.2' → onset 0.2; 'annealed@0.4f0.1' → onset 0.4, floor 0.1;
-    plain arm names (including plain 'annealed') pass through unchanged."""
+    plain arm names (including plain 'annealed') pass through unchanged.
+    A near-miss anneal spec is an error, not a fall-through: silently training
+    it as some other arm would print a fully-graded run under an
+    annealed-looking label."""
     m = re.fullmatch(r"annealed(?:@(0?\.\d+))?(?:f(0?\.\d+))?", spec)
     if not m:
+        if spec.startswith("annealed"):
+            raise ValueError(f"bad anneal spec {spec!r} — annealed[@<onset>][f<floor>] "
+                             "with fractions in (0,1), e.g. annealed@0.2 or annealed@0.4f0.1")
         return spec, {}
     kw = {}
     if m.group(1):
@@ -232,6 +238,8 @@ def arm_losses(arm, mdl, tok, sub, lam, depth):
 def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=256,
                   lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096,
                   anneal_onset=0.4, anneal_decay=0.2, anneal_floor=0.0):
+    assert arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly",
+                   "annealed"), f"unknown arm {arm!r}"
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)

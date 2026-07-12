@@ -47,13 +47,13 @@ letter of the criterion is vacuous there and the per-seed collapse count is
 the real readout: **3/3 → 2/3 → 1/3 → 0/3 across onsets 10/20/30/40%.**
 
 The slot probes at the grade-off step say *why*, cleanly: in every collapsing
-run the chain was decodable only through slot 2 (slot 3 ≤ 0.29); in every
-recovering run slot 3 had formed (≥ 0.57) — including #73's seed 0 (slot 4
+run the chain was decodable only through slot 2 (slot 3 ≤ 0.291); in every
+recovering run slot 3 had formed (≥ 0.570) — including #73's seed 0 (slot 4
 still half-formed at 0.572, recovered to 0.95) and onset-20%'s seed 2 (slot 4
 at just 0.331, recovered to 0.99). Final-answer loss can finish and polish a
 chain that reaches the deep slots, but cannot extend one stuck at depth 2 —
 and worse, the already-formed shallow slots then *erode* (slot 1 decodability
-falls from ~0.99 to 0.35–0.70 in the collapsed runs). The viable-onset
+falls from 0.95–0.99 to 0.25–0.70 in the collapsed runs). The viable-onset
 boundary is therefore **a state, not a time**: the grade must stay until the
 chain is decodable through the deep slots, and how long that takes varies by
 seed (seed 0 needed ~40% of the budget; seed 2 was ready by 20%).

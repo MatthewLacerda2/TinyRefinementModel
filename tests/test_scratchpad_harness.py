@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 from flax import nnx
 
 from scratchpad_harness import (ScratchpadNet, affine_chain_task, arm_losses,
@@ -179,6 +180,17 @@ def test_parse_arm_spec_round_trips():
     assert parse_arm_spec("annealed@0.4f0.1") == \
         ("annealed", {"anneal_onset": 0.4, "anneal_floor": 0.1})
     assert parse_arm_spec("annealedf0.1") == ("annealed", {"anneal_floor": 0.1})
+
+
+def test_near_miss_arm_specs_refuse_to_run():
+    """A typo'd anneal spec must raise, never silently train some other arm
+    under an annealed-looking label — that would fabricate a sweep row."""
+    for bad in ("annealed@", "annealed@0.2f", "annealed@1.0", "annealed@abc"):
+        with pytest.raises(ValueError):
+            parse_arm_spec(bad)
+    with pytest.raises(AssertionError):
+        train_one_arm("annealed@0.2", K=K, m=M, dim=DIM, steps=2,
+                      batch=8, n_pool=16, n_test=8, seed=0)
 
 
 def test_annealed_lambda_zero_kills_the_grade_gradient():
