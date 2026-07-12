@@ -147,6 +147,7 @@ def test_grade_lambda_matches_the_preregistered_schedule():
     S = 2500
     assert grade_lambda(0, S) == 1.0
     assert grade_lambda(999, S) == 1.0
+    assert grade_lambda(1000, S) == 1.0   # the on/decay boundary itself
     assert grade_lambda(1250, S) == 0.5
     assert grade_lambda(1500, S) == 0.0
     assert grade_lambda(2499, S) == 0.0
@@ -173,7 +174,7 @@ def test_annealed_lambda_zero_kills_the_grade_gradient():
     for path, leaf in grads:
         mx = float(jnp.abs(leaf[...]).max())
         by_top[path[0]] = max(by_top.get(path[0], 0.0), mx)
-    assert by_top["slot_readout"] == 0.0, "λ=0: the grade head must be frozen"
+    assert by_top["slot_readout"] == 0.0, "λ=0: the grade head must get zero gradient"
     assert by_top["write_block"] > 0.0, "λ=0: final CE must still teach the write block"
 
 

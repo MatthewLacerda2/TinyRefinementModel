@@ -51,7 +51,9 @@ Two reads underneath the headline number:
   matched control held 0.999. One seed in three losing ~0.14 is not a collapse,
   but it is not the control's flat line either.
 
-Slot probes (read through the grade head, frozen once λ = 0): at the cut the
+Slot probes (read through the grade head, which stops receiving gradient once
+λ = 0 — only AdamW's weight decay drifts it after that, uniformly, so its
+argmax readout is unaffected): at the cut the
 annealed chains look like the control's (seed 0's slot 4 still forming at
 0.572); at the end the frozen head reads 0.74–1.00. Seed 2's end probes dropped
 roughly uniformly (0.80–0.85) rather than deepest-first as the issue guessed.
@@ -71,7 +73,8 @@ roughly uniformly (0.80–0.85) rather than deepest-first as the issue guessed.
 - Toy scale, one task family, 3 seeds — σ_annealed estimated from 3 points is
   itself noisy; the scaffold verdict clears the pre-registered bar but the bar
   is wide because the annealed arm's own spread sets it.
-- The end-of-run slot probe is read through a head frozen at step 1500; slot
+- The end-of-run slot probe is read through a head that stops learning at
+  step 1500; slot
   representations that drifted while staying informative under-read. Final
   accuracy is the load-bearing metric; the probes are directional only.
 - 1000 grade-free steps can't distinguish "seed 2 found a stable plateau at
