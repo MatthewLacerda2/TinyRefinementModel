@@ -22,6 +22,7 @@ things, it doesn't go in this folder.
 - `2026-07-04-slots-only-readout-compression-real.md` — #62: a readout blinded to tokens stays within noise; compression real
 - `2026-07-04-final-only-supervision-decomposition-is-taught.md` — #67: without the per-slot grade the scratchpad sits at chance; the decomposition is taught, not emergent
 - `2026-07-10-grade-annealing-scaffold-not-crutch.md` — #73: the grade is a scaffold — annealed to zero mid-run the chain survives on final-answer loss (within 2σ), but seed variance grows ~7×
+- `2026-07-12-anneal-floor-wins-onset-is-a-state.md` — #95: anneal to a floor of λ≈0.1 (control-level σ, 7× calmer than zero); no fixed earlier onset is reliable — the grade must stay until the chain is decodable through the deep slots
 
 ## Entry template
 
