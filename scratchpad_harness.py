@@ -1,6 +1,6 @@
-"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67).
+"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67, #73).
 
-Five arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
+Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
 
   serial    — K ordered sub-slots, each written ONCE by a shared cross-attention
               write block reading tokens + EARLIER slots only, each graded
@@ -19,6 +19,14 @@ Five arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               (stop-gradient probe): the model is taught by final-answer CE
               only, while the readout head still measures what each slot
               carries. The does-the-decomposition-emerge ablation (#67).
+  annealed  — the graded serial arm, but λ_slot follows a schedule: fully on
+              for the first 40% of training, linear decay to zero across
+              40–60%, exactly zero for the last 40%. The scaffold-or-crutch
+              ablation (#73): #67 proved the grade must be present to
+              nucleate the chain — this asks whether, once the chain exists,
+              it sustains itself on final-answer loss alone. Held-out
+              accuracy is also measured at the grade-off step so decay across
+              the grade-free stretch is visible (crutch vs frozen-but-stable).
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
@@ -166,8 +174,38 @@ def n_params(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
 
+def grade_lambda(step, total_steps):
+    """λ_slot schedule for the annealed arm (#73): fully on for the first 40%
+    of training, linear decay across 40–60%, exactly zero afterwards. At the
+    pre-registered 2500 steps that is on for 0–1000, decay 1000–1500, off for
+    1500–2500 — a full 1000 grade-free steps to expose decay."""
+    on_until, off_from = 0.4 * total_steps, 0.6 * total_steps
+    if step < on_until:
+        return 1.0
+    if step >= off_from:
+        return 0.0
+    return 1.0 - (step - on_until) / (off_from - on_until)
+
+
+def arm_losses(arm, mdl, tok, sub, lam, depth):
+    """Loss and logits for one arm. lam is the slot-grade weight λ_slot —
+    fixed at 1.0 for every arm except annealed (#73), which passes
+    grade_lambda(step). In the finalonly arm the slots are stop-gradiented
+    inside the model, so the grade term only fits the diagnostic probe head —
+    the model's sole teacher there is the final-answer CE (#67)."""
+    final = sub[:, -1]
+    if arm == "depthonly":
+        logits = mdl(tok, depth=depth)[:, -1]                # answer at last position
+        ce_final = optax.softmax_cross_entropy_with_integer_labels(logits, final).mean()
+        return ce_final, (logits, None)
+    answer_logits, slot_logits = mdl(tok)
+    ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
+    ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
+    return ce_final + lam * ce_slots, (answer_logits, slot_logits)
+
+
 def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=256,
-                  lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096, slot_lambda=1.0):
+                  lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096):
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
@@ -186,26 +224,11 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
                               probe_only=(arm == "finalonly"), rngs=nnx.Rngs(seed))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
-    def losses(mdl, tok, sub):
-        final = sub[:, -1]
-        if arm == "depthonly":
-            logits = mdl(tok, depth=K)[:, -1]                    # answer at last position
-            ce_final = optax.softmax_cross_entropy_with_integer_labels(logits, final).mean()
-            return ce_final, (logits, None)
-        answer_logits, slot_logits = mdl(tok)
-        ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
-        # The grade: λ fixed at 1.0 (pre-registered — see the design doc). In
-        # the finalonly arm the slots are stop-gradiented inside the model, so
-        # this same term only fits the diagnostic probe head — the model's
-        # sole teacher there is ce_final (#67).
-        ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
-        return ce_final + slot_lambda * ce_slots, (answer_logits, slot_logits)
-
     @nnx.jit
-    def step(mdl, op, k):
+    def step(mdl, op, k, lam):
         idx = jax.random.randint(k, (batch,), 0, tr_tok.shape[0])
         def loss_fn(mm):
-            loss, _ = losses(mm, tr_tok[idx], tr_sub[idx])
+            loss, _ = arm_losses(arm, mm, tr_tok[idx], tr_sub[idx], lam, K)
             return loss
         loss, grads = nnx.value_and_grad(loss_fn)(mdl)
         op.update(mdl, grads)
@@ -213,24 +236,38 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
 
     @nnx.jit
     def eval_all(mdl):
-        _, (answer_logits, slot_logits) = losses(mdl, te_tok, te_sub)
+        _, (answer_logits, slot_logits) = arm_losses(arm, mdl, te_tok, te_sub, 1.0, K)
         final_acc = jnp.mean(answer_logits.argmax(-1) == te_sub[:, -1])
         slot_acc = (jnp.mean(slot_logits.argmax(-1) == te_sub, axis=0)
                     if slot_logits is not None else jnp.zeros(K))
         return final_acc, slot_acc
 
-    for _ in range(steps):
+    # The grade-off step: where the annealed λ_slot reaches exactly zero. Every
+    # arm is evaluated here too, so annealed-vs-control is a matched comparison
+    # at both checkpoints and decay across the grade-free stretch is measurable.
+    cut = min(int(round(0.6 * steps)), steps - 1)
+    cut_final = cut_slots = None
+    for i in range(steps):
+        if i == cut:
+            cut_final, cut_slots = eval_all(model)
         key, k = jax.random.split(key)
-        step(model, opt, k)
+        step(model, opt, k, grade_lambda(i, steps) if arm == "annealed" else 1.0)
 
     final_acc, slot_acc = eval_all(model)
-    return float(final_acc), [float(x) for x in slot_acc], n_params(model)
+    return {
+        "final_acc": float(final_acc),
+        "slot_acc": [float(x) for x in slot_acc],
+        "cut_final_acc": float(cut_final),
+        "cut_slot_acc": [float(x) for x in cut_slots],
+        "params": n_params(model),
+    }
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
-                    help="any of serial,parallel,depthonly,slotsonly (#62),finalonly (#67)")
+                    help="any of serial,parallel,depthonly,slotsonly (#62),"
+                         "finalonly (#67),annealed (#73)")
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--K", type=int, default=4, help="number of chained sub-steps = number of slots")
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")
@@ -238,16 +275,22 @@ def main():
     ap.add_argument("--dim", type=int, default=64)
     args = ap.parse_args()
 
+    cut = min(int(round(0.6 * args.steps)), args.steps - 1)
     print(f"== serial-scratchpad proof (#38): K={args.K} m={args.m} dim={args.dim} "
-          f"steps={args.steps} (chance={1/args.m:.3f}) ==")
-    print(f"{'arm':>10} {'seed':>5} {'params':>9} {'final_acc':>10} {'sec':>7}  slot_accs")
+          f"steps={args.steps} (chance={1/args.m:.3f}, grade-off step={cut}) ==")
+    print(f"{'arm':>10} {'seed':>5} {'params':>9} {'acc@cut':>8} {'final_acc':>10} {'sec':>7}"
+          "  slot_accs cut[...] end[...]")
+    def fmt(accs):
+        return " ".join(f"{a:.3f}" for a in accs) if any(accs) else "-"
+
     for arm in args.arms.split(","):
         for seed in [int(s) for s in args.seeds.split(",")]:
             t0 = time.time()
-            acc, slot_acc, params = train_one_arm(arm, K=args.K, m=args.m,
-                                                  dim=args.dim, steps=args.steps, seed=seed)
-            slots = " ".join(f"{a:.3f}" for a in slot_acc) if any(slot_acc) else "-"
-            print(f"{arm:>10} {seed:>5} {params/1e6:>8.2f}M {acc:>10.4f} {time.time()-t0:>7.1f}  [{slots}]",
+            r = train_one_arm(arm, K=args.K, m=args.m,
+                              dim=args.dim, steps=args.steps, seed=seed)
+            print(f"{arm:>10} {seed:>5} {r['params']/1e6:>8.2f}M {r['cut_final_acc']:>8.4f} "
+                  f"{r['final_acc']:>10.4f} {time.time()-t0:>7.1f}  "
+                  f"cut[{fmt(r['cut_slot_acc'])}] end[{fmt(r['slot_acc'])}]",
                   flush=True)
 
 
