@@ -27,6 +27,10 @@ Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               it sustains itself on final-answer loss alone. Held-out
               accuracy is also measured at the grade-off step so decay across
               the grade-free stretch is visible (crutch vs frozen-but-stable).
+              #95 parameterizes the schedule on the command line: the arm spec
+              `annealed@0.2` starts the decay at 20% of training (window stays
+              20%), and `annealed@0.4f0.1` decays to a floor of λ=0.1 and
+              holds, instead of going to zero. Plain `annealed` is #73's arm.
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
@@ -36,6 +40,7 @@ decomposes exactly into the K sub-results the slots are graded on.
 """
 
 import argparse
+import re
 import time
 
 import jax
@@ -174,17 +179,37 @@ def n_params(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
 
-def grade_lambda(step, total_steps):
-    """λ_slot schedule for the annealed arm (#73): fully on for the first 40%
-    of training, linear decay across 40–60%, exactly zero afterwards. At the
-    pre-registered 2500 steps that is on for 0–1000, decay 1000–1500, off for
-    1500–2500 — a full 1000 grade-free steps to expose decay."""
-    on_until, off_from = 0.4 * total_steps, 0.6 * total_steps
+def grade_lambda(step, total_steps, onset=0.4, decay=0.2, floor=0.0):
+    """λ_slot schedule for the annealed arm: fully on until onset (fraction of
+    the budget), linear decay to `floor` across the decay window, held at
+    `floor` afterwards. The defaults are #73's pre-registered arm — at 2500
+    steps: on for 0–1000, decay 1000–1500, zero for 1500–2500. #95 sweeps the
+    onset (how early can the grade start to go?) and the floor (does a small
+    residual grade buy back the stability that full removal cost?)."""
+    # off_from is built by summing the two scaled terms (not (onset+decay) *
+    # total_steps): for the #73 defaults this reproduces that run's boundary
+    # arithmetic bitwise, so plain `annealed` still replays the recorded result.
+    on_until = onset * total_steps
+    off_from = on_until + decay * total_steps
     if step < on_until:
         return 1.0
     if step >= off_from:
-        return 0.0
-    return 1.0 - (step - on_until) / (off_from - on_until)
+        return floor
+    return 1.0 - (1.0 - floor) * (step - on_until) / (off_from - on_until)
+
+
+def parse_arm_spec(spec):
+    """'annealed@0.2' → onset 0.2; 'annealed@0.4f0.1' → onset 0.4, floor 0.1;
+    plain arm names (including plain 'annealed') pass through unchanged."""
+    m = re.fullmatch(r"annealed(?:@(0?\.\d+))?(?:f(0?\.\d+))?", spec)
+    if not m:
+        return spec, {}
+    kw = {}
+    if m.group(1):
+        kw["anneal_onset"] = float(m.group(1))
+    if m.group(2):
+        kw["anneal_floor"] = float(m.group(2))
+    return "annealed", kw
 
 
 def arm_losses(arm, mdl, tok, sub, lam, depth):
@@ -205,7 +230,8 @@ def arm_losses(arm, mdl, tok, sub, lam, depth):
 
 
 def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=256,
-                  lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096):
+                  lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096,
+                  anneal_onset=0.4, anneal_decay=0.2, anneal_floor=0.0):
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
@@ -242,21 +268,27 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
                     if slot_logits is not None else jnp.zeros(K))
         return final_acc, slot_acc
 
-    # The grade-off step: where the annealed λ_slot reaches exactly zero. Every
+    # The grade-off step: where the annealed λ_slot reaches its floor. Every
     # arm is evaluated here too, so annealed-vs-control is a matched comparison
     # at both checkpoints and decay across the grade-free stretch is measurable.
-    cut = min(int(round(0.6 * steps)), steps - 1)
+    # Non-annealed arms keep #73's 0.6 checkpoint as a plain mid-training probe.
+    cut_frac_steps = (anneal_onset * steps + anneal_decay * steps
+                      if arm == "annealed" else 0.6 * steps)
+    cut = min(int(round(cut_frac_steps)), steps - 1)
     cut_final = cut_slots = None
     for i in range(steps):
         if i == cut:
             cut_final, cut_slots = eval_all(model)
         key, k = jax.random.split(key)
-        step(model, opt, k, grade_lambda(i, steps) if arm == "annealed" else 1.0)
+        step(model, opt, k,
+             grade_lambda(i, steps, anneal_onset, anneal_decay, anneal_floor)
+             if arm == "annealed" else 1.0)
 
     final_acc, slot_acc = eval_all(model)
     return {
         "final_acc": float(final_acc),
         "slot_acc": [float(x) for x in slot_acc],
+        "cut_step": cut,
         "cut_final_acc": float(cut_final),
         "cut_slot_acc": [float(x) for x in cut_slots],
         "params": n_params(model),
@@ -267,7 +299,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
                     help="any of serial,parallel,depthonly,slotsonly (#62),"
-                         "finalonly (#67),annealed (#73)")
+                         "finalonly (#67),annealed (#73); annealed takes an"
+                         " optional onset and floor (#95), e.g. annealed@0.2"
+                         " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--K", type=int, default=4, help="number of chained sub-steps = number of slots")
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")
@@ -275,21 +309,21 @@ def main():
     ap.add_argument("--dim", type=int, default=64)
     args = ap.parse_args()
 
-    cut = min(int(round(0.6 * args.steps)), args.steps - 1)
     print(f"== serial-scratchpad proof (#38): K={args.K} m={args.m} dim={args.dim} "
-          f"steps={args.steps} (chance={1/args.m:.3f}, grade-off step={cut}) ==")
-    print(f"{'arm':>10} {'seed':>5} {'params':>9} {'acc@cut':>8} {'final_acc':>10} {'sec':>7}"
-          "  slot_accs cut[...] end[...]")
+          f"steps={args.steps} (chance={1/args.m:.3f}) ==")
+    print(f"{'arm':>16} {'seed':>5} {'params':>9} {'cut':>5} {'acc@cut':>8} {'final_acc':>10}"
+          f" {'sec':>7}  slot_accs cut[...] end[...]")
     def fmt(accs):
         return " ".join(f"{a:.3f}" for a in accs) if any(accs) else "-"
 
-    for arm in args.arms.split(","):
+    for spec in args.arms.split(","):
+        arm, anneal_kw = parse_arm_spec(spec)
         for seed in [int(s) for s in args.seeds.split(",")]:
             t0 = time.time()
             r = train_one_arm(arm, K=args.K, m=args.m,
-                              dim=args.dim, steps=args.steps, seed=seed)
-            print(f"{arm:>10} {seed:>5} {r['params']/1e6:>8.2f}M {r['cut_final_acc']:>8.4f} "
-                  f"{r['final_acc']:>10.4f} {time.time()-t0:>7.1f}  "
+                              dim=args.dim, steps=args.steps, seed=seed, **anneal_kw)
+            print(f"{spec:>16} {seed:>5} {r['params']/1e6:>8.2f}M {r['cut_step']:>5} "
+                  f"{r['cut_final_acc']:>8.4f} {r['final_acc']:>10.4f} {time.time()-t0:>7.1f}  "
                   f"cut[{fmt(r['cut_slot_acc'])}] end[{fmt(r['slot_acc'])}]",
                   flush=True)
 

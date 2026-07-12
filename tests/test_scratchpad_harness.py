@@ -12,7 +12,8 @@ import optax
 from flax import nnx
 
 from scratchpad_harness import (ScratchpadNet, affine_chain_task, arm_losses,
-                                grade_lambda, n_params, train_one_arm)
+                                grade_lambda, n_params, parse_arm_spec,
+                                train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -153,6 +154,31 @@ def test_grade_lambda_matches_the_preregistered_schedule():
     assert grade_lambda(2499, S) == 0.0
     lams = [grade_lambda(i, S) for i in range(S)]
     assert all(b <= a for a, b in zip(lams, lams[1:])), "λ must never rise"
+
+
+def test_grade_lambda_onset_and_floor_parameterization():
+    """#95 sweeps the schedule: onset moves the decay start (window stays 20%
+    of the budget), floor makes the decay land on a residual grade instead of
+    zero and hold it there."""
+    S = 2500
+    # onset 0.2: on 0–500, decay 500–1000, off 1000+
+    assert grade_lambda(499, S, onset=0.2) == 1.0
+    assert grade_lambda(750, S, onset=0.2) == 0.5
+    assert grade_lambda(1000, S, onset=0.2) == 0.0
+    # floor 0.1: decays 1.0 → 0.1 across #73's window, then holds
+    assert grade_lambda(999, S, floor=0.1) == 1.0
+    assert grade_lambda(1250, S, floor=0.1) == 0.55
+    assert grade_lambda(1500, S, floor=0.1) == 0.1
+    assert grade_lambda(2499, S, floor=0.1) == 0.1
+
+
+def test_parse_arm_spec_round_trips():
+    assert parse_arm_spec("serial") == ("serial", {})
+    assert parse_arm_spec("annealed") == ("annealed", {})
+    assert parse_arm_spec("annealed@0.2") == ("annealed", {"anneal_onset": 0.2})
+    assert parse_arm_spec("annealed@0.4f0.1") == \
+        ("annealed", {"anneal_onset": 0.4, "anneal_floor": 0.1})
+    assert parse_arm_spec("annealedf0.1") == ("annealed", {"anneal_floor": 0.1})
 
 
 def test_annealed_lambda_zero_kills_the_grade_gradient():
