@@ -2,7 +2,7 @@
 
 Causality history: until 2026-06-11 the decoder read this window's reasoning
 output, whose slots had seen the whole window bidirectionally — a future-token
-leak (docs/findings/2026-06-11-slot-future-leak.md). Fixed by decoding against
+leak (the slot-future-leak post-mortem, ROADMAP graveyard). Fixed by decoding against
 the slots the window started with; the loop's output now only reaches the NEXT
 window through the hunch cache. Both causality tests below guard that fix: the
 fresh-slot path and the carried-hunch path (whose gate once peeked at the
