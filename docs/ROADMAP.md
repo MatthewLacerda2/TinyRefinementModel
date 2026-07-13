@@ -162,6 +162,12 @@ to both arms (or only after the verdict). Ordered certain-small-first:
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
 
+## Graveyard
+Killed ideas and closed post-mortems, with reasons, so they stay dead. New
+tombstones land here — rule 5 of the working agreement sends every non-novel
+result that killed or gates something to this section, one line each, linking
+its PR.
+
 ### Post-mortems (non-novel; full record in PR history, guards in the tests)
 - **slot-future-leak** (2026-06-11, fixed f24f238): the v1 latent-scratchpad slots
   leaked future tokens into past predictions — a bidirectional summary exposed to

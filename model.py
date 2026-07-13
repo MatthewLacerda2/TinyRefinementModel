@@ -216,8 +216,9 @@ class UniversalReasoner(nnx.Module):
         # or the hunch carried from previous windows) — never this window's loop
         # output. The loop reads the whole window bidirectionally, so exposing its
         # output to the decoder leaks future tokens into past predictions (the
-        # slot-future-leak post-mortem, ROADMAP graveyard; fixed f24f238). This
-        # window's reasoning benefits the NEXT window, via the hunch cache.
+        # slot-future-leak post-mortem in ROADMAP's Post-mortems section; fixed
+        # f24f238). This window's reasoning benefits the NEXT window, via the
+        # hunch cache.
         decoder_ctx = jnp.concatenate([z_seq, z_shared], axis=1)
 
         z_seq_out = self.decoder_stack(
