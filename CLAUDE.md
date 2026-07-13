@@ -64,9 +64,18 @@ controlled, pre-committed** experiments. These five rules are how a result earns
    baseline is a mirage. Before any architecture bet is judged, the vanilla control it's
    measured against must itself be trained properly. (See the base-model bar below.)
 
-5. **Record every result, win or lose.** Every ablation produces a one-line finding in
-   `docs/findings/` — including the failures. A recorded negative result is the moat:
-   it stops us re-trying a dead-end and explains the history to our future selves.
+5. **Record every result — where it belongs.** Every experiment's outcome gets written
+   down, win or lose; novelty decides the home:
+   - **Not novel** (literature settles it; we confirmed it holds here): the PR is the
+     record — what ran, the numbers, the verdict. No findings file. If it killed or
+     gates something, one tombstone line in the ROADMAP graveyard linking the PR —
+     future sessions grep the repo, not closed PRs.
+   - **Novel** (a combination, technique, or result the literature doesn't cover —
+     failures included; a novel negative is exactly the moat): a dated `docs/findings/`
+     entry, and if it works, the change lands in the codebase itself.
+   - The novelty test is operational: Claude doesn't know it and can't find it online.
+     State the verdict in the PR ("novel because…" / "settled by…"). **Uncertain →
+     treat as novel** — deleting a finding later is cheap, re-discovering one isn't.
 
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
@@ -125,8 +134,9 @@ graveyard of killed ideas. **GitHub issues own per-item state** — one closeabl
 When you spot a hypothesis worth testing — a smoke test, an ablation, a small or full
 run — file an issue so the queue reflects what we actually intend to do. Progress and
 live state live in issues, *not* in the codebase. Knowledge that is coupled to the code
-(a finding about what an architecture did, tied to a commit) belongs in the repo
-(`docs/findings/`); forward-looking state (what's running, what's next) belongs outside,
+(a finding about what an architecture did, tied to a commit) belongs in the repo —
+`docs/findings/` when it's novel, a ROADMAP-graveyard tombstone plus its PR otherwise
+(rule 5 above); forward-looking state (what's running, what's next) belongs outside,
 in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 **Type labels (what kind of work it is) — in priority order:**
@@ -152,21 +162,33 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 **Orthogonal labels (combine with a type):**
 - **Lane** — `cpu` runs alongside a GPU job; `gpu` is the single RTX 2060, a serial
   queue, one run at a time; `blocked` has an unmet dependency, stated as "Blocked by #N".
+  **Both `cpu` and `gpu` = partial-cpu**: the wiring, tests, and smoke logic are
+  buildable on CPU now, but the confirming measurement needs the card. Do the CPU half
+  whenever (cloud sessions parallelize freely, the card doesn't), park it as a **draft
+  PR** stating exactly what waits on the GPU, and the GPU tail takes its turn in the
+  serial queue when the card is back. The claim (assignee + draft PR) keeps the parked
+  issue out of the ready-queue meanwhile.
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
 
-**The ready-queue.** An issue is ready when it's open, not `blocked`, and its lane is
-free. The principle behind the priority order: anything that *affects another item* leads
-— whether it changes the implementation or changes how we *think* (a result that reframes
-the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
+**The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
+and its lane is free. The principle behind the priority order: anything that *affects
+another item* leads — whether it changes the implementation or changes how we *think*
+(a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
 full training run is last because nothing depends on its output.
+
+**Claiming work.** An issue with an assignee is being worked on — never start it.
+Starting any issue means: check its linked PRs for prior work, then assign it. The
+claim releases when the PR merges; a PR closed unmerged still owes its record first
+(rule 5 above, plus the closing vocabulary), then unassign so the issue re-enters the
+ready-queue. GPU runs additionally drop a "▶ started" comment — the card is a serial
+queue, and it must be visible what's holding it.
 
 **Closing the loop.** Every PR that addresses an issue links it with "Closes #N" so the
 merge closes it. Closing *without* a PR uses a controlled vocabulary in the closing
 comment so history stays greppable: "superseded-by #N", "negative-result", or
-"wont-fix: <reason>". When you start a `gpu` run, assign the issue and drop a "▶ started"
-comment so it's visible what's holding the single GPU.
+"wont-fix: <reason>".
 
 ## Repo map — what's where
 
@@ -206,7 +228,9 @@ the single biggest VRAM line.
 ## How to dig into our past
 
 - **What worked and what didn't** → `docs/findings/` (dated, one conclusion each, with
-  the evidence and the relation to prior work). Start at `docs/findings/README.md`.
+  the evidence and the relation to prior work; novel results only — non-novel outcomes
+  live in their PRs, tombstoned in the ROADMAP graveyard). Start at
+  `docs/findings/README.md`.
 - **The why and the graveyard** → `docs/ROADMAP.md` (narrative + killed ideas with
   reasons so they stay dead).
 - **Per-item state / what's live** → GitHub issues (`gh issue list`). The roadmap points

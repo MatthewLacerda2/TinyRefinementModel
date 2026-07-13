@@ -9,19 +9,20 @@ things, it doesn't go in this folder.
 
 ## Entries
 
-- `2026-06-11-slot-future-leak.md` — latent-scratchpad memory slots leaked future tokens into past predictions
 - `2026-06-13-cross-window-hunch-inert.md` — the cross-window "hunch" gives no next-window benefit (graveyard)
 - `2026-06-13-plan-a-depth-recurrence-works.md` — Plan A depth recurrence earns its compute on state-tracking (#16)
-- `2026-06-14-plan-a-integrated-into-trainer.md` — CausalRefiner integrated into the production trainer
 - `2026-06-16-plan-a-depth-ablation.md` — Plan A depth ablation on the toy tasks
 - `2026-06-18-plan-a-depth-transfer.md` — Plan A depth survives LM pretraining, exploited better than from scratch
 - `2026-06-19-plan-a-depth-dense-sweep.md` — dense sweep corrects the d8 read: depth plateaus by ~d6
 - `2026-07-03-serial-scratchpad-beats-controls.md` — #38: graded serial slots beat both controls, order is the variable
 - `2026-07-03-weight-tying-memorization-null.md` — weight-tying memorization/generalization trade: null both ways
-- `2026-07-04-gpt2-yardstick-calibrated.md` — the GPT-2-small yardstick reproduces the reference reading (#48)
 - `2026-07-04-slots-only-readout-compression-real.md` — #62: a readout blinded to tokens stays within noise; compression real
 - `2026-07-04-final-only-supervision-decomposition-is-taught.md` — #67: without the per-slot grade the scratchpad sits at chance; the decomposition is taught, not emergent
+- `2026-07-05-truncated-backprop-depth-kill.md` — #64: gradient through only the last refinement steps collapses state-tracking — the trajectory gradient is load-bearing (kill)
+- `2026-07-05-per-pass-supervision-islands.md` — #75: per-pass grades cannot replace the trajectory gradient (islands killed), but they stabilize deep recurrence (parity d8 rescued)
+- `2026-07-10-grade-annealing-scaffold-not-crutch.md` — #73: the grade is a scaffold — annealed to zero mid-run the chain survives on final-answer loss (within 2σ), but seed variance grows ~7×
 - `2026-07-10-cosine-halting-kill.md` — #39: latent-cosine halting on the serial scratchpad fails its gate; no fixed point to detect (negative result)
+- `2026-07-12-anneal-floor-wins-onset-is-a-state.md` — #95: anneal to a floor of λ≈0.1 (control-level σ, 7× calmer than zero); no fixed earlier onset is reliable — the grade must stay until the chain is decodable through the deep slots
 
 ## Entry template
 
