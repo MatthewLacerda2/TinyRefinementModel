@@ -134,8 +134,9 @@ graveyard of killed ideas. **GitHub issues own per-item state** — one closeabl
 When you spot a hypothesis worth testing — a smoke test, an ablation, a small or full
 run — file an issue so the queue reflects what we actually intend to do. Progress and
 live state live in issues, *not* in the codebase. Knowledge that is coupled to the code
-(a finding about what an architecture did, tied to a commit) belongs in the repo
-(`docs/findings/`); forward-looking state (what's running, what's next) belongs outside,
+(a finding about what an architecture did, tied to a commit) belongs in the repo —
+`docs/findings/` when it's novel, a ROADMAP-graveyard tombstone plus its PR otherwise
+(rule 5 above); forward-looking state (what's running, what's next) belongs outside,
 in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 **Type labels (what kind of work it is) — in priority order:**
@@ -172,9 +173,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   in the way first. A bug on a path nobody is running waits its turn.
 
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
-and its lane is free. The principle behind the priority order: anything that *affects another item* leads
-— whether it changes the implementation or changes how we *think* (a result that reframes
-the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
+and its lane is free. The principle behind the priority order: anything that *affects
+another item* leads — whether it changes the implementation or changes how we *think*
+(a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
 full training run is last because nothing depends on its output.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
@@ -228,7 +229,8 @@ the single biggest VRAM line.
 
 - **What worked and what didn't** → `docs/findings/` (dated, one conclusion each, with
   the evidence and the relation to prior work; novel results only — non-novel outcomes
-  live in their PRs, tombstoned in the ROADMAP graveyard). Start at `docs/findings/README.md`.
+  live in their PRs, tombstoned in the ROADMAP graveyard). Start at
+  `docs/findings/README.md`.
 - **The why and the graveyard** → `docs/ROADMAP.md` (narrative + killed ideas with
   reasons so they stay dead).
 - **Per-item state / what's live** → GitHub issues (`gh issue list`). The roadmap points
