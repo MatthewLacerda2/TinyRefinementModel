@@ -161,6 +161,12 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 **Orthogonal labels (combine with a type):**
 - **Lane** — `cpu` runs alongside a GPU job; `gpu` is the single RTX 2060, a serial
   queue, one run at a time; `blocked` has an unmet dependency, stated as "Blocked by #N".
+  **Both `cpu` and `gpu` = partial-cpu**: the wiring, tests, and smoke logic are
+  buildable on CPU now, but the confirming measurement needs the card. Do the CPU half
+  whenever (cloud sessions parallelize freely, the card doesn't), park it as a **draft
+  PR** stating exactly what waits on the GPU, and the GPU tail takes its turn in the
+  serial queue when the card is back. The claim (assignee + draft PR) keeps the parked
+  issue out of the ready-queue meanwhile.
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
