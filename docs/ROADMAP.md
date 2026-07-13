@@ -45,7 +45,8 @@ by confidence/ease within the phase: certain small wins first, the experiment la
   Phase 2 batching, and frees the seq×vocab logit/softmax activation peak. Do it
   in the rebuild regardless.
 - **Plan A architecture (the experiment — biggest, uncertain, must-validate)** — DONE,
-  integrated behind `MODEL_ARCH=refiner` (docs/findings/2026-06-14-plan-a-integrated-into-trainer.md):
+  integrated behind `MODEL_ARCH=refiner` (adapter: `plan_a_trainer.py`, whose docstring
+  carries the design; the integration report lives in its PR):
   loop a shared block causally over the current positions — refine each
   position's representation N times under a causal mask, decode from the refined
   state. No learned halting (ACT collapses at small scale). Keep random-depth
@@ -160,6 +161,19 @@ to both arms (or only after the verdict). Ordered certain-small-first:
   (#38) uses. Bonus = dead; grade = allowed.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
+
+## Graveyard
+Killed ideas and closed post-mortems, with reasons, so they stay dead. New
+tombstones land here — rule 5 of the working agreement sends every non-novel
+result that killed or gates something to this section, one line each, linking
+its PR.
+
+### Post-mortems (non-novel; full record in PR history, guards in the tests)
+- **slot-future-leak** (2026-06-11, fixed f24f238): the v1 latent-scratchpad slots
+  leaked future tokens into past predictions — a bidirectional summary exposed to
+  causal decode positions, the textbook non-causal-path bug. Pre-fix "depth lowers
+  CE" readings were leak bandwidth, not refinement (see the hunch-inert finding's
+  pre/post contrast). Guards: both causality tests in `tests/test_model_invariants.py`.
 
 ### Killed in the #10 triage (with reasons, so they stay dead)
 - **per-token halting / ACT**: collapses at small scale — documented dead-end.
