@@ -205,8 +205,8 @@ have different param trees, so a run of one cannot resume the other's checkpoint
 - **`reasoner`** — `UniversalReasoner` in `model.py`: the original cross-window "hunch"
   design. The hunch is **proven inert** (`docs/findings/2026-06-13-cross-window-hunch-inert.md`),
   so this is effectively a vanilla random-depth transformer — kept as the control
-  baseline. It is the current `MODEL_ARCH` default; the base-run plan switches to
-  `refiner` (tracked in issues).
+  baseline, selected explicitly with `MODEL_ARCH=reasoner`. The default is `refiner`
+  (the live bet); resuming an old reasoner run now requires the env var.
 
 The reusable scaffold (stable across whatever idea we try next) vs the swappable
 experiment (the arch behind the flag):

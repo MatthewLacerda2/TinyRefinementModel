@@ -134,8 +134,21 @@ class CausalRefiner(nnx.Module):
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None, islands=False, return_all_iters=False):
+                 grad_last=None, islands=False, return_all_iters=False,
+                 allow_depth_overrun=False):
         depth = self.max_depth if depth is None else depth
+        # The time embedding has rows for steps 0..max_depth only. Past that,
+        # rows are untrained (training never samples above max_depth) and then
+        # jnp.take clamps the index, so extra passes silently reuse the last
+        # time signal and the state degenerates — flagged in the 2026-06-18
+        # depth-transfer caveats, then measured as chance at depth >= 10 in
+        # 2026-07-05-per-pass-supervision-islands.md (readout 5). Fail loud;
+        # a deliberate extrapolation probe must say so.
+        assert allow_depth_overrun or depth <= self.max_depth, (
+            f"depth={depth} > max_depth={self.max_depth}: no trained time-embedding "
+            f"rows exist past max_depth and the row index silently clamps. Pass "
+            f"allow_depth_overrun=True only for a deliberate depth-extrapolation probe."
+        )
 
         pad_bias = None
         if pad_mask is not None:
