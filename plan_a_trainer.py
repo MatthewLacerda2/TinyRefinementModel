@@ -27,6 +27,7 @@ from config import (
     NUM_HEADS,
     MAX_SEQ_LEN,
     MAX_STEPS_LIMIT,
+    INFERENCE_DEPTH,
     PAD_TOKEN_ID,
     COMPUTE_DTYPE,
     REFINER_ENCODER_LAYERS,
@@ -58,9 +59,13 @@ class RefinerForTraining(nnx.Module):
         # Kept tiny ([1, 1, dim]) since it carries no information.
         self.hunch_cache = nnx.Variable(jnp.zeros((1, 1, latent_dim)))
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
+    def __call__(self, tokens, max_steps=INFERENCE_DEPTH, training=False, should_refresh=True):
         # training / should_refresh are part of the baseline interface and have no
         # effect here (no dropout, no carried state) — accepted and ignored.
+        # The default depth is the serving knee (INFERENCE_DEPTH, the 2026-06-19
+        # dense-sweep plateau), NOT MAX_STEPS_LIMIT: callers that don't say a depth
+        # get the cheapest setting the evidence says is equivalent. Training always
+        # passes its sampled depth explicitly.
         pad_mask = tokens != self.pad_token_id
         zero = jnp.array(0.0)
         diag = {"temporal_drift": zero, "forget_density": zero, "tau": zero}

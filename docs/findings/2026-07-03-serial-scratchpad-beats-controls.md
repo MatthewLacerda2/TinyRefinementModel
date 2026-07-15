@@ -69,7 +69,8 @@ Plain serial latent feedback is Coconut (published); the contribution here is th
 *structured, per-slot-supervised* decomposition, and this is the first
 non-bypassable slot design in this repo that survived — the two unsupervised
 predecessors died by gradient starvation and by leaking the future
-[[slot-future-leak]] [[cross-window-hunch-inert]]. The bypass principle held:
+[[slot-future-leak]] (post-mortem in ROADMAP's Post-mortems section)
+[[cross-window-hunch-inert]]. The bypass principle held:
 what made the difference is precisely that the loss could not be minimized
 without the chain existing.
 

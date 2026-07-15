@@ -9,9 +9,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 from flax import nnx
 
-from scratchpad_harness import ScratchpadNet, affine_chain_task, n_params, train_one_arm
+from scratchpad_harness import (ScratchpadNet, affine_chain_task, arm_losses,
+                                grade_lambda, n_params, parse_arm_spec,
+                                train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -139,13 +142,114 @@ def test_finalonly_grade_is_a_detached_probe():
         "graded arm: slot CE must still teach the write block"
 
 
+def test_densedepth_grade_teaches_the_trunk():
+    """#79 wiring guard: the intermediate per-step grades (passes k < K, graded
+    at the answer position against r_k through the dedicated head) must be a
+    live gradient path into the shared refine block and the encoder — dense
+    supervision has to teach the trunk, or the arm would just be depthonly
+    with a decorative loss term."""
+    from scratchpad_harness import DenseDepthNet
+
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = DenseDepthNet(dim=DIM, vocab=M, K=K, rngs=nnx.Rngs(0))
+
+    def intermediate_ce(mdl):
+        _, step_logits = mdl(tokens)                        # [K, B, m]
+        return optax.softmax_cross_entropy_with_integer_labels(
+            step_logits[:K - 1], subs.T[:K - 1]).mean()     # intermediate passes only
+
+    grads = nnx.to_flat_state(nnx.grad(intermediate_ce)(model))
+    live = {path[:2] for path, leaf in grads if float(jnp.abs(leaf[...]).max()) > 0.0}
+    assert ("refiner", "refine_block") in live, "per-step grade must teach the shared refine block"
+    assert ("refiner", "encoder") in live, "per-step grade must reach the encoder"
+    assert any(p[0] == "step_readout" for p in live), "the grade head itself must train"
+
+
+def test_grade_lambda_matches_the_preregistered_schedule():
+    """#73 pre-registration at 2500 steps: grade fully on for 0–1000, linear
+    decay 1000–1500, exactly zero for 1500–2500. The schedule is written in
+    fractions of the budget so the toy-sized test runs exercise it too."""
+    S = 2500
+    assert grade_lambda(0, S) == 1.0
+    assert grade_lambda(999, S) == 1.0
+    assert grade_lambda(1000, S) == 1.0   # the on/decay boundary itself
+    assert grade_lambda(1250, S) == 0.5
+    assert grade_lambda(1500, S) == 0.0
+    assert grade_lambda(2499, S) == 0.0
+    lams = [grade_lambda(i, S) for i in range(S)]
+    assert all(b <= a for a, b in zip(lams, lams[1:])), "λ must never rise"
+
+
+def test_grade_lambda_onset_and_floor_parameterization():
+    """#95 sweeps the schedule: onset moves the decay start (window stays 20%
+    of the budget), floor makes the decay land on a residual grade instead of
+    zero and hold it there."""
+    S = 2500
+    # onset 0.2: on 0–500, decay 500–1000, off 1000+
+    assert grade_lambda(499, S, onset=0.2) == 1.0
+    assert grade_lambda(750, S, onset=0.2) == 0.5
+    assert grade_lambda(1000, S, onset=0.2) == 0.0
+    # floor 0.1: decays 1.0 → 0.1 across #73's window, then holds
+    assert grade_lambda(999, S, floor=0.1) == 1.0
+    assert grade_lambda(1250, S, floor=0.1) == 0.55
+    assert grade_lambda(1500, S, floor=0.1) == 0.1
+    assert grade_lambda(2499, S, floor=0.1) == 0.1
+
+
+def test_parse_arm_spec_round_trips():
+    assert parse_arm_spec("serial") == ("serial", {})
+    assert parse_arm_spec("annealed") == ("annealed", {})
+    assert parse_arm_spec("annealed@0.2") == ("annealed", {"anneal_onset": 0.2})
+    assert parse_arm_spec("annealed@0.4f0.1") == \
+        ("annealed", {"anneal_onset": 0.4, "anneal_floor": 0.1})
+    assert parse_arm_spec("annealedf0.1") == ("annealed", {"anneal_floor": 0.1})
+
+
+def test_near_miss_arm_specs_refuse_to_run():
+    """A typo'd anneal spec must raise, never silently train some other arm
+    under an annealed-looking label — that would fabricate a sweep row."""
+    for bad in ("annealed@", "annealed@0.2f", "annealed@1.0", "annealed@abc"):
+        with pytest.raises(ValueError):
+            parse_arm_spec(bad)
+    with pytest.raises(AssertionError):
+        train_one_arm("annealed@0.2", K=K, m=M, dim=DIM, steps=2,
+                      batch=8, n_pool=16, n_test=8, seed=0)
+
+
+def test_annealed_lambda_zero_kills_the_grade_gradient():
+    """annealed (#73): once λ_slot hits zero the slot grade must teach nothing
+    — the grade head gets exactly zero gradient (its only loss path is the
+    slot CE) — while final-answer CE keeps teaching the write block. That is
+    what makes the post-anneal stretch a true final-only regime (#67's regime,
+    warm-started from a formed chain)."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = ScratchpadNet(dim=DIM, vocab=M, num_slots=K, max_seq_len=2 * K,
+                          serial=True, rngs=nnx.Rngs(0))
+
+    def total_loss(mdl, lam):
+        loss, _ = arm_losses("annealed", mdl, tokens, subs, lam, K)
+        return loss
+
+    grads = nnx.to_flat_state(nnx.grad(lambda mm: total_loss(mm, 0.0))(model))
+    by_top = {}
+    for path, leaf in grads:
+        mx = float(jnp.abs(leaf[...]).max())
+        by_top[path[0]] = max(by_top.get(path[0], 0.0), mx)
+    assert by_top["slot_readout"] == 0.0, "λ=0: the grade head must get zero gradient"
+    assert by_top["write_block"] > 0.0, "λ=0: final CE must still teach the write block"
+
+
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly"):
-        acc, slot_acc, params = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
-                                              batch=64, n_pool=512, n_test=128, seed=0)
+    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly", "annealed",
+                "densedepth", "densedepth_tied"):
+        r = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
+                          batch=64, n_pool=512, n_test=128, seed=0)
+        acc = r["final_acc"]
         assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
-        assert params > 0
+        assert np.isfinite(r["cut_final_acc"]), f"{arm}: missing grade-off checkpoint"
+        assert r["params"] > 0
         if arm != "depthonly":
-            assert len(slot_acc) == K and all(np.isfinite(a) for a in slot_acc)
+            for accs in (r["slot_acc"], r["cut_slot_acc"]):
+                assert len(accs) == K and all(np.isfinite(a) for a in accs)
