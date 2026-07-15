@@ -1,6 +1,6 @@
-"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67, #73).
+"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67, #73, #79).
 
-Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
+The arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
 
   serial    — K ordered sub-slots, each written ONCE by a shared cross-attention
               write block reading tokens + EARLIER slots only, each graded
@@ -31,6 +31,17 @@ Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               `annealed@0.2` starts the decay at 20% of training (window stays
               20%), and `annealed@0.4f0.1` decays to a floor of λ=0.1 and
               holds, instead of going to zero. Plain `annealed` is #73's arm.
+  densedepth — CausalRefiner at depth K with the serial arm's supervision
+              schedule but NO slots: pass k's state at the answer position is
+              graded against sub-result r_k through a dedicated linear head —
+              the same grade path shape as the serial arm's slot_readout. The
+              is-it-the-grade-or-the-offload ablation (#79): if this matches
+              serial, the per-step grade carried the #38 win; if serial beats
+              it, external slots add performance beyond identical supervision.
+  densedepth_tied — same, but the per-step grade goes through the refiner's
+              tied LM head (the #75 per-pass path), which forces the working
+              state itself to approximate embed(r_k) each pass. Robustness
+              check on the grade-head choice, not the primary arm.
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
@@ -175,6 +186,32 @@ class ScratchpadNet(nnx.Module):
         return self.answer_head(self.read_block(aq, ctx))[:, 0]            # [B, m]
 
 
+class DenseDepthNet(nnx.Module):
+    """CausalRefiner + a dedicated per-step grade head (#79). Pass k's normed
+    state at the answer position is graded against r_k through a separate
+    Linear — matching the serial arm's slot_readout grade path — so the tied
+    LM head's embedding geometry is never forced onto the working state. The
+    final answer is still read exactly as depthonly reads it: the last pass's
+    state through the tied head at the last position."""
+
+    def __init__(self, *, dim, vocab, K, num_heads=4, num_encoder_layers=2, rngs):
+        self.K = K
+        self.refiner = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=num_heads,
+                                     num_encoder_layers=num_encoder_layers, max_depth=K,
+                                     max_seq_len=2 * K, rngs=rngs)
+        self.step_readout = nnx.Linear(dim, vocab, rngs=rngs)   # the grade head
+
+    def __call__(self, tokens):
+        states, _ = self.refiner(tokens, depth=self.K, return_all_iters=True,
+                                 return_all_states=True)         # [K, B, S, dim] (normed)
+        step_states = states[:, :, -1, :]                        # pass k at the answer position
+        step_logits = self.step_readout(step_states)             # [K, B, m]
+        embed_t = self.refiner.embed.embedding[...].astype(self.refiner.dtype).T   # tied head, as depthonly
+        answer_logits = jnp.matmul(states[-1, :, -1, :], embed_t,
+                                   preferred_element_type=jnp.float32)
+        return answer_logits, step_logits
+
+
 def n_params(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
@@ -229,6 +266,24 @@ def arm_losses(arm, mdl, tok, sub, lam, depth):
         logits = mdl(tok, depth=depth)[:, -1]                # answer at last position
         ce_final = optax.softmax_cross_entropy_with_integer_labels(logits, final).mean()
         return ce_final, (logits, None)
+    if arm in ("densedepth", "densedepth_tied"):
+        # The grade without the offload (#79): every refinement pass k is
+        # graded at the answer position against r_k — the serial arm's
+        # per-slot supervision delivered to a slotless recurrence.
+        # Intermediate results must live in the model's own hidden state;
+        # only the loss schedule matches serial (λ fixed at 1.0 — these arms
+        # never anneal). densedepth grades through a dedicated head
+        # (DenseDepthNet); the tied variant reuses the #75 all-iters path,
+        # forcing the state itself toward embed(r_k).
+        if arm == "densedepth":
+            answer_logits, step_logits = mdl(tok)                  # [B, m], [K, B, m]
+        else:
+            logits_all, _ = mdl(tok, depth=depth, return_all_iters=True)   # [K, B, S, m]
+            step_logits = logits_all[:, :, -1, :]                          # pass k at answer position
+            answer_logits = step_logits[-1]
+        ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
+        ce_steps = optax.softmax_cross_entropy_with_integer_labels(step_logits, sub.T).mean()
+        return ce_final + lam * ce_steps, (answer_logits, step_logits.transpose(1, 0, 2))
     answer_logits, slot_logits = mdl(tok)
     ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
     ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
@@ -239,17 +294,20 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
                   lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096,
                   anneal_onset=0.4, anneal_decay=0.2, anneal_floor=0.0):
     assert arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly",
-                   "annealed"), f"unknown arm {arm!r}"
+                   "annealed", "densedepth", "densedepth_tied"), f"unknown arm {arm!r}"
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
     tr_tok, tr_sub = task(dk_tr, n_pool)
     te_tok, te_sub = task(dk_te, n_test)
 
-    if arm == "depthonly":
+    if arm in ("depthonly", "densedepth_tied"):
         model = CausalRefiner(dim=dim, vocab_size=m, num_heads=heads,
                               num_encoder_layers=enc, max_depth=K,
                               max_seq_len=2 * K, rngs=nnx.Rngs(seed))
+    elif arm == "densedepth":
+        model = DenseDepthNet(dim=dim, vocab=m, K=K, num_heads=heads,
+                              num_encoder_layers=enc, rngs=nnx.Rngs(seed))
     else:
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
@@ -307,7 +365,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
                     help="any of serial,parallel,depthonly,slotsonly (#62),"
-                         "finalonly (#67),annealed (#73); annealed takes an"
+                         "finalonly (#67),annealed (#73),densedepth,"
+                         "densedepth_tied (#79); annealed takes an"
                          " optional onset and floor (#95), e.g. annealed@0.2"
                          " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")

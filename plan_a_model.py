@@ -135,7 +135,7 @@ class CausalRefiner(nnx.Module):
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
                  grad_last=None, islands=False, return_all_iters=False,
-                 allow_depth_overrun=False):
+                 return_all_states=False, allow_depth_overrun=False):
         depth = self.max_depth if depth is None else depth
         # The time embedding has rows for steps 0..max_depth only. Past that,
         # rows are untrained (training never samples above max_depth) and then
@@ -198,10 +198,14 @@ class CausalRefiner(nnx.Module):
 
         if return_all_iters:
             z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            if return_all_states:
+                # #79: hand back the normed per-pass states instead of tied-head
+                # logits, so an external grade head can read them (toy scale only).
+                return z_all.astype(self.dtype), gates
             embed_t = self.embed.embedding[...].astype(self.dtype).T
             logits_all = jnp.matmul(z_all.astype(self.dtype), embed_t,
                                     preferred_element_type=jnp.float32)
-            gates = jnp.stack(gate_means) if self.use_gate else None
             return logits_all, gates
 
         z = self.out_norm(z)
