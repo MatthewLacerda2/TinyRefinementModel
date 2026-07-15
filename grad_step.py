@@ -92,8 +92,65 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
-    
+
     return loss, out, grads, grad_norm
+
+
+def _path_key_name(key):
+    # jax path entries come in several flavors (DictKey.key, GetAttrKey.name,
+    # SequenceKey.idx); normalize them all to a plain string.
+    for attr in ("key", "name", "idx"):
+        if hasattr(key, attr):
+            return str(getattr(key, attr))
+    return str(key)
+
+
+def grad_zero_fractions(grads):
+    """Fraction of exactly-zero entries per top-level param group (#82).
+
+    f16 gradient underflow is silent: entries round to exactly zero, the loss
+    plateaus, and the NaN-streak abort never fires because underflow isn't NaN.
+    The global grad norm can't show a tail of layers that quietly froze, so the
+    no-loss-scaling dtype policy (config.py) gets measured instead of assumed.
+
+    Grouping strips wrapper levels holding a single child (the refiner
+    adapter's params all live under 'refiner'), so both arches report their
+    real top-level groups (embed, encoder, refine_block, ...). Reading the
+    numbers — #82's caveat, amended by what the unit test showed:
+      - time_embed rows for unsampled depths are legitimately zero; the tied
+        token embedding, by contrast, gets gradient on EVERY row through the
+        CE head projection, but rare-token magnitudes are small enough to
+        round to zero benignly in f16 — embedding-style groups stay excluded
+        from the decision scalar (dense_zero_frac_max) either way.
+      - zero-init down_proj kernels block all gradient to gate/up_proj, so
+        block groups carry a large *structural* zero fraction until the first
+        optimizer updates land — attribute early readings to that, not
+        underflow. The dense signal, once training is moving, is ~0 healthy.
+    """
+    leaves = jax.tree_util.tree_flatten_with_path(grads)[0]
+    paths = [tuple(_path_key_name(k) for k in path) for path, _ in leaves]
+
+    level = 0
+    while len({p[min(level, len(p) - 1)] for p in paths}) == 1 \
+            and any(len(p) > level + 1 for p in paths):
+        level += 1
+
+    zeros, sizes = {}, {}
+    for p, (_, leaf) in zip(paths, leaves):
+        group = p[min(level, len(p) - 1)]
+        zeros[group] = zeros.get(group, 0) + jnp.sum(leaf == 0)
+        sizes[group] = sizes.get(group, 0) + leaf.size
+    return {g: zeros[g] / sizes[g] for g in zeros}
+
+
+def dense_zero_frac_max(zero_fracs):
+    """Worst zero-fraction among the dense groups — the #82 decision-rule scalar.
+
+    Embedding-style groups are excluded: their zeros are unused rows, not
+    underflow. Accepts the grad_zero_fractions dict (jax or python scalars).
+    """
+    dense = [v for k, v in zero_fracs.items() if "embed" not in k]
+    return max(dense) if dense else float("nan")
 
 
 @nnx.jit
