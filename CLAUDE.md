@@ -167,7 +167,11 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   whenever (cloud sessions parallelize freely, the card doesn't), park it as a **draft
   PR** stating exactly what waits on the GPU, and the GPU tail takes its turn in the
   serial queue when the card is back. The claim (assignee + draft PR) keeps the parked
-  issue out of the ready-queue meanwhile.
+  issue out of the ready-queue meanwhile. The draft's "what waits" section is a
+  **resume protocol a context-free session can execute**: exact commands (including
+  the env/config knobs that make them hit the changed code), what counts as pass
+  against what baseline, and the pre-named fallback if it fails — finishing must need
+  only the card, never this conversation's memory. (Template case: PR #98 / #84.)
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
@@ -201,8 +205,8 @@ have different param trees, so a run of one cannot resume the other's checkpoint
 - **`reasoner`** — `UniversalReasoner` in `model.py`: the original cross-window "hunch"
   design. The hunch is **proven inert** (`docs/findings/2026-06-13-cross-window-hunch-inert.md`),
   so this is effectively a vanilla random-depth transformer — kept as the control
-  baseline. It is the current `MODEL_ARCH` default; the base-run plan switches to
-  `refiner` (tracked in issues).
+  baseline, selected explicitly with `MODEL_ARCH=reasoner`. The default is `refiner`
+  (the live bet); resuming an old reasoner run now requires the env var.
 
 The reusable scaffold (stable across whatever idea we try next) vs the swappable
 experiment (the arch behind the flag):

@@ -134,8 +134,21 @@ class CausalRefiner(nnx.Module):
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None, islands=False, return_all_iters=False):
+                 grad_last=None, islands=False, return_all_iters=False,
+                 return_all_states=False, allow_depth_overrun=False):
         depth = self.max_depth if depth is None else depth
+        # The time embedding has rows for steps 0..max_depth only. Past that,
+        # rows are untrained (training never samples above max_depth) and then
+        # jnp.take clamps the index, so extra passes silently reuse the last
+        # time signal and the state degenerates — flagged in the 2026-06-18
+        # depth-transfer caveats, then measured as chance at depth >= 10 in
+        # 2026-07-05-per-pass-supervision-islands.md (readout 5). Fail loud;
+        # a deliberate extrapolation probe must say so.
+        assert allow_depth_overrun or depth <= self.max_depth, (
+            f"depth={depth} > max_depth={self.max_depth}: no trained time-embedding "
+            f"rows exist past max_depth and the row index silently clamps. Pass "
+            f"allow_depth_overrun=True only for a deliberate depth-extrapolation probe."
+        )
 
         pad_bias = None
         if pad_mask is not None:
@@ -185,10 +198,14 @@ class CausalRefiner(nnx.Module):
 
         if return_all_iters:
             z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            if return_all_states:
+                # #79: hand back the normed per-pass states instead of tied-head
+                # logits, so an external grade head can read them (toy scale only).
+                return z_all.astype(self.dtype), gates
             embed_t = self.embed.embedding[...].astype(self.dtype).T
             logits_all = jnp.matmul(z_all.astype(self.dtype), embed_t,
                                     preferred_element_type=jnp.float32)
-            gates = jnp.stack(gate_means) if self.use_gate else None
             return logits_all, gates
 
         z = self.out_norm(z)
