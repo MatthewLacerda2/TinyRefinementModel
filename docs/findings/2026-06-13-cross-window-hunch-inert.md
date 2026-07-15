@@ -9,7 +9,8 @@ Commit: 5f17340  Run: runs/run_20260611_234058 (checkpoint step 384639 ≈ opt s
 Universal Reasoner, 79.6M params (dim 512, 4 encoder + 4 decoder blocks, one
 weight-shared reasoning block iterated over 32 latent slots), trained on the
 fineweb-edu curriculum mixture for ~3000 optimizer steps (~200M tokens) on a
-single RTX 2060. Since the 2026-06-11 causality fix [[slot-future-leak]] the
+single RTX 2060. Since the 2026-06-11 causality fix [[slot-future-leak]] (post-mortem
+in ROADMAP's Post-mortems section) the
 reasoning loop's only pathway to influence predictions is the cross-window
 hunch cache: the loop runs on window 1 and writes a compressed latent summary
 that the decoder reads when it starts window 2. The depth curve measures exactly

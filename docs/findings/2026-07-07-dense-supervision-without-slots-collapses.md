@@ -94,3 +94,7 @@ it (#62).
   before dying at step 4) — the slotless arm is *trying* to form the chain and
   cannot hold it, which is consistent with the interference story but not
   proof of the mechanism.
+- In densedepth_tied the final pass's grade and the final-answer CE score the
+  *same* logits, so the final target is effectively weighted 2× there (serial
+  and densedepth grade it through two different heads). A schedule asymmetry
+  worth noting for exactness; the variant sits at chance either way.

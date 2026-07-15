@@ -154,3 +154,17 @@ def test_depth_is_static_and_varies_output():
     d1 = np.asarray(m(tok, depth=1))
     d8 = np.asarray(m(tok, depth=8))
     assert np.max(np.abs(d1 - d8)) > 1e-3, "depth had no effect on the output"
+
+
+def test_depth_overrun_fails_loud():
+    """Depth past max_depth has no trained time-embedding rows and the row index
+    silently clamps (findings 2026-06-18 caveats, 2026-07-05 readout 5) — the
+    model must refuse it unless the caller opts into a deliberate probe."""
+    m = _tiny()  # max_depth=8
+    tok = jnp.arange(1, 17)[None, :]
+    with pytest.raises(AssertionError, match="allow_depth_overrun"):
+        m(tok, depth=9)
+    # The opt-in must still run — degraded numbers are the probe's business
+    # (at random init deep overrun can even overflow, so only shape is checked).
+    out = np.asarray(m(tok, depth=12, allow_depth_overrun=True))
+    assert out.shape == (1, 16, 37)

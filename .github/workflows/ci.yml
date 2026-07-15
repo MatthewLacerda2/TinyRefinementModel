@@ -1,10 +1,17 @@
 name: CI
 
+# Trigger policy (#110): skip draft PRs (parked partial-cpu work re-triggers via
+# ready_for_review the moment it's undrafted, so nothing merges unchecked) and
+# markdown-only changes (paths-ignore skips only when EVERY changed file is .md —
+# a mixed .md+code diff still runs everything).
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md"]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["**.md"]
 
 # Three named jobs so each load-bearing check is a separately visible (and
 # separately requireable) status (#45):
@@ -17,9 +24,12 @@ on:
 # CPU-only throughout (FORCE_F32_COMPUTE via tests/conftest.py or explicit env)
 # so CI runs while the GPU trains; the real f16 path stays RUN_TESTS_ON_GPU=1.
 
+# Each job carries the draft guard (an `if` on the job, since a workflow can't
+# be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
   test:
     name: pytest (CPU)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     env:
       # CPU-only CI for the unit tests; no GPU/CUDA, no training runs.
@@ -47,6 +57,7 @@ jobs:
 
   golden:
     name: golden-run (CPU)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     env:
       JAX_PLATFORMS: cpu
@@ -74,6 +85,7 @@ jobs:
 
   smoke:
     name: overfit smoke (CPU)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     env:
       JAX_PLATFORMS: cpu

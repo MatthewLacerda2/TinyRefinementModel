@@ -1,32 +1,70 @@
 import numpy as np
 import optax
 
-from config import MAX_STEPS_LIMIT, DATA_SEED
+from config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET
 
+# Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
+# phase that does not grow with the run.
 WARMUP_STEPS = 1000
-DECAY_STEPS = 15000
 
-learning_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=1e-5,
-    peak_value=1e-4,
-    warmup_steps=WARMUP_STEPS, 
-    decay_steps=DECAY_STEPS, 
-    end_value=1e-6
-)
+# The LR anneal's horizon must match the run length (#83). DECAY_STEPS derives
+# from the planned token budget (config.TRAIN_TOKEN_BUDGET); with no budget set
+# it stays at the historical 15000 opt steps, so existing configs and the golden
+# run resolve unchanged.
+_DEFAULT_DECAY_STEPS = 15000
+
+
+def resolve_decay_steps(token_budget, tokens_per_opt_step=TOKENS_PER_OPT_STEP):
+    """Opt-step horizon for the run: token budget / tokens per opt step
+    (None → the historical default). A budget that doesn't clear warmup is a
+    config error, not a run worth starting — fail loud."""
+    if token_budget is None:
+        return _DEFAULT_DECAY_STEPS
+    steps = round(token_budget / tokens_per_opt_step)
+    if steps <= WARMUP_STEPS:
+        raise ValueError(
+            f"TRAIN_TOKEN_BUDGET={token_budget} resolves to {steps} opt steps, "
+            f"inside the {WARMUP_STEPS}-step warmup — the cosine would never decay."
+        )
+    return steps
+
+
+def build_learning_schedule(decay_steps):
+    """The run's LR schedule at an explicit horizon; module-level
+    learning_schedule is this at the resolved DECAY_STEPS."""
+    return optax.warmup_cosine_decay_schedule(
+        init_value=1e-5,
+        peak_value=1e-4,
+        warmup_steps=WARMUP_STEPS,
+        decay_steps=decay_steps,
+        end_value=1e-6
+    )
+
+
+DECAY_STEPS = resolve_decay_steps(TRAIN_TOKEN_BUDGET)
+learning_schedule = build_learning_schedule(DECAY_STEPS)
+
+# The λ anneals deliberately do NOT follow DECAY_STEPS (#83): they relax
+# regularization pressure over early training — absolute-step optimizer
+# dynamics, like warmup — not a function of the run's energy budget. On a
+# longer run they sit at their end values from 15k on, which is today's
+# behavior made explicit rather than silently stretched. (For the refiner
+# arch both terms are exactly zero anyway.)
+LAMBDA_DECAY_STEPS = 15000
 
 forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0, 
-    peak_value=0.05, 
-    warmup_steps=WARMUP_STEPS, 
-    decay_steps=DECAY_STEPS, 
+    init_value=0.0,
+    peak_value=0.05,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
     end_value=0.001
 )
 
 diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0, 
-    peak_value=1.0, 
-    warmup_steps=WARMUP_STEPS, 
-    decay_steps=DECAY_STEPS, 
+    init_value=0.0,
+    peak_value=1.0,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
     end_value=0.1
 )
 

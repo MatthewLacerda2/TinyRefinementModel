@@ -50,10 +50,10 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
         out1 = model(seq1_in, max_steps=max_steps, training=True, should_refresh=should_refresh)
-        ce1 = ce_of(out1, seq1_out)
+        ce1, _ = ce_of(out1, seq1_out)
 
         out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
-        ce2 = ce_of(out2, seq2_out)
+        ce2, logit_stats = ce_of(out2, seq2_out)
 
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
@@ -63,8 +63,13 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
 
         # No NaN masking here: a non-finite loss must surface in the train loop
         # (which skips the update and aborts on a streak), not be silently zeroed.
+        # Logit-scale thermometer (#80): the CE scan's telemetry over window 2 —
+        # same segment 'token_loss' reads — so entropy/log-Z drift (collapse or
+        # blur) is visible in the metrics stream instead of surfacing as loss
+        # weirdness. Measurement only; the CE backward ignores its cotangent.
         new_diag = {
             **out2.diag,
+            **jax.lax.stop_gradient(logit_stats),
             'seg1_ce': jax.lax.stop_gradient(ce1),
             'token_loss': jax.lax.stop_gradient(ce2),
         }

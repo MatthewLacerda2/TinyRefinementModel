@@ -225,18 +225,26 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     #     happen late? gate openness: do early passes make real updates?
     #   depth transfer: trained at `depth`, evaled at 1..12 — past max_depth the
     #     time embedding saturates (jnp.take clips the row index), so passes
-    #     beyond training depth reuse the last time signal.
+    #     beyond training depth reuse the last time signal. The model asserts on
+    #     depth overrun exactly because of that clamp; this probe is the one
+    #     deliberate exception, so it opts in.
     @nnx.jit(static_argnames=["depth"])
     def eval_passes(model, inp, tgt, mask, depth):
         logits_all, gates = model(inp, depth=depth, return_all_iters=True)
         hit = (logits_all.argmax(-1) == tgt[None]) * mask[None]
         return jnp.sum(hit, axis=(1, 2)) / jnp.sum(mask), gates
 
+    @nnx.jit(static_argnames=["depth"])
+    def eval_transfer_sums(model, inp, tgt, mask, depth):
+        logits = model(inp, depth=depth, allow_depth_overrun=True)
+        pred = logits.argmax(-1)
+        return jnp.sum((pred == tgt) * mask), jnp.sum(mask)
+
     sub = slice(0, min(1024, te_inp.shape[0]))
     pass_acc, gate_open = eval_passes(model, te_inp[sub], te_tgt[sub], te_mask[sub], depth)
     transfer = {}
     for d in range(1, 13):
-        a, _, m = eval_chunk_sums(model, te_inp[sub], te_tgt[sub], te_mask[sub], d)
+        a, m = eval_transfer_sums(model, te_inp[sub], te_tgt[sub], te_mask[sub], d)
         transfer[d] = float(a) / float(m)
     extras = {
         "pass_acc": [float(x) for x in pass_acc],
