@@ -84,7 +84,14 @@ readings, as in prior findings.
 ## Budget
 
 3 CPU training runs (the serial arm, ~minutes each) + eval-only halting ladder.
-Well under an hour. Any outcome is a findings entry.
+Well under an hour.
+
+## Outcome (2026-07-15)
+
+The KILL branch fired — no τ satisfied (a)+(b)+(c). Non-novel per rule 5
+(the mechanism mismatch is derivable: a fixed-point detector on a write-once
+memory), so the record is PR #96 + the Graveyard tombstone in
+`docs/ROADMAP.md`, not a findings entry.
 
 ## Files
 
@@ -92,4 +99,4 @@ Well under an hour. Any outcome is a findings entry.
 |---|---|
 | Varlen task + halting eval + `--halting` runner | `scratchpad_harness.py` |
 | Truncation-equivalence, varlen-task, halt-rule tests | `tests/test_scratchpad_harness.py` |
-| Verdict | `docs/findings/` entry + PR closing #39 |
+| Verdict | PR #96 (kill) + tombstone in `docs/ROADMAP.md` Graveyard — non-novel per rule 5, so no findings entry |

@@ -109,11 +109,10 @@ the v1 leak that had to be amputated).
   gap versus the parallel-slot control. Runs on the tiny ablation harness
   (minutes), so it is a cpu-lane bet, not a real-model run.
 - **Parked refinements — gated behind the proof; adding them now confounds it:**
-  - *Convergence halting* — #39: stop refining when the latent stops moving
-    (cosine of step k vs k-1 below a threshold). This is the Deep-Equilibrium /
-    fixed-point family and the 2025 recurrent-depth line (Geiping et al.), NOT
-    learned per-token halting (ACT, which is killed below). Not novel as a
-    mechanism; worth it for adaptive compute (fewer steps on easy tokens).
+  - *Convergence halting* — #39: **KILLED 2026-07-15** (see Graveyard) — the
+    write-once scratchpad has no iterated state, so the fixed-point detector
+    has no fixed point to detect; the measured accuracy/writes trade never
+    clears the bar. PR #96.
   - *Slot dimensionality / "vagueness"* — a wide continuous slot can hold a soft,
     under-specified idea (superposition) where a token must commit; the state
     starts vague and sharpens toward commitment — which is what convergence
@@ -174,6 +173,17 @@ its PR.
   causal decode positions, the textbook non-causal-path bug. Pre-fix "depth lowers
   CE" readings were leak bandwidth, not refinement (see the hunch-inert finding's
   pre/post contrast). Guards: both causality tests in `tests/test_model_invariants.py`.
+
+### Killed by measurement (non-novel; full record in the linked PR)
+- **cosine halting on the serial scratchpad** (#39, 2026-07-15, PR #96): halting the
+  write loop when cosine(s_k, s_{k−1}) clears a threshold cannot trade writes for
+  accuracy — every τ that saves ≥0.5 writes loses ~0.15 accuracy (3–4σ), every τ that
+  preserves accuracy saves nothing. Structural: the rule is a fixed-point detector and
+  the write-once scratchpad has no iterated state — no fixed point to detect; converged
+  slots plateau at ~0.6 cosine because slot-index embeddings keep even frozen-value
+  latents apart. If adaptive depth is ever revisited, the detector must live in
+  grade-logit space, not latent space (measured ≈0.86 vs ≈−0.14 separation there); a
+  genuinely iterated state (the refiner's depth loop) would also dodge the objection.
 
 ### Killed in the #10 triage (with reasons, so they stay dead)
 - **per-token halting / ACT**: collapses at small scale — documented dead-end.
