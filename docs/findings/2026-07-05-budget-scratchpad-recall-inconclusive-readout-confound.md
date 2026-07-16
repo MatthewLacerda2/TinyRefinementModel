@@ -1,8 +1,10 @@
 # Fixed-budget recall test is uninterpretable: the unlimited-memory ceiling also sits at chance, so budget2-vs-budget1 cannot be read as a retention result — phase 2 (#63)
 
-Status: inconclusive (pre-registered kill criterion fired, but on a confound —
-recorded per AUTONOMY.md: "ambiguity is a result, not a tie to be broken by
-enthusiasm")
+Status: retracted — the run is void, not merely confounded. 2026-07-16
+addendum (bottom): the eval scored the recall arms against r_K while they
+were TRAINED on (r_1+r_K) mod m, so "at chance" is what the table shows
+whether the readout failed or solved the task. The readout-capacity
+diagnosis below is unsupported; only "this run decided nothing" survives.
 Date: 2026-07-05
 Commit: c3e9fb25f6ca65e864b722c76277c97b47dba17d  Run: tiny-config ablation
 (synthetic, no runs/ id)  Measured with: `python scratchpad_harness.py --arms
@@ -107,3 +109,30 @@ failure mode than this one, where the pathway is mandatory (per-step grades all
 trained near-perfectly) but the final combinator never learned regardless of
 memory shape. Worth distinguishing for the record: this is a readout-capacity
 gap, not a bypass or a forget-gate collapse.
+
+## Addendum (2026-07-16): eval-target bug voids the table — diagnosis retracted
+
+Found while rebasing PR #76 onto main: `eval_all` computed
+`final_acc = mean(argmax == te_sub[:, -1])` for EVERY arm — the recall arms
+were trained on `(r_1 + r_K) mod m` but scored against `r_K`. Since r_1 is
+~uniform, a model that perfectly solved the recall task would still score
+≈ 1/m against the wrong target. **The table above therefore cannot
+distinguish "the readout never learned to combine" from "the readout solved
+the task and the eval measured the wrong thing."** Everything downstream of
+the table is unsupported:
+
+- The readout-capacity diagnosis (## Reading, and the contrast drawn in
+  ## Relation to prior work) is retracted — it may still be true, but this
+  run is not evidence for it.
+- The per-slot grade rows are unaffected (scored against `sub` correctly),
+  so "each sub-result was computed and stored near-perfectly" stands.
+- Phase 1 (`2026-07-05-budget-scratchpad-overwrite-carries-chain.md`) is
+  unaffected: its arms train on the plain chain task whose final target
+  really is r_K, so its eval was correct.
+
+The fix (in the PR #76 rebase): loss and eval now share one
+`final_target(arm, sub, m)` so they can never disagree, with a regression
+test (`test_recall_arms_scored_against_their_trained_target`) pinning an
+oracle model to ~zero CE. Phase 2 must be rerun under the corrected eval
+before any of the follow-ups listed above are worth spending on — the rerun
+might simply show a win (or a clean kill) at zero extra design cost.

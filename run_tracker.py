@@ -19,7 +19,9 @@ from config import (
     NUM_GROUPS,
     DATA_SEED,
     MODEL_SEED,
+    TRAIN_TOKEN_BUDGET,
 )
+from schedules import DECAY_STEPS
 
 class RunTracker:
     def __init__(self, runs_root="runs"):
@@ -72,6 +74,9 @@ class RunTracker:
             "NUM_GROUPS": NUM_GROUPS,
             "DATA_SEED": DATA_SEED,
             "MODEL_SEED": MODEL_SEED,
+            # The run's recipe horizon (#83): budget in, resolved anneal out.
+            "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
+            "DECAY_STEPS": DECAY_STEPS,
         }
 
     def _check_compatibility(self, metadata_path):

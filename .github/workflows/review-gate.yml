@@ -12,13 +12,19 @@ name: Review Gate
 # When neither secret is set (forks, or not yet configured) the job skips
 # gracefully — the pytest CI job remains the hard gate either way.
 
+# Trigger policy (#110), same as ci.yml — doubly worth it here since every run
+# spends Claude tokens: skip drafts (ready_for_review re-triggers on undraft)
+# and markdown-only diffs.
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["**.md"]
 
 jobs:
   review:
     name: code-reviewer verdict
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -72,7 +72,12 @@ class CausalAttention(nnx.Module):
             bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
             if pad_bias is not None:
                 bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
-            out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
+            # The bias must stay f32: cast to f16 turns -1e9 into -inf (f16 max
+            # ~65504), and a fully-masked row would softmax to NaN (#84).
+            # dot_product_attention adds the bias to its f32 logits, so f16
+            # q/k/v keep the tensor-core path — same contract as the chunked
+            # branch, whose bias also stays f32.
+            out = jax.nn.dot_product_attention(q, k, v, bias=bias)
         return self.o(out.reshape(b, s, d))
 
 
@@ -134,8 +139,21 @@ class CausalRefiner(nnx.Module):
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None):
+                 grad_last=None, islands=False, return_all_iters=False,
+                 return_all_states=False, allow_depth_overrun=False):
         depth = self.max_depth if depth is None else depth
+        # The time embedding has rows for steps 0..max_depth only. Past that,
+        # rows are untrained (training never samples above max_depth) and then
+        # jnp.take clamps the index, so extra passes silently reuse the last
+        # time signal and the state degenerates — flagged in the 2026-06-18
+        # depth-transfer caveats, then measured as chance at depth >= 10 in
+        # 2026-07-05-per-pass-supervision-islands.md (readout 5). Fail loud;
+        # a deliberate extrapolation probe must say so.
+        assert allow_depth_overrun or depth <= self.max_depth, (
+            f"depth={depth} > max_depth={self.max_depth}: no trained time-embedding "
+            f"rows exist past max_depth and the row index silently clamps. Pass "
+            f"allow_depth_overrun=True only for a deliberate depth-extrapolation probe."
+        )
 
         pad_bias = None
         if pad_mask is not None:
@@ -154,11 +172,22 @@ class CausalRefiner(nnx.Module):
         # encoder output; the encoder itself keeps an identity gradient path, since
         # a full detach would leave it with no training signal at all.
         assert grad_last is None or grad_last >= 1, "grad_last must be >= 1 (or None for full backprop)"
+        assert not (islands and grad_last is not None), "islands and grad_last are different cuts — pick one"
         z_enc = z
         cut = None if grad_last is None else depth - grad_last
 
+        # islands (#75): cut the trajectory gradient at EVERY pass boundary, so
+        # each iteration is graded only by its own loss (pair with per-pass
+        # supervision — with a final-only loss this is just grad_last=1). Same
+        # deviation-only detach as grad_last: the encoder keeps its identity path.
+        # return_all_iters (#75): also return every pass's logits (toy scale only
+        # — [depth, b, s, vocab] is cheap here, unaffordable at real vocab) plus
+        # each pass's mean gate openness, for per-pass supervision and readouts.
+        all_z, gate_means = [], []
         for step in range(depth):
-            if cut is not None and step == cut and cut > 0:
+            if islands and step > 0:
+                z = z_enc + jax.lax.stop_gradient(z - z_enc)
+            elif cut is not None and step == cut and cut > 0:
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
             t_signal = self.time_embed(jnp.asarray(step))
             z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
@@ -166,8 +195,23 @@ class CausalRefiner(nnx.Module):
             if self.use_gate:
                 g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))
                 z = g * z_new + (1.0 - g) * z
+                gate_means.append(jnp.mean(g))
             else:
                 z = z_new
+            if return_all_iters:
+                all_z.append(z)
+
+        if return_all_iters:
+            z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            if return_all_states:
+                # #79: hand back the normed per-pass states instead of tied-head
+                # logits, so an external grade head can read them (toy scale only).
+                return z_all.astype(self.dtype), gates
+            embed_t = self.embed.embedding[...].astype(self.dtype).T
+            logits_all = jnp.matmul(z_all.astype(self.dtype), embed_t,
+                                    preferred_element_type=jnp.float32)
+            return logits_all, gates
 
         z = self.out_norm(z)
         if return_hidden:
