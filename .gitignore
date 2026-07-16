@@ -4,6 +4,7 @@ __pycache__/
 orbax_checkpoints/
 runs/
 venv/
+.venv/
 
 # Explicitly kept helpers
 auxmd.md
