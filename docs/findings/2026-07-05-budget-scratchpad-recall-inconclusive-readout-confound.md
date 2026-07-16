@@ -136,3 +136,10 @@ test (`test_recall_arms_scored_against_their_trained_target`) pinning an
 oracle model to ~zero CE. Phase 2 must be rerun under the corrected eval
 before any of the follow-ups listed above are worth spending on — the rerun
 might simply show a win (or a clean kill) at zero extra design cost.
+
+Rerun done same day (#114): see
+`2026-07-16-budget-scratchpad-recall-rerun-readout-fine-writer-leaks.md` —
+`unlimited` solves at 0.991 (the readout-capacity diagnosis above was wrong),
+and the S=1 control solves at 0.897, exposing a second, design-level leak:
+the token-visible writer can smuggle the combined answer past any slot
+budget. Retention stays untested pending a local-context writer.
