@@ -7,9 +7,10 @@ the signal to split a piece of it into a skill, not to let it sprawl.
 
 ## How we work
 
-Prefer plain language that explains what we — or the code — are *doing*, not highly
-technical decoration. The user is trying to architect intelligence, not ornament an
-implementation.
+Prefer simple language that explains what we or the code are doing at a high level.
+
+We MUST obey Richard Sutton's "the bitter lesson". The intelligence of our model must
+come from scalable methods, not hand-crafted.
 
 First structure a good architecture and write code that is readable and organized.
 Then tighten it — denser, more compact — but compactness serves readability, it is not
