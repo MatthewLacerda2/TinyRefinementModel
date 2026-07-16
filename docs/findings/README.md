@@ -26,6 +26,7 @@ things, it doesn't go in this folder.
 - `2026-07-10-grade-annealing-scaffold-not-crutch.md` — #73: the grade is a scaffold — annealed to zero mid-run the chain survives on final-answer loss (within 2σ), but seed variance grows ~7×
 - `2026-07-12-anneal-floor-wins-onset-is-a-state.md` — #95: anneal to a floor of λ≈0.1 (control-level σ, 7× calmer than zero); no fixed earlier onset is reliable — the grade must stay until the chain is decodable through the deep slots
 - `2026-07-15-f16-no-loss-scaling-no-dense-underflow.md` — #82: dense-kernel zero-grad fraction 0.0003 vs the 0.05 bar on the f16 no-loss-scaling path — underflow measurable but negligible at init; base run's early stretch is the confirming read
+- `2026-07-16-budget-scratchpad-recall-rerun-readout-fine-writer-leaks.md` — #114: corrected-eval rerun of #63 phase 2 — the readout combines two values at 0.99 (old diagnosis dead), but the token-visible writer leaks the answer past the S=1 control, so retention is still untested
 
 ## Entry template
 
