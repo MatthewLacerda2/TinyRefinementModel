@@ -49,6 +49,14 @@ NUM_GROUPS = NUM_HEADS // 4
 # The two arches have different param trees, so a checkpoint from one cannot be
 # resumed by the other — resuming an old reasoner run now requires the env var.
 MODEL_ARCH = os.environ.get("MODEL_ARCH", "refiner")
+_KNOWN_ARCHES = ("refiner", "reasoner")
+if MODEL_ARCH not in _KNOWN_ARCHES:
+    # Fail closed at import (#104): the selector otherwise falls through to a
+    # default, so a typo would silently train the wrong architecture for the
+    # whole run — the one failure mode a launch banner does not reliably catch.
+    raise SystemExit(
+        f"MODEL_ARCH={MODEL_ARCH!r} is not a known architecture; "
+        f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'refiner')")
 # Blockwise memory-lean attention for the refiner (#66): removes the O(seq²)
 # score/probability transients that dominate the grad-step peak (mem_profile).
 # Opt-in until the dim960 GPU fit-test + wall-clock bench pass on the box;
