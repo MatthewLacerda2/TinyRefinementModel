@@ -37,9 +37,14 @@ bars were written to judge, so neither verdict is claimed.
 
 **1. The retracted diagnosis is now definitively dead.** `unlimited` solves
 the recall task at 0.991 under the corrected eval — same config, same seeds
-as July 5. The readout (one cross-attention pass + linear head) combines two
-retrieved values just fine; the July 5 "all arms at chance" was 100% the
-eval-target bug. The model had solved the task behind the broken grader.
+as July 5. The July 5 "all arms at chance" was 100% the eval-target bug; the
+model had solved the task behind the broken grader. One locus caveat, forced
+by conclusion 2 below: because `unlimited`'s writers are also token-visible,
+this run cannot say WHERE the combination happens — the readout may retrieve
+r_1 and r_K and add them, or the step-K writer may deposit the pre-computed
+sum for the readout to merely fetch. What is dead is the claim that the
+system couldn't compute the combination at this dim/step budget. The #116
+local-context writer removes the writer-side option and will pin the locus.
 
 **2. The task does not force retention — the writer is a side channel.** The
 supposedly-retention-free control, budget1 (S=1, forced full overwrite),
