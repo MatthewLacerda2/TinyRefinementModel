@@ -13,8 +13,8 @@ import pytest
 from flax import nnx
 
 from scratchpad_harness import (BudgetScratchpadNet, ScratchpadNet, affine_chain_task,
-                                arm_losses, final_target, grade_lambda, n_params,
-                                parse_arm_spec, train_one_arm)
+                                arm_losses, encode_links, final_target, grade_lambda,
+                                n_params, parse_arm_spec, train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -355,8 +355,9 @@ def test_recall_arms_scored_against_their_trained_target():
 
 
 def test_budget_arms_train_and_beat_nothing_burns():
-    """#63: full train/eval path for the four new arms at toy size."""
-    for arm in ("overwrite", "budget1", "budget2", "unlimited"):
+    """#63/#116: full train/eval path for the budget and local-writer arms."""
+    for arm in ("overwrite", "budget1", "budget2", "unlimited",
+                "budget1_local", "budget2_local", "unlimited_local"):
         r = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
                           batch=64, n_pool=512, n_test=128, seed=0)
         acc = r["final_acc"]
@@ -364,3 +365,72 @@ def test_budget_arms_train_and_beat_nothing_burns():
         assert r["params"] > 0
         for accs in (r["slot_acc"], r["cut_slot_acc"]):
             assert len(accs) == K and all(np.isfinite(a) for a in accs)
+
+
+def test_local_writer_encoding_isolates_links():
+    """#116 leak guard, half 1: with per-link encoding, link k's encoded states
+    must be bit-identical no matter what the OTHER links contain — there is no
+    attention path between links. (Half 2 — that write k consumes only link
+    k's states — is a one-line concat in the model, guarded by the gradient
+    test below.) The #114 leak was exactly this: a full-sequence causal
+    encoder let position 2K-1 carry link 1, so 'local context' by position
+    masking alone would still smuggle."""
+    task = affine_chain_task(K, M)
+    tok_a, _ = task(jax.random.PRNGKey(0), 16)
+    tok_b, _ = task(jax.random.PRNGKey(1), 16)
+    link = 1
+    tok_b = tok_b.at[:, 2 * link:2 * link + 2].set(tok_a[:, 2 * link:2 * link + 2])
+
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, read_tokens=False,
+                                local_writer=True, rngs=nnx.Rngs(0))
+    h_a = encode_links(model.embed, model.encoder, tok_a, per_link=True)
+    h_b = encode_links(model.embed, model.encoder, tok_b, per_link=True)
+    np.testing.assert_array_equal(np.asarray(h_a[:, link]), np.asarray(h_b[:, link]))
+    assert not np.array_equal(np.asarray(h_a), np.asarray(h_b)), \
+        "sanity: the other links do differ"
+
+
+def test_local_writer_first_link_reaches_answer_only_through_memory():
+    """#116 leak guard, half 2: the gradient of the final answer w.r.t. link
+    1's ENCODED states must flow only through the memory chain. Cut the chain
+    — stop-gradient the memory after write 1 — and link 1's gradient must be
+    exactly zero; leave it intact and it must be nonzero. Under the #114
+    full-sequence writer this gradient survives the cut (the last write reads
+    link 1 directly), which is the leak."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, read_tokens=False,
+                                local_writer=True, rngs=nnx.Rngs(0))
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(2), 8)
+
+    def answer_sum(h, cut_after_first):
+        bsz = tokens.shape[0]
+        memory = jnp.broadcast_to(model.mem_init[...].astype(h.dtype),
+                                  (bsz, model.num_slots, h.shape[-1]))
+        for k in range(K):
+            q_k = jnp.broadcast_to(model.step_index(jnp.array([k]))[None, :, :],
+                                   (bsz, 1, h.shape[-1]))
+            v_k = model.write_block(q_k, jnp.concatenate([h[:, k], memory], axis=1))
+            addr_in = jnp.concatenate([q_k[:, 0], memory.mean(axis=1)], axis=-1)
+            addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+            memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
+            if k == 0 and cut_after_first:
+                memory = jax.lax.stop_gradient(memory)
+        return jnp.sum(model.readout(h[:, -1], memory))
+
+    h = encode_links(model.embed, model.encoder, tokens, per_link=True)
+    g_cut = jax.grad(answer_sum)(h, cut_after_first=True)
+    g_open = jax.grad(answer_sum)(h, cut_after_first=False)
+    assert float(jnp.abs(g_cut[:, 0]).max()) == 0.0, \
+        "link 1 must be unreachable except through memory"
+    assert float(jnp.abs(g_open[:, 0]).max()) > 0.0, \
+        "sanity: through memory, link 1 does reach the answer"
+
+
+def test_local_arms_share_target_with_their_full_context_twins():
+    """#116: the _local arms train and score on the same recall target as
+    their #63 twins — the writer context is the ONLY variable."""
+    _, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 32)
+    recall = np.asarray((subs[:, 0] + subs[:, -1]) % M)
+    for arm in ("budget1_local", "budget2_local", "unlimited_local"):
+        np.testing.assert_array_equal(np.asarray(final_target(arm, subs, M)), recall)
