@@ -1,4 +1,4 @@
-"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #63, #67, #73, #79).
+"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #63, #67, #73, #79, #116).
 
 The arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
 
@@ -134,6 +134,26 @@ class CrossBlock(nnx.Module):
         return x + self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
 
 
+def encode_links(embed, encoder, tokens, per_link):
+    """Shared encode step. per_link=False: the standard causal encode over the
+    whole sequence -> [B, 2K, d]. per_link=True (#116): each (a_k, b_k) link is
+    embedded and encoded as its OWN 2-token sequence -> [B, K, 2, d] — there is
+    no attention path between links, so link j can reach step k != j only
+    through whatever the writes chose to keep in memory. This is the leak fix:
+    the #114 rerun showed a full-sequence causal encoder lets the LAST write
+    compute the recall answer directly, making every slot budget porous."""
+    h = embed(tokens)
+    if per_link:
+        bsz, seq, d = h.shape
+        assert seq % 2 == 0, "per-link encoding expects (a_k, b_k) pairs"
+        h = h.reshape(bsz * (seq // 2), 2, d)
+    for blk in encoder:
+        h = blk(h)
+    if per_link:
+        return h.reshape(bsz, seq // 2, 2, d)
+    return h
+
+
 class ScratchpadNet(nnx.Module):
     """embed -> causal encoder -> K slot writes (serial or parallel) -> readout.
 
@@ -148,17 +168,25 @@ class ScratchpadNet(nnx.Module):
                   slots. Final-answer CE becomes the model's only supervision
                   (#67), with the slot-by-slot readout kept as the instrument
                   that shows whether the decomposition emerged anyway.
+    local_writer=True (#116): tokens are encoded per link (encode_links), and
+                  slot k's write context is link k's two states + slots 1..k-1
+                  — the ONLY cross-step channel is the slots. Serial and
+                  slots-only-readout by requirement (asserted), since a
+                  full-sequence view anywhere would reopen the #114 leak.
     All modes share the identical parameter tree — the flags only change the
     data flow, which is what makes each comparison a one-variable ablation.
     """
 
     def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
                  max_seq_len=64, serial=True, read_tokens=True, probe_only=False,
-                 rngs, dtype=jnp.float32):
+                 local_writer=False, rngs, dtype=jnp.float32):
+        assert not local_writer or (serial and not read_tokens), \
+            "local_writer requires serial=True and read_tokens=False (#116)"
         self.num_slots = num_slots
         self.serial = serial
         self.read_tokens = read_tokens
         self.probe_only = probe_only
+        self.local_writer = local_writer
         self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
@@ -172,9 +200,9 @@ class ScratchpadNet(nnx.Module):
         self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens):
-        h = self.embed(tokens)
-        for blk in self.encoder:
-            h = blk(h)
+        if self.local_writer:
+            assert tokens.shape[1] == 2 * self.num_slots, "one (a_k, b_k) link per slot"
+        h = encode_links(self.embed, self.encoder, tokens, self.local_writer)
         bsz = tokens.shape[0]
         queries = self.slot_index(jnp.arange(self.num_slots))[None, :, :]   # [1, K, d]
         queries = jnp.broadcast_to(queries, (bsz, self.num_slots, queries.shape[-1]))
@@ -182,7 +210,8 @@ class ScratchpadNet(nnx.Module):
         if self.serial:
             slots = []
             for k in range(self.num_slots):
-                ctx = jnp.concatenate([h] + slots, axis=1) if slots else h
+                base = h[:, k] if self.local_writer else h                  # link k only, or all tokens
+                ctx = jnp.concatenate([base] + slots, axis=1) if slots else base
                 slots.append(self.write_block(queries[:, k:k + 1], ctx))    # written once
             slots = jnp.concatenate(slots, axis=1)                          # [B, K, d]
         else:
@@ -190,7 +219,8 @@ class ScratchpadNet(nnx.Module):
 
         graded = jax.lax.stop_gradient(slots) if self.probe_only else slots
         slot_logits = self.slot_readout(graded)                             # [B, K, m]
-        return self.readout(h, slots), slot_logits
+        h_read = h[:, -1] if self.local_writer else h   # content unread: local_writer forces read_tokens=False
+        return self.readout(h_read, slots), slot_logits
 
     def readout(self, h, slots):
         """Answer logits from the readout context. A separate method so the #62
@@ -224,14 +254,24 @@ class BudgetScratchpadNet(nnx.Module):
     invertible, so a tokens-visible readout could recompute r_1 from r_K and
     the tokens directly, without ever consulting memory -- the #62 slots-only
     wiring closes that shortcut so a win can only mean genuine retention.
+
+    local_writer (#116) closes the OTHER shortcut the #114 rerun exposed: with
+    a full-sequence encoder, step k's write sees every link, so the LAST write
+    can compute the recall answer itself and carry it past any slot budget
+    (budget1 hit 0.897 that way). With local_writer=True each write sees only
+    its own link (encode_links) + the current memory -- information can cross
+    steps ONLY by surviving in memory. Requires read_tokens=False.
     """
 
     def __init__(self, *, dim, vocab, num_steps, num_slots, num_heads=4,
                  num_encoder_layers=2, max_seq_len=64, read_tokens=True,
-                 rngs, dtype=jnp.float32):
+                 local_writer=False, rngs, dtype=jnp.float32):
+        assert not (local_writer and read_tokens), \
+            "local_writer requires read_tokens=False (#116)"
         self.num_steps = num_steps
         self.num_slots = num_slots
         self.read_tokens = read_tokens
+        self.local_writer = local_writer
         self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
@@ -248,9 +288,9 @@ class BudgetScratchpadNet(nnx.Module):
         self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens):
-        h = self.embed(tokens)
-        for blk in self.encoder:
-            h = blk(h)
+        if self.local_writer:
+            assert tokens.shape[1] == 2 * self.num_steps, "one (a_k, b_k) link per step"
+        h = encode_links(self.embed, self.encoder, tokens, self.local_writer)
         bsz = tokens.shape[0]
         memory = jnp.broadcast_to(self.mem_init[...].astype(h.dtype),
                                   (bsz, self.num_slots, h.shape[-1]))
@@ -259,7 +299,8 @@ class BudgetScratchpadNet(nnx.Module):
         for k in range(self.num_steps):
             q_k = jnp.broadcast_to(self.step_index(jnp.array([k]))[None, :, :],
                                    (bsz, 1, h.shape[-1]))
-            ctx = jnp.concatenate([h, memory], axis=1)
+            tok_ctx = h[:, k] if self.local_writer else h                  # link k only, or all tokens
+            ctx = jnp.concatenate([tok_ctx, memory], axis=1)
             v_k = self.write_block(q_k, ctx)                                # [B, 1, d]
             slot_logits.append(self.slot_readout(v_k))                     # graded on THIS write
 
@@ -268,7 +309,8 @@ class BudgetScratchpadNet(nnx.Module):
             memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
 
         slot_logits = jnp.concatenate(slot_logits, axis=1)                 # [B, K, m]
-        return self.readout(h, memory), slot_logits
+        h_read = h[:, -1] if self.local_writer else h   # content unread: local_writer forces read_tokens=False
+        return self.readout(h_read, memory), slot_logits
 
     def readout(self, h, memory):
         """Same contract as ScratchpadNet.readout: read_tokens=False makes the
@@ -352,7 +394,10 @@ def parse_arm_spec(spec):
 # (r_1 + r_K) mod m with a slots-only readout (see docs/design/budget-scratchpad.md
 # for why tokens must be hidden there). overwrite stays on the plain chain
 # task (final = r_K), matched against serial exactly as #38 was.
-RECALL_ARMS = ("budget1", "budget2", "unlimited")
+# The _local variants (#116) are the same arms with per-link writer context
+# (local_writer=True) — the leak-closed rerun where retention must be real.
+RECALL_ARMS = ("budget1", "budget2", "unlimited",
+               "budget1_local", "budget2_local", "unlimited_local")
 
 
 def final_target(arm, sub, m):
@@ -405,7 +450,8 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
                   anneal_onset=0.4, anneal_decay=0.2, anneal_floor=0.0):
     assert arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly",
                    "annealed", "densedepth", "densedepth_tied",
-                   "overwrite", "budget1", "budget2", "unlimited"), f"unknown arm {arm!r}"
+                   "overwrite", "budget1", "budget2", "unlimited",
+                   "budget1_local", "budget2_local", "unlimited_local"), f"unknown arm {arm!r}"
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
@@ -423,15 +469,17 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
         model = BudgetScratchpadNet(dim=dim, vocab=m, num_steps=K, num_slots=1,
                                     num_heads=heads, num_encoder_layers=enc,
                                     max_seq_len=2 * K, read_tokens=True, rngs=nnx.Rngs(seed))
-    elif arm in ("budget1", "budget2"):
+    elif arm in ("budget1", "budget2", "budget1_local", "budget2_local"):
         model = BudgetScratchpadNet(dim=dim, vocab=m, num_steps=K,
-                                    num_slots=(1 if arm == "budget1" else 2),
+                                    num_slots=(1 if arm.startswith("budget1") else 2),
                                     num_heads=heads, num_encoder_layers=enc,
-                                    max_seq_len=2 * K, read_tokens=False, rngs=nnx.Rngs(seed))
-    elif arm == "unlimited":
+                                    max_seq_len=2 * K, read_tokens=False,
+                                    local_writer=arm.endswith("_local"), rngs=nnx.Rngs(seed))
+    elif arm in ("unlimited", "unlimited_local"):
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
-                              serial=True, read_tokens=False, rngs=nnx.Rngs(seed))
+                              serial=True, read_tokens=False,
+                              local_writer=(arm == "unlimited_local"), rngs=nnx.Rngs(seed))
     else:
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
@@ -491,7 +539,8 @@ def main():
                     help="any of serial,parallel,depthonly,slotsonly (#62),"
                          "finalonly (#67),annealed (#73),densedepth,"
                          "densedepth_tied (#79),overwrite,budget1,budget2,"
-                         "unlimited (#63); annealed takes an"
+                         "unlimited (#63),budget1_local,budget2_local,"
+                         "unlimited_local (#116); annealed takes an"
                          " optional onset and floor (#95), e.g. annealed@0.2"
                          " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")
