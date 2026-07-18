@@ -18,6 +18,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
+import layers
+from layers import RotaryAttention
 from plan_a_model import CausalAttention, CausalRefiner
 
 
@@ -48,3 +50,35 @@ def test_refiner_leading_pad_stays_finite_in_f16(chunked):
 
     logits = np.asarray(model(tokens, depth=2, pad_mask=pad_mask))
     assert np.isfinite(logits).all(), "non-finite logits from a leading-pad batch in f16"
+
+
+def test_rotary_attention_additive_mask_stays_finite_in_f16(monkeypatch):
+    """#99: the reasoner path's RotaryAttention has the same hazard — its
+    additive float masks carry -1e9 entries (slot masks, model.py constants),
+    and the pre-fix cast to COMPUTE_DTYPE overflowed them to -inf in f16.
+    COMPUTE_DTYPE is read at call time, so patching it forces the production
+    f16 path on the CPU lane too; batch element 1 masks every key, giving
+    genuinely fully-masked rows."""
+    monkeypatch.setattr(layers, "COMPUTE_DTYPE", jnp.float16)
+    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0))
+    x = jnp.asarray(np.random.default_rng(2).normal(size=(2, 8, 32)), jnp.float32)
+    additive_mask = jnp.zeros((2, 1, 8, 8), jnp.float32).at[1].add(-1e9)
+
+    out = np.asarray(attn(x, mask=additive_mask))
+    assert np.isfinite(out).all(), \
+        "non-finite RotaryAttention output on fully-masked rows (additive-bias branch)"
+
+
+def test_rotary_attention_boolean_mask_stays_finite_in_f16(monkeypatch):
+    """Contrast branch: a fully-masked BOOLEAN row goes through
+    dot_product_attention's mask argument, whose masked path uses its own
+    finite large-negative constant — pinned here so the two branches' contracts
+    stay documented together."""
+    monkeypatch.setattr(layers, "COMPUTE_DTYPE", jnp.float16)
+    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0))
+    x = jnp.asarray(np.random.default_rng(3).normal(size=(2, 8, 32)), jnp.float32)
+    bool_mask = jnp.ones((2, 1, 8, 8), bool).at[1].set(False)
+
+    out = np.asarray(attn(x, mask=bool_mask))
+    assert np.isfinite(out).all(), \
+        "non-finite RotaryAttention output on fully-masked rows (boolean-mask branch)"
