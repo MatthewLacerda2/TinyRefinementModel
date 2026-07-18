@@ -96,7 +96,11 @@ class RotaryAttention(nnx.Module):
         v = v.astype(COMPUTE_DTYPE)
 
         if mask is not None and mask.dtype != jnp.bool_:
-            attn_bias = mask.astype(COMPUTE_DTYPE)
+            # Bias stays f32 (#99, same hazard as #84): the -1e9 mask entries
+            # overflow to -inf under an f16 cast, and a fully-masked row's
+            # softmax then yields NaN. dot_product_attention adds the bias to
+            # f32 logits (QK accumulates in f32), so the cast bought nothing.
+            attn_bias = mask.astype(jnp.float32)
             mask_arg = None
         else:
             attn_bias = None
