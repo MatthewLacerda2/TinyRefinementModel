@@ -209,6 +209,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 continue
             nonfinite_streak = 0
 
+            # Underflow instrument (#82) sampling happens BEFORE the update:
+            # apply_grads donates the grad buffers (#128), so this micro-step's
+            # raw grads are unreadable afterwards. Same tensors either way —
+            # pre-accumulation grads are what the instrument wants.
+            if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
+                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(grads).items()}
+                zero_frac_dense = dense_zero_frac_max(zero_fracs)
+
             apply_grads(optimizer, grads, model)
 
             t_compute += (time.time() - t_compute_start)
@@ -245,17 +253,11 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
 
-                # Underflow instrument (#82): zero-gradient fraction per param
-                # group, sampled from this micro-step's raw grads — the tensors
-                # where f16 underflow would actually round to zero, before the
-                # optimizer's accumulation. The signal is the dense max, which
-                # also lands in the CSV for trend reading; interpretation
-                # caveats (time_embed row sparsity, structural zeros behind the
-                # zero-init down_proj early in training) live on
-                # grad_zero_fractions itself.
-                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(grads).items()}
-                zero_frac_dense = dense_zero_frac_max(zero_fracs)
-
+                # Underflow instrument (#82): zero_fracs / zero_frac_dense were
+                # sampled just before apply_grads above (donation makes the raw
+                # grads unreadable here). Interpretation caveats (time_embed row
+                # sparsity, structural zeros behind the zero-init down_proj early
+                # in training) live on grad_zero_fractions itself.
                 logger.log(
                     opt_step,
                     float(accum_token_loss),
