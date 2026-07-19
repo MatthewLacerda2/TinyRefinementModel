@@ -79,8 +79,12 @@ def test_real_adapter_groups_and_interpretation_caveats():
     from plan_a_trainer import RefinerForTraining
 
     vocab = 5000  # far more tokens than the ~60 the batch uses
+    # time_signal pinned to "table": the time_embed caveat this test documents
+    # (unsampled-depth rows read as structural zeros) only exists in table mode.
+    # The base-run default (sinusoidal, #86) is pinned by the companion test below.
     m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=vocab, num_heads=4,
-                           encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+                           encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+                           time_signal="table")
     rng = np.random.default_rng(3)
     batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
 
@@ -107,3 +111,23 @@ def test_real_adapter_groups_and_interpretation_caveats():
     _, _, grads, _ = compute_grad_step(m, batch, jnp.array(2), 2)
     fracs = _fracs(grads)
     assert dense_zero_frac_max(fracs) < 0.05, "structural zeros must vanish after an update"
+
+
+def test_sinusoidal_adapter_groups_have_no_time_embed():
+    """#86: under the base-run default (sinusoidal time signal) the instrument's
+    group list loses time_embed — the signal is a formula, not parameters. Pin
+    the group set the ACTUAL base run will report so a monitoring script
+    written against it can't be surprised."""
+    from config import MAX_SEQ_LEN
+    from plan_a_trainer import RefinerForTraining
+
+    m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
+                           encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+                           time_signal="sinusoidal")
+    rng = np.random.default_rng(3)
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    _, _, grads, _ = compute_grad_step(m, batch, jnp.array(1), 2)
+    assert set(_fracs(grads)) == {
+        "embed", "encoder", "refine_block",
+        "time_norm", "time_signal_norm", "out_norm", "gate",
+    }

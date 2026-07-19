@@ -28,6 +28,7 @@ things, it doesn't go in this folder.
 - `2026-07-15-f16-no-loss-scaling-no-dense-underflow.md` — #82: dense-kernel zero-grad fraction 0.0003 vs the 0.05 bar on the f16 no-loss-scaling path — underflow measurable but negligible at init; base run's early stretch is the confirming read
 - `2026-07-16-budget-scratchpad-recall-rerun-readout-fine-writer-leaks.md` — #114: corrected-eval rerun of #63 phase 2 — the readout combines two values at 0.99 (old diagnosis dead), but the token-visible writer leaks the answer past the S=1 control, so retention is still untested
 - `2026-07-18-budget-scratchpad-retention-win-slot-parking.md` — #116: retention under capacity pressure is real — leak closed, 2 slots for 5 writes hits 1.0000 on every seed by parking r_1 (~99.5% of later writes routed away from it), while the 1-slot in-vector carry trains unreliably
+- `2026-07-18-sinusoidal-time-signal-depth-extrapolates.md` — #86: sinusoidal step signal matches the learned table at trained depths (2σ parity) and converts never-trained loops 9–16 into +0.11 accuracy under length shift, where the clamped table collapses to chance with NaN loss — depth becomes an open dial
 
 ## Entry template
 
