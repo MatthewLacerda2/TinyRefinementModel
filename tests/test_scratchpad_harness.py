@@ -12,9 +12,9 @@ import optax
 import pytest
 from flax import nnx
 
-from scratchpad_harness import (ScratchpadNet, affine_chain_task, arm_losses,
-                                grade_lambda, n_params, parse_arm_spec,
-                                train_one_arm)
+from scratchpad_harness import (BudgetScratchpadNet, ScratchpadNet, affine_chain_task,
+                                arm_losses, encode_links, final_target, grade_lambda,
+                                n_params, parse_arm_spec, train_one_arm)
 
 K, M, DIM = 3, 7, 32
 
@@ -142,6 +142,29 @@ def test_finalonly_grade_is_a_detached_probe():
         "graded arm: slot CE must still teach the write block"
 
 
+def test_densedepth_grade_teaches_the_trunk():
+    """#79 wiring guard: the intermediate per-step grades (passes k < K, graded
+    at the answer position against r_k through the dedicated head) must be a
+    live gradient path into the shared refine block and the encoder — dense
+    supervision has to teach the trunk, or the arm would just be depthonly
+    with a decorative loss term."""
+    from scratchpad_harness import DenseDepthNet
+
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = DenseDepthNet(dim=DIM, vocab=M, K=K, rngs=nnx.Rngs(0))
+
+    def intermediate_ce(mdl):
+        _, step_logits = mdl(tokens)                        # [K, B, m]
+        return optax.softmax_cross_entropy_with_integer_labels(
+            step_logits[:K - 1], subs.T[:K - 1]).mean()     # intermediate passes only
+
+    grads = nnx.to_flat_state(nnx.grad(intermediate_ce)(model))
+    live = {path[:2] for path, leaf in grads if float(jnp.abs(leaf[...]).max()) > 0.0}
+    assert ("refiner", "refine_block") in live, "per-step grade must teach the shared refine block"
+    assert ("refiner", "encoder") in live, "per-step grade must reach the encoder"
+    assert any(p[0] == "step_readout" for p in live), "the grade head itself must train"
+
+
 def test_grade_lambda_matches_the_preregistered_schedule():
     """#73 pre-registration at 2500 steps: grade fully on for 0–1000, linear
     decay 1000–1500, exactly zero for 1500–2500. The schedule is written in
@@ -219,7 +242,8 @@ def test_annealed_lambda_zero_kills_the_grade_gradient():
 def test_all_arms_train_and_beat_nothing_burns():
     """Full train/eval path runs for every arm at toy size, losses finite, and
     the graded arms report per-slot accuracies (the collapse detector)."""
-    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly", "annealed"):
+    for arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly", "annealed",
+                "densedepth", "densedepth_tied"):
         r = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
                           batch=64, n_pool=512, n_test=128, seed=0)
         acc = r["final_acc"]
@@ -229,3 +253,184 @@ def test_all_arms_train_and_beat_nothing_burns():
         if arm != "depthonly":
             for accs in (r["slot_acc"], r["cut_slot_acc"]):
                 assert len(accs) == K and all(np.isfinite(a) for a in accs)
+
+
+def test_budget_one_addr_is_forced_to_one():
+    """#63: softmax over a size-1 axis is identically 1 regardless of the
+    learned addr_head's weights -- num_slots=1 has literally no addressing
+    degree of freedom, so every write is a full overwrite by construction,
+    not by anything the optimizer had to discover."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+    addr_in = jax.random.normal(jax.random.PRNGKey(1), (5, 2 * DIM)) * 50.0  # extreme logits
+    addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+    np.testing.assert_allclose(np.asarray(addr), np.ones((5, 1)), atol=1e-6)
+
+
+def test_budget_two_addr_is_a_real_distribution_over_slots():
+    """num_slots=2: the address is a genuine 2-way softmax (sums to 1, neither
+    entry pinned) -- the addressing wiring that phase 2 needs a policy to
+    emerge over, as opposed to the num_slots=1 degenerate case above."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+    addr_in = jax.random.normal(jax.random.PRNGKey(2), (5, 2 * DIM))
+    addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+    np.testing.assert_allclose(np.asarray(addr.sum(axis=-1)), np.ones(5), atol=1e-6)
+    assert np.asarray(addr).std() > 0.0, "addressing must vary with input, not collapse to a constant"
+
+
+def test_budget_scratchpad_grade_is_live_on_write_block():
+    """The per-step grade on v_k must still reach write_block -- the same
+    non-bypassable-supervision property #38's finalonly test guards for
+    ScratchpadNet, checked here for the new memory-addressed architecture."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                max_seq_len=2 * K, rngs=nnx.Rngs(0))
+
+    def slot_ce(mdl):
+        _, slot_logits = mdl(tokens)
+        return optax.softmax_cross_entropy_with_integer_labels(slot_logits, subs).mean()
+
+    grads = nnx.to_flat_state(nnx.grad(slot_ce)(model))
+    assert any(path[0] == "write_block" and float(jnp.abs(leaf[...]).max()) > 0.0
+               for path, leaf in grads), "slot grade must teach the write block"
+
+
+def test_budget_recall_readout_cannot_see_token_states():
+    """The recall-task arms (#63 phase 2) force read_tokens=False so a correct
+    answer can only come from memory, not from re-deriving r_1 out of the
+    (invertible, since m is prime) affine chain directly from tokens -- the
+    same #62 guard, applied to BudgetScratchpadNet's readout."""
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(4), 4)
+
+    def token_grad_into_answer(read_tokens):
+        model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=2,
+                                    max_seq_len=2 * K, read_tokens=read_tokens,
+                                    rngs=nnx.Rngs(0))
+        h = model.embed(tokens)
+        for blk in model.encoder:
+            h = blk(h)
+        bsz = tokens.shape[0]
+        memory = jnp.broadcast_to(model.mem_init[...].astype(h.dtype),
+                                  (bsz, model.num_slots, h.shape[-1]))
+        for k in range(K):
+            q_k = jnp.broadcast_to(model.step_index(jnp.array([k]))[None, :, :],
+                                   (bsz, 1, h.shape[-1]))
+            v_k = model.write_block(q_k, jnp.concatenate([h, memory], axis=1))
+            addr_in = jnp.concatenate([q_k[:, 0], memory.mean(axis=1)], axis=-1)
+            addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+            memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
+        g = jax.grad(lambda hh: jnp.sum(model.readout(hh, memory)))(h)
+        return float(jnp.abs(g).max())
+
+    assert token_grad_into_answer(read_tokens=False) == 0.0, \
+        "recall arms: the readout must be blind to token states"
+    assert token_grad_into_answer(read_tokens=True) > 0.0, \
+        "sanity: a tokens+memory readout must actually read the tokens"
+
+
+def test_recall_arms_scored_against_their_trained_target():
+    """#63 eval-target regression guard. The original phase-2 run trained the
+    recall arms on (r_1+r_K) mod m but scored them against r_K — under that
+    bug a SOLVED recall task also reads as chance, so the run's table was
+    void. Pin both halves: final_target selects the trained answer per arm,
+    and arm_losses gives ~zero final CE to an oracle that outputs exactly the
+    recall target — while the same outputs scored as a plain-chain arm must
+    not look solved."""
+    tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(5), 64)
+    recall = (subs[:, 0] + subs[:, -1]) % M
+    np.testing.assert_array_equal(np.asarray(final_target("serial", subs, M)),
+                                  np.asarray(subs[:, -1]))
+    np.testing.assert_array_equal(np.asarray(final_target("budget2", subs, M)),
+                                  np.asarray(recall))
+
+    class Oracle:
+        def __call__(self, tok):
+            return 20.0 * jax.nn.one_hot(recall, M), 20.0 * jax.nn.one_hot(subs, M)
+
+    loss_recall, _ = arm_losses("budget2", Oracle(), tokens, subs, 1.0, K)
+    loss_chain, _ = arm_losses("serial", Oracle(), tokens, subs, 1.0, K)
+    assert float(loss_recall) < 0.01, "oracle recall outputs must score as solved"
+    assert float(loss_chain) > 0.5, "the same outputs must NOT solve the plain chain task"
+
+
+def test_budget_arms_train_and_beat_nothing_burns():
+    """#63/#116: full train/eval path for the budget and local-writer arms."""
+    for arm in ("overwrite", "budget1", "budget2", "unlimited",
+                "budget1_local", "budget2_local", "unlimited_local"):
+        r = train_one_arm(arm, K=K, m=M, dim=DIM, steps=40,
+                          batch=64, n_pool=512, n_test=128, seed=0)
+        acc = r["final_acc"]
+        assert np.isfinite(acc) and 0.0 <= acc <= 1.0, f"{arm}: bad final acc {acc}"
+        assert r["params"] > 0
+        for accs in (r["slot_acc"], r["cut_slot_acc"]):
+            assert len(accs) == K and all(np.isfinite(a) for a in accs)
+
+
+def test_local_writer_encoding_isolates_links():
+    """#116 leak guard, half 1: with per-link encoding, link k's encoded states
+    must be bit-identical no matter what the OTHER links contain — there is no
+    attention path between links. (Half 2 — that write k consumes only link
+    k's states — is a one-line concat in the model, guarded by the gradient
+    test below.) The #114 leak was exactly this: a full-sequence causal
+    encoder let position 2K-1 carry link 1, so 'local context' by position
+    masking alone would still smuggle."""
+    task = affine_chain_task(K, M)
+    tok_a, _ = task(jax.random.PRNGKey(0), 16)
+    tok_b, _ = task(jax.random.PRNGKey(1), 16)
+    link = 1
+    tok_b = tok_b.at[:, 2 * link:2 * link + 2].set(tok_a[:, 2 * link:2 * link + 2])
+
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, read_tokens=False,
+                                local_writer=True, rngs=nnx.Rngs(0))
+    h_a = encode_links(model.embed, model.encoder, tok_a, per_link=True)
+    h_b = encode_links(model.embed, model.encoder, tok_b, per_link=True)
+    np.testing.assert_array_equal(np.asarray(h_a[:, link]), np.asarray(h_b[:, link]))
+    assert not np.array_equal(np.asarray(h_a), np.asarray(h_b)), \
+        "sanity: the other links do differ"
+
+
+def test_local_writer_first_link_reaches_answer_only_through_memory():
+    """#116 leak guard, half 2: the gradient of the final answer w.r.t. link
+    1's ENCODED states must flow only through the memory chain. Cut the chain
+    — stop-gradient the memory after write 1 — and link 1's gradient must be
+    exactly zero; leave it intact and it must be nonzero. Under the #114
+    full-sequence writer this gradient survives the cut (the last write reads
+    link 1 directly), which is the leak."""
+    model = BudgetScratchpadNet(dim=DIM, vocab=M, num_steps=K, num_slots=1,
+                                max_seq_len=2 * K, read_tokens=False,
+                                local_writer=True, rngs=nnx.Rngs(0))
+    tokens, _ = affine_chain_task(K, M)(jax.random.PRNGKey(2), 8)
+
+    def answer_sum(h, cut_after_first):
+        bsz = tokens.shape[0]
+        memory = jnp.broadcast_to(model.mem_init[...].astype(h.dtype),
+                                  (bsz, model.num_slots, h.shape[-1]))
+        for k in range(K):
+            q_k = jnp.broadcast_to(model.step_index(jnp.array([k]))[None, :, :],
+                                   (bsz, 1, h.shape[-1]))
+            v_k = model.write_block(q_k, jnp.concatenate([h[:, k], memory], axis=1))
+            addr_in = jnp.concatenate([q_k[:, 0], memory.mean(axis=1)], axis=-1)
+            addr = jax.nn.softmax(model.addr_head(addr_in), axis=-1)
+            memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
+            if k == 0 and cut_after_first:
+                memory = jax.lax.stop_gradient(memory)
+        return jnp.sum(model.readout(h[:, -1], memory))
+
+    h = encode_links(model.embed, model.encoder, tokens, per_link=True)
+    g_cut = jax.grad(answer_sum)(h, cut_after_first=True)
+    g_open = jax.grad(answer_sum)(h, cut_after_first=False)
+    assert float(jnp.abs(g_cut[:, 0]).max()) == 0.0, \
+        "link 1 must be unreachable except through memory"
+    assert float(jnp.abs(g_open[:, 0]).max()) > 0.0, \
+        "sanity: through memory, link 1 does reach the answer"
+
+
+def test_local_arms_share_target_with_their_full_context_twins():
+    """#116: the _local arms train and score on the same recall target as
+    their #63 twins — the writer context is the ONLY variable."""
+    _, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 32)
+    recall = np.asarray((subs[:, 0] + subs[:, -1]) % M)
+    for arm in ("budget1_local", "budget2_local", "unlimited_local"):
+        np.testing.assert_array_equal(np.asarray(final_target(arm, subs, M)), recall)

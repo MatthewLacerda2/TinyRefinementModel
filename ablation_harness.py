@@ -141,8 +141,9 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
-              per_pass_loss=False, islands=False, readouts=False,
-              n_pool=32768, n_test=4096, eval_batch=256, train_seq=SEQ, test_seq=None):
+              per_pass_loss=False, islands=False, readouts=False, time_signal="table",
+              eval_depths=None, n_pool=32768, n_test=4096, eval_batch=256,
+              train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
     # trains on length train_seq and is evaluated on longer sequences, so it must
     # use RoPE positions it never saw in training. test_seq=None -> same length.
@@ -165,7 +166,8 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     else:
         model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                               num_encoder_layers=enc, max_depth=max(depth, 1),
-                              max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias, rngs=nnx.Rngs(seed))
+                              max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias,
+                              time_signal=time_signal, rngs=nnx.Rngs(seed))
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
@@ -217,6 +219,32 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         a, c, m = eval_chunk_sums(model, te_inp[s], te_tgt[s], te_mask[s], depth)
         acc_sum, ce_sum, count = acc_sum + float(a), ce_sum + float(c), count + float(m)
 
+    # #86 extensibility probe: eval the TRAINED model at other depths too (the
+    # table arm clamps past max_depth — allow_depth_overrun opts into measuring
+    # exactly that; the sinusoidal arm extrapolates by construction). Chunked
+    # like the main eval so the depth-16 logits never materialize whole-pool.
+    if eval_depths:
+        assert not readouts, "eval_depths and readouts are separate probes — pick one"
+
+        @nnx.jit(static_argnames=["depth"])
+        def eval_overrun_sums(model, inp, tgt, mask, depth):
+            logits = model(inp, depth=depth, allow_depth_overrun=True)
+            pred = logits.argmax(-1)
+            acc_s = jnp.sum((pred == tgt) * mask)
+            ce_s = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(
+                logits=logits, labels=tgt) * mask)
+            return acc_s, ce_s, jnp.sum(mask)
+
+        extra = {}
+        for d in eval_depths:
+            a_sum = c_sum = m_sum = 0.0
+            for i in range(0, te_inp.shape[0], eval_batch):
+                s = slice(i, i + eval_batch)
+                a, c, m = eval_overrun_sums(model, te_inp[s], te_tgt[s], te_mask[s], d)
+                a_sum, c_sum, m_sum = a_sum + float(a), c_sum + float(c), m_sum + float(m)
+            extra[d] = (a_sum / m_sum, c_sum / m_sum)
+        return acc_sum / count, ce_sum / count, n_params, extra
+
     if not readouts:
         return acc_sum / count, ce_sum / count, n_params
 
@@ -225,18 +253,26 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     #     happen late? gate openness: do early passes make real updates?
     #   depth transfer: trained at `depth`, evaled at 1..12 — past max_depth the
     #     time embedding saturates (jnp.take clips the row index), so passes
-    #     beyond training depth reuse the last time signal.
+    #     beyond training depth reuse the last time signal. The model asserts on
+    #     depth overrun exactly because of that clamp; this probe is the one
+    #     deliberate exception, so it opts in.
     @nnx.jit(static_argnames=["depth"])
     def eval_passes(model, inp, tgt, mask, depth):
         logits_all, gates = model(inp, depth=depth, return_all_iters=True)
         hit = (logits_all.argmax(-1) == tgt[None]) * mask[None]
         return jnp.sum(hit, axis=(1, 2)) / jnp.sum(mask), gates
 
+    @nnx.jit(static_argnames=["depth"])
+    def eval_transfer_sums(model, inp, tgt, mask, depth):
+        logits = model(inp, depth=depth, allow_depth_overrun=True)
+        pred = logits.argmax(-1)
+        return jnp.sum((pred == tgt) * mask), jnp.sum(mask)
+
     sub = slice(0, min(1024, te_inp.shape[0]))
     pass_acc, gate_open = eval_passes(model, te_inp[sub], te_tgt[sub], te_mask[sub], depth)
     transfer = {}
     for d in range(1, 13):
-        a, _, m = eval_chunk_sums(model, te_inp[sub], te_tgt[sub], te_mask[sub], d)
+        a, m = eval_transfer_sums(model, te_inp[sub], te_tgt[sub], te_mask[sub], d)
         transfer[d] = float(a) / float(m)
     extras = {
         "pass_acc": [float(x) for x in pass_acc],
@@ -268,6 +304,12 @@ def main():
                     help="cut the gradient chain at every pass boundary (#75) — pair with --per-pass-loss. refiner-only.")
     ap.add_argument("--readouts", action="store_true",
                     help="print #75 readouts: per-pass accuracy, gate openness per pass, depth-transfer curve (eval at depths 1..12). refiner-only.")
+    ap.add_argument("--time-signal", default="table", choices=["table", "sinusoidal"],
+                    help="#86: 'table' = learned per-step embedding (rows end at max_depth); "
+                         "'sinusoidal' = diffusion-style continuous encoding, defined at any depth. refiner-only.")
+    ap.add_argument("--eval-depths", default=None,
+                    help="#86: also eval each trained model at these depths (comma list, e.g. 12,16); "
+                         "past max_depth the table arm clamps — that IS the measurement. refiner-only.")
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--train-seq", type=int, default=SEQ)
     ap.add_argument("--test-seq", type=int, default=None,
@@ -283,9 +325,10 @@ def main():
         vocab = VOCAB[args.task]
         task_desc = args.task
     depths = [int(d) for d in args.depths.split(",")]
+    eval_depths = [int(d) for d in args.eval_depths.split(",")] if args.eval_depths else None
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
@@ -293,11 +336,15 @@ def main():
         out = train_one(task_fn, vocab, d, arch=args.arch, dim=args.dim,
                         steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
                         grad_last=args.grad_last, per_pass_loss=args.per_pass_loss,
-                        islands=args.islands, readouts=args.readouts, lr=args.lr,
+                        islands=args.islands, readouts=args.readouts,
+                        time_signal=args.time_signal, eval_depths=eval_depths, lr=args.lr,
                         train_seq=args.train_seq, test_seq=test_seq)
         acc, ce, n_params = out[:3]
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
+        if eval_depths:
+            print("  eval_depths: " + " ".join(
+                f"d{k}={a:.4f}/{c:.4f}" for k, (a, c) in out[3].items()))
         if args.readouts:
             extras = out[3]
             print("  pass_acc: " + " ".join(f"{a:.4f}" for a in extras["pass_acc"]))

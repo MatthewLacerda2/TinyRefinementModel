@@ -154,3 +154,49 @@ def test_depth_is_static_and_varies_output():
     d1 = np.asarray(m(tok, depth=1))
     d8 = np.asarray(m(tok, depth=8))
     assert np.max(np.abs(d1 - d8)) > 1e-3, "depth had no effect on the output"
+
+
+def test_depth_overrun_fails_loud():
+    """Depth past max_depth has no trained time-embedding rows and the row index
+    silently clamps (findings 2026-06-18 caveats, 2026-07-05 readout 5) — the
+    model must refuse it unless the caller opts into a deliberate probe."""
+    m = _tiny()  # max_depth=8
+    tok = jnp.arange(1, 17)[None, :]
+    with pytest.raises(AssertionError, match="allow_depth_overrun"):
+        m(tok, depth=9)
+    # The opt-in must still run — degraded numbers are the probe's business
+    # (at random init deep overrun can even overflow, so only shape is checked).
+    out = np.asarray(m(tok, depth=12, allow_depth_overrun=True))
+    assert out.shape == (1, 16, 37)
+
+
+def test_sinusoidal_time_signal_extends_past_max_depth():
+    """#86: the sinusoidal step encoding is a fixed function of the step index,
+    so a sinusoidal-signal model has no depth ceiling — depth 12 on a
+    max_depth=8 model must run WITHOUT the overrun opt-in (which exists only
+    for the table's clamp hazard) and stay finite. The param tree must also
+    carry no time_embed table."""
+    m = CausalRefiner(dim=64, vocab_size=37, num_heads=4, num_encoder_layers=2,
+                      max_depth=8, max_seq_len=32, time_signal="sinusoidal",
+                      rngs=nnx.Rngs(0))
+    tok = jnp.arange(1, 17)[None, :]
+    out = np.asarray(m(tok, depth=12))
+    assert out.shape == (1, 16, 37)
+    assert np.isfinite(out).all()
+    assert "time_embed" not in nnx.state(m, nnx.Param), \
+        "sinusoidal mode must not build the learned table"
+
+
+def test_sinusoidal_encoding_distinct_and_deterministic():
+    """Each step must get its own signal (the whole point of a time signal),
+    the same signal every call, defined arbitrarily far out."""
+    from plan_a_model import sinusoidal_step_encoding
+    encs = [np.asarray(sinusoidal_step_encoding(s, 64, jnp.float32)) for s in range(16)]
+    for a in range(16):
+        assert encs[a].shape == (64,)
+        for b in range(a + 1, 16):
+            assert np.max(np.abs(encs[a] - encs[b])) > 1e-3, f"steps {a},{b} indistinct"
+    again = np.asarray(sinusoidal_step_encoding(3, 64, jnp.float32))
+    np.testing.assert_array_equal(encs[3], again)
+    far = np.asarray(sinusoidal_step_encoding(100, 64, jnp.float32))
+    assert np.isfinite(far).all()

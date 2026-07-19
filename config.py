@@ -48,14 +48,42 @@ NUM_GROUPS = NUM_HEADS // 4
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
-#   "reasoner" — UniversalReasoner, the cross-window-hunch baseline (default;
-#                the hunch is proven inert, so this is effectively a vanilla
-#                random-depth transformer and serves as the control).
-#   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence
-#                (docs/findings/2026-06-13-plan-a-depth-recurrence-works.md).
-# A refiner run has a different param tree, so it must start fresh (--new-run);
-# it cannot resume a reasoner checkpoint.
-MODEL_ARCH = os.environ.get("MODEL_ARCH", "reasoner")
+#   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence.
+#                The default: it is the live bet, proven on the toy gate and
+#                through pretraining (findings 2026-06-13 / 06-16 / 06-18).
+#   "reasoner" — UniversalReasoner, the cross-window-hunch baseline. The hunch
+#                is proven inert (finding 2026-06-13), so this is effectively a
+#                vanilla random-depth transformer, kept as the control —
+#                select it explicitly (MODEL_ARCH=reasoner) for control runs.
+# The two arches have different param trees, so a checkpoint from one cannot be
+# resumed by the other — resuming an old reasoner run now requires the env var.
+MODEL_ARCH = os.environ.get("MODEL_ARCH", "refiner")
+_KNOWN_ARCHES = ("refiner", "reasoner")
+if MODEL_ARCH not in _KNOWN_ARCHES:
+    # Fail closed at import (#104): the selector otherwise falls through to a
+    # default, so a typo would silently train the wrong architecture for the
+    # whole run — the one failure mode a launch banner does not reliably catch.
+    raise SystemExit(
+        f"MODEL_ARCH={MODEL_ARCH!r} is not a known architecture; "
+        f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'refiner')")
+# Refiner time signal (#86): how each refinement pass is told which step it is.
+#   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
+#                  so inference depth is an open dial (finding
+#                  2026-07-18-sinusoidal-time-signal-depth-extrapolates.md:
+#                  parity with the table at trained depths, +0.11 from
+#                  extrapolated loops under length shift). The default — what
+#                  the base run trains.
+#   "table"      — the learned per-step embedding; rows end at MAX_STEPS_LIMIT
+#                  and the signal clamps past them (chance + NaN, same finding).
+#                  Required to RESUME refiner checkpoints from before this flip:
+#                  the two modes have different param trees.
+TIME_SIGNAL = os.environ.get("TIME_SIGNAL", "sinusoidal")
+if TIME_SIGNAL not in ("table", "sinusoidal"):
+    # Same fail-closed contract as MODEL_ARCH (#104): a typo must not silently
+    # train a different model for a whole run.
+    raise SystemExit(
+        f"TIME_SIGNAL={TIME_SIGNAL!r} is not a known time signal; "
+        f"use one of table, sinusoidal (unset defaults to 'sinusoidal')")
 # Blockwise memory-lean attention for the refiner (#66): removes the O(seq²)
 # score/probability transients that dominate the grad-step peak (mem_profile).
 # Opt-in until the dim960 GPU fit-test + wall-clock bench pass on the box;
@@ -65,6 +93,15 @@ CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
 # near the reasoner baseline; init prints the actual count for both arches.
 REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
+
+# Refiner serving depth. The dense 1→8 sweep
+# (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
+# plateau at ~d6 (peak d7; d6–d8 inside seed noise), and pretraining shifts the
+# curve LEFT — the same ceiling in fewer loops. Loops past the knee buy nothing
+# measurable and cost a full pass of the shared block each, so inference/eval
+# tooling defaults here. Training is a separate decision and still samples up to
+# MAX_STEPS_LIMIT (pre-registered with the sweep: "MAX_STEPS_LIMIT=8 stays").
+INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 
 # Training
 MAX_STEPS_LIMIT = 8

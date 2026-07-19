@@ -30,7 +30,7 @@ from config import (
 )
 from model import UniversalReasoner
 from checkpoint_utils import save_checkpoint
-from grad_step import compute_grad_step, apply_grads
+from grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from optimizers import optimizer_chain, create_sft_optimizer
 from schedules import (
     CURRICULUM_START_WEIGHTS,
@@ -245,6 +245,17 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
 
+                # Underflow instrument (#82): zero-gradient fraction per param
+                # group, sampled from this micro-step's raw grads — the tensors
+                # where f16 underflow would actually round to zero, before the
+                # optimizer's accumulation. The signal is the dense max, which
+                # also lands in the CSV for trend reading; interpretation
+                # caveats (time_embed row sparsity, structural zeros behind the
+                # zero-init down_proj early in training) live on
+                # grad_zero_fractions itself.
+                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(grads).items()}
+                zero_frac_dense = dense_zero_frac_max(zero_fracs)
+
                 logger.log(
                     opt_step,
                     float(accum_token_loss),
@@ -255,9 +266,15 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=float(accum_depth),
                     val_ce=latest_val_ce,
+                    zero_frac_dense_max=zero_frac_dense,
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = None
+
+                print(
+                    f"🧊 [ZeroGrad] dense max: {zero_frac_dense:.4f} | "
+                    + " ".join(f"{k}={v:.3f}" for k, v in zero_fracs.items())
+                )
 
                 if not sft_phase_event.is_set():
                     curr_weights = get_curriculum_weights(opt_step)

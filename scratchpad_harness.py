@@ -1,6 +1,6 @@
-"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #67, #73).
+"""Toy proof harness for the supervised serial latent scratchpad (#38, #62, #63, #67, #73, #79, #116).
 
-Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
+The arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
 
   serial    — K ordered sub-slots, each written ONCE by a shared cross-attention
               write block reading tokens + EARLIER slots only, each graded
@@ -31,12 +31,39 @@ Six arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
               `annealed@0.2` starts the decay at 20% of training (window stays
               20%), and `annealed@0.4f0.1` decays to a floor of λ=0.1 and
               holds, instead of going to zero. Plain `annealed` is #73's arm.
+  densedepth — CausalRefiner at depth K with the serial arm's supervision
+              schedule but NO slots: pass k's state at the answer position is
+              graded against sub-result r_k through a dedicated linear head —
+              the same grade path shape as the serial arm's slot_readout. The
+              is-it-the-grade-or-the-offload ablation (#79): if this matches
+              serial, the per-step grade carried the #38 win; if serial beats
+              it, external slots add performance beyond identical supervision.
+  densedepth_tied — same, but the per-step grade goes through the refiner's
+              tied LM head (the #75 per-pass path), which forces the working
+              state itself to approximate embed(r_k) each pass. Robustness
+              check on the grade-head choice, not the primary arm.
+
+Plus four fixed-budget arms (docs/design/budget-scratchpad.md, #63) — forgetting
+by capacity instead of by gate:
+
+  overwrite — BudgetScratchpadNet, S=1 physical slot, K sequential writes, each
+              overwriting the last. Same final target as serial (r_K). Phase 1:
+              does forgetting-by-overwrite still carry the chain with O(1) memory?
+  budget1   — BudgetScratchpadNet, S=1, on the RECALL task (final = (r_1+r_K) mod
+              m, needs r_1 held past the point it would normally be overwritten).
+              The no-retention-possible control for phase 2.
+  budget2   — BudgetScratchpadNet, S=2, same recall task. Must learn to park r_1
+              in one slot and let the other churn through r_2..r_K. The bet.
+  unlimited — ScratchpadNet (serial, append-all, tokens hidden from the readout)
+              on the recall task — the ceiling: nothing needs to be evicted.
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and
 decomposes exactly into the K sub-results the slots are graded on.
 
     python scratchpad_harness.py --arms serial,parallel,depthonly --seeds 0,1,2
+    python scratchpad_harness.py --arms overwrite,serial --seeds 0,1,2 --K 4
+    python scratchpad_harness.py --arms budget1,budget2,unlimited --seeds 0,1,2 --K 5
 """
 
 import argparse
@@ -107,6 +134,26 @@ class CrossBlock(nnx.Module):
         return x + self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
 
 
+def encode_links(embed, encoder, tokens, per_link):
+    """Shared encode step. per_link=False: the standard causal encode over the
+    whole sequence -> [B, 2K, d]. per_link=True (#116): each (a_k, b_k) link is
+    embedded and encoded as its OWN 2-token sequence -> [B, K, 2, d] — there is
+    no attention path between links, so link j can reach step k != j only
+    through whatever the writes chose to keep in memory. This is the leak fix:
+    the #114 rerun showed a full-sequence causal encoder lets the LAST write
+    compute the recall answer directly, making every slot budget porous."""
+    h = embed(tokens)
+    if per_link:
+        bsz, seq, d = h.shape
+        assert seq % 2 == 0, "per-link encoding expects (a_k, b_k) pairs"
+        h = h.reshape(bsz * (seq // 2), 2, d)
+    for blk in encoder:
+        h = blk(h)
+    if per_link:
+        return h.reshape(bsz, seq // 2, 2, d)
+    return h
+
+
 class ScratchpadNet(nnx.Module):
     """embed -> causal encoder -> K slot writes (serial or parallel) -> readout.
 
@@ -121,17 +168,25 @@ class ScratchpadNet(nnx.Module):
                   slots. Final-answer CE becomes the model's only supervision
                   (#67), with the slot-by-slot readout kept as the instrument
                   that shows whether the decomposition emerged anyway.
+    local_writer=True (#116): tokens are encoded per link (encode_links), and
+                  slot k's write context is link k's two states + slots 1..k-1
+                  — the ONLY cross-step channel is the slots. Serial and
+                  slots-only-readout by requirement (asserted), since a
+                  full-sequence view anywhere would reopen the #114 leak.
     All modes share the identical parameter tree — the flags only change the
     data flow, which is what makes each comparison a one-variable ablation.
     """
 
     def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
                  max_seq_len=64, serial=True, read_tokens=True, probe_only=False,
-                 rngs, dtype=jnp.float32):
+                 local_writer=False, rngs, dtype=jnp.float32):
+        assert not local_writer or (serial and not read_tokens), \
+            "local_writer requires serial=True and read_tokens=False (#116)"
         self.num_slots = num_slots
         self.serial = serial
         self.read_tokens = read_tokens
         self.probe_only = probe_only
+        self.local_writer = local_writer
         self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
@@ -145,9 +200,9 @@ class ScratchpadNet(nnx.Module):
         self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens):
-        h = self.embed(tokens)
-        for blk in self.encoder:
-            h = blk(h)
+        if self.local_writer:
+            assert tokens.shape[1] == 2 * self.num_slots, "one (a_k, b_k) link per slot"
+        h = encode_links(self.embed, self.encoder, tokens, self.local_writer)
         bsz = tokens.shape[0]
         queries = self.slot_index(jnp.arange(self.num_slots))[None, :, :]   # [1, K, d]
         queries = jnp.broadcast_to(queries, (bsz, self.num_slots, queries.shape[-1]))
@@ -155,7 +210,8 @@ class ScratchpadNet(nnx.Module):
         if self.serial:
             slots = []
             for k in range(self.num_slots):
-                ctx = jnp.concatenate([h] + slots, axis=1) if slots else h
+                base = h[:, k] if self.local_writer else h                  # link k only, or all tokens
+                ctx = jnp.concatenate([base] + slots, axis=1) if slots else base
                 slots.append(self.write_block(queries[:, k:k + 1], ctx))    # written once
             slots = jnp.concatenate(slots, axis=1)                          # [B, K, d]
         else:
@@ -163,7 +219,8 @@ class ScratchpadNet(nnx.Module):
 
         graded = jax.lax.stop_gradient(slots) if self.probe_only else slots
         slot_logits = self.slot_readout(graded)                             # [B, K, m]
-        return self.readout(h, slots), slot_logits
+        h_read = h[:, -1] if self.local_writer else h   # content unread: local_writer forces read_tokens=False
+        return self.readout(h_read, slots), slot_logits
 
     def readout(self, h, slots):
         """Answer logits from the readout context. A separate method so the #62
@@ -173,6 +230,121 @@ class ScratchpadNet(nnx.Module):
         ctx = jnp.concatenate([h, slots], axis=1) if self.read_tokens else slots
         aq = jnp.broadcast_to(self.answer_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
         return self.answer_head(self.read_block(aq, ctx))[:, 0]            # [B, m]
+
+
+class BudgetScratchpadNet(nnx.Module):
+    """Fixed-capacity memory scratchpad (#63, docs/design/budget-scratchpad.md):
+    S physical slots shared across K >= S sequential writes. Each step's write
+    reads tokens + the CURRENT S-slot memory (not the full history) and produces
+    a candidate value; a softmax address over the S slots (computed from the
+    step's identity and the memory itself) decides how much of each slot gets
+    overwritten:
+
+        addr = softmax(addr_head(concat(query, mean(memory))))    # [B, S]
+        memory[i] <- (1 - addr[:, i]) * memory[i] + addr[:, i] * candidate
+
+    S=1 degenerates to pure overwrite: a softmax over a size-1 axis is
+    identically 1, so there is no addressing policy to learn, by construction.
+    S>1 must learn, from step index and memory content alone, which slot to
+    spare and which to let churn -- no forget gate, no forgetting loss, no
+    bonus the gradient could ignore; capacity alone makes eviction mandatory.
+
+    read_tokens gates the FINAL answer readout only (same knob as ScratchpadNet).
+    Forced False for the recall task variant: m prime makes the affine chain
+    invertible, so a tokens-visible readout could recompute r_1 from r_K and
+    the tokens directly, without ever consulting memory -- the #62 slots-only
+    wiring closes that shortcut so a win can only mean genuine retention.
+
+    local_writer (#116) closes the OTHER shortcut the #114 rerun exposed: with
+    a full-sequence encoder, step k's write sees every link, so the LAST write
+    can compute the recall answer itself and carry it past any slot budget
+    (budget1 hit 0.897 that way). With local_writer=True each write sees only
+    its own link (encode_links) + the current memory -- information can cross
+    steps ONLY by surviving in memory. Requires read_tokens=False.
+    """
+
+    def __init__(self, *, dim, vocab, num_steps, num_slots, num_heads=4,
+                 num_encoder_layers=2, max_seq_len=64, read_tokens=True,
+                 local_writer=False, rngs, dtype=jnp.float32):
+        assert not (local_writer and read_tokens), \
+            "local_writer requires read_tokens=False (#116)"
+        self.num_steps = num_steps
+        self.num_slots = num_slots
+        self.read_tokens = read_tokens
+        self.local_writer = local_writer
+        self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
+        self.encoder = nnx.List([
+            Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
+        ])
+        self.write_block = CrossBlock(dim, num_heads, rngs, dtype)   # shared across k
+        self.step_index = nnx.Embed(num_steps, dim, rngs=rngs, dtype=dtype)
+        self.slot_readout = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)  # the grade head
+        self.addr_head = nnx.Linear(2 * dim, num_slots, rngs=rngs, dtype=dtype)
+        self.mem_init = nnx.Param(
+            jax.nn.initializers.zeros(rngs(), (num_slots, dim), jnp.float32))
+        self.read_block = CrossBlock(dim, num_heads, rngs, dtype)
+        self.answer_query = nnx.Param(
+            jax.nn.initializers.normal(0.02)(rngs(), (1, 1, dim), jnp.float32))
+        self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
+
+    def __call__(self, tokens):
+        if self.local_writer:
+            assert tokens.shape[1] == 2 * self.num_steps, "one (a_k, b_k) link per step"
+        h = encode_links(self.embed, self.encoder, tokens, self.local_writer)
+        bsz = tokens.shape[0]
+        memory = jnp.broadcast_to(self.mem_init[...].astype(h.dtype),
+                                  (bsz, self.num_slots, h.shape[-1]))
+
+        slot_logits = []
+        for k in range(self.num_steps):
+            q_k = jnp.broadcast_to(self.step_index(jnp.array([k]))[None, :, :],
+                                   (bsz, 1, h.shape[-1]))
+            tok_ctx = h[:, k] if self.local_writer else h                  # link k only, or all tokens
+            ctx = jnp.concatenate([tok_ctx, memory], axis=1)
+            v_k = self.write_block(q_k, ctx)                                # [B, 1, d]
+            slot_logits.append(self.slot_readout(v_k))                     # graded on THIS write
+
+            addr_in = jnp.concatenate([q_k[:, 0], memory.mean(axis=1)], axis=-1)
+            addr = jax.nn.softmax(self.addr_head(addr_in), axis=-1)        # [B, S]
+            memory = (1 - addr[:, :, None]) * memory + addr[:, :, None] * v_k
+
+        slot_logits = jnp.concatenate(slot_logits, axis=1)                 # [B, K, m]
+        h_read = h[:, -1] if self.local_writer else h   # content unread: local_writer forces read_tokens=False
+        return self.readout(h_read, memory), slot_logits
+
+    def readout(self, h, memory):
+        """Same contract as ScratchpadNet.readout: read_tokens=False makes the
+        final answer reachable ONLY through the memory bank (#62 wiring)."""
+        bsz = h.shape[0]
+        ctx = jnp.concatenate([h, memory], axis=1) if self.read_tokens else memory
+        aq = jnp.broadcast_to(self.answer_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
+        return self.answer_head(self.read_block(aq, ctx))[:, 0]            # [B, m]
+
+
+class DenseDepthNet(nnx.Module):
+    """CausalRefiner + a dedicated per-step grade head (#79). Pass k's normed
+    state at the answer position is graded against r_k through a separate
+    Linear — matching the serial arm's slot_readout grade path — so the tied
+    LM head's embedding geometry is never forced onto the working state. The
+    final answer is still read exactly as depthonly reads it: the last pass's
+    state through the tied head at the last position."""
+
+    def __init__(self, *, dim, vocab, K, num_heads=4, num_encoder_layers=2, rngs):
+        self.K = K
+        self.refiner = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=num_heads,
+                                     num_encoder_layers=num_encoder_layers, max_depth=K,
+                                     max_seq_len=2 * K, rngs=rngs)
+        self.step_readout = nnx.Linear(dim, vocab, rngs=rngs)   # the grade head
+
+    def __call__(self, tokens):
+        states, _ = self.refiner(tokens, depth=self.K, return_all_iters=True,
+                                 return_all_states=True)         # [K, B, S, dim] (normed)
+        step_states = states[:, :, -1, :]                        # pass k at the answer position
+        step_logits = self.step_readout(step_states)             # [K, B, m]
+        embed_t = self.refiner.embed.embedding[...].astype(self.refiner.dtype).T   # tied head, as depthonly
+        answer_logits = jnp.matmul(states[-1, :, -1, :], embed_t,
+                                   preferred_element_type=jnp.float32)
+        return answer_logits, step_logits
 
 
 def n_params(model):
@@ -218,6 +390,25 @@ def parse_arm_spec(spec):
     return "annealed", kw
 
 
+# #63: budget1/budget2/unlimited run the RECALL task variant — final =
+# (r_1 + r_K) mod m with a slots-only readout (see docs/design/budget-scratchpad.md
+# for why tokens must be hidden there). overwrite stays on the plain chain
+# task (final = r_K), matched against serial exactly as #38 was.
+# The _local variants (#116) are the same arms with per-link writer context
+# (local_writer=True) — the leak-closed rerun where retention must be real.
+RECALL_ARMS = ("budget1", "budget2", "unlimited",
+               "budget1_local", "budget2_local", "unlimited_local")
+
+
+def final_target(arm, sub, m):
+    """The answer an arm is trained on — and must be SCORED on. One function
+    shared by the loss and the eval so the two can never disagree: the #63
+    phase-2 run scored recall arms against r_K while training them on
+    (r_1+r_K) mod m, which reads as chance whether the readout failed or
+    solved the task, voiding that run's table."""
+    return (sub[:, 0] + sub[:, -1]) % m if arm in RECALL_ARMS else sub[:, -1]
+
+
 def arm_losses(arm, mdl, tok, sub, lam, depth):
     """Loss and logits for one arm. lam is the slot-grade weight λ_slot —
     fixed at 1.0 for every arm except annealed (#73), which passes
@@ -229,7 +420,26 @@ def arm_losses(arm, mdl, tok, sub, lam, depth):
         logits = mdl(tok, depth=depth)[:, -1]                # answer at last position
         ce_final = optax.softmax_cross_entropy_with_integer_labels(logits, final).mean()
         return ce_final, (logits, None)
+    if arm in ("densedepth", "densedepth_tied"):
+        # The grade without the offload (#79): every refinement pass k is
+        # graded at the answer position against r_k — the serial arm's
+        # per-slot supervision delivered to a slotless recurrence.
+        # Intermediate results must live in the model's own hidden state;
+        # only the loss schedule matches serial (λ fixed at 1.0 — these arms
+        # never anneal). densedepth grades through a dedicated head
+        # (DenseDepthNet); the tied variant reuses the #75 all-iters path,
+        # forcing the state itself toward embed(r_k).
+        if arm == "densedepth":
+            answer_logits, step_logits = mdl(tok)                  # [B, m], [K, B, m]
+        else:
+            logits_all, _ = mdl(tok, depth=depth, return_all_iters=True)   # [K, B, S, m]
+            step_logits = logits_all[:, :, -1, :]                          # pass k at answer position
+            answer_logits = step_logits[-1]
+        ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
+        ce_steps = optax.softmax_cross_entropy_with_integer_labels(step_logits, sub.T).mean()
+        return ce_final + lam * ce_steps, (answer_logits, step_logits.transpose(1, 0, 2))
     answer_logits, slot_logits = mdl(tok)
+    final = final_target(arm, sub, answer_logits.shape[-1])
     ce_final = optax.softmax_cross_entropy_with_integer_labels(answer_logits, final).mean()
     ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
     return ce_final + lam * ce_slots, (answer_logits, slot_logits)
@@ -239,17 +449,37 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
                   lr=2e-3, wd=0.01, seed=0, n_pool=32768, n_test=4096,
                   anneal_onset=0.4, anneal_decay=0.2, anneal_floor=0.0):
     assert arm in ("serial", "parallel", "depthonly", "slotsonly", "finalonly",
-                   "annealed"), f"unknown arm {arm!r}"
+                   "annealed", "densedepth", "densedepth_tied",
+                   "overwrite", "budget1", "budget2", "unlimited",
+                   "budget1_local", "budget2_local", "unlimited_local"), f"unknown arm {arm!r}"
     task = affine_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
     tr_tok, tr_sub = task(dk_tr, n_pool)
     te_tok, te_sub = task(dk_te, n_test)
 
-    if arm == "depthonly":
+    if arm in ("depthonly", "densedepth_tied"):
         model = CausalRefiner(dim=dim, vocab_size=m, num_heads=heads,
                               num_encoder_layers=enc, max_depth=K,
                               max_seq_len=2 * K, rngs=nnx.Rngs(seed))
+    elif arm == "densedepth":
+        model = DenseDepthNet(dim=dim, vocab=m, K=K, num_heads=heads,
+                              num_encoder_layers=enc, rngs=nnx.Rngs(seed))
+    elif arm == "overwrite":
+        model = BudgetScratchpadNet(dim=dim, vocab=m, num_steps=K, num_slots=1,
+                                    num_heads=heads, num_encoder_layers=enc,
+                                    max_seq_len=2 * K, read_tokens=True, rngs=nnx.Rngs(seed))
+    elif arm in ("budget1", "budget2", "budget1_local", "budget2_local"):
+        model = BudgetScratchpadNet(dim=dim, vocab=m, num_steps=K,
+                                    num_slots=(1 if arm.startswith("budget1") else 2),
+                                    num_heads=heads, num_encoder_layers=enc,
+                                    max_seq_len=2 * K, read_tokens=False,
+                                    local_writer=arm.endswith("_local"), rngs=nnx.Rngs(seed))
+    elif arm in ("unlimited", "unlimited_local"):
+        model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
+                              num_encoder_layers=enc, max_seq_len=2 * K,
+                              serial=True, read_tokens=False,
+                              local_writer=(arm == "unlimited_local"), rngs=nnx.Rngs(seed))
     else:
         model = ScratchpadNet(dim=dim, vocab=m, num_slots=K, num_heads=heads,
                               num_encoder_layers=enc, max_seq_len=2 * K,
@@ -271,7 +501,7 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
     @nnx.jit
     def eval_all(mdl):
         _, (answer_logits, slot_logits) = arm_losses(arm, mdl, te_tok, te_sub, 1.0, K)
-        final_acc = jnp.mean(answer_logits.argmax(-1) == te_sub[:, -1])
+        final_acc = jnp.mean(answer_logits.argmax(-1) == final_target(arm, te_sub, m))
         slot_acc = (jnp.mean(slot_logits.argmax(-1) == te_sub, axis=0)
                     if slot_logits is not None else jnp.zeros(K))
         return final_acc, slot_acc
@@ -307,7 +537,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
                     help="any of serial,parallel,depthonly,slotsonly (#62),"
-                         "finalonly (#67),annealed (#73); annealed takes an"
+                         "finalonly (#67),annealed (#73),densedepth,"
+                         "densedepth_tied (#79),overwrite,budget1,budget2,"
+                         "unlimited (#63),budget1_local,budget2_local,"
+                         "unlimited_local (#116); annealed takes an"
                          " optional onset and floor (#95), e.g. annealed@0.2"
                          " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")

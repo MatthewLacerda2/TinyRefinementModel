@@ -72,7 +72,12 @@ class CausalAttention(nnx.Module):
             bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
             if pad_bias is not None:
                 bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
-            out = jax.nn.dot_product_attention(q, k, v, bias=bias.astype(x.dtype))
+            # The bias must stay f32: cast to f16 turns -1e9 into -inf (f16 max
+            # ~65504), and a fully-masked row would softmax to NaN (#84).
+            # dot_product_attention adds the bias to its f32 logits, so f16
+            # q/k/v keep the tensor-core path — same contract as the chunked
+            # branch, whose bias also stays f32.
+            out = jax.nn.dot_product_attention(q, k, v, bias=bias)
         return self.o(out.reshape(b, s, d))
 
 
@@ -95,6 +100,20 @@ class Block(nnx.Module):
         return x
 
 
+def sinusoidal_step_encoding(step, dim, dtype):
+    """Continuous "which refinement step am I on" signal (#86) — the encoding
+    diffusion models use for their timestep, and for the same reason: it is a
+    fixed function of the step index, defined for ANY step, so the depth dial
+    has no structural ceiling (the learned table's rows end at max_depth).
+    Standard sin/cos geometric-frequency ladder; step is a static Python int
+    (the refine loop is unrolled), so this folds into the compiled graph."""
+    assert dim % 2 == 0, "sinusoidal step encoding needs an even dim"
+    half = dim // 2
+    freqs = jnp.exp(-jnp.log(10000.0) * jnp.arange(half, dtype=jnp.float32) / half)
+    angles = step * freqs
+    return jnp.concatenate([jnp.sin(angles), jnp.cos(angles)]).astype(dtype)
+
+
 class CausalRefiner(nnx.Module):
     """embed -> causal encoder -> (shared block looped K times) -> norm -> tied head.
 
@@ -105,15 +124,23 @@ class CausalRefiner(nnx.Module):
 
     def __init__(self, *, dim, vocab_size, num_heads=4, num_encoder_layers=2,
                  max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0,
-                 chunked_attention=False, rngs, dtype=jnp.float32):
+                 chunked_attention=False, time_signal="table", rngs, dtype=jnp.float32):
+        # time_signal (#86): "table" is the learned per-step embedding — rows end
+        # at max_depth, so depth is hard-capped. "sinusoidal" is the diffusion-
+        # style continuous encoding, defined for any step index, making
+        # inference-time depth an open dial. Different param trees — a checkpoint
+        # from one cannot resume the other.
+        assert time_signal in ("table", "sinusoidal"), f"unknown time_signal {time_signal!r}"
         self.dim = dim
         self.vocab_size = vocab_size
         self.max_depth = max_depth
         self.use_gate = use_gate
+        self.time_signal = time_signal
         self.dtype = dtype
 
         self.embed = nnx.Embed(vocab_size, dim, rngs=rngs, dtype=dtype)
-        self.time_embed = nnx.Embed(max_depth + 1, dim, rngs=rngs, dtype=dtype)
+        if time_signal == "table":
+            self.time_embed = nnx.Embed(max_depth + 1, dim, rngs=rngs, dtype=dtype)
 
         self.encoder = nnx.List([
             Block(dim, num_heads, max_seq_len, rngs, dtype, chunked_attention=chunked_attention)
@@ -134,8 +161,23 @@ class CausalRefiner(nnx.Module):
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
-                 grad_last=None, islands=False, return_all_iters=False):
+                 grad_last=None, islands=False, return_all_iters=False,
+                 return_all_states=False, allow_depth_overrun=False):
         depth = self.max_depth if depth is None else depth
+        # The time embedding has rows for steps 0..max_depth only. Past that,
+        # rows are untrained (training never samples above max_depth) and then
+        # jnp.take clamps the index, so extra passes silently reuse the last
+        # time signal and the state degenerates — flagged in the 2026-06-18
+        # depth-transfer caveats, then measured as chance at depth >= 10 in
+        # 2026-07-05-per-pass-supervision-islands.md (readout 5). Fail loud;
+        # a deliberate extrapolation probe must say so.
+        # The sinusoidal signal (#86) is defined at every step, so only the
+        # table mode carries the clamp hazard and needs the loud failure.
+        assert allow_depth_overrun or self.time_signal != "table" or depth <= self.max_depth, (
+            f"depth={depth} > max_depth={self.max_depth}: no trained time-embedding "
+            f"rows exist past max_depth and the row index silently clamps. Pass "
+            f"allow_depth_overrun=True only for a deliberate depth-extrapolation probe."
+        )
 
         pad_bias = None
         if pad_mask is not None:
@@ -171,7 +213,10 @@ class CausalRefiner(nnx.Module):
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
             elif cut is not None and step == cut and cut > 0:
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
-            t_signal = self.time_embed(jnp.asarray(step))
+            if self.time_signal == "table":
+                t_signal = self.time_embed(jnp.asarray(step))
+            else:
+                t_signal = sinusoidal_step_encoding(step, self.dim, self.dtype)
             z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
             z_new = self.refine_block(z_in, pad_bias)
             if self.use_gate:
@@ -185,10 +230,14 @@ class CausalRefiner(nnx.Module):
 
         if return_all_iters:
             z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            if return_all_states:
+                # #79: hand back the normed per-pass states instead of tied-head
+                # logits, so an external grade head can read them (toy scale only).
+                return z_all.astype(self.dtype), gates
             embed_t = self.embed.embedding[...].astype(self.dtype).T
             logits_all = jnp.matmul(z_all.astype(self.dtype), embed_t,
                                     preferred_element_type=jnp.float32)
-            gates = jnp.stack(gate_means) if self.use_gate else None
             return logits_all, gates
 
         z = self.out_norm(z)
