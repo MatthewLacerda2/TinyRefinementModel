@@ -14,7 +14,7 @@ DATA_ROOT, and --dim/--blocks shrink the model so the whole thing runs in CPU
 minutes. Wrong labels, target off-by-ones, broken gradient flow, and dead loss
 components fail at tiny scale exactly as they would at full scale:
     FORCE_F32_COMPUTE=1 JAX_PLATFORMS=cpu PYTHONPATH=. \
-        python tools/overfit_smoke.py --synthetic --dim 64 --blocks 2 --steps 80
+        python tools/overfit_smoke.py --synthetic --dim 60 --blocks 2 --steps 80
 """
 
 import os
