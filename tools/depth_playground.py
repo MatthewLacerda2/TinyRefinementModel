@@ -70,16 +70,25 @@ def generate_at_depth(model, enc, prompt, depth, *, max_new_tokens, temperature,
     return enc.decode(generated), (len(generated) / dt if dt > 0 else 0.0)
 
 
-def sweep(model, enc, prompt, depths, args):
+def sweep(model, enc, prompt, depths, args, step):
     print(f"\n{'=' * 70}\n👤 {prompt}\n{'=' * 70}")
+    lines = [f"\n## {prompt}",
+             f"_checkpoint step {step} | temperature {args.temperature} | "
+             f"seed {args.seed} | {time.strftime('%Y-%m-%d %H:%M')}_"]
     for d in depths:
         text, tps = generate_at_depth(
             model, enc, prompt, d,
             max_new_tokens=args.max_new_tokens, temperature=args.temperature,
             top_k=args.top_k, top_p=args.top_p, seed=args.seed)
+        body = text.strip() or "(empty)"
         print(f"\n--- depth {d}  ({tps:.1f} tok/s) ---")
-        print(text.strip() or "(empty)")
+        print(body)
+        lines += [f"\n### depth {d}  ({tps:.1f} tok/s)", "```", body, "```"]
     print()
+    if args.out:
+        with open(args.out, "a") as f:
+            f.write("\n".join(lines) + "\n")
+        print(f"💾 appended to {args.out}")
 
 
 def main():
@@ -95,6 +104,8 @@ def main():
     p.add_argument("--seed", type=int, default=42,
                    help="sampling seed, shared across depths so depth is the only variable")
     p.add_argument("--checkpoint-path", type=str, default=None)
+    p.add_argument("--out", type=str, default="auxmd.md",
+                   help="append sweeps to this file (gitignored by the aux convention); '' disables")
     args = p.parse_args()
 
     depths = [int(d) for d in args.depths.split(",")]
@@ -105,7 +116,7 @@ def main():
 
     if args.prompt:
         for prompt in args.prompt:
-            sweep(model, enc, prompt, depths, args)
+            sweep(model, enc, prompt, depths, args, step)
         return
 
     print("Interactive — empty line to quit.")
@@ -116,7 +127,7 @@ def main():
             break
         if not prompt:
             break
-        sweep(model, enc, prompt, depths, args)
+        sweep(model, enc, prompt, depths, args, step)
 
 
 if __name__ == "__main__":
