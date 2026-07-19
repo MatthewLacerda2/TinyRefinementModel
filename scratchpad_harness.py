@@ -97,6 +97,32 @@ def affine_chain_task(K, m):
     return fn
 
 
+def variable_chain_task(K, m):
+    """Variable-length affine chain (#123): k_eff ~ U{1..K} real links, then
+    recognizable pad links (a = b = 0; real links always have a >= 1). The
+    sub-target is STATIONARY after the chain ends — r stays r_{k_eff} through
+    the pad links — so 'done' is detectable as the state no longer changing,
+    and the final answer is sub[:, -1] = r_{k_eff}. Returns (tokens, subs,
+    k_eff) so halting evals can correlate the halt step with the true length."""
+    def fn(key, batch):
+        ka, kb, kk = jax.random.split(key, 3)
+        a = jax.random.randint(ka, (batch, K), 1, m)
+        b = jax.random.randint(kb, (batch, K), 0, m)
+        k_eff = jax.random.randint(kk, (batch,), 1, K + 1)
+        live = jnp.arange(K)[None, :] < k_eff[:, None]
+        a = jnp.where(live, a, 0)
+        b = jnp.where(live, b, 0)
+        tokens = jnp.stack([a, b], axis=-1).reshape(batch, 2 * K)
+
+        def step(r, ab):
+            r_new = jnp.where(ab[:, 0] > 0, (r * ab[:, 0] + ab[:, 1]) % m, r)
+            return r_new, r_new
+        _, subs = jax.lax.scan(step, jnp.zeros(batch, jnp.int32),
+                               jnp.stack([a.T, b.T], axis=-1).astype(jnp.int32))
+        return tokens.astype(jnp.int32), subs.T, k_eff.astype(jnp.int32)
+    return fn
+
+
 class CrossBlock(nnx.Module):
     """Pre-norm cross-attention + SwiGLU: queries read a separate context. No
     positional encoding on the queries — slot identity comes from the caller's
@@ -347,6 +373,69 @@ class DenseDepthNet(nnx.Module):
         return answer_logits, step_logits
 
 
+class HaltingScratchpadNet(nnx.Module):
+    """#123: serial scratchpad + a halting head scoring 'stop after write k'.
+
+    Halting is a READOUT choice, not a compute cut: all K writes always run
+    (the per-slot grade stays on, #67), a per-step answer is read from slots
+    1..k after each write, and p = softmax(halt_logits) weights those answers
+    in the loss — so min-depth collapse is expressible but never
+    architecturally forced. halt_context is THE one variable:
+
+      "trajectory" — the halt query cross-attends slots 1..k: the decision can
+                     reread the model's own thinking, the way thinking-token
+                     models can (the issue's hypothesis).
+      "current"    — the SAME head, context = slot k alone: the decision sees
+                     only the latest state — the graveyard-ACT configuration.
+
+    Identical parameter tree either way; only the context width differs.
+    The answer readout is slots-only (#62 wiring), so answers can only come
+    from memory."""
+
+    def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
+                 max_seq_len=64, halt_context="trajectory", rngs, dtype=jnp.float32):
+        assert halt_context in ("trajectory", "current"), f"unknown halt_context {halt_context!r}"
+        self.num_slots = num_slots
+        self.halt_context = halt_context
+        self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
+        self.encoder = nnx.List([
+            Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
+        ])
+        self.write_block = CrossBlock(dim, num_heads, rngs, dtype)   # shared across k
+        self.slot_index = nnx.Embed(num_slots, dim, rngs=rngs, dtype=dtype)
+        self.slot_readout = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)  # the grade head
+        self.read_block = CrossBlock(dim, num_heads, rngs, dtype)
+        self.answer_query = nnx.Param(
+            jax.nn.initializers.normal(0.02)(rngs(), (1, 1, dim), jnp.float32))
+        self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
+        self.halt_block = CrossBlock(dim, num_heads, rngs, dtype)
+        self.halt_query = nnx.Param(
+            jax.nn.initializers.normal(0.02)(rngs(), (1, 1, dim), jnp.float32))
+        self.halt_head = nnx.Linear(dim, 1, rngs=rngs, dtype=dtype)
+
+    def __call__(self, tokens):
+        h = self.embed(tokens)
+        for blk in self.encoder:
+            h = blk(h)
+        bsz = tokens.shape[0]
+        queries = jnp.broadcast_to(self.slot_index(jnp.arange(self.num_slots))[None, :, :],
+                                   (bsz, self.num_slots, h.shape[-1]))
+        aq = jnp.broadcast_to(self.answer_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
+        hq = jnp.broadcast_to(self.halt_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
+
+        slots, answers, halts = [], [], []
+        for k in range(self.num_slots):
+            ctx = jnp.concatenate([h] + slots, axis=1) if slots else h
+            slots.append(self.write_block(queries[:, k:k + 1], ctx))    # written once
+            bank = jnp.concatenate(slots, axis=1)                       # slots 1..k
+            answers.append(self.answer_head(self.read_block(aq, bank))[:, 0])
+            halt_ctx = bank if self.halt_context == "trajectory" else slots[-1]
+            halts.append(self.halt_head(self.halt_block(hq, halt_ctx))[:, 0, 0])
+
+        slot_logits = self.slot_readout(jnp.concatenate(slots, axis=1))  # [B, K, m]
+        return jnp.stack(answers, 1), slot_logits, jnp.stack(halts, 1)   # [B,K,m], [B,K,m], [B,K]
+
+
 def n_params(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
@@ -533,6 +622,84 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
     }
 
 
+# #123: the halting arms run the variable-length chain. halt_traj vs
+# halt_state is the observability comparison; halt_off is the rule-4 ceiling
+# (read out at K, halting head untrained).
+HALT_ARMS = ("halt_traj", "halt_state", "halt_off")
+
+
+def train_one_halt_arm(arm, *, K=6, m=7, dim=64, heads=4, enc=2, steps=2500,
+                       batch=256, lr=2e-3, wd=0.01, seed=0, lam_slot=1.0,
+                       lam_ponder=0.2, n_pool=32768, n_test=4096):
+    assert arm in HALT_ARMS, f"unknown halt arm {arm!r}"
+    task = variable_chain_task(K, m)
+    key = jax.random.PRNGKey(seed)
+    key, dk_tr, dk_te = jax.random.split(key, 3)
+    tr_tok, tr_sub, _ = task(dk_tr, n_pool)
+    te_tok, te_sub, te_keff = task(dk_te, n_test)
+
+    model = HaltingScratchpadNet(
+        dim=dim, vocab=m, num_slots=K, num_heads=heads, num_encoder_layers=enc,
+        max_seq_len=2 * K,
+        halt_context=("current" if arm == "halt_state" else "trajectory"),
+        rngs=nnx.Rngs(seed))
+    opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
+    step_frac = (jnp.arange(K, dtype=jnp.float32) + 1.0) / K   # ponder cost per halt step
+
+    def halt_losses(mdl, tok, sub):
+        answers, slot_logits, halt_logits = mdl(tok)
+        target = sub[:, -1]                                    # r_{k_eff} (stationary tail)
+        ce_k = optax.softmax_cross_entropy_with_integer_labels(
+            answers, jnp.broadcast_to(target[:, None], target.shape + (K,)))   # [B, K]
+        ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
+        if arm == "halt_off":
+            # Ceiling: full-depth readout, no halting pressure. The halting
+            # head's outputs are unused, so its params receive no gradient.
+            return ce_k[:, -1].mean() + lam_slot * ce_slots, (answers, halt_logits)
+        p = jax.nn.softmax(halt_logits, axis=-1)               # [B, K]
+        ce_halted = (p * ce_k).sum(-1).mean()
+        ponder = (p * step_frac[None, :]).sum(-1).mean()
+        return ce_halted + lam_slot * ce_slots + lam_ponder * ponder, (answers, halt_logits)
+
+    @nnx.jit
+    def step(mdl, op, k):
+        idx = jax.random.randint(k, (batch,), 0, tr_tok.shape[0])
+        def loss_fn(mm):
+            loss, _ = halt_losses(mm, tr_tok[idx], tr_sub[idx])
+            return loss
+        loss, grads = nnx.value_and_grad(loss_fn)(mdl)
+        op.update(mdl, grads)
+        return loss
+
+    @nnx.jit
+    def eval_all(mdl):
+        answers, slot_logits, halt_logits = mdl(te_tok)
+        target = te_sub[:, -1]
+        halt_step = halt_logits.argmax(-1)                     # [B], 0-indexed
+        halted_pred = jnp.take_along_axis(
+            answers.argmax(-1), halt_step[:, None], axis=1)[:, 0]
+        full_acc = jnp.mean(answers[:, -1].argmax(-1) == target)
+        halted_acc = jnp.mean(halted_pred == target)
+        # Pearson correlation between the chosen halt step and the true length.
+        hs = halt_step.astype(jnp.float32) + 1.0
+        ke = te_keff.astype(jnp.float32)
+        hs_c, ke_c = hs - hs.mean(), ke - ke.mean()
+        corr = (hs_c * ke_c).mean() / jnp.sqrt((hs_c**2).mean() * (ke_c**2).mean() + 1e-12)
+        p = jax.nn.softmax(halt_logits, axis=-1)
+        return full_acc, halted_acc, corr, p[:, 0].mean(), hs.mean()
+
+    for i in range(steps):
+        key, k = jax.random.split(key)
+        step(model, opt, k)
+
+    full_acc, halted_acc, corr, p1, mean_halt = eval_all(model)
+    return {
+        "full_acc": float(full_acc), "halted_acc": float(halted_acc),
+        "corr": float(corr), "p1_mass": float(p1), "mean_halt": float(mean_halt),
+        "params": n_params(model),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
@@ -540,7 +707,8 @@ def main():
                          "finalonly (#67),annealed (#73),densedepth,"
                          "densedepth_tied (#79),overwrite,budget1,budget2,"
                          "unlimited (#63),budget1_local,budget2_local,"
-                         "unlimited_local (#116); annealed takes an"
+                         "unlimited_local (#116),halt_traj,halt_state,"
+                         "halt_off (#123); annealed takes an"
                          " optional onset and floor (#95), e.g. annealed@0.2"
                          " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")
@@ -561,6 +729,14 @@ def main():
         arm, anneal_kw = parse_arm_spec(spec)
         for seed in [int(s) for s in args.seeds.split(",")]:
             t0 = time.time()
+            if arm in HALT_ARMS:
+                r = train_one_halt_arm(arm, K=args.K, m=args.m,
+                                       dim=args.dim, steps=args.steps, seed=seed)
+                print(f"{spec:>16} {seed:>5} {r['params']/1e6:>8.2f}M "
+                      f"full={r['full_acc']:.4f} halted={r['halted_acc']:.4f} "
+                      f"corr={r['corr']:+.3f} p1={r['p1_mass']:.3f} "
+                      f"mean_halt={r['mean_halt']:.2f} {time.time()-t0:>7.1f}s", flush=True)
+                continue
             r = train_one_arm(arm, K=args.K, m=args.m,
                               dim=args.dim, steps=args.steps, seed=seed, **anneal_kw)
             print(f"{spec:>16} {seed:>5} {r['params']/1e6:>8.2f}M {r['cut_step']:>5} "

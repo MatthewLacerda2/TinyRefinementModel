@@ -434,3 +434,44 @@ def test_local_arms_share_target_with_their_full_context_twins():
     recall = np.asarray((subs[:, 0] + subs[:, -1]) % M)
     for arm in ("budget1_local", "budget2_local", "unlimited_local"):
         np.testing.assert_array_equal(np.asarray(final_target(arm, subs, M)), recall)
+
+
+def test_variable_chain_task_stationary_after_k_eff():
+    """#123: pad links are (0,0), sub-targets freeze at r_{k_eff} through the
+    pads, and the final sub IS r_{k_eff} — 'done' must be detectable as the
+    state no longer changing, or halting has nothing to track."""
+    from scratchpad_harness import variable_chain_task
+    tokens, subs, k_eff = variable_chain_task(6, M)(jax.random.PRNGKey(7), 256)
+    a = np.asarray(tokens)[:, 0::2]
+    subs, k_eff = np.asarray(subs), np.asarray(k_eff)
+    for i in range(256):
+        assert (a[i, :k_eff[i]] >= 1).all(), "real links must have a >= 1"
+        assert (a[i, k_eff[i]:] == 0).all(), "pad links must have a == 0"
+        assert (subs[i, k_eff[i] - 1:] == subs[i, k_eff[i] - 1]).all(), \
+            "sub-targets must be stationary after the chain ends"
+    assert (subs[:, -1] == subs[np.arange(256), k_eff - 1]).all()
+    assert set(np.unique(k_eff)) == set(range(1, 7)), "k_eff should span 1..K"
+
+
+def test_halt_arms_share_param_tree_and_smoke_train():
+    """#123: trajectory vs current halt context must be the SAME parameters
+    (one-variable ablation — only the halt head's context width differs), and
+    all three arms must train end-to-end at toy size with finite metrics."""
+    from scratchpad_harness import HaltingScratchpadNet, train_one_halt_arm
+
+    def shapes(net):
+        return jax.tree_util.tree_map(lambda x: x.shape, nnx.state(net, nnx.Param))
+
+    traj = HaltingScratchpadNet(dim=DIM, vocab=M, num_slots=4,
+                                halt_context="trajectory", rngs=nnx.Rngs(0))
+    curr = HaltingScratchpadNet(dim=DIM, vocab=M, num_slots=4,
+                                halt_context="current", rngs=nnx.Rngs(0))
+    assert shapes(traj) == shapes(curr), "halt arms must share one param tree"
+
+    for arm in ("halt_traj", "halt_state", "halt_off"):
+        r = train_one_halt_arm(arm, K=4, m=M, dim=DIM, steps=40,
+                               batch=64, n_pool=512, n_test=128, seed=0)
+        for key in ("full_acc", "halted_acc", "corr", "p1_mass", "mean_halt"):
+            assert np.isfinite(r[key]), f"{arm}: non-finite {key}"
+        assert 0.0 <= r["full_acc"] <= 1.0 and 0.0 <= r["halted_acc"] <= 1.0
+        assert 1.0 <= r["mean_halt"] <= 4.0, f"{arm}: halt step outside 1..K"
