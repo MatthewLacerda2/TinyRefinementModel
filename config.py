@@ -25,7 +25,11 @@ def resolve_root(path):
     return os.path.abspath(path)
 
 # Architecture
-LATENT_DIM = 512
+# v1 base-run width: 960 is the widest that fits the 6GB card with bf16 optimizer
+# moments (#18) — ~5.3GB peak at depth-8/batch-1, ~0.7GB margin; dim1024 OOMs. Not a
+# power of 2, but a clean multiple of 64, and the big VRAM lines (the 50304×dim
+# embedding/LM head, the FFN) don't care. What matters is head_dim — see NUM_HEADS.
+LATENT_DIM = 960
 NUM_BLOCKS = 8
 SHARED_SLOTS = 32
 MAX_SEQ_LEN = 512
@@ -34,7 +38,12 @@ MAX_SEQ_LEN = 512
 # VRAM line (embedding + tied LM head), so the smaller vocab is the headline saving.
 # Must be ≥ the tokenizer's n_vocab — update both together if TOKENIZER_NAME changes.
 VOCAB_SIZE = 50304
-NUM_HEADS = 16
+# 15 heads → head_dim = 960/15 = 64, the tensor-core-clean size on Turing f16.
+# (16 heads would give head_dim 60, not a multiple of 8 → XLA pads to 64: you pay
+# near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
+# asserts pass (dim%heads==0, head_dim even for RoPE); baseline GQA NUM_GROUPS=15//4=3,
+# and 15%3==0 so the jnp.repeat that expands KV groups tiles cleanly (layers.py:82).
+NUM_HEADS = 15
 NUM_GROUPS = NUM_HEADS // 4
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
