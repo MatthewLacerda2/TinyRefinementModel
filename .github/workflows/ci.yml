@@ -109,4 +109,6 @@ jobs:
         # labels, target off-by-ones, broken gradient flow, and dead loss terms
         # fail here in minutes. Tiny dim/blocks so it's CPU-fast; the full-scale
         # variant stays a pre-launch GPU check (tools/overfit_smoke.py defaults).
-        run: PYTHONPATH=. python tools/overfit_smoke.py --synthetic --dim 64 --blocks 2 --steps 80
+        # --dim must divide config NUM_HEADS (15 since the dim960 config, #109) with an
+        # even head_dim for RoPE: 60/15 = 4. The old --dim 64 broke on 15 heads.
+        run: PYTHONPATH=. python tools/overfit_smoke.py --synthetic --dim 60 --blocks 2 --steps 80
