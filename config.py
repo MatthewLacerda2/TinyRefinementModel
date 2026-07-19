@@ -57,6 +57,24 @@ if MODEL_ARCH not in _KNOWN_ARCHES:
     raise SystemExit(
         f"MODEL_ARCH={MODEL_ARCH!r} is not a known architecture; "
         f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'refiner')")
+# Refiner time signal (#86): how each refinement pass is told which step it is.
+#   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
+#                  so inference depth is an open dial (finding
+#                  2026-07-18-sinusoidal-time-signal-depth-extrapolates.md:
+#                  parity with the table at trained depths, +0.11 from
+#                  extrapolated loops under length shift). The default — what
+#                  the base run trains.
+#   "table"      — the learned per-step embedding; rows end at MAX_STEPS_LIMIT
+#                  and the signal clamps past them (chance + NaN, same finding).
+#                  Required to RESUME refiner checkpoints from before this flip:
+#                  the two modes have different param trees.
+TIME_SIGNAL = os.environ.get("TIME_SIGNAL", "sinusoidal")
+if TIME_SIGNAL not in ("table", "sinusoidal"):
+    # Same fail-closed contract as MODEL_ARCH (#104): a typo must not silently
+    # train a different model for a whole run.
+    raise SystemExit(
+        f"TIME_SIGNAL={TIME_SIGNAL!r} is not a known time signal; "
+        f"use one of table, sinusoidal (unset defaults to 'sinusoidal')")
 # Blockwise memory-lean attention for the refiner (#66): removes the O(seq²)
 # score/probability transients that dominate the grad-step peak (mem_profile).
 # Opt-in until the dim960 GPU fit-test + wall-clock bench pass on the box;

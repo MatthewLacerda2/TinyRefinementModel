@@ -106,3 +106,22 @@ def test_checkpoint_roundtrip_preserves_forward(tmp_path):
 
     roundtripped = np.asarray(other(tokens, max_steps=2, training=False, should_refresh=True).logits)
     np.testing.assert_array_equal(reference, roundtripped)
+
+
+def test_adapter_honors_time_signal():
+    """#86: the production adapter must pass the time-signal choice through —
+    sinusoidal builds no learned table (different param tree), table does. The
+    default comes from config.TIME_SIGNAL, so the base run trains whatever the
+    launch environment says."""
+    import config
+    sin = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+                             encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+                             time_signal="sinusoidal")
+    tab = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+                             encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+                             time_signal="table")
+    default = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+                                 encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    assert "time_embed" not in nnx.state(sin.refiner, nnx.Param)
+    assert "time_embed" in nnx.state(tab.refiner, nnx.Param)
+    assert default.refiner.time_signal == config.TIME_SIGNAL
