@@ -11,7 +11,7 @@ from schedules import (
     forget_lambda_schedule,
     diversity_lambda_schedule,
 )
-from losses import chunked_cross_entropy
+from losses import chunked_cross_entropy_rows
 
 def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda):
     """Assembles the full training loss from both segments' outputs.
@@ -43,17 +43,31 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         # #19) — this is what keeps the [b, s, vocab] f32 logit peak off the card.
         embedding = model.embed.embedding[...]
 
-        def ce_of(out, targets):
-            return chunked_cross_entropy(out.hidden, embedding, targets, PAD_TOKEN_ID)
-
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
         out1 = model(seq1_in, max_steps=max_steps, training=True, should_refresh=should_refresh)
-        ce1, _ = ce_of(out1, seq1_out)
-
         out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
-        ce2, logit_stats = ce_of(out2, seq2_out)
+
+        # Both windows are scored in ONE chunked-CE scan, stacked on the batch axis:
+        # two separate calls duplicated the [vocab, dim] f32 gradient plumbing across
+        # custom_vjp boundaries XLA cannot fuse — the ~1.3 GiB temp-arena OOM at
+        # dim960 (#128). Per-row sums/counts keep ce1/ce2 numerically identical to
+        # the two-call version; only the shared embedding-grad summation order moved.
+        b = seq1_in.shape[0]
+        hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
+        targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
+        loss_sums, counts, row_stats = chunked_cross_entropy_rows(
+            hidden, embedding, targets, PAD_TOKEN_ID)
+        counts = jax.lax.stop_gradient(counts).clip(min=1.0)
+        ce1 = loss_sums[:b].sum() / counts[:b].sum()
+        ce2 = loss_sums[b:].sum() / counts[b:].sum()
+        # Window-2 telemetry, as before (weighted by row counts when b > 1).
+        logit_stats = {
+            'out_entropy': jnp.sum(row_stats['out_entropy'][b:] * counts[b:]) / counts[b:].sum(),
+            'logz_mean': jnp.sum(row_stats['logz_mean'][b:] * counts[b:]) / counts[b:].sum(),
+            'max_abs_logit': jnp.max(row_stats['max_abs_logit'][b:]),
+        }
 
         opt_step = step // ACCUMULATION_STEPS
         f_lambda = forget_lambda_schedule(opt_step)
@@ -153,6 +167,12 @@ def dense_zero_frac_max(zero_fracs):
     return max(dense) if dense else float("nan")
 
 
-@nnx.jit
+# Donation (#128): without it, this step holds input AND output copies of the
+# whole optimizer state (MultiSteps f32 accumulator, mu, nu), the params, and
+# the grads at once — a 4.65GiB buffer assignment that, not compute_grad_step,
+# was the true dim960 OOM. Donating aliases old state to new in place (~2.2GiB
+# saved). The caller must not touch `grads` after this call — the trainer
+# samples its zero-frac telemetry BEFORE applying, for exactly this reason.
+@nnx.jit(donate_argnums=(0, 1, 2))
 def apply_grads(opt, grads, model):
     opt.update(model, grads)

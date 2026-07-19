@@ -23,14 +23,23 @@ scan carry (never stacked) and emits ``grad_hidden`` one chunk at a time. Memory
 bounded by construction — one chunk's logits plus the small fixed gradients —
 independent of XLA's rematerialization heuristics or the allocator's budget.
 
+A fourth constraint surfaced at dim960 (#128): the grad step scored its two windows
+with two SEPARATE chunked-CE calls, and XLA does not reuse buffers across the two
+custom_vjp boundaries — the [vocab, dim] f32 gradient plumbing (scan carry ping-pong,
+per-chunk GEMM output, final add, plus the f16 embed-cast) existed once PER CALL,
+~1.3 GiB of duplicated vocab-sized temporaries in the packed temp arena. The core is
+therefore per-row (``chunked_cross_entropy_rows``): callers stack their windows on the
+batch axis and score them in ONE scan — one carry, one GEMM chain, one cast — and read
+per-window losses from the per-row sums/counts. The scalar API below wraps it.
+
 The per-token loss and its gradients are identical to the naive full-logit CE (the vocab
 axis is never chunked); only the float32 sum over positions reorders, so a golden-run
 re-record is expected. The unit test asserts value AND gradient parity.
 
-The scan also accumulates logit-scale telemetry (#80) — mean softmax entropy, mean
-log Z, max |logit|, all over non-pad positions — since each chunk's full-vocab f32
+The scan also accumulates logit-scale telemetry (#80) — softmax entropy, log Z,
+max |logit|, per row over non-pad positions — since each chunk's full-vocab f32
 logits are already in hand here and nowhere else. Measurement only: the stats ride
-back as a second output whose cotangent the backward ignores, so they can never leak
+back as extra outputs whose cotangents the backward ignores, so they can never leak
 gradient into training.
 """
 
@@ -56,16 +65,17 @@ def _to_chunks(hidden, targets, pad_id, chunk_size):
     return h_steps, t_steps, n_chunks, n_pad
 
 
-def _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size):
-    """Scalar loss plus logit-scale stats, scored chunk-by-chunk via scan so the
+def _masked_chunked_rows(hidden, embedding, targets, pad_id, chunk_size):
+    """Per-row CE sums and telemetry, scored chunk-by-chunk via one scan so the
     forward never holds the full vocab-wide logits. Shared by the custom_vjp primal
-    and its forward rule. Returns ``(loss, stats)`` where stats holds ``out_entropy``,
-    ``logz_mean`` and ``max_abs_logit``, each masked to non-pad positions."""
+    and its forward rule. Returns ``(loss_sums [b], counts [b], stats)`` where stats
+    holds per-row ``out_entropy``, ``logz_mean`` (masked means) and ``max_abs_logit``."""
+    b = hidden.shape[0]
     embed_t = embedding.astype(hidden.dtype).T  # [d, vocab]
     h_steps, t_steps, _, _ = _to_chunks(hidden, targets, pad_id, chunk_size)
 
     def step(carry, xs):
-        loss_sum, count, ent_sum, logz_sum, max_abs = carry
+        loss_sum, count, ent_sum, logz_sum, max_abs = carry  # all [b]
         h, t = xs
         # f32 logits accumulation matches the original head (preferred_element_type).
         logits = jnp.matmul(h, embed_t, preferred_element_type=jnp.float32)
@@ -77,31 +87,36 @@ def _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size):
         entropy = logz - jnp.sum(jax.nn.softmax(logits, axis=-1) * logits, axis=-1)
         pos_max_abs = jnp.max(jnp.abs(logits), axis=-1)
         carry = (
-            loss_sum + jnp.sum(ce * mask),
-            count + jnp.sum(mask),
-            ent_sum + jnp.sum(entropy * mask),
-            logz_sum + jnp.sum(logz * mask),
-            jnp.maximum(max_abs, jnp.max(jnp.where(mask > 0, pos_max_abs, 0.0))),
+            loss_sum + jnp.sum(ce * mask, axis=-1),
+            count + jnp.sum(mask, axis=-1),
+            ent_sum + jnp.sum(entropy * mask, axis=-1),
+            logz_sum + jnp.sum(logz * mask, axis=-1),
+            jnp.maximum(max_abs, jnp.max(jnp.where(mask > 0, pos_max_abs, 0.0), axis=-1)),
         )
         return carry, None
 
-    zero = jnp.asarray(0.0, jnp.float32)
-    init = (zero, zero, zero, zero, zero)
-    (loss_sum, count, ent_sum, logz_sum, max_abs), _ = jax.lax.scan(
+    zeros = jnp.zeros((b,), jnp.float32)
+    init = (zeros, zeros, zeros, zeros, zeros)
+    (loss_sums, counts, ent_sums, logz_sums, max_abs), _ = jax.lax.scan(
         step, init, (h_steps, t_steps))
-    denom = count.clip(min=1.0)
+    denom = counts.clip(min=1.0)
     stats = {
-        'out_entropy': ent_sum / denom,
-        'logz_mean': logz_sum / denom,
+        'out_entropy': ent_sums / denom,
+        'logz_mean': logz_sums / denom,
         'max_abs_logit': max_abs,
     }
-    return loss_sum / denom, stats
+    return loss_sums, counts, stats
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(3, 4))
-def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128):
-    """Masked-mean next-token cross-entropy through the tied LM head, scored in
-    sequence-axis chunks with an explicit, memory-bounded (scan) backward.
+def chunked_cross_entropy_rows(hidden, embedding, targets, pad_id, chunk_size=128):
+    """Per-row masked CE sums through the tied LM head, scored in sequence-axis
+    chunks with an explicit, memory-bounded (scan) backward.
+
+    This is the core: ONE scan regardless of how many logical windows the caller
+    packed onto the batch axis, so the [vocab, dim] gradient plumbing exists once
+    (#128). Callers derive their losses from the sums/counts, e.g.
+    ``ce_w = loss_sums[w] / counts[w].clip(min=1)``.
 
     Args:
         hidden:    ``[b, s, d]`` final pre-head states (the model returns these during
@@ -113,37 +128,40 @@ def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128):
                    penalty, so smaller is strictly leaner.
 
     Returns:
-        ``(loss, stats)``:
-        loss  — scalar ``sum(CE * mask) / sum(mask)`` — identical to the naive
+        ``(loss_sums, counts, stats)``:
+        loss_sums — ``[b]`` per-row ``sum(CE * mask)`` — identical to the naive
                 computation (value and gradients) up to float32 summation order.
-        stats — logit-scale telemetry over non-pad positions (#80): ``out_entropy``
-                (mean softmax entropy), ``logz_mean`` (mean log Z), ``max_abs_logit``.
-                Measurement only — the backward ignores their cotangent, so no
-                gradient can flow through them.
+        counts — ``[b]`` per-row non-pad position counts (f32). Measurement-grade:
+                the backward ignores its cotangent, so divide by it freely.
+        stats — per-row logit-scale telemetry over non-pad positions (#80):
+                ``out_entropy`` (mean softmax entropy), ``logz_mean`` (mean log Z),
+                ``max_abs_logit``. Measurement only — the backward ignores their
+                cotangent, so no gradient can flow through them.
     """
-    return _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size)
+    return _masked_chunked_rows(hidden, embedding, targets, pad_id, chunk_size)
 
 
 def _cce_fwd(hidden, embedding, targets, pad_id, chunk_size):
     # Residuals are just the inputs — no logits saved, so the forward stays bounded.
     # targets is integer (non-differentiable) but can't be a nondiff_argnum because it is
     # a tracer; it rides in the residuals and gets a None cotangent in _cce_bwd.
-    out = _masked_chunked_loss(hidden, embedding, targets, pad_id, chunk_size)
+    out = _masked_chunked_rows(hidden, embedding, targets, pad_id, chunk_size)
     return out, (hidden, embedding, targets)
 
 
 def _cce_bwd(pad_id, chunk_size, residuals, g):
     hidden, embedding, targets = residuals
-    # g mirrors the (loss, stats) output; the stats cotangent is dropped — they are
-    # diagnostics, structurally outside the training gradient.
-    g, _ = g
+    # g mirrors the (loss_sums, counts, stats) output; the counts and stats cotangents
+    # are dropped — counts is a denominator-grade measurement, stats are diagnostics,
+    # both structurally outside the training gradient.
+    g_sums, _, _ = g
     b, s, d = hidden.shape
     vocab = embedding.shape[0]
     embed_t = embedding.astype(hidden.dtype).T  # [d, vocab]
 
-    # loss = sum(mask * CE) / count, so d loss/d logits = (1/count) * mask * (p - onehot).
-    count = jnp.sum(targets != pad_id).astype(jnp.float32).clip(min=1.0)
-    scale = g / count
+    # loss_sums[i] = sum(mask_i * CE_i), so d loss_sums[i] / d logits_i = mask_i * (p - onehot)
+    # scaled by that row's incoming cotangent.
+    scale = g_sums[:, None, None]  # [b, 1, 1]
 
     h_steps, t_steps, n_chunks, n_pad = _to_chunks(hidden, targets, pad_id, chunk_size)
 
@@ -167,4 +185,23 @@ def _cce_bwd(pad_id, chunk_size, residuals, g):
     return grad_hidden, grad_embedding, None
 
 
-chunked_cross_entropy.defvjp(_cce_fwd, _cce_bwd)
+chunked_cross_entropy_rows.defvjp(_cce_fwd, _cce_bwd)
+
+
+def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128):
+    """Masked-mean CE over ALL rows — the original scalar API, now a thin wrapper
+    over the per-row core. ``loss = Σ_rows sum_i / Σ_rows count_i`` with the stats
+    aggregated the same way, so single-window callers (tests, tools) see exactly
+    the old semantics. Gradients flow through the per-row sums with the correct
+    1/total_count scale — identical to the old global-mean backward."""
+    loss_sums, counts, stats = chunked_cross_entropy_rows(
+        hidden, embedding, targets, pad_id, chunk_size)
+    counts = jax.lax.stop_gradient(counts)
+    denom_rows = counts.clip(min=1.0)
+    total = counts.sum().clip(min=1.0)
+    agg = {
+        'out_entropy': jnp.sum(stats['out_entropy'] * denom_rows) / total,
+        'logz_mean': jnp.sum(stats['logz_mean'] * denom_rows) / total,
+        'max_abs_logit': jnp.max(stats['max_abs_logit']),
+    }
+    return loss_sums.sum() / total, agg

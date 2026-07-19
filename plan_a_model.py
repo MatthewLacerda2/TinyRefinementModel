@@ -184,9 +184,21 @@ class CausalRefiner(nnx.Module):
             pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
             pad_bias = pad_bias[:, None, None, :]
 
+        # Rematerialization is a GPU-memory measure (#128) and is gated to the
+        # GPU backend: the CPU emitter rejects the f16×f16→f32 attention dot
+        # inside remat regions (ValueError: precision 'F16_F16_F32' not
+        # supported), and the CPU lane (tests, golden) has no VRAM constraint.
+        # Same math either way — checkpoint only changes what the backward
+        # recomputes.
+        remat = jax.checkpoint if jax.default_backend() == "gpu" else (lambda f: f)
+
         z = self.embed(tokens)
+        # Same rematerialization as the refine loop below (#128): the encoder is
+        # 7 distinct blocks and the grad step holds TWO windows' graphs at once,
+        # so un-remat'd encoder residuals are 14 block-applications of live
+        # activations. Checkpointing each block keeps only its boundary states.
         for blk in self.encoder:
-            z = blk(z, pad_bias)
+            z = remat(lambda b, z_: b(z_, pad_bias))(blk, z)
 
         # Truncated backprop through the refinement depth (#64): with grad_last=j,
         # gradient flows through only the last j refinement iterations — the
@@ -207,6 +219,22 @@ class CausalRefiner(nnx.Module):
         # return_all_iters (#75): also return every pass's logits (toy scale only
         # — [depth, b, s, vocab] is cheap here, unaffordable at real vocab) plus
         # each pass's mean gate openness, for per-pass supervision and readouts.
+        # Each unrolled iteration's block internals are rematerialized in the
+        # backward (#128): without this, backprop through the depth loop keeps
+        # every iteration's attention/MLP activations alive at once — the graph's
+        # 2.8GiB live peak that OOM'd the 6GB card at dim960. jax.checkpoint saves
+        # only the iteration boundaries (z, t_signal) and recomputes the inside;
+        # same math, and forward-only inference is untouched (checkpoint is a
+        # no-op outside differentiation).
+        def _refine_iter(z, t_signal):
+            z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
+            z_new = self.refine_block(z_in, pad_bias)
+            if self.use_gate:
+                g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))
+                return g * z_new + (1.0 - g) * z, jnp.mean(g)
+            return z_new, None
+        refine_iter = remat(_refine_iter)
+
         all_z, gate_means = [], []
         for step in range(depth):
             if islands and step > 0:
@@ -217,14 +245,9 @@ class CausalRefiner(nnx.Module):
                 t_signal = self.time_embed(jnp.asarray(step))
             else:
                 t_signal = sinusoidal_step_encoding(step, self.dim, self.dtype)
-            z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
-            z_new = self.refine_block(z_in, pad_bias)
+            z, g_mean = refine_iter(z, t_signal)
             if self.use_gate:
-                g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))
-                z = g * z_new + (1.0 - g) * z
-                gate_means.append(jnp.mean(g))
-            else:
-                z = z_new
+                gate_means.append(g_mean)
             if return_all_iters:
                 all_z.append(z)
 
