@@ -36,8 +36,14 @@ class UniversalReasoner(nnx.Module):
         # The reasoning stack's memory is already bounded by the scan-level
         # jax.checkpoint in _reasoning_loop; per-block remat inside it was double
         # checkpointing (322ms -> 271ms/micro-step from dropping it alone).
-        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=False)
-        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=False)
+        # encoder/decoder remat flipped ON for dim960 (#128 follow-up): the June
+        # dim512 benchmark that turned it off predates the #129 memory work, and
+        # at dim960 the control OOM'd 1.06GiB on late depth-variant compiles with
+        # these stacks un-remat'd. The reasoning stack stays False — its scan-level
+        # jax.checkpoint in _reasoning_loop already bounds it (per-block remat
+        # inside that was measured as double-checkpointing overhead).
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True, use_remat=False)
 
         self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype)
