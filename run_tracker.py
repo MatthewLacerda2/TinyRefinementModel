@@ -69,10 +69,16 @@ class RunTracker:
         here makes every future run revivable by construction. Best-effort: a failure
         to snapshot must never take down a training launch.
         """
+        # Every shell-out below carries a timeout: a raised error is caught, but a
+        # *hang* (wedged D-state nvidia-smi, a stuck pip) is not — without the timeout
+        # it would stall every launch. TimeoutExpired is a SubprocessError, so the
+        # existing excepts already handle it once it fires.
+
         # 1. Pinned libs — the second half of the compat surface (code is the first).
         try:
             freeze = subprocess.check_output(
-                [sys.executable, "-m", "pip", "freeze"], stderr=subprocess.DEVNULL)
+                [sys.executable, "-m", "pip", "freeze"],
+                stderr=subprocess.DEVNULL, timeout=120)
             with open(os.path.join(run_dir, "env_freeze.txt"), "wb") as f:
                 f.write(freeze)
         except (OSError, subprocess.SubprocessError) as e:
@@ -86,12 +92,16 @@ class RunTracker:
         try:
             smi = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version,name",
-                 "--format=csv,noheader"], stderr=subprocess.DEVNULL).decode().strip()
+                 "--format=csv,noheader"], stderr=subprocess.DEVNULL,
+                timeout=30).decode().strip()
             lines.append(f"gpu {smi}")
         except (OSError, subprocess.SubprocessError):
             lines.append("gpu (nvidia-smi unavailable)")
-        with open(os.path.join(run_dir, "system_snapshot.txt"), "w") as f:
-            f.write("\n".join(lines) + "\n")
+        try:
+            with open(os.path.join(run_dir, "system_snapshot.txt"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError as e:  # e.g. disk full at run creation on the near-full root fs
+            print(f"⚠️ Could not write system_snapshot.txt ({e}).")
 
         RunTracker.capture_worktree_snapshot(run_dir)
 
@@ -108,7 +118,7 @@ class RunTracker:
         """
         try:
             patch = subprocess.check_output(
-                ["git", "diff", "HEAD"], stderr=subprocess.DEVNULL)
+                ["git", "diff", "HEAD"], stderr=subprocess.DEVNULL, timeout=60)
             with open(os.path.join(run_dir, "worktree.patch"), "wb") as f:
                 f.write(patch)
         except (OSError, subprocess.SubprocessError) as e:
@@ -117,7 +127,7 @@ class RunTracker:
         try:
             untracked = subprocess.check_output(
                 ["git", "ls-files", "--others", "--exclude-standard"],
-                stderr=subprocess.DEVNULL).decode()
+                stderr=subprocess.DEVNULL, timeout=60).decode()
             with open(os.path.join(run_dir, "worktree.untracked.txt"), "w") as f:
                 f.write(untracked)
         except (OSError, subprocess.SubprocessError) as e:

@@ -96,6 +96,12 @@ def ensure_worktree(run_id, commit):
     if not os.path.exists(wt):
         subprocess.run(["git", "worktree", "add", "--detach", wt, commit],
                        cwd=REPO_ROOT, check=True)
+    else:
+        # Worktree exists but the sentinel doesn't — a prior run died mid-setup,
+        # leaving a possibly half-patched tree. Reset it clean before re-applying so
+        # the patch lands on the pristine commit, not on top of a partial apply.
+        subprocess.run(["git", "reset", "--hard", commit], cwd=wt, check=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=wt, check=True)
 
     patch = os.path.join(run_dir(run_id), "worktree.patch")
     if has_file(run_id, "worktree.patch"):
@@ -200,23 +206,35 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
 
 # --- closing the loop: reproduce the metric (#44 DoD) ------------------------
 
-def recorded_val_ce(run_id):
-    """The run's own last held-out val CE (metrics.csv) — the number a faithful
-    revival must reproduce. Held-out CE is what the #17 noise floor is stated in
-    (2σ = 0.06 nats), so it is the natural apples-to-apples target."""
+def recorded_val_ce(run_id, step=None):
+    """The run's own held-out val CE (metrics.csv) — the number a faithful revival
+    must reproduce. Held-out CE is what the #17 noise floor is stated in (2σ = 0.06
+    nats), so it is the natural apples-to-apples target.
+
+    The yardstick scores whatever checkpoint is on disk, whose step need not be the
+    last *logged* row (val cadence and checkpoint cadence can differ). Pass `step`
+    (from the yardstick's reported checkpoint step) to compare like-for-like; we fall
+    back to the last logged CE only when no row matches."""
     path = os.path.join(run_dir(run_id), "metrics.csv")
     if not os.path.exists(path):
         return None
-    last = None
+    last = matched = None
     with open(path) as f:
         for row in csv.DictReader(f):
             v = row.get("val_ce", "")
-            if v not in ("", "nan", None):
+            if v in ("", "nan", None):
+                continue
+            try:
+                last = float(v)
+            except ValueError:
+                continue
+            if step is not None:
                 try:
-                    last = float(v)
+                    if int(float(row.get("step", "nan"))) == int(step):
+                        matched = last
                 except ValueError:
                     pass
-    return last
+    return matched if matched is not None else last
 
 
 def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
@@ -271,10 +289,17 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
         raise SystemExit("Yardstick produced no held-out val CE (DATA_ROOT unset?) "
                          "— cannot compare. See the JSON at " + out_json)
 
+    # Compare against the CE logged for the exact checkpoint step the yardstick scored.
+    step = (row.get("checkpoint") or {}).get("step")
+    expect = recorded_val_ce(run_id, step=step) if step is not None else expect
+
     print(f"\n  measured held-out val CE : {measured:.4f}")
     if expect is None:
-        print("  verdict: no recorded metric to compare against — measured value logged only.")
-        return
+        # A DoD gate that can't find the recorded metric must not exit success —
+        # otherwise an un-checkable run reads as "reproduced". Distinct code 2.
+        print("  verdict: NO recorded metric to compare against — cannot verify "
+              "(measured value logged above).")
+        raise SystemExit(2)
     delta = abs(measured - expect)
     ok = delta <= tolerance
     print(f"  |measured - recorded|    : {delta:.4f}  "
