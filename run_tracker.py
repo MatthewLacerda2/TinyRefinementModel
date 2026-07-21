@@ -20,6 +20,7 @@ from config import (
     DATA_SEED,
     MODEL_SEED,
     TRAIN_TOKEN_BUDGET,
+    MODEL_ARCH,
 )
 from schedules import DECAY_STEPS
 
@@ -59,8 +60,86 @@ class RunTracker:
         return metadata
 
     @staticmethod
+    def capture_environment_snapshot(run_dir):
+        """Freeze everything a revival (tools/timemachine.py) needs beyond the commit
+        SHA: the dirty working tree, the pinned Python libs, and the host it assumed.
+
+        These make a run self-describing. Until now they were written by hand (only
+        one run ever had them), so reproducibility was accidental; capturing them
+        here makes every future run revivable by construction. Best-effort: a failure
+        to snapshot must never take down a training launch.
+        """
+        # Every shell-out below carries a timeout: a raised error is caught, but a
+        # *hang* (wedged D-state nvidia-smi, a stuck pip) is not — without the timeout
+        # it would stall every launch. TimeoutExpired is a SubprocessError, so the
+        # existing excepts already handle it once it fires.
+
+        # 1. Pinned libs — the second half of the compat surface (code is the first).
+        try:
+            freeze = subprocess.check_output(
+                [sys.executable, "-m", "pip", "freeze"],
+                stderr=subprocess.DEVNULL, timeout=120)
+            with open(os.path.join(run_dir, "env_freeze.txt"), "wb") as f:
+                f.write(freeze)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not capture pip freeze ({e}); libs not pinned.")
+
+        # 2. The host the venv assumed — driver/GPU/python. Not part of the compat
+        #    surface (driver is a shared passthrough) but invaluable for debugging a
+        #    failed revival. MODEL_ARCH also rides in run_metadata.json, machine-readable.
+        lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}",
+                 f"MODEL_ARCH {MODEL_ARCH}"]
+        try:
+            smi = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=driver_version,name",
+                 "--format=csv,noheader"], stderr=subprocess.DEVNULL,
+                timeout=30).decode().strip()
+            lines.append(f"gpu {smi}")
+        except (OSError, subprocess.SubprocessError):
+            lines.append("gpu (nvidia-smi unavailable)")
+        try:
+            with open(os.path.join(run_dir, "system_snapshot.txt"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError as e:  # e.g. disk full at run creation on the near-full root fs
+            print(f"⚠️ Could not write system_snapshot.txt ({e}).")
+
+        RunTracker.capture_worktree_snapshot(run_dir)
+
+    @staticmethod
+    def capture_worktree_snapshot(run_dir):
+        """Freeze the working tree so a dirty launch is reproducible.
+
+        `git_dirty` records *that* the tree diverged from HEAD; this records *how*.
+        Without it, reviving a weight (tools/timemachine.py) can only reconstruct the
+        commit, not the uncommitted edits that were actually live at launch. We save
+        the tracked-file diff as a patch the time machine re-applies onto the worktree,
+        plus the list of untracked non-ignored files (whose contents we deliberately
+        do NOT copy — bloat/surprise risk — but warn about on reconstruction).
+        """
+        try:
+            patch = subprocess.check_output(
+                ["git", "diff", "HEAD"], stderr=subprocess.DEVNULL, timeout=60)
+            with open(os.path.join(run_dir, "worktree.patch"), "wb") as f:
+                f.write(patch)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not capture worktree patch ({e}); dirty state not saved.")
+
+        try:
+            untracked = subprocess.check_output(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                stderr=subprocess.DEVNULL, timeout=60).decode()
+            with open(os.path.join(run_dir, "worktree.untracked.txt"), "w") as f:
+                f.write(untracked)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"⚠️ Could not list untracked files ({e}).")
+
+    @staticmethod
     def get_hyperparameters():
         return {
+            # Which arch built the param tree — the two arches are not
+            # checkpoint-compatible, so a faithful revival (tools/timemachine.py)
+            # must rebuild the same skeleton. Recorded machine-readably here.
+            "MODEL_ARCH": MODEL_ARCH,
             "LATENT_DIM": LATENT_DIM,
             "NUM_BLOCKS": NUM_BLOCKS,
             "SHARED_SLOTS": SHARED_SLOTS,
@@ -148,6 +227,7 @@ class RunTracker:
             }
             self.session_index = 0
             self.save_metadata(metadata)
+            self.capture_environment_snapshot(self.run_dir)
             print(f"📁 Created new training run folder: {self.run_dir}")
         else:
             # Resume existing run
