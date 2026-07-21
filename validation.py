@@ -8,10 +8,10 @@ import jax.numpy as jnp
 import optax
 from flax import nnx
 
-from config import BATCH_SIZE, MAX_SEQ_LEN, PAD_TOKEN_ID
+from config import EVAL_ROWS, MAX_SEQ_LEN, PAD_TOKEN_ID
 from data_loaders import TextDataGenerator
 
-VAL_BATCHES = 4
+VAL_ROWS = EVAL_ROWS
 VAL_FIXED_DEPTH = 4
 # Far past any plausible training consumption (an 8k-opt-step run consumes
 # under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
@@ -37,7 +37,7 @@ def _val_ce_sums(model, batch):
 
 
 class ValidationProbe:
-    """Loads VAL_BATCHES fixed held-out batches once, then scores them on demand.
+    """Loads VAL_ROWS fixed held-out rows once, then scores them on demand.
     Restores the training stream's carried hunch afterwards, so validating never
     perturbs training."""
 
@@ -48,12 +48,16 @@ class ValidationProbe:
     def _load(self):
         gen = TextDataGenerator(f"{self.data_root}/pretrain/fineweb-edu")
         gen.skip_count = VAL_SKIP_SAMPLES
+        # One row per batch, independent of BATCH_SIZE (#24): this reproduces the
+        # pre-#24 read pattern exactly — including where a file boundary lands
+        # mid-slice — so the measured val CE stays comparable to every number
+        # already recorded. Batching a 4-row probe would buy nothing anyway.
         batches = []
-        while len(batches) < VAL_BATCHES:
-            batch, _ = gen.get_batch(BATCH_SIZE)
-            if batch is None:
+        while len(batches) < VAL_ROWS:
+            row, _ = gen.get_batch(1)
+            if row is None:
                 break
-            batches.append(batch)
+            batches.append(row)
         if not batches:
             print("⚠️ Validation disabled: no held-out data available past the skip range.")
         return batches

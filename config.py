@@ -105,11 +105,29 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 
 # Training
 MAX_STEPS_LIMIT = 8
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
+# BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
+# fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
+# ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
+# fatter micro-steps amortize it. Measured +34% (3.8k -> 5.1k tok/s at depth 4).
+# Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
+# and the learning dynamics are all identical: same model, fewer resources.
+# Going past 2 is not worth it — the return per doubling shrinks fast (the next
+# rung measured +19-25%) as the card goes from launch-bound to compute-bound.
+BATCH_SIZE = 2
+ACCUMULATION_STEPS = 64
 # Target tokens consumed per optimizer step: each micro-step scores two
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
+
+# Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
+# and scores them ONE ROW AT A TIME, deliberately ignoring BATCH_SIZE. Sizing or
+# chunking the eval slice by a training throughput knob would silently redefine
+# what "val CE" means and break comparability with every number already recorded
+# (the champion's 4.7092, the #17 noise floor of sigma~0.03, the time machine's
+# +/-0.06 reproduction check). Eval is a handful of rows, so there is nothing to
+# gain by batching it — and batch-1 scoring is also the shape every stored
+# checkpoint of both arches was written at.
+EVAL_ROWS = 4
 
 # Planned token budget for the run (#83) — env-overridable per run like the seeds,
 # recorded in run_metadata.json. Drives schedules.DECAY_STEPS so the LR cosine

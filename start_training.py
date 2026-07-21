@@ -91,6 +91,7 @@ if __name__ == "__main__":
         del old_state
         gc.collect()
 
-    data_queue = setup_data_pipeline(start_step, sft_phase_event, monitor.sft_start_step)
+    data_queue = setup_data_pipeline(start_step, sft_phase_event, monitor.sft_start_step,
+                                     samples_seen=monitor.samples_seen or None)
 
     train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker)

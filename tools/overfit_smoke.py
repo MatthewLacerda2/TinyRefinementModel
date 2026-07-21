@@ -49,7 +49,9 @@ def main():
                         help="number of blocks (shrink for CPU CI; must be even)")
     args = parser.parse_args()
 
-    model = UniversalReasoner(args.dim, nnx.Rngs(0), num_blocks=args.blocks)
+    # batch_size pinned at 1, not the training BATCH_SIZE: this smoke feeds a
+    # single row, and the reasoner's hunch cache asserts on the leading dim.
+    model = UniversalReasoner(args.dim, nnx.Rngs(0), num_blocks=args.blocks, batch_size=1)
     optimizer = nnx.Optimizer(
         model,
         optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.lr)),
@@ -60,7 +62,7 @@ def main():
         batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     else:
         from tools.common import load_eval_batches
-        batch = load_eval_batches(num_batches=1, skip=0)[0]
+        batch = load_eval_batches(num_rows=1, skip=0)[0]
 
     initial_ce = None
     final_ce = None

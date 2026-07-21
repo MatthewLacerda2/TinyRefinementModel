@@ -45,6 +45,11 @@ def main():
     parser.add_argument("--warmup", type=int, default=10, help="untimed steps (includes compile)")
     parser.add_argument("--depth", type=int, default=8, help="reasoning steps (curriculum depth)")
     parser.add_argument("--modes", type=str, default="loop,kernel")
+    parser.add_argument("--batch", type=int, default=BATCH_SIZE,
+                        help="micro-batch rows (default: config BATCH_SIZE). Sweeping this "
+                             "measures how throughput scales with the forward's GEMM shape — "
+                             "the 1->2 rung is what stacking the two windows would buy without "
+                             "touching the data pipeline, the 2->4 rung is what real batching adds.")
     parser.add_argument("--no-remat-encdec", action="store_true",
                         help="disable per-block remat in encoder/decoder stacks (P5 config c)")
     parser.add_argument("--no-remat-reasoning", action="store_true",
@@ -56,7 +61,7 @@ def main():
     print(f"device: {jax.devices()[0]}")
     print(f"allocator: {os.environ.get('XLA_PYTHON_CLIENT_ALLOCATOR', '(default bfc)')} | "
           f"preallocate: {os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '(default true)')}")
-    print(f"depth: {args.depth} | steps: {args.steps} | warmup: {args.warmup} | "
+    print(f"depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | warmup: {args.warmup} | "
           f"no_remat_encdec: {args.no_remat_encdec} | no_remat_reasoning: {args.no_remat_reasoning} | "
           f"attn_impl: {args.attn_impl or '(default)'}")
 
@@ -75,9 +80,9 @@ def main():
 
     rng = np.random.default_rng(0)
     batch = jnp.array(
-        rng.integers(0, VOCAB_SIZE, size=(BATCH_SIZE, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32
+        rng.integers(0, VOCAB_SIZE, size=(args.batch, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32
     )
-    no_boundary = jnp.zeros((BATCH_SIZE,), dtype=bool)
+    no_boundary = jnp.zeros((args.batch,), dtype=bool)
 
     def micro_step(i, sync):
         loss, out, grads, grad_norm = compute_grad_step(
@@ -99,7 +104,7 @@ def main():
     print(f"warmup (incl. compile): {time.time() - t0:.1f}s")
     report_memory("post-warmup")
 
-    tokens_per_step = BATCH_SIZE * 2 * MAX_SEQ_LEN
+    tokens_per_step = args.batch * 2 * MAX_SEQ_LEN
     for mode in args.modes.split(","):
         t0 = time.time()
         for i in range(args.steps):

@@ -21,7 +21,7 @@ def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkey
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
-    monkeypatch.setattr(validation, "VAL_BATCHES", 1)
+    monkeypatch.setattr(validation, "VAL_ROWS", 1)
 
     probe = validation.ValidationProbe(trainer.DATA_ROOT)
     sentinel = jnp.ones_like(tiny_model.hunch_cache[...]) * 0.123
