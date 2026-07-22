@@ -109,11 +109,14 @@ the v1 leak that had to be amputated).
   gap versus the parallel-slot control. Runs on the tiny ablation harness
   (minutes), so it is a cpu-lane bet, not a real-model run.
 - **Parked refinements — gated behind the proof; adding them now confounds it:**
-  - *Convergence halting* — #39: stop refining when the latent stops moving
-    (cosine of step k vs k-1 below a threshold). This is the Deep-Equilibrium /
+  - *Convergence halting* — #39: stop refining when the state stops moving
+    (cosine of step k vs k-1 above a threshold). This is the Deep-Equilibrium /
     fixed-point family and the 2025 recurrent-depth line (Geiping et al.), NOT
     learned per-token halting (ACT, which is killed below). Not novel as a
     mechanism; worth it for adaptive compute (fewer steps on easy tokens).
+    **The raw-latent signal is dead** (see Graveyard) — #39 now carries the one
+    variant that measurement pointed at instead: the same rule on the *grade
+    logits*, which separate cleanly where the latents do not.
   - *Slot dimensionality / "vagueness"* — a wide continuous slot can hold a soft,
     under-specified idea (superposition) where a token must commit; the state
     starts vague and sharpens toward commitment — which is what convergence
@@ -174,6 +177,22 @@ its PR.
   causal decode positions, the textbook non-causal-path bug. Pre-fix "depth lowers
   CE" readings were leak bandwidth, not refinement (see the hunch-inert finding's
   pre/post contrast). Guards: both causality tests in `tests/test_model_invariants.py`.
+- **cosine halting on the serial scratchpad — raw-latent signal** (#39, 2026-07-15,
+  PR #96, closed unmerged; this line is the record): halting the write loop at the
+  first slot with cosine(s_k, s_{k−1}) > τ cannot trade writes for accuracy. On an
+  identity-tail split (oracle 3.25 writes against the fixed 4), 3 seeds: τ ∈ {0.5,
+  0.7} do save (3.30 / 3.48 writes) but cost 0.14–0.17 accuracy (≈3–4σ_pooled), and
+  every τ ≥ 0.98 holds accuracy while saving nothing (≥3.99 writes). Two crumbs
+  worth keeping. (a) Converged and computing steps overlap badly in raw-latent
+  cosine (0.59–0.65 ± 0.24 vs ≈0.01 ± 0.18); the leading *hypothesis* is that the
+  slot-index embedding keeps even frozen-value latents apart — unmeasured, and the
+  labels there also fire on coincidental residue collisions (~11% of "converged"
+  steps), so treat both distributions as indicative, not as measured cause. (b) The
+  same signal read on the **grade logits** separates cleanly (≈0.86 vs ≈−0.14) and
+  was never run as a halting rule — that is the live follow-up, #39. Note this kills
+  a *signal*, not adaptive depth: a genuinely iterated state (the refiner's depth
+  loop) never had a fixed point removed from under it the way a write-once
+  scratchpad does.
 
 ### Killed in the #10 triage (with reasons, so they stay dead)
 - **per-token halting / ACT**: collapses at small scale — documented dead-end.
