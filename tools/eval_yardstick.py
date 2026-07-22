@@ -35,8 +35,8 @@ import tiktoken
 from flax import nnx
 from dotenv import load_dotenv
 
-from config import BATCH_SIZE, MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME, MODEL_ARCH
-from tools.common import restore_reasoner, restore_refiner
+from config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME, MODEL_ARCH
+from tools.common import EVAL_BATCH_SIZE, restore_reasoner, restore_refiner
 from tools.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
@@ -106,11 +106,13 @@ def main():
     ap.add_argument("--no-heldout", action="store_true", help="skip the own-corpus ppl probe")
     args = ap.parse_args()
 
-    if args.arch == "reasoner" and args.batch != BATCH_SIZE:
-        # The reasoner's slot/hunch caches are built (and checkpointed) at
-        # BATCH_SIZE; its forward asserts on any other leading dim.
-        print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {BATCH_SIZE}.")
-        args.batch = BATCH_SIZE
+    if args.arch == "reasoner" and args.batch != EVAL_BATCH_SIZE:
+        # The reasoner's slot/hunch caches are built (and checkpointed) at the
+        # eval batch size; its forward asserts on any other leading dim. This is
+        # EVAL_BATCH_SIZE, not the training BATCH_SIZE (#24) — the yardstick must
+        # keep restoring checkpoints written before batching changed.
+        print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
+        args.batch = EVAL_BATCH_SIZE
     restore = {"reasoner": restore_reasoner, "refiner": restore_refiner}[args.arch]
     model, step = restore(args.checkpoint_path)
 

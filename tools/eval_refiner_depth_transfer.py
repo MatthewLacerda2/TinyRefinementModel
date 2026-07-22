@@ -75,19 +75,23 @@ def restore_refiner(checkpoint_path=None):
     return model, latest
 
 
-def load_domain_batches(source, num_batches, skip):
-    """Held-out batches for one domain, skipping past the trained range."""
+def load_domain_batches(source, num_rows, skip):
+    """Held-out rows for one domain, skipping past the trained range.
+
+    Counted in ROWS and scored one row at a time (#24), so the slice this depth
+    curve is measured over does not move when the batching knob does — same
+    reasoning as tools/common.load_eval_batches."""
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set (try DATA_ROOT=runs/data).")
     gen = TextDataGenerator(f"{resolve_root(data_root)}/{source}")
     gen.skip_count = skip
     batches = []
-    while len(batches) < num_batches:
-        batch, _ = gen.get_batch(BATCH_SIZE)
-        if batch is None:
+    while len(batches) < num_rows:
+        row, _ = gen.get_batch(1)
+        if row is None:
             break
-        batches.append(batch)
+        batches.append(row)
     return batches
 
 

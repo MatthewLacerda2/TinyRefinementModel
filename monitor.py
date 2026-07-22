@@ -13,6 +13,10 @@ class LossMonitor:
         self.is_new_best = False
         # Step at which the SFT phase began; None while still pretraining.
         self.sft_start_step = None
+        # Samples the data pipeline has served (#24). Restored from the
+        # checkpoint rather than re-derived from the step count, so a resume
+        # seeks correctly even if BATCH_SIZE changed between runs.
+        self.samples_seen = 0
 
     def reset_for_new_phase(self, step):
         """Forget the previous phase's plateau state so the new phase gets a

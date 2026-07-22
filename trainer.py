@@ -71,6 +71,30 @@ def _param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
 
+def split_samples(total_samples, weights):
+    """Split a sample count across sources by mixture weight.
+
+    The unit that resume correctness hangs on: TextDataGenerator's skip_count is
+    in SAMPLES, while every step counter in this trainer is in MICRO-STEPS, and
+    each micro-step draws BATCH_SIZE samples across the mixer (#24). Callers pass
+    the SAMPLE total — read from the checkpoint, not re-derived from steps — so
+    a run that resumes under a different batch size than it was trained at still
+    seeks to the right place. Getting this wrong is silent either way: too small
+    and the model re-trains on data it already saw, too large and it skips a
+    slice of corpus it never read. No crash, no warning, just a bad run.
+
+    Per-source truncation is deliberate: skip_count is an integer sample offset,
+    so the total can fall short by at most one sample per source.
+    """
+    return [int(total_samples * w) for w in weights]
+
+
+def samples_from_micro_steps(micro_steps, weights, batch_size=BATCH_SIZE):
+    """split_samples for the case with no recorded sample count — a pre-#24
+    checkpoint, or a fresh run. Converts micro-steps at the given batch size."""
+    return split_samples(micro_steps * batch_size, weights)
+
+
 def init_model_and_optimizer():
     if MODEL_ARCH == "refiner":
         # Imported lazily so the baseline path never touches Plan A code.
@@ -96,7 +120,7 @@ def init_model_and_optimizer():
 
     return model, optimizer
 
-def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
+def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, samples_seen=None):
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [
         TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
@@ -115,23 +139,29 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None):
 
     if start_step > 1:
         start_opt_step = start_step // ACCUMULATION_STEPS
+        # Prefer the recorded sample count over re-deriving it from micro-steps
+        # (#24): only the recorded figure survives a change in BATCH_SIZE between
+        # the run that wrote the checkpoint and the one resuming it.
         if sft_start_step is None or start_step < sft_start_step:
-            total_pretrain_seen = (start_step - 1)
             avg_weights = get_average_curriculum_weights(start_opt_step)
-            for gen, weight in zip(pretrain_sources, avg_weights):
-                gen.skip_count = int(total_pretrain_seen * weight)
+            skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
+                     else samples_from_micro_steps(start_step - 1, avg_weights))
+            for gen, skip in zip(pretrain_sources, skips):
+                gen.skip_count = skip
         else:
-            # 1. Catch up pretrain sources to the point where pretraining ended
+            # 1. Catch up pretrain sources to the point where pretraining ended.
+            # The pretrain/SFT split is still counted in micro-steps: samples_seen
+            # is a single total and does not say where the phase boundary fell.
             sft_start_opt_step = sft_start_step // ACCUMULATION_STEPS
-            total_pre_pretrain_seen = (sft_start_step - 1)
             avg_weights = get_average_curriculum_weights(sft_start_opt_step)
-            for gen, weight in zip(pretrain_sources, avg_weights):
-                gen.skip_count = int(total_pre_pretrain_seen * weight)
+            skips = samples_from_micro_steps(sft_start_step - 1, avg_weights)
+            for gen, skip in zip(pretrain_sources, skips):
+                gen.skip_count = skip
 
             # 2. Add SFT usage for all blended sources (Chat + Replay)
-            total_sft_seen = (start_step - sft_start_step)
-            for gen, weight in zip(sft_sources, SFT_MIX_WEIGHTS):
-                gen.skip_count += int(total_sft_seen * weight)
+            sft_skips = samples_from_micro_steps(start_step - sft_start_step, SFT_MIX_WEIGHTS)
+            for gen, skip in zip(sft_sources, sft_skips):
+                gen.skip_count += skip
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
@@ -179,6 +209,12 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             batch, doc_boundary = data_queue.get()
             if batch is None:
                 break
+
+            # Count consumed samples as they are consumed (#24). Deriving this at
+            # save time as step x BATCH_SIZE would be wrong for exactly the run
+            # that needs it most: one resumed at a different batch size than it
+            # was trained at, whose history spans both.
+            monitor.samples_seen += batch.shape[0]
 
             t_compute_start = time.time()
 

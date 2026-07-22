@@ -72,6 +72,12 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
                 "sft_active": sft_active,
                 "sft_start_step": monitor.sft_start_step,
                 "run_id": run_id,  # Save run_id inside checkpoint metadata
+                # Samples actually consumed, counted as they were served rather
+                # than re-derived (#24). Resume rebuilds the data position from
+                # this; computing it as step x BATCH_SIZE would mis-seek exactly
+                # the run that needs it — one resumed at a different batch size
+                # than it was trained at, whose history spans both.
+                "samples_seen": monitor.samples_seen,
             }),
             step=ocp.args.JsonSave(step),
         ),
@@ -112,8 +118,13 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         monitor.sft_start_step = m_state.get("sft_start_step", None)
+        # Checkpoints written before #24 have no samples_seen; every one of them
+        # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
+        # value, not a guess.
+        monitor.samples_seen = m_state.get("samples_seen", restored["step"])
 
-        print(f"✅ Resuming from step {start_step}")
+        print(f"✅ Resuming from step {start_step} "
+              f"({monitor.samples_seen:,} samples consumed)")
         del restored 
         gc.collect()
     else:
