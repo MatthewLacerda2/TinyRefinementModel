@@ -108,11 +108,15 @@ MAX_STEPS_LIMIT = 8
 # BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
 # fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
 # ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
-# fatter micro-steps amortize it. Measured +34% (3.8k -> 5.1k tok/s at depth 4).
+# fatter micro-steps amortize it. Matched pairs on an idle card: +43% at depth 4
+# (5.0k -> 7.2k tok/s) and +40% at depth 8 (4.2k -> 5.9k). An earlier sweep read
+# +34% but was measured while a training job shared the GPU — same ratio, lower
+# absolutes; trust the idle numbers.
 # Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
 # and the learning dynamics are all identical: same model, fewer resources.
 # Going past 2 is not worth it — the return per doubling shrinks fast (the next
-# rung measured +19-25%) as the card goes from launch-bound to compute-bound.
+# rung read +19-25% on the contended sweep, unconfirmed since) as the card goes
+# from launch-bound to compute-bound.
 BATCH_SIZE = 2
 ACCUMULATION_STEPS = 64
 # Target tokens consumed per optimizer step: each micro-step scores two
