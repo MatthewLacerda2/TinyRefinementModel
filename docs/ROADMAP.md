@@ -205,10 +205,17 @@ its PR.
   *training stabilizer* for deep recurrence, not a computational necessity. Caveat:
   measured on PR #97's branch, whose table control clamped explicitly (the #122
   control on main lets overrun detonate); the sinusoidal verdict was independently
-  re-measured and landed via #122 — this arm never was. Live follow-up: #138, the
-  rematch under per-pass grading (#75's demonstrated stabilizer); if it passes, #86's
-  pre-registered preference order applies — none > sinusoidal > learned (fewer
-  params, no ceiling, no step counter for any halting mechanism to latch onto).
+  re-measured and landed via #122 — this arm never was. **The #138 rematch ran
+  2026-07-24** (per-pass grading on both arms, GPU, log `aux_138_protocol.log`):
+  the collapse mode is cured — 3/3 seeds train clean at d8, including this crater
+  seed — but the stabilized arm still loses trained depth 8 by −0.027 (**5.9σ**,
+  parity everywhere shallower), so the pre-registered kill bar fires and
+  **sinusoidal stays the production signal**; #86's none-first preference order
+  never activates. The same grid found the arm *length-extends better* than
+  sinusoidal (+2.3σ at d16), reversing #122's assignment under per-pass
+  supervision — the extension behavior belongs to the (signal × supervision)
+  pair. Full record:
+  `docs/findings/2026-07-24-time-blind-rematch-collapse-cured-step-signal-holds-d8.md`.
 
 ### Killed in the #10 triage (with reasons, so they stay dead)
 - **per-token halting / ACT**: collapses at small scale — documented dead-end.
