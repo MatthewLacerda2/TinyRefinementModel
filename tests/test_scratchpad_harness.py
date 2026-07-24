@@ -475,3 +475,100 @@ def test_halt_arms_share_param_tree_and_smoke_train():
             assert np.isfinite(r[key]), f"{arm}: non-finite {key}"
         assert 0.0 <= r["full_acc"] <= 1.0 and 0.0 <= r["halted_acc"] <= 1.0
         assert 1.0 <= r["mean_halt"] <= 4.0, f"{arm}: halt step outside 1..K"
+
+def test_grade_halt_steps_first_crossing_on_hand_built_signal():
+    """#39: the detector must halt at the FIRST slot whose grade-logit cosine
+    against the previous slot clears tau, and run all K slots when none does.
+    Hand-built one-hot grades make every cosine exactly 0 or 1, so the
+    expected halt step is known by construction — no model in the loop."""
+    from scratchpad_harness import grade_halt_steps
+    e = np.eye(M, dtype=np.float32)
+    slot_logits = jnp.asarray(np.stack([
+        [e[0], e[0], e[1], e[2]],   # cos [1,0,0] -> halt step 1 (2 writes)
+        [e[0], e[1], e[1], e[2]],   # cos [0,1,0] -> halt step 2 (3 writes)
+        [e[0], e[1], e[2], e[2]],   # cos [0,0,1] -> halt step 3 (4 writes)
+        [e[0], e[1], e[2], e[3]],   # cos [0,0,0] -> no crossing, full depth
+    ]))
+    np.testing.assert_array_equal(
+        np.asarray(grade_halt_steps(slot_logits, 0.5)), [1, 2, 3, 3])
+
+    # tau-monotone: a mid-angle transition (cos ~= 0.707) crosses tau = 0.5
+    # but not tau = 0.9, and the halt can only move later as tau rises.
+    mid = ((e[0] + e[1]) / np.sqrt(2)).astype(np.float32)
+    graded = jnp.asarray(np.stack([[e[0], mid, e[2], e[2]]]))  # cos [.707, 0, 1]
+    assert int(grade_halt_steps(graded, 0.5)[0]) == 1
+    assert int(grade_halt_steps(graded, 0.9)[0]) == 3
+
+
+def test_grade_halting_ladder_readout_composition():
+    """#39: the halt-step -> answer-column composition. #96's ladder had
+    off-by-one-prone index math and NO test on it — an off-by-one there shifts
+    every halted accuracy while leaving mean writes untouched, i.e. a
+    plausible-looking wrong verdict. Answers are built so the target is
+    argmax ONLY at the expected halt column; any index slip reads a wrong
+    class and accuracy craters from 1.0 to 0.0."""
+    from scratchpad_harness import grade_halting_ladder
+    e = np.eye(M, dtype=np.float32)
+    slot_logits = np.stack([
+        [e[0], e[0], e[1], e[2]],   # halt step 1
+        [e[0], e[1], e[1], e[2]],   # halt step 2
+        [e[0], e[1], e[2], e[2]],   # halt step 3
+        [e[0], e[1], e[2], e[3]],   # full depth: step 3
+    ])
+    expected_step = np.array([1, 2, 3, 3])
+    target = np.array([0, 1, 2, 3])
+    answers = np.zeros((4, 4, M), np.float32)
+    for b in range(4):
+        for k in range(4):
+            answers[b, k, target[b] if k == expected_step[b] else (target[b] + 1) % M] = 1.0
+    te_sub = np.zeros((4, 4), np.int64)
+    te_sub[:, -1] = target
+    def stub(tok):
+        return jnp.asarray(answers), jnp.asarray(slot_logits), None
+    [row] = grade_halting_ladder(stub, jnp.zeros((4, 8), jnp.int32),
+                                 jnp.asarray(te_sub), jnp.asarray(expected_step + 1),
+                                 taus=(0.5,))
+    assert row["halted_acc"] == 1.0, "halt-index arithmetic is off"
+    assert row["mean_writes"] == pytest.approx((2 + 3 + 4 + 4) / 4)
+    assert np.isfinite(row["corr"])
+
+
+def test_converged_transition_labels_are_exact():
+    """#39: convergence labels come from k_eff, never from repeated residues
+    (#96 mislabelled 11.4% of steps that way). Transition j feeds slot
+    k = j+2 (1-indexed); it is converged iff k > k_eff. Cross-check on real
+    task draws: a converged transition's sub-target must not have moved."""
+    from scratchpad_harness import converged_transition_labels, variable_chain_task
+    labels = np.asarray(converged_transition_labels(jnp.asarray([1, 2, 3, 4]), 4))
+    np.testing.assert_array_equal(labels, [[True, True, True],
+                                           [False, True, True],
+                                           [False, False, True],
+                                           [False, False, False]])
+
+    _, subs, k_eff = variable_chain_task(4, M)(jax.random.PRNGKey(11), 512)
+    subs = np.asarray(subs)
+    lab = np.asarray(converged_transition_labels(k_eff, 4))
+    for j in range(3):
+        conv = lab[:, j]
+        assert (subs[conv, j + 1] == subs[conv, j]).all(), \
+            "a converged transition changed the sub-target"
+
+
+def test_grade_gate_stats_separation_call():
+    """#39: the gate must fire 'separated' only when the converged and
+    computing cosine means sit more than one pooled sigma apart."""
+    from scratchpad_harness import grade_gate_stats
+    e = np.eye(M, dtype=np.float32)
+    apart = jnp.asarray(np.stack([
+        [e[0], e[0], e[0], e[0]],   # k_eff=1: all transitions converged, cos 1
+        [e[0], e[1], e[2], e[3]],   # k_eff=4: all computing, cos 0
+    ]))
+    g = grade_gate_stats(apart, jnp.asarray([1, 4]))
+    assert g["separated"] and g["converged_mean"] > 0.9 > 0.1 > g["computing_mean"]
+
+    overlap = jnp.asarray(np.stack([
+        [e[0], e[1], e[2], e[3]],
+        [e[0], e[1], e[2], e[3]],
+    ]))
+    g = grade_gate_stats(overlap, jnp.asarray([1, 4]))
+    assert not g["separated"], "identical distributions must not pass the gate"
