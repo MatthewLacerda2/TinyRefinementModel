@@ -628,15 +628,26 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
 HALT_ARMS = ("halt_traj", "halt_state", "halt_off")
 
 
-def train_one_halt_arm(arm, *, K=6, m=7, dim=64, heads=4, enc=2, steps=2500,
-                       batch=256, lr=2e-3, wd=0.01, seed=0, lam_slot=1.0,
-                       lam_ponder=0.2, n_pool=32768, n_test=4096):
-    assert arm in HALT_ARMS, f"unknown halt arm {arm!r}"
+def halt_task_data(K, m, seed, n_pool=32768, n_test=4096):
+    """The exact train/test draw `train_one_halt_arm` makes for `seed` —
+    factored so eval-only consumers (the #39 ladder) see the same split
+    without retraining. Returns (key, tr_tok, tr_sub, te_tok, te_sub, te_keff)
+    with `key` already advanced past the data split, ready for training."""
     task = variable_chain_task(K, m)
     key = jax.random.PRNGKey(seed)
     key, dk_tr, dk_te = jax.random.split(key, 3)
     tr_tok, tr_sub, _ = task(dk_tr, n_pool)
     te_tok, te_sub, te_keff = task(dk_te, n_test)
+    return key, tr_tok, tr_sub, te_tok, te_sub, te_keff
+
+
+def train_one_halt_arm(arm, *, K=6, m=7, dim=64, heads=4, enc=2, steps=2500,
+                       batch=256, lr=2e-3, wd=0.01, seed=0, lam_slot=1.0,
+                       lam_ponder=0.2, n_pool=32768, n_test=4096,
+                       return_model=False):
+    assert arm in HALT_ARMS, f"unknown halt arm {arm!r}"
+    key, tr_tok, tr_sub, te_tok, te_sub, te_keff = halt_task_data(
+        K, m, seed, n_pool=n_pool, n_test=n_test)
 
     model = HaltingScratchpadNet(
         dim=dim, vocab=m, num_slots=K, num_heads=heads, num_encoder_layers=enc,
@@ -693,11 +704,163 @@ def train_one_halt_arm(arm, *, K=6, m=7, dim=64, heads=4, enc=2, steps=2500,
         step(model, opt, k)
 
     full_acc, halted_acc, corr, p1, mean_halt = eval_all(model)
-    return {
+    results = {
         "full_acc": float(full_acc), "halted_acc": float(halted_acc),
         "corr": float(corr), "p1_mass": float(p1), "mean_halt": float(mean_halt),
         "params": n_params(model),
     }
+    return (results, model) if return_model else results
+
+
+# ---------------------------------------------------------------------------
+# #39: deterministic convergence halting in grade-logit space. The raw-latent
+# version of this rule is dead (PR #96, tombstoned); what survived is #96's
+# diagnostic — consecutive-slot *grade logits* separate converged from
+# computing steps where the latents do not. Everything here is eval-only on a
+# trained halt_off model: no halting pressure, no learned halting (#123 killed
+# that separately — the failure there is the incentive; a detector has none).
+
+GRADE_TAUS = (0.0, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99)
+
+
+def grade_cosines(slot_logits):
+    """Cosine between consecutive slots' grade logits, f32. [B, K, m] ->
+    [B, K-1]; column j compares slot j+1 against slot j (0-indexed), i.e. the
+    transition into slot k = j+2 in 1-indexed terms."""
+    x = slot_logits.astype(jnp.float32)
+    a, b = x[:, 1:], x[:, :-1]
+    return (a * b).sum(-1) / (
+        jnp.linalg.norm(a, axis=-1) * jnp.linalg.norm(b, axis=-1) + 1e-12)
+
+
+def grade_halt_steps(slot_logits, tau):
+    """First-crossing rule (#39): halt at the first slot k >= 2 (1-indexed)
+    whose grade-logit cosine against slot k-1 exceeds tau; run all K slots if
+    none does. Returns the 0-indexed halt step [B] — writes spent = step + 1
+    (the detector reads slot k's grade, so slot k is already written)."""
+    cos = grade_cosines(slot_logits)                # [B, K-1]
+    crossed = cos > tau
+    first = jnp.argmax(crossed, axis=-1)            # first True column, 0 if none
+    K = slot_logits.shape[1]
+    return jnp.where(crossed.any(-1), first + 1, K - 1)
+
+
+def converged_transition_labels(k_eff, K):
+    """Ground-truth label per cosine column: transition j is *converged* iff
+    the state was already final before it, i.e. 1-indexed k = j+2 > k_eff.
+    Exact by construction of variable_chain_task — never inferred from
+    repeated residues (#96 mislabelled 11.4% of steps that way)."""
+    j = jnp.arange(K - 1)
+    return j[None, :] >= (k_eff[:, None] - 1)       # [B, K-1] bool
+
+
+def _pearson(x, y):
+    xc, yc = x - x.mean(), y - y.mean()
+    return (xc * yc).mean() / jnp.sqrt((xc**2).mean() * (yc**2).mean() + 1e-12)
+
+
+def grade_gate_stats(slot_logits, k_eff):
+    """The pre-registered gate (#39): converged-vs-computing grade-logit
+    cosine on one seed. If the two means sit within 1 pooled sigma, the signal
+    is dead and the ladder must not run."""
+    cos = grade_cosines(slot_logits)
+    conv = converged_transition_labels(k_eff, slot_logits.shape[1])
+    def masked(mask):
+        w = mask.astype(jnp.float32)
+        mean = (cos * w).sum() / w.sum()
+        var = (((cos - mean) ** 2) * w).sum() / w.sum()
+        return float(mean), float(jnp.sqrt(var))
+    cm, cs = masked(conv)
+    pm, ps = masked(~conv)
+    pooled = ((cs**2 + ps**2) / 2) ** 0.5
+    return {"converged_mean": cm, "converged_std": cs,
+            "computing_mean": pm, "computing_std": ps,
+            "pooled_std": pooled, "separated": abs(cm - pm) > pooled}
+
+
+def grade_halting_ladder(model, te_tok, te_sub, te_keff, taus=GRADE_TAUS):
+    """Eval-only tau ladder on a trained model: one forward gives every stop
+    point (answers[:, k] is the readout from slots 1..k) and the detector
+    signal. Per tau: halted accuracy, mean writes, corr(halt step, k_eff)."""
+    answers, slot_logits, _ = model(te_tok)
+    target = te_sub[:, -1]
+    pred_k = answers.argmax(-1)                     # [B, K]
+    rows = []
+    for tau in taus:
+        hs = grade_halt_steps(slot_logits, tau)     # [B], 0-indexed
+        halted_pred = jnp.take_along_axis(pred_k, hs[:, None], axis=1)[:, 0]
+        writes = hs.astype(jnp.float32) + 1.0
+        rows.append({
+            "tau": tau,
+            "halted_acc": float(jnp.mean(halted_pred == target)),
+            "mean_writes": float(writes.mean()),
+            "corr": float(_pearson(writes, te_keff.astype(jnp.float32))),
+        })
+    return rows
+
+
+def run_halting_protocol(*, K, m, dim, steps, seeds, taus=GRADE_TAUS):
+    """The #39 protocol, verdict computed mechanically against the
+    pre-registered bars: train halt_off per seed, gate on the first seed
+    (stop if the signal doesn't separate), then the tau ladder, judged on
+    3-seed means at one global tau. KEEP needs all of
+    (a) halted acc within 2 sigma_pooled of the same seeds' full-depth acc,
+    (b) mean writes <= 3.5 (oracle 3.25 at K=4), (c) corr(halt, k_eff) >= 0.8."""
+    print(f"== #39 grade-logit halting: K={K} m={m} dim={dim} steps={steps} "
+          f"seeds={seeds} ==", flush=True)
+    runs = []
+    for i, seed in enumerate(seeds):
+        t0 = time.time()
+        r, model = train_one_halt_arm("halt_off", K=K, m=m, dim=dim,
+                                      steps=steps, seed=seed, return_model=True)
+        _, _, _, te_tok, te_sub, te_keff = halt_task_data(K, m, seed)
+        print(f"halt_off seed={seed} full_acc={r['full_acc']:.4f} "
+              f"({time.time()-t0:.0f}s)", flush=True)
+        if i == 0:
+            _, slot_logits, _ = model(te_tok)
+            g = grade_gate_stats(slot_logits, te_keff)
+            print(f"gate: converged {g['converged_mean']:+.3f}±{g['converged_std']:.3f} "
+                  f"vs computing {g['computing_mean']:+.3f}±{g['computing_std']:.3f} "
+                  f"(pooled σ {g['pooled_std']:.3f}) -> "
+                  f"{'separated' if g['separated'] else 'OVERLAP — STOP'}", flush=True)
+            if not g["separated"]:
+                print("verdict: KILL at the gate — grade-logit cosine does not "
+                      "separate converged from computing on this model; the "
+                      "pre-registered protocol says do not run the sweep.", flush=True)
+                return {"gate": g, "verdict": "kill-at-gate"}
+        runs.append((r, grade_halting_ladder(model, te_tok, te_sub, te_keff, taus)))
+
+    import statistics
+    mu = statistics.mean
+
+    def sd(v):
+        return statistics.stdev(v) if len(v) > 1 else 0.0
+
+    full = [r["full_acc"] for r, _ in runs]
+    full_mu, full_sd = mu(full), sd(full)
+    print(f"\nfull-depth ceiling: {full_mu:.4f} ± {full_sd:.4f}  "
+          f"(oracle writes {sum(min(k + 2, K) for k in range(K)) / K:.2f}, fixed {K})")
+    print(f"{'tau':>5} {'halted_acc':>16} {'writes':>13} {'corr':>13}  verdict")
+    verdict, keep_tau = "kill", None
+    for ti, tau in enumerate(taus):
+        acc = [lad[ti]["halted_acc"] for _, lad in runs]
+        wr = [lad[ti]["mean_writes"] for _, lad in runs]
+        co = [lad[ti]["corr"] for _, lad in runs]
+        pooled = ((sd(acc)**2 + full_sd**2) / 2) ** 0.5
+        a = abs(mu(acc) - full_mu) <= 2 * pooled
+        b = mu(wr) <= 3.5
+        c = mu(co) >= 0.8
+        marks = f"a={'✓' if a else '✗'} b={'✓' if b else '✗'} c={'✓' if c else '✗'}"
+        if a and b and c and keep_tau is None:
+            verdict, keep_tau = "keep", tau
+        print(f"{tau:>5.2f} {mu(acc):>7.4f}±{sd(acc):.4f} {mu(wr):>7.3f}±{sd(wr):.3f} "
+              f"{mu(co):>+7.3f}±{sd(co):.3f}  {marks}", flush=True)
+    print(f"\nverdict: {verdict.upper()}"
+          + (f" at tau={keep_tau}" if keep_tau is not None else "")
+          + "  (bars: (a) within 2σ_pooled of full-depth, (b) writes ≤ 3.5, "
+            "(c) corr ≥ 0.8 — all three at one global tau)", flush=True)
+    return {"verdict": verdict, "keep_tau": keep_tau, "runs": runs,
+            "full_mu": full_mu, "full_sd": full_sd}
 
 
 def main():
@@ -716,7 +879,17 @@ def main():
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")
     ap.add_argument("--steps", type=int, default=2500)
     ap.add_argument("--dim", type=int, default=64)
+    ap.add_argument("--halting", action="store_true",
+                    help="run the #39 grade-logit convergence-halting protocol "
+                         "(trains halt_off per seed, gates on seed one, then the "
+                         "pre-registered tau ladder) instead of --arms")
     args = ap.parse_args()
+
+    seeds = [int(s) for s in args.seeds.split(",")]
+    if args.halting:
+        run_halting_protocol(K=args.K, m=args.m, dim=args.dim,
+                             steps=args.steps, seeds=seeds)
+        return
 
     print(f"== serial-scratchpad proof (#38): K={args.K} m={args.m} dim={args.dim} "
           f"steps={args.steps} (chance={1/args.m:.3f}) ==")
@@ -727,7 +900,7 @@ def main():
 
     for spec in args.arms.split(","):
         arm, anneal_kw = parse_arm_spec(spec)
-        for seed in [int(s) for s in args.seeds.split(",")]:
+        for seed in seeds:
             t0 = time.time()
             if arm in HALT_ARMS:
                 r = train_one_halt_arm(arm, K=args.K, m=args.m,
