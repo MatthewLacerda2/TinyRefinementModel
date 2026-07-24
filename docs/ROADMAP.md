@@ -193,6 +193,22 @@ its PR.
   a *signal*, not adaptive depth: a genuinely iterated state (the refiner's depth
   loop) never had a fixed point removed from under it the way a write-once
   scratchpad does.
+- **time-blind refiner — no step signal** (#86 third arm, 2026-07-10, PR #97, closed
+  unmerged; this line is the record): pre-registered on #86 before any result and run
+  as the third arm of the time-signal grid (statetrack, dim 96, seeds {0,1,2}).
+  Killed on the extensibility bar — by variance, not by mean: seeds 0/1 extended past
+  the trained depth as well as sinusoidal (d16 0.752 / 0.772), while seed 2
+  deterministically collapsed during depth-8 *training* (0.277 / 0.238, reproduced
+  twice, same init and data), inflating σ_pooled until the +0.5σ/+0.9σ reading failed
+  the ≥2σ bar; the run declined to launder a 0.69-accuracy crater as noise. Reading:
+  the state alone suffices for the computation — the explicit step signal is a
+  *training stabilizer* for deep recurrence, not a computational necessity. Caveat:
+  measured on PR #97's branch, whose table control clamped explicitly (the #122
+  control on main lets overrun detonate); the sinusoidal verdict was independently
+  re-measured and landed via #122 — this arm never was. Live follow-up: #138, the
+  rematch under per-pass grading (#75's demonstrated stabilizer); if it passes, #86's
+  pre-registered preference order applies — none > sinusoidal > learned (fewer
+  params, no ceiling, no step counter for any halting mechanism to latch onto).
 
 ### Killed in the #10 triage (with reasons, so they stay dead)
 - **per-token halting / ACT**: collapses at small scale — documented dead-end.
