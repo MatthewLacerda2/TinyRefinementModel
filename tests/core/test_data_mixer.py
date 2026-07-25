@@ -9,7 +9,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import numpy as np
 import jax.numpy as jnp
 
-from data_loaders import DataMixer
+from trm.data.loaders import DataMixer
 
 
 class FakeSource:

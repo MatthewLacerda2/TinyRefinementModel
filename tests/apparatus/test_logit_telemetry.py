@@ -14,10 +14,10 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from config import LATENT_DIM, MAX_SEQ_LEN
-from grad_step import compute_grad_step
-from losses import chunked_cross_entropy
-from model import UniversalReasoner
+from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.train.grad_step import compute_grad_step
+from trm.train.losses import chunked_cross_entropy
+from trm.model.reasoner import UniversalReasoner
 
 
 def _naive_stats(hidden, embedding, targets, pad_id):

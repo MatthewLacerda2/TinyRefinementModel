@@ -14,7 +14,7 @@ Delete this comment in the copy.
 |---|---|
 | Commit SHA | `<git rev-parse HEAD at launch>` |
 | `MODEL_ARCH` | `refiner` \| `reasoner` |
-| Config snapshot | `<LATENT_DIM, NUM_HEADS, depth, MAX_SEQ_LEN, … or link to the config.py at that SHA>` |
+| Config snapshot | `<LATENT_DIM, NUM_HEADS, depth, MAX_SEQ_LEN, … or link to trm/config.py at that SHA>` |
 | Params | `<count>` |
 | Tokenizer | `r50k_base` (VOCAB_SIZE `<n>`) |
 | Dataset manifest | `<prefill version + per-source token counts + filter settings, e.g. fineweb≥4 4.0B / codeparrot 4.0B / finemath 2.5B / ultrachat 0.26B>` |

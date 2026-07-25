@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from dotenv import load_dotenv
 
-from config import VOCAB_SIZE, PAD_TOKEN_ID, resolve_root
+from trm.config import VOCAB_SIZE, PAD_TOKEN_ID, resolve_root
 
 load_dotenv()
 

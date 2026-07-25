@@ -14,7 +14,7 @@ aux*
 # Working plans stay local; docs/findings/ is tracked and publishable
 docs/plans/
 
-# Time-machine reconstructions (tools/timemachine.py): worktrees + cached venvs,
+# Time-machine reconstructions (instruments/timemachine.py): worktrees + cached venvs,
 # both regenerable from the run snapshot. Never commit them.
 .timemachine/
 

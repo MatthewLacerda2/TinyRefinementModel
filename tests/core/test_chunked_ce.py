@@ -11,7 +11,7 @@ import numpy as np
 import optax
 import pytest
 
-from losses import chunked_cross_entropy
+from trm.train.losses import chunked_cross_entropy
 
 
 def _naive_ce(hidden, embedding, targets, pad_id):

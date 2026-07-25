@@ -17,7 +17,7 @@ import optax
 import pytest
 from flax import nnx
 
-from plan_a_model import CausalRefiner
+from trm.model.refiner import CausalRefiner
 
 
 def _tiny(vocab=37, dim=64, seq=32, enc=2):
@@ -190,7 +190,7 @@ def test_sinusoidal_time_signal_extends_past_max_depth():
 def test_sinusoidal_encoding_distinct_and_deterministic():
     """Each step must get its own signal (the whole point of a time signal),
     the same signal every call, defined arbitrarily far out."""
-    from plan_a_model import sinusoidal_step_encoding
+    from trm.model.refiner import sinusoidal_step_encoding
     encs = [np.asarray(sinusoidal_step_encoding(s, 64, jnp.float32)) for s in range(16)]
     for a in range(16):
         assert encs[a].shape == (64,)

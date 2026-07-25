@@ -8,7 +8,7 @@ import math
 import jax.numpy as jnp
 import numpy as np
 
-from infer_local import _temperature_truncate
+from trm.infer import _temperature_truncate
 
 LOGITS = [2.0, 1.9, 1.8, 0.0, -1.0]
 

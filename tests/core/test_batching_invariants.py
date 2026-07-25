@@ -18,14 +18,17 @@ import inspect
 import numpy as np
 import pytest
 
-import checkpoint_utils
-import config
-import trainer as trainer_mod
-import validation
-from config import ACCUMULATION_STEPS, BATCH_SIZE, EVAL_ROWS, MAX_SEQ_LEN
-from tools import common
-from tools import eval_refiner_depth_transfer as depth_transfer
-from trainer import samples_from_micro_steps, split_samples
+from trm.runtime import checkpoints
+
+from trm import config
+
+import trm.train.trainer as trainer_mod
+from trm.train import validation
+
+from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, EVAL_ROWS, MAX_SEQ_LEN
+from trm.runtime import restore
+from experiments.depth import eval_refiner_transfer as depth_transfer
+from trm.train.trainer import samples_from_micro_steps, split_samples
 
 
 def test_tokens_per_opt_step_is_the_batching_invariant():
@@ -58,7 +61,7 @@ def test_eval_loaders_read_one_row_at_a_time():
     That reproduces the pre-#24 access pattern exactly — same rows, same order,
     same place a file boundary lands — so a val CE stays comparable to the
     champion's 4.7092 and the #17 noise floor no matter what BATCH_SIZE is."""
-    for loader in (validation.ValidationProbe._load, common.load_eval_batches,
+    for loader in (validation.ValidationProbe._load, restore.load_eval_batches,
                    depth_transfer.load_domain_batches):
         src = inspect.getsource(loader)
         assert "get_batch(1)" in src, (
@@ -85,7 +88,7 @@ def test_eval_batch_size_is_pinned_independent_of_training_batch():
     its hunch_cache is shaped [batch, slots, dim] and every checkpoint we hold
     was written when BATCH_SIZE was 1. Tying this to the training knob would
     make stored checkpoints unrestorable."""
-    assert common.EVAL_BATCH_SIZE == 1
+    assert restore.EVAL_BATCH_SIZE == 1
 
 
 WEIGHTS = [0.5, 0.3, 0.2]
@@ -130,7 +133,7 @@ def test_samples_seen_is_counted_not_derived():
     """The consumed-sample counter must accumulate actual batch rows. Deriving it
     at save time as step x BATCH_SIZE is wrong for the one run that needs it: a
     resume whose history spans two different batch sizes."""
-    save_src = inspect.getsource(checkpoint_utils.save_checkpoint)
+    save_src = inspect.getsource(checkpoints.save_checkpoint)
     assert '"samples_seen": monitor.samples_seen' in save_src
     assert "step * BATCH_SIZE" not in save_src
     assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
@@ -139,7 +142,7 @@ def test_samples_seen_is_counted_not_derived():
 def test_phase_flip_preserves_the_data_position():
     """An SFT phase flip resets plateau state, never the consumed-sample count —
     zeroing it would rewind the data stream to the start of the corpus."""
-    from monitor import LossMonitor
+    from trm.runtime.monitor import LossMonitor
 
     m = LossMonitor()
     m.samples_seen = 123456
@@ -150,5 +153,5 @@ def test_phase_flip_preserves_the_data_position():
 def test_pre_24_checkpoints_resume_exactly():
     """A checkpoint with no samples_seen was written at BATCH_SIZE=1, so one
     sample per micro-step is its exact position — not an approximation."""
-    restore_src = inspect.getsource(checkpoint_utils.load_or_create_checkpoint)
+    restore_src = inspect.getsource(checkpoints.load_or_create_checkpoint)
     assert 'm_state.get("samples_seen", restored["step"])' in restore_src

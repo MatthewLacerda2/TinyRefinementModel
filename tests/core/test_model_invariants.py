@@ -12,7 +12,7 @@ current window's mean — the second leak).
 import jax.numpy as jnp
 import numpy as np
 
-from config import PAD_TOKEN_ID
+from trm.config import PAD_TOKEN_ID
 
 
 def _logits(model, tokens_np, depth=2):

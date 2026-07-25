@@ -12,7 +12,7 @@ import optax
 import pytest
 from flax import nnx
 
-from scratchpad_harness import (BudgetScratchpadNet, ScratchpadNet, affine_chain_task,
+from experiments.scratchpad.harness import (BudgetScratchpadNet, ScratchpadNet, affine_chain_task,
                                 arm_losses, encode_links, final_target, grade_lambda,
                                 n_params, parse_arm_spec, train_one_arm)
 
@@ -148,7 +148,7 @@ def test_densedepth_grade_teaches_the_trunk():
     live gradient path into the shared refine block and the encoder — dense
     supervision has to teach the trunk, or the arm would just be depthonly
     with a decorative loss term."""
-    from scratchpad_harness import DenseDepthNet
+    from experiments.scratchpad.harness import DenseDepthNet
 
     tokens, subs = affine_chain_task(K, M)(jax.random.PRNGKey(3), 8)
     model = DenseDepthNet(dim=DIM, vocab=M, K=K, rngs=nnx.Rngs(0))
@@ -440,7 +440,7 @@ def test_variable_chain_task_stationary_after_k_eff():
     """#123: pad links are (0,0), sub-targets freeze at r_{k_eff} through the
     pads, and the final sub IS r_{k_eff} — 'done' must be detectable as the
     state no longer changing, or halting has nothing to track."""
-    from scratchpad_harness import variable_chain_task
+    from experiments.scratchpad.harness import variable_chain_task
     tokens, subs, k_eff = variable_chain_task(6, M)(jax.random.PRNGKey(7), 256)
     a = np.asarray(tokens)[:, 0::2]
     subs, k_eff = np.asarray(subs), np.asarray(k_eff)
@@ -457,7 +457,7 @@ def test_halt_arms_share_param_tree_and_smoke_train():
     """#123: trajectory vs current halt context must be the SAME parameters
     (one-variable ablation — only the halt head's context width differs), and
     all three arms must train end-to-end at toy size with finite metrics."""
-    from scratchpad_harness import HaltingScratchpadNet, train_one_halt_arm
+    from experiments.scratchpad.harness import HaltingScratchpadNet, train_one_halt_arm
 
     def shapes(net):
         return jax.tree_util.tree_map(lambda x: x.shape, nnx.state(net, nnx.Param))
@@ -481,7 +481,7 @@ def test_grade_halt_steps_first_crossing_on_hand_built_signal():
     against the previous slot clears tau, and run all K slots when none does.
     Hand-built one-hot grades make every cosine exactly 0 or 1, so the
     expected halt step is known by construction — no model in the loop."""
-    from scratchpad_harness import grade_halt_steps
+    from experiments.scratchpad.harness import grade_halt_steps
     e = np.eye(M, dtype=np.float32)
     slot_logits = jnp.asarray(np.stack([
         [e[0], e[0], e[1], e[2]],   # cos [1,0,0] -> halt step 1 (2 writes)
@@ -507,7 +507,7 @@ def test_grade_halting_ladder_readout_composition():
     plausible-looking wrong verdict. Answers are built so the target is
     argmax ONLY at the expected halt column; any index slip reads a wrong
     class and accuracy craters from 1.0 to 0.0."""
-    from scratchpad_harness import grade_halting_ladder
+    from experiments.scratchpad.harness import grade_halting_ladder
     e = np.eye(M, dtype=np.float32)
     slot_logits = np.stack([
         [e[0], e[0], e[1], e[2]],   # halt step 1
@@ -538,7 +538,7 @@ def test_converged_transition_labels_are_exact():
     (#96 mislabelled 11.4% of steps that way). Transition j feeds slot
     k = j+2 (1-indexed); it is converged iff k > k_eff. Cross-check on real
     task draws: a converged transition's sub-target must not have moved."""
-    from scratchpad_harness import converged_transition_labels, variable_chain_task
+    from experiments.scratchpad.harness import converged_transition_labels, variable_chain_task
     labels = np.asarray(converged_transition_labels(jnp.asarray([1, 2, 3, 4]), 4))
     np.testing.assert_array_equal(labels, [[True, True, True],
                                            [False, True, True],
@@ -557,7 +557,7 @@ def test_converged_transition_labels_are_exact():
 def test_grade_gate_stats_separation_call():
     """#39: the gate must fire 'separated' only when the converged and
     computing cosine means sit more than one pooled sigma apart."""
-    from scratchpad_harness import grade_gate_stats
+    from experiments.scratchpad.harness import grade_gate_stats
     e = np.eye(M, dtype=np.float32)
     apart = jnp.asarray(np.stack([
         [e[0], e[0], e[0], e[0]],   # k_eff=1: all transitions converged, cos 1

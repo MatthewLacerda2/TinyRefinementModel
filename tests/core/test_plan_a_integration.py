@@ -17,10 +17,10 @@ import orbax.checkpoint as ocp
 import pytest
 from flax import nnx
 
-from checkpoint_utils import restore_tolerating_legacy
-from config import MAX_SEQ_LEN
-from grad_step import compute_grad_step, apply_grads
-from plan_a_trainer import RefinerForTraining
+from trm.runtime.checkpoints import restore_tolerating_legacy
+from trm.config import MAX_SEQ_LEN
+from trm.train.grad_step import compute_grad_step, apply_grads
+from trm.model.refiner_lm import RefinerForTraining
 
 DIM = 64
 VOCAB = 37
@@ -195,7 +195,8 @@ def test_adapter_honors_time_signal():
     sinusoidal builds no learned table (different param tree), table does. The
     default comes from config.TIME_SIGNAL, so the base run trains whatever the
     launch environment says."""
-    import config
+    from trm import config
+
     sin = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
                              encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
                              time_signal="sinusoidal")

@@ -62,7 +62,7 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture
 def token_batch():
     """Fixed [1, 64] token batch, values clear of PAD."""
-    from config import PAD_TOKEN_ID
+    from trm.config import PAD_TOKEN_ID
 
     rng = np.random.default_rng(7)
     tokens = rng.integers(1, 5000, size=(1, 64))
@@ -75,7 +75,7 @@ def tiny_model():
     """Full UniversalReasoner (batch 1), shared across the session — construction
     dominates test time on CPU, the forwards are cheap at short sequence lengths."""
     from flax import nnx
-    from config import LATENT_DIM
-    from model import UniversalReasoner
+    from trm.config import LATENT_DIM
+    from trm.model.reasoner import UniversalReasoner
 
     return UniversalReasoner(LATENT_DIM, nnx.Rngs(0), batch_size=1)

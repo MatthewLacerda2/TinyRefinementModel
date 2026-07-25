@@ -43,7 +43,7 @@ r_k = (r_{k-1} * a_k + b_k) mod m                  (k = 1..K)
 ## Architecture — three arms, one variable apart
 
 All arms share the same base: `embed(tokens) → causal encoder (2 × Block)` from
-`plan_a_model.py`, dim 64, heads 4. Vocab m. Sizes are toy-lane; the harness
+`trm/model/refiner.py`, dim 64, heads 4. Vocab m. Sizes are toy-lane; the harness
 parametrizes them.
 
 ### Arm S — serial scratchpad (the bet)
@@ -106,6 +106,6 @@ stays blocked until this gate returns a verdict.
 
 | Piece | Where |
 |---|---|
-| Task + three arms + runner | `scratchpad_harness.py` (root, mirrors `ablation_harness.py`; reuses `Block`/`CausalRefiner` from `plan_a_model.py`) |
+| Task + three arms + runner | `experiments/scratchpad/harness.py` (mirrors `experiments/depth/ablation_harness.py`; reuses `Block`/`CausalRefiner` from `trm/model/refiner.py`) |
 | Wiring/causality/grade tests | `tests/apparatus/test_scratchpad_harness.py` |
 | Verdict | `docs/findings/` entry + PR closing #38 |

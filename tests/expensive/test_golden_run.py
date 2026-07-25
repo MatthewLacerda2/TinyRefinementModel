@@ -20,9 +20,9 @@ import optax
 import pytest
 from flax import nnx
 
-from config import LATENT_DIM, MAX_SEQ_LEN
-from grad_step import compute_grad_step, apply_grads
-from model import UniversalReasoner
+from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.train.grad_step import compute_grad_step, apply_grads
+from trm.model.reasoner import UniversalReasoner
 
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "golden", "train_step_losses.json")
 DEPTHS = [1, 2, 3, 2, 1]

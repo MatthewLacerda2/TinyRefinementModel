@@ -18,9 +18,10 @@ import numpy as np
 import pytest
 from flax import nnx
 
-import layers
-from layers import RotaryAttention
-from plan_a_model import CausalAttention, CausalRefiner
+from trm.model import layers
+
+from trm.model.layers import RotaryAttention
+from trm.model.refiner import CausalAttention, CausalRefiner
 
 
 @pytest.mark.parametrize("chunked", [False, True], ids=["stock", "chunked"])
