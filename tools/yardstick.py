@@ -26,7 +26,7 @@ Protocol notes, so the number is comparable to something:
 Everything here is model-agnostic: scoring talks to the model only through
 `logits_fn(tokens) -> logits` (numpy in, numpy out, causal), so the same core
 scores our checkpoints (tools/eval_yardstick.py), the calibration GPT-2, and the
-tiny fakes in tests/test_yardstick.py.
+tiny fakes in tests/apparatus/test_yardstick.py.
 """
 
 import hashlib

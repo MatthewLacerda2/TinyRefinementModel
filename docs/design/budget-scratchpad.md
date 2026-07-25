@@ -107,7 +107,7 @@ sits at the `budget1` level (no retention learned), or Phase 1 fails outright
 | Piece | Where |
 |---|---|
 | `BudgetScratchpadNet` + arms | `scratchpad_harness.py` (extends the #38 harness, reuses `Block`/`CrossBlock`) |
-| Wiring guards | `tests/test_scratchpad_harness.py` |
+| Wiring guards | `tests/apparatus/test_scratchpad_harness.py` |
 | Verdict | `docs/findings/` entries + PR closing #63 |
 
 ## What this stage does NOT claim

@@ -107,5 +107,5 @@ stays blocked until this gate returns a verdict.
 | Piece | Where |
 |---|---|
 | Task + three arms + runner | `scratchpad_harness.py` (root, mirrors `ablation_harness.py`; reuses `Block`/`CausalRefiner` from `plan_a_model.py`) |
-| Wiring/causality/grade tests | `tests/test_scratchpad_harness.py` |
+| Wiring/causality/grade tests | `tests/apparatus/test_scratchpad_harness.py` |
 | Verdict | `docs/findings/` entry + PR closing #38 |

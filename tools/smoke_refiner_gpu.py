@@ -46,7 +46,7 @@ def main():
     # Wake the zero-init residual path before measuring zero-fracs: at init,
     # down_proj == 0 blocks all gradient to gate/up_proj, so nearly half of each
     # block group reads exactly zero for structural reasons (pinned in
-    # tests/test_grad_zero_frac.py) — and MultiSteps lands no real update within
+    # tests/apparatus/test_grad_zero_frac.py) — and MultiSteps lands no real update within
     # this smoke to clear it. Scale 0.02 puts down_proj where early training
     # does, the regime the underflow reading has to certify. Finiteness and
     # VRAM-fit checks are unaffected.
