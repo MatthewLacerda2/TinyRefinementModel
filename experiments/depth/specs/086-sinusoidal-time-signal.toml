@@ -1,0 +1,116 @@
+# Retrofit of a COMPLETED experiment (#40 build 1). The criteria below are
+# transcribed from what #86 pre-registered before any run; the [results] are the
+# per-seed numbers published in the finding. Both arrive in one commit because
+# the experiment predates this format — that is what status = "retrofit" means,
+# and it is the one case where the file cannot itself prove pre-registration.
+#
+# The point of retrofitting is falsification: if the format cannot express what
+# these experiments actually did, the format is wrong (#40's instruction).
+
+[experiment]
+id = "86"
+status = "retrofit"
+title = "Depth-extensible time signal: sinusoidal step encoding vs the learned embedding table"
+hypothesis = """
+The refiner tells each pass which step it is through nnx.Embed(max_depth + 1),
+whose rows end at max_depth — so depth is hard-capped at 8 and jnp.take silently
+clamps past it. A sinusoidal step encoding is defined for ANY step, so it should
+match the table at trained depths and keep working beyond them.
+"""
+finding = "docs/findings/2026-07-18-sinusoidal-time-signal-depth-extrapolates.md"
+issue = 86
+commit = "c1b0201"
+
+[protocol]
+task = "statetrack"
+seeds = [0, 1, 2]
+dim = 96
+steps = 2500
+matched = "same seed => same init, pools, minibatch order; only the time signal differs"
+command = """
+PYTHONPATH=. python -m experiments.depth.ablation_harness --task statetrack \
+  --depths 1,2,4,8 --steps 2500 --seed {0,1,2} --time-signal {table,sinusoidal}
+"""
+command_leg_b = "... --depths 8 --test-seq 48 --eval-depths 12,16"
+metric = "held-out accuracy (chance 0.20)"
+
+[arms.table]
+role = "control"
+config_delta = { time_signal = "table" }
+
+[arms.sinusoidal]
+role = "treatment"
+config_delta = { time_signal = "sinusoidal" }
+
+# --- Pre-registered on #86 before any run -----------------------------------
+# Keep: within 2 sigma at ALL trained depths AND beats the clamped control past
+#       depth 8 by >= 2 sigma.
+# Kill: loses >= 2 sigma at ANY trained depth, or shows no gain past 8.
+
+[criteria.parity_at_trained_depths]
+rule = "within"
+treatment = "sinusoidal"
+control = "table"
+sigmas = 2.0
+points = ["d1", "d2", "d4", "d8"]
+require = "all"
+
+[criteria.extends_past_the_cap]
+rule = "beats"
+treatment = "sinusoidal"
+control = "table"
+sigmas = 2.0
+points = ["d12", "d16"]
+require = "all"
+
+[criteria.loses_at_a_trained_depth]
+rule = "loses"
+treatment = "sinusoidal"
+control = "table"
+sigmas = 2.0
+points = ["d1", "d2", "d4", "d8"]
+require = "any"
+
+[verdict]
+keep_if = ["parity_at_trained_depths", "extends_past_the_cap"]
+kill_if = ["loses_at_a_trained_depth"]
+recorded = "KEEP"
+
+[readouts]
+names = [
+  "the clamped table's failure past its cap is worse than 'no gain': exactly chance AND CE = NaN in every seed — overrun is toxic, not a soft ceiling",
+  "every sinusoidal seed improves when run past its trained depth; even the degraded seed 1 climbs monotonically (0.370 -> 0.408 -> 0.424)",
+  "d12 ~= d16, so the extrapolation gain plateaus by ~12 at this training depth",
+]
+
+# --- Results, exactly as the finding published them --------------------------
+# Leg A exists ONLY in summarized form: the finding printed per-depth means and a
+# combined sigma_pooled, not the underlying seeds. So it is recorded as summaries
+# and the published sigma_pooled is split evenly between the arms (sigma such
+# that RMS(sigma, sigma) = sigma_pooled, i.e. both arms carry it). Inventing
+# per-seed numbers that happen to reproduce the published mean and sigma would be
+# fabricating measurements nobody took.
+[results.d1]
+table = { mean = 0.8144, sigma = 0.0281, n = 3 }
+sinusoidal = { mean = 0.7910, sigma = 0.0281, n = 3 }
+
+[results.d2]
+table = { mean = 0.8733, sigma = 0.0493, n = 3 }
+sinusoidal = { mean = 0.8624, sigma = 0.0493, n = 3 }
+
+[results.d4]
+table = { mean = 0.9718, sigma = 0.0122, n = 3 }
+sinusoidal = { mean = 0.9746, sigma = 0.0122, n = 3 }
+
+[results.d8]
+table = { mean = 0.9645, sigma = 0.0509, n = 3 }
+sinusoidal = { mean = 0.9212, sigma = 0.0509, n = 3 }
+
+# Leg B is genuinely per-seed as published.
+[results.d12]
+table = [0.2050, 0.2042, 0.2052]
+sinusoidal = [0.7672, 0.4082, 0.7693]
+
+[results.d16]
+table = [0.2050, 0.2042, 0.2052]
+sinusoidal = [0.7694, 0.4236, 0.7639]

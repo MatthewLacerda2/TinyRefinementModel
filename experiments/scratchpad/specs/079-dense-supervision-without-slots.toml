@@ -1,0 +1,98 @@
+# Retrofit of a COMPLETED experiment (#40 build 1). See 086's header for what
+# status = "retrofit" means about pre-registration.
+
+[experiment]
+id = "79"
+status = "retrofit"
+title = "Dense per-step supervision without slots — is the grade or the offload carrying the #38 win?"
+hypothesis = """
+#38's depthonly control removed two things at once (slots AND intermediate
+supervision), and #67 proved the grade is necessary. Open question: is the grade
+also SUFFICIENT, with the slots merely a convenient place to attach it? The
+densedepth arm is the CausalRefiner at depth K=4 given the serial arm's exact
+supervision schedule but no slots — intermediate results must live in the
+recurrence's own hidden state.
+"""
+finding = "docs/findings/2026-07-07-dense-supervision-without-slots-collapses.md"
+issue = 79
+commit = "3accd14"
+
+[protocol]
+task = "affine_chain"
+K = 4
+m = 7
+dim = 64
+steps = 2500
+seeds = [0, 1, 2]
+heldout = 4096
+matched = "same seed => same pools"
+command = """
+JAX_PLATFORMS=cpu FORCE_F32_COMPUTE=1 PYTHONPATH=. \
+python -m experiments.scratchpad.harness --arms serial,densedepth,densedepth_tied \
+  --seeds 0,1,2 --K 4 --m 7 --steps 2500
+"""
+metric = "held-out final-answer accuracy (chance = 1/7 ~= 0.143)"
+caveat = """
+Stated in advance on the issue: removing the slots changes the param tree
+(0.17M vs 0.22M). Inherent to the variable under test, as with #38's depthonly
+control — a confound that cannot be removed without removing the experiment.
+"""
+
+[arms.serial]
+role = "control"
+config_delta = { arm = "serial" }
+note = "the #38 control; re-run on this machine and reproduced #38's numbers exactly (0.9988 / 0.9790 / 0.9988)"
+
+[arms.densedepth]
+role = "treatment"
+config_delta = { arm = "densedepth" }
+note = "pass k's state at the answer position graded against sub-result r_k through a dedicated linear head, lambda=1.0, plus final-answer CE"
+
+[arms.densedepth_tied]
+role = "treatment"
+config_delta = { arm = "densedepth_tied" }
+note = "robustness check on the grade-head choice: grades through the tied LM head instead"
+
+# --- Pre-registered on #79 before any run -----------------------------------
+# densedepth within 2 sigma_pooled of serial  -> the grade carried the win.
+# serial ahead by >= 2 sigma_pooled           -> the offload is real.
+
+[criteria.grade_alone_suffices]
+rule = "within"
+treatment = "densedepth"
+control = "serial"
+sigmas = 2.0
+points = ["affine_chain_k4"]
+
+[criteria.offload_is_real]
+rule = "loses"
+treatment = "densedepth"
+control = "serial"
+sigmas = 2.0
+points = ["affine_chain_k4"]
+
+[verdict]
+keep_if = ["grade_alone_suffices"]
+kill_if = ["offload_is_real"]
+recorded = "KILL"
+recorded_note = """
+"KILL" here names the hypothesis under test (grade-alone-suffices), not the
+mechanism: the kill IS the positive result that the offload is load-bearing.
+Serial - densedepth = +0.803, about 15.6x sigma_pooled against a 2 sigma bar; the
+tied variant is ~72 sigma behind. Worth noting how the spec reads a two-sided
+pre-registration — both branches were named up front, and the module reports
+which one fired rather than whether the experimenter was pleased.
+"""
+
+[readouts]
+names = [
+  "densedepth reproduces the PARALLEL arm's regime, not depthonly's: its mean (0.1894) sits on top of #38's parallel arm (0.1878 +/- 0.030)",
+  "per-step signature localizes the failure: r1 and r2 perfect (shallow token functions), collapse exactly where composing a prior LATENT result becomes unavoidable (step 3-4)",
+  "the grade-head choice does not change the verdict — the tied variant lands in the same regime",
+]
+
+# --- Results (per seed, from the finding) ------------------------------------
+[results.affine_chain_k4]
+serial = [0.9988, 0.9790, 0.9988]
+densedepth = [0.2703, 0.1323, 0.1655]
+densedepth_tied = [0.1443, 0.1411, 0.1633]
