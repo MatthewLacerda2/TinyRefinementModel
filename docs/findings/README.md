@@ -30,6 +30,7 @@ things, it doesn't go in this folder.
 - `2026-07-18-budget-scratchpad-retention-win-slot-parking.md` — #116: retention under capacity pressure is real — leak closed, 2 slots for 5 writes hits 1.0000 on every seed by parking r_1 (~99.5% of later writes routed away from it), while the 1-slot in-vector carry trains unreliably
 - `2026-07-18-sinusoidal-time-signal-depth-extrapolates.md` — #86: sinusoidal step signal matches the learned table at trained depths (2σ parity) and converts never-trained loops 9–16 into +0.11 accuracy under length shift, where the clamped table collapses to chance with NaN loss — depth becomes an open dial
 - `2026-07-19-trajectory-visible-halting-collapses-incentive-not-observability.md` — #123: letting the halting head reread the whole thought trajectory does NOT prevent ACT-style collapse (99.5%+ mass on step 1, corr ≈ 0, every seed, solvable task) — the graveyard failure is an incentive pathology, not an observability one; halting pressure also rots full-depth competence 0.996 → ~0.6
+- `2026-07-24-time-blind-rematch-collapse-cured-step-signal-holds-d8.md` — #138: per-pass grading cures the time-blind collapse (3/3 seeds, including #97's crater seed), but the step signal still earns trained d8 (−5.9σ); the time-blind arm length-extends better (+2.3σ at d16), reversing #122's assignment under per-pass supervision
 
 ## Entry template
 

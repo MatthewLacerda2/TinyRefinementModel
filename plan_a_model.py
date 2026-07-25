@@ -128,9 +128,11 @@ class CausalRefiner(nnx.Module):
         # time_signal (#86): "table" is the learned per-step embedding — rows end
         # at max_depth, so depth is hard-capped. "sinusoidal" is the diffusion-
         # style continuous encoding, defined for any step index, making
-        # inference-time depth an open dial. Different param trees — a checkpoint
-        # from one cannot resume the other.
-        assert time_signal in ("table", "sinusoidal"), f"unknown time_signal {time_signal!r}"
+        # inference-time depth an open dial. "none" (#138) removes the step
+        # signal entirely — the refine block conditions only on the state it is
+        # refining. Different param trees — a checkpoint from one cannot resume
+        # another's.
+        assert time_signal in ("table", "sinusoidal", "none"), f"unknown time_signal {time_signal!r}"
         self.dim = dim
         self.vocab_size = vocab_size
         self.max_depth = max_depth
@@ -150,7 +152,8 @@ class CausalRefiner(nnx.Module):
                                   chunked_attention=chunked_attention)  # shared, looped
 
         self.time_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
-        self.time_signal_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+        if time_signal != "none":
+            self.time_signal_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.out_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
         if use_gate:
@@ -227,7 +230,9 @@ class CausalRefiner(nnx.Module):
         # same math, and forward-only inference is untouched (checkpoint is a
         # no-op outside differentiation).
         def _refine_iter(z, t_signal):
-            z_in = self.time_norm(z) + self.time_signal_norm(t_signal)[None, None, :]
+            z_in = self.time_norm(z)
+            if t_signal is not None:
+                z_in = z_in + self.time_signal_norm(t_signal)[None, None, :]
             z_new = self.refine_block(z_in, pad_bias)
             if self.use_gate:
                 g = jax.nn.sigmoid(self.gate(jnp.concatenate([z_new, z], axis=-1)))
@@ -243,8 +248,10 @@ class CausalRefiner(nnx.Module):
                 z = z_enc + jax.lax.stop_gradient(z - z_enc)
             if self.time_signal == "table":
                 t_signal = self.time_embed(jnp.asarray(step))
-            else:
+            elif self.time_signal == "sinusoidal":
                 t_signal = sinusoidal_step_encoding(step, self.dim, self.dtype)
+            else:
+                t_signal = None    # "none" (#138): the state is the only signal
             z, g_mean = refine_iter(z, t_signal)
             if self.use_gate:
                 gate_means.append(g_mean)

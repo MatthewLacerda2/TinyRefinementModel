@@ -200,3 +200,29 @@ def test_sinusoidal_encoding_distinct_and_deterministic():
     np.testing.assert_array_equal(encs[3], again)
     far = np.asarray(sinusoidal_step_encoding(100, 64, jnp.float32))
     assert np.isfinite(far).all()
+
+
+def test_none_time_signal_is_step_blind_and_unbounded():
+    """#138: time_signal="none" removes the step signal entirely — the refine
+    block conditions only on the state. Step-blindness is structural: the param
+    tree must carry NO time-signal parameters (no table, no time_signal_norm),
+    so there is no path for "which pass is this" to enter the graph. Like
+    sinusoidal, no ceiling: depth 12 on a max_depth=8 model runs without the
+    overrun opt-in, and a none model must be strictly smaller than sinusoidal
+    (the dropped norm) which is smaller than table (the dropped rows)."""
+    def build(sig):
+        return CausalRefiner(dim=64, vocab_size=37, num_heads=4,
+                             num_encoder_layers=2, max_depth=8, max_seq_len=32,
+                             time_signal=sig, rngs=nnx.Rngs(0))
+    m = build("none")
+    tok = jnp.arange(1, 17)[None, :]
+    out = np.asarray(m(tok, depth=12))
+    assert out.shape == (1, 16, 37)
+    assert np.isfinite(out).all()
+    state = nnx.state(m, nnx.Param)
+    assert "time_embed" not in state and "time_signal_norm" not in state, \
+        "none mode must build no time-signal parameters at all"
+
+    def n_params(mm):
+        return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(mm, nnx.Param)))
+    assert n_params(build("none")) < n_params(build("sinusoidal")) < n_params(build("table"))

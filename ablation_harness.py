@@ -304,7 +304,7 @@ def main():
                     help="cut the gradient chain at every pass boundary (#75) — pair with --per-pass-loss. refiner-only.")
     ap.add_argument("--readouts", action="store_true",
                     help="print #75 readouts: per-pass accuracy, gate openness per pass, depth-transfer curve (eval at depths 1..12). refiner-only.")
-    ap.add_argument("--time-signal", default="table", choices=["table", "sinusoidal"],
+    ap.add_argument("--time-signal", default="table", choices=["table", "sinusoidal", "none"],
                     help="#86: 'table' = learned per-step embedding (rows end at max_depth); "
                          "'sinusoidal' = diffusion-style continuous encoding, defined at any depth. refiner-only.")
     ap.add_argument("--eval-depths", default=None,
