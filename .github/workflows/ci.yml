@@ -28,12 +28,42 @@ on:
 #                         committed golden went stale once already, pre-#50)
 #   overfit smoke (CPU) — end-to-end training-path smoke at tiny scale: the
 #                         real grad step must collapse CE on one batch
+#   lint (ruff)         — errors and bugs only, never formatting (see the ruff
+#                         config in pyproject.toml). Its job is to catch the
+#                         class of defect that costs a run: an unused import
+#                         masking a rename, a shadowed name, an f-string that
+#                         silently prints nothing. Needs no jax, so it finishes
+#                         in seconds and fails fast ahead of the slow jobs.
 # CPU-only throughout (FORCE_F32_COMPUTE via tests/conftest.py or explicit env)
 # so CI runs while the GPU trains; the real f16 path stays RUN_TESTS_ON_GPU=1.
 
 # Each job carries the draft guard (an `if` on the job, since a workflow can't
 # be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
+  lint:
+    name: lint (ruff)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install ruff
+        # The pin comes from requirements.txt so there is one version to bump, but
+        # only that line is installed — the rest of the file pulls jax, which this
+        # job has no use for. Pinned at all because an unpinned linter turns
+        # "upstream shipped a new rule" into a red build on an unrelated PR.
+        run: pip install "$(grep '^ruff==' requirements.txt)"
+
+      - name: Ruff
+        # Rule selection lives in pyproject.toml, so local `ruff check .` and CI
+        # are the same check — no flags to keep in sync in two places.
+        run: ruff check .
+
   test:
     name: pytest (CPU)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}

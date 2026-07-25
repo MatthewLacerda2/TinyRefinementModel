@@ -32,9 +32,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME
-from infer_local import _temperature_truncate
-from tools.common import restore_refiner
+# E402 below is deliberate: these are repo-local modules, reachable only after the
+# sys.path insert above puts the repo root on the path.
+from config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME  # noqa: E402
+from infer_local import _temperature_truncate  # noqa: E402
+from tools.common import restore_refiner  # noqa: E402
 
 
 def generate_at_depth(model, enc, prompt, depth, *, max_new_tokens, temperature,

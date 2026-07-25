@@ -30,7 +30,7 @@ import optax
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from config import LATENT_DIM, MAX_SEQ_LEN, PAD_TOKEN_ID, BATCH_SIZE, resolve_root
+from config import LATENT_DIM, MAX_SEQ_LEN, PAD_TOKEN_ID, resolve_root
 from plan_a_trainer import RefinerForTraining
 from data_loaders import TextDataGenerator
 from checkpoint_utils import discover_latest_checkpoint_run

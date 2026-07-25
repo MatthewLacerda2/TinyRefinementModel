@@ -6,7 +6,6 @@ the arch resolver *refuses to guess* (a wrong arch corrupts the restore) and tha
 metric it compares against is read correctly.
 """
 
-import os
 import json
 
 import pytest

@@ -75,9 +75,9 @@ def main():
     print(f"— depth {MAX_STEPS_LIMIT} (worst case) with optimizer resident —")
     for s in range(1, 4):
         loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s), MAX_STEPS_LIMIT)
-        l, g = float(loss), float(gnorm)
-        ok = math.isfinite(l) and math.isfinite(g) and g > 0
-        print(f"  step {s}: loss={l:.4f}  grad_norm={g:.4f}  {'OK' if ok else '✗ NON-FINITE/ZERO'}")
+        loss_f, grad_f = float(loss), float(gnorm)
+        ok = math.isfinite(loss_f) and math.isfinite(grad_f) and grad_f > 0
+        print(f"  step {s}: loss={loss_f:.4f}  grad_norm={grad_f:.4f}  {'OK' if ok else '✗ NON-FINITE/ZERO'}")
         assert ok, f"depth {MAX_STEPS_LIMIT} step {s} non-finite/zero in f16"
         worst_dense = max(worst_dense, read_zero_fracs(grads))
         apply_grads(optimizer, grads, model)

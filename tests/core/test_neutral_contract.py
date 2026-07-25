@@ -13,7 +13,6 @@ The second is the one that matters; the first is what stops the seam from being
 re-opened one convenient attribute at a time.
 """
 
-import io
 import pathlib
 import tokenize
 

@@ -6,11 +6,13 @@ before importing jax through this module).
 
 import os
 
-import jax.numpy as jnp
 from flax import nnx
 import orbax.checkpoint as ocp
 
+from checkpoint_utils import discover_latest_checkpoint_run, restore_tolerating_legacy
 from config import LATENT_DIM, MODEL_ARCH, resolve_root
+from data_loaders import TextDataGenerator
+from model import UniversalReasoner
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
 # reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
@@ -18,9 +20,6 @@ from config import LATENT_DIM, MODEL_ARCH, resolve_root
 # to restore every checkpoint we have — all written when BATCH_SIZE was 1 — for
 # no benefit, since eval reads a handful of rows.
 EVAL_BATCH_SIZE = 1
-from model import UniversalReasoner
-from data_loaders import TextDataGenerator
-from checkpoint_utils import discover_latest_checkpoint_run, restore_tolerating_legacy
 
 
 def _restore_into(model, checkpoint_path):

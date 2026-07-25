@@ -12,17 +12,20 @@ import os
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 
-import argparse
-import datetime
+# Everything below is deliberately imported after the env block above: these reach
+# jax (via tools.common), and the memory-fraction var has no effect once jax is
+# imported. Hoisting them would silently undo the arena cap — hence the noqas.
+import argparse  # noqa: E402
+import datetime  # noqa: E402
 
-import tiktoken
-from dotenv import load_dotenv
+import tiktoken  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from checkpoint_utils import discover_latest_checkpoint_run
-from config import TOKENIZER_NAME
-from tools.common import restore_model
+from checkpoint_utils import discover_latest_checkpoint_run  # noqa: E402
+from config import TOKENIZER_NAME  # noqa: E402
+from tools.common import restore_model  # noqa: E402
 
 PROMPTS = [
     "The water cycle begins when",
