@@ -15,7 +15,14 @@ on:
 
 # Three named jobs so each load-bearing check is a separately visible (and
 # separately requireable) status (#45):
-#   pytest (CPU)        — the broad unit/invariant suite
+#   pytest (CPU)        — the tiered unit/invariant suite: tests/core (properties
+#                         the model must always have) then tests/apparatus (the
+#                         research harnesses and instruments). Two steps, one
+#                         job: they share the pip install, and a failure names
+#                         its tier. Both gate the merge — an apparatus that rots
+#                         quietly is worse than one that fails loudly; the cure
+#                         for accumulation is deletion at tombstone time, not
+#                         skipping (tests/README.md).
 #   golden-run (CPU)    — the opt-in exact-trajectory regression, forced on here
 #                         so silent numeric drift can't go unnoticed (the
 #                         committed golden went stale once already, pre-#50)
@@ -52,8 +59,11 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
-      - name: Run tests
-        run: pytest tests/ -q
+      - name: Core suite
+        run: pytest tests/core -q
+
+      - name: Apparatus suite
+        run: pytest tests/apparatus -q
 
   golden:
     name: golden-run (CPU)
@@ -81,7 +91,7 @@ jobs:
         # plus the two test classes that catch silent numeric drift: the
         # reference-numerics suite (caught the double-applied attention scaling)
         # and step determinism (what makes golden comparisons meaningful at all).
-        run: pytest tests/test_golden_run.py tests/test_attention_numerics.py tests/test_step_determinism.py -q
+        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q
 
   smoke:
     name: overfit smoke (CPU)

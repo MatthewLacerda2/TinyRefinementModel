@@ -5,9 +5,9 @@ Five real grad steps (varied depths, fixed synthetic batch, fixed optimizer)
 compared against stored values. CPU execution is deterministic, so the match
 is exact.
 
-Opt-in (several minutes on CPU): RUN_GOLDEN=1 pytest tests/test_golden_run.py
+Opt-in (several minutes on CPU): RUN_GOLDEN=1 pytest tests/expensive/test_golden_run.py
 After an INTENTIONAL math change (new loss term, architecture change), delete
-tests/golden/train_step_losses.json and rerun with RUN_GOLDEN=1 to re-record —
+tests/expensive/golden/train_step_losses.json and rerun with RUN_GOLDEN=1 to re-record —
 and say so in the commit message.
 """
 
