@@ -11,6 +11,7 @@ subprocess because config.py reads the environment at import time.
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -28,7 +29,8 @@ from schedules import (
     resolve_decay_steps,
 )
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
+REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 
 LR_PEAK, LR_END = 1e-4, 1e-6
 

@@ -41,7 +41,8 @@ The user's instinct is to experiment a lot: try every idea several ways, pull pi
 out to see what happens. That instinct is right — and it is exactly the thing that
 manufactures false wins if it isn't disciplined. Trying one idea ten ways hands you a
 "winner" by chance alone. So the cure is never *fewer* experiments; it's **cheap,
-controlled, pre-committed** experiments. These five rules are how a result earns belief:
+controlled, pre-committed** experiments. Rules 1–5 are how a result earns belief; rule 6
+is how the apparatus that produced it gets cleaned up afterwards:
 
 1. **Clear the noise floor.** A single-seed number is not a result. We measure
    seed-to-seed variance first (what "no real difference" looks like), and a delta only
@@ -77,6 +78,13 @@ controlled, pre-committed** experiments. These five rules are how a result earns
    - The novelty test is operational: Claude doesn't know it and can't find it online.
      State the verdict in the PR ("novel because…" / "settled by…"). **Uncertain →
      treat as novel** — deleting a finding later is cheap, re-discovering one isn't.
+
+6. **A tombstone takes its apparatus with it.** The knowledge is what we keep; the
+   scaffolding that produced it is not. So the PR that writes a graveyard entry also
+   deletes that line's harness and its `tests/apparatus/` guards, in the same diff —
+   grep `tests/apparatus/` before opening it. This is the one rule that stops the
+   suite from growing forever: tests aren't retired by judgment calls nobody makes,
+   they're retired by the kill they belong to. The finding survives the harness.
 
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
@@ -223,7 +231,7 @@ experiment (the arch behind the flag):
 | **Proof instrument** | `ablation_harness.py` — tiny toy-task depth ablations (parity / cumsum / state-tracking) at the *exact* arch we'd ship |
 | **Diagnostics & smokes** | `tools/` — `eval_depth_curve.py`, `overfit_smoke.py`, `smoke_refiner_gpu.py`, `vram_headroom_smoke.py`, `dump_transcripts.py`, … |
 | **Inference / plots** | `infer_local.py`, `plot_history.py` |
-| **Tests** | `tests/` — invariants, determinism, golden-run, data hygiene. CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs them on every push/PR to `main`. |
+| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
 compute is the permanent policy** (`config.py`); the GPU lane is serial. Tokenizer is

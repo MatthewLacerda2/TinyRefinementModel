@@ -176,7 +176,7 @@ its PR.
   leaked future tokens into past predictions — a bidirectional summary exposed to
   causal decode positions, the textbook non-causal-path bug. Pre-fix "depth lowers
   CE" readings were leak bandwidth, not refinement (see the hunch-inert finding's
-  pre/post contrast). Guards: both causality tests in `tests/test_model_invariants.py`.
+  pre/post contrast). Guards: both causality tests in `tests/core/test_model_invariants.py`.
 - **cosine halting on the serial scratchpad — raw-latent signal** (#39, 2026-07-15,
   PR #96, closed unmerged; this line is the record): halting the write loop at the
   first slot with cosine(s_k, s_{k−1}) > τ cannot trade writes for accuracy. On an
