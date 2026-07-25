@@ -5,10 +5,12 @@ degrade gracefully when there is nothing to report on.
 """
 
 import os
+import pathlib
 import subprocess
 import sys
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
+REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists()))
 SCRIPT = os.path.join(REPO_ROOT, "tools", "milestone_report.py")
 
 

@@ -5,10 +5,14 @@ config.py reads the env at import time."""
 
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Anchored on the marker file, not on a fixed number of parent hops — the old
+# `dirname(dirname(__file__))` silently became `tests/` the day this file moved
+# into a tier folder, and the subprocess failed with a bare ModuleNotFoundError.
+REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 
 
 def _read_config(env_overrides):

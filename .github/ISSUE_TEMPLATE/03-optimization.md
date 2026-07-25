@@ -24,6 +24,8 @@ labels: ["optimization"]
 
 ## Validation plan
 <!-- How you confirm it is a win AND did not break anything. -->
-- [ ] `JAX_PLATFORMS=cpu pytest tests/ -q` still green (incl. golden run)
+- [ ] `JAX_PLATFORMS=cpu pytest tests/ -q` still green
+- [ ] `RUN_GOLDEN=1 pytest tests/expensive -q` still green — an optimization claiming
+      math-identity must reproduce the trajectory exactly (the plain run above skips it)
 - [ ] Measured before/after for the target metric
 - [ ] Outputs unchanged (or change explained and accepted)

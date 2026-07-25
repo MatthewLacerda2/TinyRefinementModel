@@ -6,7 +6,9 @@
 
 ## Validation / smoke-test performed
 <!-- What you actually ran. No multi-hour training run should be needed to review this. -->
-- [ ] `JAX_PLATFORMS=cpu pytest tests/ -q` passes locally
+- [ ] `JAX_PLATFORMS=cpu pytest tests/ -q` passes locally (core + apparatus)
+- [ ] If this PR tombstones a research line: its harness and `tests/apparatus/` guards
+      are deleted in this same diff (CLAUDE.md rule 6)
 - Other checks run:
 
 ## Risk

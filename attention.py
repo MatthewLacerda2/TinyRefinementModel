@@ -17,7 +17,7 @@ to maintain — don't go hunting for it.
 Numerics match the stock path: scores accumulate in f32 (``preferred_element_
 type``), softmax runs in f32, the causal mask and additive pad bias apply to
 scaled scores. Only the block loop reorders float ops, so parity is allclose,
-not bit-exact — pinned by tests/test_chunked_attention.py in value and grads.
+not bit-exact — pinned by tests/core/test_chunked_attention.py in value and grads.
 """
 
 from functools import partial

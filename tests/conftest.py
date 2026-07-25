@@ -3,9 +3,15 @@
 Tests default to CPU so the suite stays runnable while a training process owns
 the GPU. Set RUN_TESTS_ON_GPU=1 to opt back in when the GPU is free.
 This must happen before any test module imports jax.
+
+Every test lives in exactly one tier folder — core/, apparatus/, or expensive/ —
+and the folder IS the declaration (see tests/README.md). The guard below refuses
+to collect a test file dropped straight into tests/, because "where does this go"
+must have one answer, and an unfiled test is one nobody can decide to delete.
 """
 
 import os
+import pathlib
 
 if not os.environ.get("RUN_TESTS_ON_GPU"):
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -23,7 +29,29 @@ def pytest_configure(config):
     )
 
 
+TIERS = ("core", "apparatus", "expensive")
+_TESTS_ROOT = pathlib.Path(__file__).parent.resolve()
+
+
 def pytest_collection_modifyitems(config, items):
+    """Refuse to collect a test that isn't under one of the three tiers.
+
+    Catches both ways of dodging the taxonomy: a file left in tests/ directly,
+    and a fourth folder invented to avoid choosing.
+    """
+    unfiled = sorted({
+        str(path.relative_to(_TESTS_ROOT))
+        for path in (pathlib.Path(str(item.fspath)).resolve() for item in items)
+        if path.is_relative_to(_TESTS_ROOT) and path.relative_to(_TESTS_ROOT).parts[0] not in TIERS
+    })
+    if unfiled:
+        raise pytest.UsageError(
+            "these test files are not in a tier folder:\n  tests/"
+            + "\n  tests/".join(unfiled)
+            + f"\nEvery test belongs to exactly one of {TIERS} — "
+              "see tests/README.md for what each one means and when it gets deleted."
+        )
+
     if not os.environ.get("RUN_TESTS_ON_GPU"):
         skip_gpu = pytest.mark.skip(reason="GPU busy or unavailable (set RUN_TESTS_ON_GPU=1)")
         for item in items:

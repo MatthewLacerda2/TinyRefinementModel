@@ -6,9 +6,10 @@ runs/
 venv/
 .venv/
 
-# Explicitly kept helpers
-auxmd.md
-auxpy.py
+# Local scratch: working notes, launch scripts, watchdog/protocol logs. CLAUDE.md
+# says aux* is local-and-gitignored, but only two names were listed here, so every
+# aux_*.log and aux_*.sh a run left behind sat in `git status` forever. One rule now.
+aux*
 
 # Working plans stay local; docs/findings/ is tracked and publishable
 docs/plans/
