@@ -109,14 +109,15 @@ the v1 leak that had to be amputated).
   gap versus the parallel-slot control. Runs on the tiny ablation harness
   (minutes), so it is a cpu-lane bet, not a real-model run.
 - **Parked refinements — gated behind the proof; adding them now confounds it:**
-  - *Convergence halting* — #39: stop refining when the state stops moving
-    (cosine of step k vs k-1 above a threshold). This is the Deep-Equilibrium /
+  - *Convergence halting* — stop refining when the state stops moving (cosine
+    of step k vs k-1 above a threshold). This is the Deep-Equilibrium /
     fixed-point family and the 2025 recurrent-depth line (Geiping et al.), NOT
     learned per-token halting (ACT, which is killed below). Not novel as a
     mechanism; worth it for adaptive compute (fewer steps on easy tokens).
-    **The raw-latent signal is dead** (see Graveyard) — #39 now carries the one
-    variant that measurement pointed at instead: the same rule on the *grade
-    logits*, which separate cleanly where the latents do not.
+    **Dead on the write-once scratchpad in both spaces** — raw latents (PR #96)
+    and grade logits (#39, closed negative-result); see the Graveyard for the
+    numbers. The surviving home is the refiner's depth loop, where the state
+    genuinely iterates — that is #140.
   - *Slot dimensionality / "vagueness"* — a wide continuous slot can hold a soft,
     under-specified idea (superposition) where a token must commit; the state
     starts vague and sharpens toward commitment — which is what convergence
@@ -189,10 +190,26 @@ its PR.
   labels there also fire on coincidental residue collisions (~11% of "converged"
   steps), so treat both distributions as indicative, not as measured cause. (b) The
   same signal read on the **grade logits** separates cleanly (≈0.86 vs ≈−0.14) and
-  was never run as a halting rule — that is the live follow-up, #39. Note this kills
-  a *signal*, not adaptive depth: a genuinely iterated state (the refiner's depth
-  loop) never had a fixed point removed from under it the way a write-once
-  scratchpad does.
+  was never run as a halting rule — that became the re-scoped #39, killed next.
+- **cosine halting on the serial scratchpad — grade-logit signal** (#39, 2026-07-23,
+  closed negative-result; the #39 PR carries the run, log `aux_39_protocol.log`):
+  the space fix worked exactly as far as the diagnostic promised, and still died on
+  the pre-registered bars. On `variable_chain_task` with exact k_eff labels
+  (halt_off, K=4, m=7, dim 64, 10k steps, seeds {0,1,2}, full-depth ceiling
+  0.9963 ± 0.0042): the gate separated (+0.942 ± 0.064 converged vs −0.005 ± 0.401
+  computing, ≈3.3 pooled σ), and the ladder trades far better than raw latents ever
+  did — τ=0.90 saves 0.60 of 4 writes for −0.019 accuracy where the latent rule
+  cost 0.14–0.17. But no τ on the pre-registered grid satisfied all three bars:
+  corr(halt step, k_eff) — the primary, per-instance bar — peaked at **0.789 < 0.8**
+  (τ=0.80), and accuracy-within-2σ never co-occurred with writes ≤ 3.5 (τ=0.99:
+  0.9952 acc but 3.82 writes). Reading: grade-logit cosine measures *something real
+  but rate-shaped* — it fires at roughly the right frequency without being right
+  about *which instance* is done, exactly the failure #123's corr bar exists to
+  catch. Both scratchpad spaces are now dead; the structural objection stands — a
+  write-once scratchpad has no iterated state for a fixed-point detector. The one
+  untried home is the refiner's depth loop, where the state genuinely iterates:
+  #140, with the transferable lessons (readout space, exact labels, gate-then-
+  ladder) written into it.
 - **time-blind refiner — no step signal** (#86 third arm, 2026-07-10, PR #97, closed
   unmerged; this line is the record): pre-registered on #86 before any result and run
   as the third arm of the time-signal grid (statetrack, dim 96, seeds {0,1,2}).
