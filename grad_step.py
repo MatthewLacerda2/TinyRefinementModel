@@ -7,35 +7,34 @@ from config import (
     ACCUMULATION_STEPS,
     PAD_TOKEN_ID,
 )
-from schedules import (
-    forget_lambda_schedule,
-    diversity_lambda_schedule,
-)
 from losses import chunked_cross_entropy_rows
 
-def compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda):
-    """Assembles the full training loss from both segments' outputs.
+def compute_total_loss(ce1, ce2, graded_aux):
+    """Assembles the full training loss: CE on both windows, plus whatever
+    auxiliary terms the architecture asked to have graded.
 
     Standalone (not buried in the jitted grad step) so the loss-wiring test can
-    assert every cost component actually contributes — a forget-cost term was
-    once computed and logged but never added here, and the model spent ~3900
+    assert every cost the model reports actually contributes — a forget-cost term
+    was once computed and logged but never added here, and the model spent ~3900
     opt steps not learning to forget.
 
-    Plain CE on both segments plus the two regularizers. The old refinement,
-    anchor, and ponder terms are gone: with the reasoning depth randomly sampled
-    per training step, "use the extra steps well" is enforced structurally
-    instead of through patch losses (which made copying step 1 the optimum).
+    This function knows no architecture's cost names: `graded_aux` arrives
+    already weighted from the model's own `grade_aux` (#105). Terms are added one
+    at a time in iteration order rather than summed as a group, so the arithmetic
+    an architecture's recorded trajectory was produced under is reproducible.
     """
-    return (ce1 + ce2) \
-           + d_lambda * (out1.diversity_loss + out2.diversity_loss) \
-           + f_lambda * (out1.forget_cost + out2.forget_cost)
+    total = ce1 + ce2
+    for term in graded_aux.values():
+        total = total + term
+    return total
 
 
-@nnx.jit(static_argnames=['max_steps'])
-def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
-    # A document boundary means the hunch cache holds state from an unrelated
-    # document — the model should start its slots fresh.
-    should_refresh = jnp.any(doc_boundary).squeeze()
+@nnx.jit(static_argnames=['depth'])
+def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False):
+    # Whether this batch opens a new document is a fact about the data stream;
+    # what a model does with it (start fresh, or continue from carried state) is
+    # the model's business.
+    new_document = jnp.any(doc_boundary).squeeze()
 
     def loss_fn(model):
         # Training models return pre-head states (out.hidden), not full logits, so the
@@ -46,8 +45,8 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
-        out1 = model(seq1_in, max_steps=max_steps, training=True, should_refresh=should_refresh)
-        out2 = model(seq2_in, max_steps=max_steps, training=True, should_refresh=False)
+        out1 = model(seq1_in, depth=depth, training=True, new_document=new_document)
+        out2 = model(seq2_in, depth=depth, training=True, new_document=False)
 
         # Both windows are scored in ONE chunked-CE scan, stacked on the batch axis:
         # two separate calls duplicated the [vocab, dim] f32 gradient plumbing across
@@ -70,10 +69,9 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         }
 
         opt_step = step // ACCUMULATION_STEPS
-        f_lambda = forget_lambda_schedule(opt_step)
-        d_lambda = diversity_lambda_schedule(opt_step)
+        graded_aux = model.grade_aux([out1.aux, out2.aux], opt_step)
 
-        total_loss = compute_total_loss(ce1, ce2, out1, out2, f_lambda, d_lambda)
+        total_loss = compute_total_loss(ce1, ce2, graded_aux)
 
         # No NaN masking here: a non-finite loss must surface in the train loop
         # (which skips the update and aborts on a streak), not be silently zeroed.
@@ -91,18 +89,10 @@ def compute_grad_step(model, batch_tokens, step, max_steps, doc_boundary=False):
         return total_loss, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
-    
-    current_hunch = model.hunch_cache[...]
-    cleared_hunch = jnp.zeros_like(current_hunch)
-    
-    # After the step, carry the hunch forward UNLESS a document boundary was hit
-    carried_hunch = jax.lax.cond(
-        should_refresh,
-        lambda: jax.lax.stop_gradient(cleared_hunch),
-        lambda: jax.lax.stop_gradient(current_hunch)
-    )
-    
-    model.hunch_cache[...] = carried_hunch
+
+    # Let the model settle whatever it carries into the next step. A stateless
+    # architecture does nothing here.
+    model.end_step(new_document)
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))

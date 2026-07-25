@@ -59,15 +59,15 @@ DEFAULT_DEPTH = 4
 
 @nnx.jit(static_argnames=["depth"])
 def _forward_logits(model, tokens, depth):
-    return model(tokens, max_steps=depth, training=False, should_refresh=True).logits
+    return model(tokens, depth=depth, training=False, new_document=True).logits
 
 
 def make_logits_fn(model, depth):
     """Adapt a restored model to the yardstick's numpy-causal interface.
 
-    Every batch starts from fresh cross-window state (the hunch cache is
-    vestigial-zero for the refiner and refreshed by should_refresh=True for the
-    reasoner), so LAMBADA examples stay independent."""
+    Every batch is scored as a fresh document (new_document=True), so a model
+    that carries cross-window state starts clean and LAMBADA examples stay
+    independent. A stateless model carries nothing to begin with."""
     def logits_fn(tokens):
         return np.asarray(_forward_logits(model, jnp.asarray(tokens), depth=depth))
     return logits_fn

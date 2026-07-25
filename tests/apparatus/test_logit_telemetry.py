@@ -73,7 +73,7 @@ def test_grad_step_surfaces_stats_in_diag():
     model = UniversalReasoner(LATENT_DIM, nnx.Rngs(5), batch_size=1)
     rng = np.random.default_rng(11)
     batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
-    _, out, _, _ = compute_grad_step(model, batch, step=0, max_steps=1)
+    _, out, _, _ = compute_grad_step(model, batch, step=0, depth=1)
 
     vocab = model.embed.embedding[...].shape[0]
     entropy = float(out.diag['out_entropy'])

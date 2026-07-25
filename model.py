@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import jax
 import jax.numpy as jnp
 from flax import nnx
@@ -15,11 +17,12 @@ from config import (
 from layers import (
     BlockStack,
     ScanStepOutput,
-    ReasonerOutput,
     calculate_slot_stability_loss,
 )
+from lm_contract import LMOutput, LanguageModel
+from schedules import diversity_lambda_schedule, forget_lambda_schedule
 
-class UniversalReasoner(nnx.Module):
+class UniversalReasoner(LanguageModel):
     def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):
         self.latent_dim = latent_dim
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
@@ -89,7 +92,7 @@ class UniversalReasoner(nnx.Module):
         z_seq = self.encoder_stack(z_seq_base, mask=pad_bias, q_pos=seq_pos, kv_pos=seq_pos, is_causal=True, training=training)
         return z_seq, pad_mask, seq_pos
 
-    def _reasoning_loop(self, z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared, training=False):
+    def _reasoning_loop(self, z_seq, pad_mask, seq_pos, depth, batch_size, z_shared, training=False):
         # Fixed base positions for slot KV keys in the cross-attention context.
         # These stay constant across iterations — slots always appear at the same
         # position as memory keys. Only query positions advance with the iteration.
@@ -97,15 +100,15 @@ class UniversalReasoner(nnx.Module):
         shared_kv_pos = jnp.concatenate([seq_pos, base_shared_pos])
 
         # Precompute per-step slot query positions at trace time (Python loop).
-        # max_steps is a static_argname so this evaluates to a concrete constant array.
+        # depth is a static_argname so this evaluates to a concrete constant array.
         # XLA sees static integer constants rather than a dynamic gather/arithmetic,
         # which significantly reduces compilation time.
         all_step_shared_pos = jnp.array([
             list(range(MAX_SEQ_LEN + i * SHARED_SLOTS, MAX_SEQ_LEN + (i + 1) * SHARED_SLOTS))
-            for i in range(max_steps)
-        ])  # [max_steps, SHARED_SLOTS]
+            for i in range(depth)
+        ])  # [depth, SHARED_SLOTS]
 
-        all_time_embeds = self.time_embed(jnp.arange(max_steps))
+        all_time_embeds = self.time_embed(jnp.arange(depth))
 
         pad_part = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
         slot_part = jnp.zeros((batch_size, SHARED_SLOTS), dtype=jnp.float32)
@@ -176,7 +179,7 @@ class UniversalReasoner(nnx.Module):
         return final_shared, all_outputs
 
 
-    def __call__(self, tokens, max_steps=MAX_STEPS_LIMIT, training=False, should_refresh=True):
+    def __call__(self, tokens, depth=MAX_STEPS_LIMIT, training=False, new_document=True):
         batch_size = tokens.shape[0]
         assert batch_size == self.hunch_cache[...].shape[0], (
             f"Batch size {batch_size} does not match the hunch cache built for batch "
@@ -201,7 +204,7 @@ class UniversalReasoner(nnx.Module):
             gate = jax.nn.sigmoid(self.hunch_gate(gate_in))
             return gate * current_hunch + (1.0 - gate) * z_shared_base
         
-        z_shared = jax.lax.cond(should_refresh, get_fresh, get_carried)
+        z_shared = jax.lax.cond(new_document, get_fresh, get_carried)
 
         # Decoder slots use negative positions, which index into the tail of the
         # extended RoPE cache — distinct from all query/key positions in the
@@ -215,7 +218,7 @@ class UniversalReasoner(nnx.Module):
         decoder_bias = decoder_bias[:, None, None, :]
 
         final_shared, all_outputs = self._reasoning_loop(
-            z_seq, pad_mask, seq_pos, max_steps, batch_size, z_shared, training=training
+            z_seq, pad_mask, seq_pos, depth, batch_size, z_shared, training=training
         )
 
         # Causality: the decoder reads the slots this window STARTED with (fresh,
@@ -258,7 +261,7 @@ class UniversalReasoner(nnx.Module):
         # Undefined for a 1-step trajectory (no transitions): report 0, not the NaN
         # that jnp.mean over an empty diff produces.
         states = all_outputs.shared_state
-        if max_steps > 1:
+        if depth > 1:
             diffs = states[1:] - states[:-1]
             temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
         else:
@@ -268,16 +271,60 @@ class UniversalReasoner(nnx.Module):
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),
             'tau': jax.nn.softplus(self.raw_tau[...]) + 1e-4,
+            # The two costs are reported twice on purpose: in `aux` to be graded
+            # into the loss, and here to be logged. The logger reads telemetry
+            # only, so it never needs to know an architecture's cost names.
+            'forget_cost': total_f_cost,
+            'diversity_loss': total_div_cost,
         }
 
         # Carry the final slot state forward as the next segment's hunch.
         self.hunch_cache[...] = final_shared
 
-        return ReasonerOutput(
+        return LMOutput(
             logits=logits,
             hidden=hidden,
-            forget_cost=total_f_cost,
-            diversity_loss=total_div_cost,
+            aux={'diversity': total_div_cost, 'forget': total_f_cost},
             diag=diag,
-            final_shared=final_shared,
         )
+
+    # --- The contract's optional hooks: this architecture's own bookkeeping,
+    # which used to live in the shared training loop (#105). ---
+
+    def grade_aux(self, window_aux, opt_step):
+        """Both regularizers, summed over windows and weighted by their schedules.
+
+        Summed *before* scaling, and returned in this order, because that is the
+        expression the loop has always evaluated — the golden-run trajectory is
+        recorded against `d_lambda * (d1 + d2) + f_lambda * (f1 + f2)` added to
+        the CE in that sequence, and f32 addition does not reassociate for free.
+        """
+        def over_windows(key):
+            return sum(aux[key] for aux in window_aux)
+
+        return {
+            'diversity': diversity_lambda_schedule(opt_step) * over_windows('diversity'),
+            'forget': forget_lambda_schedule(opt_step) * over_windows('forget'),
+        }
+
+    def reset_state(self):
+        self.hunch_cache[...] = jnp.zeros_like(self.hunch_cache[...])
+
+    def end_step(self, new_document):
+        # Carry the hunch into the next step UNLESS this step crossed a document
+        # boundary. stop_gradient either way: the hunch is state, not a path for
+        # gradient to flow back into a previous step.
+        current = self.hunch_cache[...]
+        self.hunch_cache[...] = jax.lax.cond(
+            new_document,
+            lambda: jax.lax.stop_gradient(jnp.zeros_like(current)),
+            lambda: jax.lax.stop_gradient(current),
+        )
+
+    @contextmanager
+    def isolated_state(self):
+        saved_hunch = self.hunch_cache[...]
+        try:
+            yield
+        finally:
+            self.hunch_cache[...] = saved_hunch

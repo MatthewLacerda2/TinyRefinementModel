@@ -16,7 +16,7 @@ from config import VOCAB_SIZE
 
 
 def test_untrained_model_scores_near_uniform_guessing(tiny_model, token_batch):
-    out = tiny_model(jnp.asarray(token_batch), max_steps=2, training=False, should_refresh=True)
+    out = tiny_model(jnp.asarray(token_batch), depth=2, training=False, new_document=True)
     targets = np.roll(token_batch, -1, axis=1)[:, :-1]
     ce = float(jnp.mean(
         optax.softmax_cross_entropy_with_integer_labels(

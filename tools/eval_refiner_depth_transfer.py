@@ -101,8 +101,8 @@ def _ce_sums(model, batch, depth):
     mirrors validation._val_ce_sums, but depth is the swept argument here."""
     seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
     seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
-    out1 = model(seq1_in, max_steps=depth, training=False)
-    out2 = model(seq2_in, max_steps=depth, training=False)
+    out1 = model(seq1_in, depth=depth, training=False)
+    out2 = model(seq2_in, depth=depth, training=False)
     total, count = jnp.array(0.0), jnp.array(0)
     for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
         mask = targets != PAD_TOKEN_ID

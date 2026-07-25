@@ -26,11 +26,11 @@ HUNCH_REFRESH_EVERY = 4
 def run_model_inference(
     model: UniversalReasoner,
     tokens: jnp.ndarray,
-    max_steps: int = MAX_STEPS_LIMIT,
-    should_refresh: bool = True,
+    depth: int = MAX_STEPS_LIMIT,
+    new_document: bool = True,
 ) -> jnp.ndarray:
     out = model(
-        tokens, max_steps=max_steps, training=False, should_refresh=should_refresh
+        tokens, depth=depth, training=False, new_document=new_document
     )
     return out.logits
 
@@ -61,7 +61,7 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 
 @partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p'])
 def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature):
-    all_logits = run_model_inference(model, padded_tks, max_steps=MAX_STEPS_LIMIT, should_refresh=refresh)
+    all_logits = run_model_inference(model, padded_tks, depth=MAX_STEPS_LIMIT, new_document=refresh)
     logits = all_logits[0, token_idx, :]
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
@@ -86,14 +86,14 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k
         if valid_len >= MAX_SEQ_LEN:
             break
 
-        should_refresh = (i % HUNCH_REFRESH_EVERY == 0)
+        new_document = (i % HUNCH_REFRESH_EVERY == 0)
 
         # temperature=0 means greedy argmax below; pass 1.0 so the jitted
         # truncation step is a no-op scale rather than a division by zero.
         effective_temperature = temperature if temperature > 0.0 else 1.0
         logits = get_logits_for_token(
             model, input_ids, valid_len - 1,
-            refresh=should_refresh, top_k=top_k, top_p=top_p,
+            refresh=new_document, top_k=top_k, top_p=top_p,
             temperature=effective_temperature,
         )
 

@@ -20,7 +20,6 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 
 import argparse
 
-import jax.numpy as jnp
 import numpy as np
 import optax
 from flax import nnx
@@ -33,10 +32,10 @@ load_dotenv()
 from tools.common import restore_model, load_eval_batches
 
 
-@nnx.jit(static_argnames=["max_steps"])
-def prime_hunch(model, window1, max_steps):
+@nnx.jit(static_argnames=["depth"])
+def prime_hunch(model, window1, depth):
     """Run the reasoning loop over window 1; its output lands in the hunch cache."""
-    model(window1, max_steps=max_steps, training=False, should_refresh=True)
+    model(window1, depth=depth, training=False, new_document=True)
 
 
 @nnx.jit(static_argnames=["use_hunch"])
@@ -45,7 +44,7 @@ def score_window2(model, tokens, use_hunch):
     (the decoder reads the slots the window started with), so run depth 1."""
     seq_in = tokens[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN]
     seq_out = tokens[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
-    out = model(seq_in, max_steps=1, training=False, should_refresh=not use_hunch)
+    out = model(seq_in, depth=1, training=False, new_document=not use_hunch)
     mask = seq_out != PAD_TOKEN_ID
     token_ce = optax.softmax_cross_entropy_with_integer_labels(logits=out.logits, labels=seq_out)
     return token_ce, mask
@@ -61,8 +60,8 @@ def main():
 
     if MODEL_ARCH == "refiner":
         raise SystemExit(
-            "eval_depth_curve probes the reasoner's cross-window hunch; the refiner has none "
-            "(its hunch_cache is a vestigial zero buffer). Use tools/eval_refiner_depth_transfer.py instead."
+            "eval_depth_curve probes the reasoner's cross-window hunch; the refiner carries "
+            "no state between windows at all. Use tools/eval_refiner_depth_transfer.py instead."
         )
 
     model, ckpt_step = restore_model(args.checkpoint_path)
@@ -83,7 +82,7 @@ def main():
         window1 = batch[:, :MAX_SEQ_LEN]
         hard_mask = None
         for cond in conditions:
-            model.hunch_cache[...] = jnp.zeros_like(model.hunch_cache[...])
+            model.reset_state()
             if cond == "fresh":
                 token_ce, mask = score_window2(model, batch, use_hunch=False)
             else:

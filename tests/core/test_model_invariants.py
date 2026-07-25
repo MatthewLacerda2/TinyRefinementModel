@@ -15,8 +15,8 @@ import numpy as np
 from config import PAD_TOKEN_ID
 
 
-def _logits(model, tokens_np, max_steps=2):
-    out = model(jnp.asarray(tokens_np), max_steps=max_steps, training=False, should_refresh=True)
+def _logits(model, tokens_np, depth=2):
+    out = model(jnp.asarray(tokens_np), depth=depth, training=False, new_document=True)
     return np.asarray(out.logits, dtype=np.float32)
 
 
@@ -52,8 +52,8 @@ def test_causality_holds_with_carried_hunch(tiny_model, token_batch):
     window_a = (token_batch + 17) % 5000 + 1
 
     def run(tokens_b):
-        tiny_model(jnp.asarray(window_a), max_steps=2, training=False, should_refresh=True)
-        out = tiny_model(jnp.asarray(tokens_b), max_steps=2, training=False, should_refresh=False)
+        tiny_model(jnp.asarray(window_a), depth=2, training=False, new_document=True)
+        out = tiny_model(jnp.asarray(tokens_b), depth=2, training=False, new_document=False)
         return np.asarray(out.logits, dtype=np.float32)[:, :40]
 
     perturbed = token_batch.copy()

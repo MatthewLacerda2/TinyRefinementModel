@@ -125,10 +125,15 @@ def plot_training_history(log_path=None):
                         'ce': float(row.get('ce', 0)),
                         # old CSVs called the first segment's CE "first_ce"
                         'seg1_ce': float(row.get('seg1_ce') or row.get('first_ce') or 0),
-                        'diversity': float(row.get('diversity_loss', 0)),
-                        'forget_cost': float(row.get('avg_forget_cost', 0)),
-                        'grad_norm': float(row.get('grad_norm_avg', 0)),
-                        'temporal_drift': float(row.get('temporal_drift', 0)),
+                        # Arch-optional (#105): a model that has no forget gate or
+                        # slot-diversity term leaves these cells empty rather than
+                        # writing zeros, so read them the sparse way — `float('')`
+                        # would raise, and the ValueError below would silently drop
+                        # every row of the run.
+                        'diversity': float(row.get('diversity_loss') or 0),
+                        'forget_cost': float(row.get('avg_forget_cost') or 0),
+                        'grad_norm': float(row.get('grad_norm_avg') or 0),
+                        'temporal_drift': float(row.get('temporal_drift') or 0),
                         # old CSVs logged mean_halt_step where new ones log sampled depth
                         'depth_avg': float(row.get('depth_avg') or row.get('mean_halt_step') or 0),
                         # sparse: only written every VAL_EVERY_OPT_STEPS, 0 means absent

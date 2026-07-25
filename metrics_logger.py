@@ -4,12 +4,21 @@ import fsspec
 import jax.numpy as jnp
 
 
+def _fmt(diags, key, places):
+    """A reported metric, or an empty cell if this architecture doesn't measure it."""
+    return f"{diags[key]:.{places}f}" if key in diags else ""
+
+
 class MetricsLogger:
     def __init__(self, history_file, start_opt_step=None):
         self.history_file = history_file
+        # Telemetry this logger knows how to write. A model reports the subset it
+        # actually measures (#105) — an architecture without a forget gate simply
+        # omits those keys, and their columns stay empty instead of being filled
+        # with zeros that look like measurements.
         self.diag_keys = [
             'temporal_drift', 'forget_density',
-            'diversity_loss', 'tau',
+            'forget_cost', 'diversity_loss', 'tau',
             'out_entropy', 'logz_mean', 'max_abs_logit',
         ]
         # Full set of fields for CSV
@@ -52,8 +61,9 @@ class MetricsLogger:
             print(f"⚠️ Could not trim replayed rows from {self.history_file}: {e}")
 
     def extract_diags(self, diag, jnp_mean_fn):
-        """Extracts and formats diagnostics from the model step using a provided mean function."""
-        return {k: float(jnp_mean_fn(diag.get(k, 0))) for k in self.diag_keys}
+        """Reduces the diagnostics this model reported to plain floats. Keys the
+        model did not report are absent, not zero."""
+        return {k: float(jnp_mean_fn(diag[k])) for k in self.diag_keys if k in diag}
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
@@ -98,14 +108,14 @@ class MetricsLogger:
                 "seg1_ce": f"{seg1_ce:.4f}" if seg1_ce is not None else "",
                 "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
                 "zero_frac_dense_max": f"{zero_frac_dense_max:.6f}" if zero_frac_dense_max is not None else "",
-                "avg_forget_cost": f"{out.forget_cost:.4f}",
-                "diversity_loss": f"{out.diversity_loss:.6f}",
-                "temporal_drift": f"{diag_dict.get('temporal_drift', 0):.6f}",
-                "forget_density": f"{diag_dict.get('forget_density', 0):.6f}",
-                "tau": f"{diag_dict.get('tau', 0):.6f}",
-                "out_entropy": f"{diag_dict.get('out_entropy', 0):.4f}",
-                "logz_mean": f"{diag_dict.get('logz_mean', 0):.4f}",
-                "max_abs_logit": f"{diag_dict.get('max_abs_logit', 0):.2f}",
+                "avg_forget_cost": _fmt(diag_dict, "forget_cost", 4),
+                "diversity_loss": _fmt(diag_dict, "diversity_loss", 6),
+                "temporal_drift": _fmt(diag_dict, "temporal_drift", 6),
+                "forget_density": _fmt(diag_dict, "forget_density", 6),
+                "tau": _fmt(diag_dict, "tau", 6),
+                "out_entropy": _fmt(diag_dict, "out_entropy", 4),
+                "logz_mean": _fmt(diag_dict, "logz_mean", 4),
+                "max_abs_logit": _fmt(diag_dict, "max_abs_logit", 2),
                 "depth_avg": f"{depth_avg:.4f}" if depth_avg is not None else "",
                 "val_ce": f"{val_ce:.4f}" if val_ce is not None else "",
             }

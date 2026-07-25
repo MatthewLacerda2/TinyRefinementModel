@@ -42,7 +42,7 @@ def test_grad_steps_match_golden_trajectory():
 
     losses = []
     for step, depth in enumerate(DEPTHS):
-        loss, out, grads, grad_norm = compute_grad_step(model, batch, step, max_steps=depth)
+        loss, out, grads, grad_norm = compute_grad_step(model, batch, step, depth=depth)
         apply_grads(optimizer, grads, model)
         losses.append(float(loss))
 
