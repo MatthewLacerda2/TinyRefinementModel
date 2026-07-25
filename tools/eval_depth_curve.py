@@ -29,7 +29,10 @@ from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, MODEL_ARCH, PAD_TOKEN_ID
 
 load_dotenv()
 
-from tools.common import restore_model, load_eval_batches
+# E402 below is deliberate: tools.common imports jax, and the memory-fraction env
+# var set above has no effect once jax is imported. Hoisting this would silently
+# undo the arena cap.
+from tools.common import restore_model, load_eval_batches  # noqa: E402
 
 
 @nnx.jit(static_argnames=["depth"])

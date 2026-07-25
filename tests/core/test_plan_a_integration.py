@@ -18,7 +18,7 @@ import pytest
 from flax import nnx
 
 from checkpoint_utils import restore_tolerating_legacy
-from config import MAX_SEQ_LEN, PAD_TOKEN_ID
+from config import MAX_SEQ_LEN
 from grad_step import compute_grad_step, apply_grads
 from plan_a_trainer import RefinerForTraining
 

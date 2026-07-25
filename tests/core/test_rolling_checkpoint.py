@@ -15,7 +15,6 @@ import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
 
-import checkpoint_utils
 from checkpoint_utils import (
     BEST_SUBDIR,
     CHECKPOINT_ITEMS,

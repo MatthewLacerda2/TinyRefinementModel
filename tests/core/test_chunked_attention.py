@@ -25,7 +25,10 @@ def _stock(q, k, v, pad_cols):
 
 def _rand_qkv(seed, s):
     rng = np.random.default_rng(seed)
-    mk = lambda: jnp.asarray(rng.normal(size=(B, s, H, D)), jnp.float32)
+    def mk():
+        return jnp.asarray(rng.normal(size=(B, s, H, D)), jnp.float32)
+
+    # Drawn in this order from one generator, so q, k, v are distinct.
     q, k, v = mk(), mk(), mk()
     pad_cols = jnp.where(jnp.arange(s) < s - 3, 0.0, -1e9)[None, :].astype(jnp.float32)
     pad_cols = jnp.broadcast_to(pad_cols, (B, s))
@@ -105,7 +108,9 @@ def test_chunked_attention_f16_parity_gpu():
     CPU CI skips this — the CPU lane forces f32 (see conftest)."""
     s, block_q = 160, 128
     rng = np.random.default_rng(23)
-    mk = lambda: jnp.asarray(rng.normal(size=(B, s, H, D)), jnp.float16)
+    def mk():
+        return jnp.asarray(rng.normal(size=(B, s, H, D)), jnp.float16)
+
     q, k, v = mk(), mk(), mk()
     pad_cols = jnp.broadcast_to(
         jnp.where(jnp.arange(s) < s - 5, 0.0, -1e9)[None, :].astype(jnp.float32), (B, s))

@@ -232,7 +232,7 @@ experiment (the arch behind the flag):
 | **Proof instrument** | `ablation_harness.py` — tiny toy-task depth ablations (parity / cumsum / state-tracking) at the *exact* arch we'd ship |
 | **Diagnostics & smokes** | `tools/` — `eval_depth_curve.py`, `overfit_smoke.py`, `smoke_refiner_gpu.py`, `vram_headroom_smoke.py`, `dump_transcripts.py`, … |
 | **Inference / plots** | `infer_local.py`, `plot_history.py` |
-| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`. |
+| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus `ruff check .` as its own status (errors and bugs only, config in `pyproject.toml` — run it locally before pushing). |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
 compute is the permanent policy** (`config.py`); the GPU lane is serial. Tokenizer is

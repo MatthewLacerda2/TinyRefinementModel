@@ -114,7 +114,7 @@ def ensure_worktree(run_id, commit):
 
     untracked = os.path.join(run_dir(run_id), "worktree.untracked.txt")
     if os.path.exists(untracked):
-        n = len([l for l in open(untracked) if l.strip()])
+        n = len([line for line in open(untracked) if line.strip()])
         if n:
             print(f"  note: {n} untracked non-ignored files existed at launch "
                   f"(not restored; see {os.path.relpath(untracked, REPO_ROOT)})")
@@ -336,7 +336,7 @@ def fork(run_id, new_name, build_venv=True, arch_override=None):
         if os.path.exists(s):
             shutil.copy2(s, os.path.join(dst_dir, f))
 
-    print(f"\nResume the fork inside its reconstructed world:")
+    print("\nResume the fork inside its reconstructed world:")
     print(f"  cd {world['worktree']}")
     print(f"  PYTHONPATH=. MODEL_ARCH={world['arch']} DATA_ROOT=$DATA_ROOT \\")
     print(f"    {world['python']} start_training.py --checkpoint-path {dst_ckpt}")

@@ -104,7 +104,7 @@ def main():
     gap = np.mean(np.abs(np.array(bf16_losses[half:]) - np.array(f32_losses[half:])))
     rel = gap / np.mean(np.array(f32_losses[half:]))
 
-    print(f"\nstep   f32_mu    bf16_mu")
+    print("\nstep   f32_mu    bf16_mu")
     for s in range(0, args.steps, max(1, args.steps // 10)):
         print(f"{s:4d}  {f32_losses[s]:7.4f}   {bf16_losses[s]:7.4f}")
     print(f"{args.steps-1:4d}  {f32_losses[-1]:7.4f}   {bf16_losses[-1]:7.4f}")
