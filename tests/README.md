@@ -30,7 +30,7 @@ grep `tests/apparatus/` before you open the PR.
 
 - Pins a bug that actually happened, or a property stated in a design doc → `core/`.
 - Proves an ablation harness measures what its write-up says it measures, or
-  that a `tools/` instrument reports honestly → `apparatus/`.
+  that an `instruments/` tool reports honestly → `apparatus/`.
 - Takes minutes, or compares against recorded numbers → `expensive/`.
 
 If a test seems to belong in two tiers, it is usually two tests.

@@ -1,4 +1,4 @@
-"""Unit tests for the time machine's pure logic (tools/timemachine.py).
+"""Unit tests for the time machine's pure logic (instruments.timemachine).
 
 The reconstruction itself (worktree, venv build, GPU eval) is validated by hand on
 the card; these pin the decisions that must never silently go wrong — above all that
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-import tools.timemachine as tm
+import instruments.timemachine as tm
 
 
 @pytest.fixture

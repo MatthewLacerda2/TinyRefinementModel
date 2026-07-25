@@ -80,7 +80,7 @@ tiny-config ablation harness:
 
 ## Why the two arches don't share block code (the decision, written down once)
 
-`layers.py` (reasoner blocks) and `plan_a_model.py` (the refiner's shared block)
+`trm/model/layers.py` (reasoner blocks) and `trm/model/refiner.py` (the refiner's shared block)
 implement the same SwiGLU transformer block twice. That duplication is
 **deliberately frozen, not waiting to be shared** — and #105 is where the choice
 got recorded instead of re-litigated on sight:

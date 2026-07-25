@@ -17,9 +17,9 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import jax.numpy as jnp
 import pytest
 
-from grad_step import compute_total_loss
-from schedules import sample_reasoning_depth
-from config import MAX_STEPS_LIMIT
+from trm.train.grad_step import compute_total_loss
+from trm.train.schedules import sample_reasoning_depth
+from trm.config import MAX_STEPS_LIMIT
 
 # Any step past warmup, so no schedule is legitimately sitting at zero.
 GRADING_STEP = 1000

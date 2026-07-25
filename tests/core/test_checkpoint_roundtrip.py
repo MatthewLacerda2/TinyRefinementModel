@@ -10,8 +10,8 @@ import numpy as np
 import orbax.checkpoint as ocp
 from flax import nnx
 
-from config import LATENT_DIM
-from model import UniversalReasoner
+from trm.config import LATENT_DIM
+from trm.model.reasoner import UniversalReasoner
 
 
 def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, token_batch):

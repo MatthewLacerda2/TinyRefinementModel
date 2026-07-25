@@ -12,7 +12,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from tools.yardstick import (
+from instruments.yardstick.yardstick import (
     encode_example,
     score_examples,
     split_last_word,
@@ -118,8 +118,8 @@ def test_tiny_refiner_through_the_runner_adapter():
     score_examples. Finite, in-range, and deterministic across calls."""
     from flax import nnx
 
-    from plan_a_trainer import RefinerForTraining
-    from tools.eval_yardstick import make_logits_fn
+    from trm.model.refiner_lm import RefinerForTraining
+    from instruments.yardstick.eval_yardstick import make_logits_fn
 
     pad = 63
     model = RefinerForTraining(

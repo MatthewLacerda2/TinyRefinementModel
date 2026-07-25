@@ -21,7 +21,7 @@ which slot to spare and which to let churn.
 
 One class covers both phases; the slot budget `S` is the only knob that
 changes between arms (matched-pair discipline). Reuses `Block`/`CrossBlock`
-exactly as `ScratchpadNet` does (`scratchpad_harness.py`).
+exactly as `ScratchpadNet` does (`experiments/scratchpad/harness.py`).
 
 ```
 embed(tokens) -> causal encoder (2 x Block) -> h                     # tokens, as before
@@ -52,7 +52,7 @@ for k in 1..K:
 
 ## Task reuse — no new generator needed
 
-Both phases reuse the existing `affine_chain_task(K, m)` from `scratchpad_harness.py`
+Both phases reuse the existing `affine_chain_task(K, m)` from `experiments/scratchpad/harness.py`
 (`r_k = (r_{k-1}*a_k + b_k) mod m`, non-commutative, chance = 1/m). Only how the
 **final answer** is read off the sub-results changes:
 
@@ -106,7 +106,7 @@ sits at the `budget1` level (no retention learned), or Phase 1 fails outright
 
 | Piece | Where |
 |---|---|
-| `BudgetScratchpadNet` + arms | `scratchpad_harness.py` (extends the #38 harness, reuses `Block`/`CrossBlock`) |
+| `BudgetScratchpadNet` + arms | `experiments/scratchpad/harness.py` (extends the #38 harness, reuses `Block`/`CrossBlock`) |
 | Wiring guards | `tests/apparatus/test_scratchpad_harness.py` |
 | Verdict | `docs/findings/` entries + PR closing #63 |
 

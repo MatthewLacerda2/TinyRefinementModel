@@ -34,7 +34,7 @@ safe to run, and its layout comes next.
 
 - **`CLAUDE.md`** — the working agreement Claude reads first: how we decide a result is
   real, the conventions here, and how to navigate the rest.
-- **`config.py`** — the single source of truth for every architecture and training
+- **`trm/config.py`** — the single source of truth for every architecture and training
   constant, the float16 compute policy, and the architecture selector.
 - **Tracking is split by purpose.** GitHub issues hold per-item state. `docs/ROADMAP.md`
   holds the narrative and the graveyard of killed ideas. `docs/findings/` holds dated
@@ -44,9 +44,14 @@ safe to run, and its layout comes next.
   code), `ideas` (things to try on the model), `optimization` (cheaper code, same model),
   `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
   serial queue), `blocked` (unmet dependency). Plus `bug`.
+- **Four trees, one home per file.** `trm/` is the library and its operations, and lives
+  forever; `experiments/<line>/` holds one research line and is deleted with it;
+  `instruments/` holds permanent measuring gear; `tests/` holds the guards. Nothing sits
+  in the repo root, entry points run as `python -m trm.train.start`, and a test enforces
+  both that and the dependency direction between the trees.
 - **Tests** live in `tests/` and run on CPU by default; CI runs them on every push and
-  pull request.
-- **`ablation_harness.py`** is the proof instrument — it trains the real architecture at
+  pull request, alongside `ruff`.
+- **`experiments/depth/ablation_harness.py`** is the proof instrument — it trains the real architecture at
   tiny scale on toy tasks where depth has to do work.
 - **Storage tiers.** The SSD holds live runs and the tokenized corpus under `runs/`; a
   1 TB HDD is the cold archive for finished runs and champion weights.
@@ -63,9 +68,9 @@ depth refines a prediction without seeing future tokens. The number of refinemen
 is sampled randomly during training and fixed at inference. A tied LM head reads the
 final state.
 
-A second mode, selected with `MODEL_ARCH=reasoner` (`model.py`), is a vanilla
+A second mode, selected with `MODEL_ARCH=reasoner` (`trm/model/reasoner.py`), is a vanilla
 random-depth transformer kept as a control baseline.
 
 Everything runs in float16 on the RTX 2060 (Turing has no bfloat16 tensor cores). The
 tokenizer is `r50k_base`. Exact dimensions, depth limits, and the rest of the constants
-live in `config.py`.
+live in `trm/config.py`.

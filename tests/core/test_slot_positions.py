@@ -10,7 +10,7 @@ scheme fails loudly instead of silently shifting where slots get keyed.
 
 import numpy as np
 
-from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS
+from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS
 
 CACHE_LEN = MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS
 

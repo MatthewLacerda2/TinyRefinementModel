@@ -10,14 +10,16 @@ import pytest
 
 
 def test_trainer_imports():
-    import trainer  # noqa: F401
-    import optimizers  # noqa: F401
-    import validation  # noqa: F401
+    from trm.train import trainer  # noqa: F401
+    from trm.train import optimizers  # noqa: F401
+    from trm.train import validation  # noqa: F401
 
 
 def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkeypatch):
-    import trainer
-    import validation
+    from trm.train import trainer
+
+    from trm.train import validation
+
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
+from trm.train.grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
 
 
 def _fracs(tree):
@@ -74,9 +74,9 @@ def test_real_adapter_groups_and_interpretation_caveats():
         attribute to structure, not underflow.
     f32 CPU lane throughout: underflow itself cannot occur here."""
     import optax
-    from config import MAX_SEQ_LEN
-    from grad_step import apply_grads
-    from plan_a_trainer import RefinerForTraining
+    from trm.config import MAX_SEQ_LEN
+    from trm.train.grad_step import apply_grads
+    from trm.model.refiner_lm import RefinerForTraining
 
     vocab = 5000  # far more tokens than the ~60 the batch uses
     # time_signal pinned to "table": the time_embed caveat this test documents
@@ -118,8 +118,8 @@ def test_sinusoidal_adapter_groups_have_no_time_embed():
     group list loses time_embed — the signal is a formula, not parameters. Pin
     the group set the ACTUAL base run will report so a monitoring script
     written against it can't be surprised."""
-    from config import MAX_SEQ_LEN
-    from plan_a_trainer import RefinerForTraining
+    from trm.config import MAX_SEQ_LEN
+    from trm.model.refiner_lm import RefinerForTraining
 
     m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
                            encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,

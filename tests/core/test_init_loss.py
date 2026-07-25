@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from config import VOCAB_SIZE
+from trm.config import VOCAB_SIZE
 
 
 def test_untrained_model_scores_near_uniform_guessing(tiny_model, token_batch):

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from dotenv import load_dotenv
 
-from config import resolve_root
+from trm.config import resolve_root
 
 load_dotenv()
 
@@ -31,7 +31,7 @@ def _source_dir():
 
 @pytest.mark.skipif(_source_dir() is None, reason="local pretrain data not available")
 def test_same_seed_yields_identical_batch_stream():
-    from data_loaders import TextDataGenerator
+    from trm.data.loaders import TextDataGenerator
 
     gen_a = TextDataGenerator(_source_dir())
     gen_b = TextDataGenerator(_source_dir())

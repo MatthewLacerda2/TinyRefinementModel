@@ -6,8 +6,8 @@ import jax.numpy as jnp
 from flax import nnx
 import numpy as np
 
-from ablation_harness import VanillaTransformer, memorize_task, train_one
-from plan_a_model import CausalRefiner
+from experiments.depth.ablation_harness import VanillaTransformer, memorize_task, train_one
+from trm.model.refiner import CausalRefiner
 
 
 def test_memorize_dictionary_is_fixed_across_calls():

@@ -18,8 +18,8 @@ import sys
 import numpy as np
 import pytest
 
-from config import TOKENS_PER_OPT_STEP
-from schedules import (
+from trm.config import TOKENS_PER_OPT_STEP
+from trm.train.schedules import (
     DECAY_STEPS,
     LAMBDA_DECAY_STEPS,
     WARMUP_STEPS,
@@ -87,8 +87,8 @@ def _resolved_in_subprocess(env_overrides):
     env = {**os.environ, **env_overrides}
     out = subprocess.check_output(
         [sys.executable, "-c",
-         "import json, config, schedules; print(json.dumps("
-         "{'budget': config.TRAIN_TOKEN_BUDGET, 'decay': schedules.DECAY_STEPS}))"],
+         "import json; from trm import config; from trm.train import schedules; "
+         "print(json.dumps({'budget': config.TRAIN_TOKEN_BUDGET, 'decay': schedules.DECAY_STEPS}))"],
         env=env, cwd=REPO,
     )
     return json.loads(out)
@@ -105,7 +105,7 @@ def test_env_override_resolves_horizon():
 
 
 def test_horizon_recorded_in_run_metadata():
-    from run_tracker import RunTracker
+    from trm.runtime.run_tracker import RunTracker
     params = RunTracker.get_hyperparameters()
     assert params["DECAY_STEPS"] == DECAY_STEPS
     assert "TRAIN_TOKEN_BUDGET" in params

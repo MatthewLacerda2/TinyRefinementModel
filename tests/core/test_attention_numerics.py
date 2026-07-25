@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from config import COMPUTE_DTYPE
-from layers import RotaryAttention, apply_rope
+from trm.config import COMPUTE_DTYPE
+from trm.model.layers import RotaryAttention, apply_rope
 
 HEADS, GROUPS, DIM = 4, 2, 64
 HEAD_DIM = DIM // HEADS

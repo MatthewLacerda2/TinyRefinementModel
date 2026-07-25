@@ -11,11 +11,12 @@ import sys
 
 # Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
 REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists()))
-SCRIPT = os.path.join(REPO_ROOT, "tools", "milestone_report.py")
+# Invoked as a module (#143), the way milestone_report runs its own sub-tools.
+MODULE = "instruments.milestone_report"
 
 
 def test_section_failure_is_tolerated_and_labeled():
-    from tools.milestone_report import run_section
+    from instruments.milestone_report import run_section
 
     failed = run_section("boom", lambda: 1 / 0)
     assert failed["status"] == "FAILED"
@@ -28,7 +29,7 @@ def test_section_failure_is_tolerated_and_labeled():
 
 def _run(args, cwd):
     env = dict(os.environ, PYTHONPATH=REPO_ROOT, JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
-    return subprocess.run([sys.executable, SCRIPT, *args], cwd=cwd,
+    return subprocess.run([sys.executable, "-m", MODULE, *args], cwd=cwd,
                           env=env, capture_output=True, text=True, timeout=300)
 
 

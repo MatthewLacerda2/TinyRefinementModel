@@ -19,7 +19,8 @@ def _read_config(env_overrides):
     env = {**os.environ, **env_overrides}
     out = subprocess.check_output(
         [sys.executable, "-c",
-         "import json, config; print(json.dumps({'model': config.MODEL_SEED, 'data': config.DATA_SEED}))"],
+         "import json; from trm import config; "
+         "print(json.dumps({'model': config.MODEL_SEED, 'data': config.DATA_SEED}))"],
         env=env, cwd=REPO,
     )
     return json.loads(out)
@@ -31,7 +32,7 @@ def test_seeds_default_and_override():
 
 
 def test_seeds_recorded_in_run_metadata():
-    from run_tracker import RunTracker
+    from trm.runtime.run_tracker import RunTracker
     params = RunTracker().get_hyperparameters()
     assert params["MODEL_SEED"] == 42
     assert params["DATA_SEED"] == 42

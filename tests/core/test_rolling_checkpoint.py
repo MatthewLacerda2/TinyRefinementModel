@@ -15,13 +15,13 @@ import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
 
-from checkpoint_utils import (
+from trm.runtime.checkpoints import (
     BEST_SUBDIR,
     CHECKPOINT_ITEMS,
     save_checkpoint,
     discover_latest_checkpoint_run,
 )
-from monitor import LossMonitor
+from trm.runtime.monitor import LossMonitor
 
 
 def _make_manager(path):
@@ -110,9 +110,9 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
     fresh model with identical forward output."""
     import optax
     from flax import nnx
-    from config import LATENT_DIM
-    from model import UniversalReasoner
-    from checkpoint_utils import load_or_create_checkpoint
+    from trm.config import LATENT_DIM
+    from trm.model.reasoner import UniversalReasoner
+    from trm.runtime.checkpoints import load_or_create_checkpoint
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     monitor = LossMonitor()
@@ -154,7 +154,8 @@ def _probe_opt_steps(total_micro_steps, accumulation_steps, log_real_steps, val_
 
 
 def test_probe_fires_at_configured_cadence():
-    import trainer
+    from trm.train import trainer
+
 
     accum = 4          # keep the test fast; ratio is what matters
     log_real = trainer.LOG_REAL_STEPS

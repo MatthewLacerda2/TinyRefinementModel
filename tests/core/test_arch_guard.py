@@ -17,7 +17,7 @@ def _import_config_with(arch):
         env.pop("MODEL_ARCH", None)
     else:
         env["MODEL_ARCH"] = arch
-    return subprocess.run([sys.executable, "-c", "import config"],
+    return subprocess.run([sys.executable, "-c", "import trm.config"],
                           env=env, capture_output=True, text=True)
 
 def test_unknown_model_arch_fails_closed_before_anything_builds():
@@ -37,7 +37,7 @@ def test_unknown_time_signal_fails_closed():
     refiner's param tree, so a typo must refuse to launch, not silently train
     a different model."""
     env = {**os.environ, "JAX_PLATFORMS": "cpu", "TIME_SIGNAL": "sinsuoidal"}
-    r = subprocess.run([sys.executable, "-c", "import config"],
+    r = subprocess.run([sys.executable, "-c", "import trm.config"],
                        env=env, capture_output=True, text=True)
     assert r.returncode != 0
     assert "sinsuoidal" in r.stderr and "sinusoidal" in r.stderr and "table" in r.stderr
@@ -48,6 +48,6 @@ def test_known_time_signals_and_unset_default_launch():
         env.pop("TIME_SIGNAL", None)
         if ts is not None:
             env["TIME_SIGNAL"] = ts
-        r = subprocess.run([sys.executable, "-c", "import config"],
+        r = subprocess.run([sys.executable, "-c", "import trm.config"],
                            env=env, capture_output=True, text=True)
         assert r.returncode == 0, f"TIME_SIGNAL={ts!r} must be accepted: {r.stderr}"

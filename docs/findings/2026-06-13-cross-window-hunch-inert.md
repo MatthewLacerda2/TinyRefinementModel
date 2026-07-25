@@ -93,3 +93,21 @@ latent-reasoning line) loops a shared block *causally over the current positions
 feeding refinement back into the prediction it refines — the pathway this
 architecture severed when it closed the leak, and the target of the Plan A
 redesign.
+
+## Apparatus (removed 2026-07-25, #143)
+
+The tool that produced this curve — `tools/eval_depth_curve.py`, later
+`experiments/depth/eval_depth_curve.py` — has been deleted. Rule 6: a tombstone
+takes its apparatus with it, and this one outlived its line by six weeks. The
+numbers above are the record; the harness is not.
+
+If the cross-window hunch is attempted again, it should be **rebuilt clean**
+rather than resurrected. Two reasons. The probe measured a *specific* pathway of
+a *specific* architecture (the v1 reasoner's 32-slot compressed summary, at the
+commit above); reusing it would silently constrain a new design to the old one's
+shape. And the method has moved on since June — a re-attempt gets a pre-registered
+kill criterion against a measured noise floor and a matched control (rules 1–4),
+which this measurement predates. Note what is *not* reopened by any of that: the
+graveyard's "soft auxiliary bonuses" entry stands. A bonus for using an optional
+memory is what the gradient rejected twice. A dedicated supervised target that
+cannot be minimized without the memory is a different mechanism and remains open.

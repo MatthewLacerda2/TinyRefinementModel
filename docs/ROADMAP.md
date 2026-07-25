@@ -45,7 +45,7 @@ by confidence/ease within the phase: certain small wins first, the experiment la
   Phase 2 batching, and frees the seq×vocab logit/softmax activation peak. Do it
   in the rebuild regardless.
 - **Plan A architecture (the experiment — biggest, uncertain, must-validate)** — DONE,
-  integrated behind `MODEL_ARCH=refiner` (adapter: `plan_a_trainer.py`, whose docstring
+  integrated behind `MODEL_ARCH=refiner` (adapter: `trm/model/refiner_lm.py`, whose docstring
   carries the design; the integration report lives in its PR):
   loop a shared block causally over the current positions — refine each
   position's representation N times under a causal mask, decode from the refined

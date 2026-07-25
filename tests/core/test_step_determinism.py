@@ -10,9 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from config import LATENT_DIM, MAX_SEQ_LEN
-from grad_step import compute_grad_step
-from model import UniversalReasoner
+from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.train.grad_step import compute_grad_step
+from trm.model.reasoner import UniversalReasoner
 
 
 def _one_step():

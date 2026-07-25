@@ -205,37 +205,54 @@ comment so history stays greppable: "superseded-by #N", "negative-result", or
 
 ## Repo map — what's where
 
-Two architectures coexist, selected at launch by `MODEL_ARCH` (see `config.py`); they
+**Four trees, and the folder is the declaration of kind** (#143). A new file has exactly
+one home, and the rule is short enough to hold in your head:
+
+| if it… | it goes in | and it lives |
+|---|---|---|
+| is part of what the model *is* or how it trains | `trm/` | forever |
+| belongs to one research line | `experiments/<line>/` | as long as that line |
+| measures something, permanently | `instruments/` | forever |
+| guards a property | `tests/{core,apparatus,expensive}/` | with what it guards |
+| is per-issue scratch | `aux*`, `docs/plans/` | until you're done (gitignored) |
+
+Nothing goes in the repo root — there are no `.py` files there, and
+`tests/core/test_package_layout.py` fails the build if one appears. Entry points are run
+as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -m trm.infer`.
+
+**The direction is enforced, not just intended:** `trm/` never imports from
+`experiments/` or `instruments/`, and one research line never imports another — so
+tombstoning a line stays a single folder deletion (rule 6). The same test holds that line.
+
+Two architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/config.py`); they
 have different param trees, so a run of one cannot resume the other's checkpoint:
-- **`refiner`** — Plan A, `CausalRefiner` in `plan_a_model.py`: causal within-window
+- **`refiner`** — Plan A, `CausalRefiner` in `trm/model/refiner.py`: causal within-window
   depth recurrence (a shared block looped K times under a causal mask). The **live bet**
   — the depth-recurrence mechanism the project is built on.
   (`docs/findings/2026-06-13-plan-a-depth-recurrence-works.md`.)
-- **`reasoner`** — `UniversalReasoner` in `model.py`: the original cross-window "hunch"
-  design. The hunch is **proven inert** (`docs/findings/2026-06-13-cross-window-hunch-inert.md`),
-  so this is effectively a vanilla random-depth transformer — kept as the control
-  baseline, selected explicitly with `MODEL_ARCH=reasoner`. The default is `refiner`
-  (the live bet); resuming an old reasoner run now requires the env var.
-
-The reusable scaffold (stable across whatever idea we try next) vs the swappable
-experiment (the arch behind the flag):
+- **`reasoner`** — `UniversalReasoner` in `trm/model/reasoner.py`: the original
+  cross-window "hunch" design. The hunch is **proven inert**
+  (`docs/findings/2026-06-13-cross-window-hunch-inert.md`), so this is effectively a
+  vanilla random-depth transformer — kept as the control baseline, selected explicitly
+  with `MODEL_ARCH=reasoner`. The default is `refiner` (the live bet); resuming an old
+  reasoner run now requires the env var.
 
 | Concern | Files |
 |---|---|
-| **Config (single source of truth)** | `config.py` — every architecture/training constant, the dtype policy, the arch selector |
-| **Model — live** | `plan_a_model.py` (CausalRefiner), `layers.py` |
-| **Model — control/graveyard** | `model.py` (UniversalReasoner) |
-| **Model contract** | `lm_contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
-| **Training loop** | `trainer.py` (loop + data pipeline; + `plan_a_trainer.py` adapter), `start_training.py` (entry), `grad_step.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
-| **Data** | `prefill.py` (tokenize corpus → `runs/data/`), `data_loaders.py`, `tools/data_curation/` |
-| **Persistence & run state** | `checkpoint_utils.py`, `run_tracker.py`, `metrics_logger.py`, `monitor.py` |
-| **Proof instrument** | `ablation_harness.py` — tiny toy-task depth ablations (parity / cumsum / state-tracking) at the *exact* arch we'd ship |
-| **Diagnostics & smokes** | `tools/` — `eval_depth_curve.py`, `overfit_smoke.py`, `smoke_refiner_gpu.py`, `vram_headroom_smoke.py`, `dump_transcripts.py`, … |
-| **Inference / plots** | `infer_local.py`, `plot_history.py` |
+| **Config (single source of truth)** | `trm/config.py` — every architecture/training constant, the dtype policy, the arch selector |
+| **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
+| **Model — live** | `trm/model/refiner.py` (CausalRefiner, deliberately config-free so the toy harness shares it), `refiner_lm.py` (the production contract impl), `layers.py`, `attention.py`, `rope.py` |
+| **Model — control/graveyard** | `trm/model/reasoner.py` (UniversalReasoner) |
+| **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
+| **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py`, `curation/` |
+| **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `run_tracker.py`, `metrics.py`, `monitor.py` |
+| **Inference** | `trm/infer.py` |
+| **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), the `eval_*` depth probes, `playground.py`; `experiments/scratchpad/harness.py` |
+| **Instruments** | `instruments/` — `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus `ruff check .` as its own status (errors and bugs only, config in `pyproject.toml` — run it locally before pushing). |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
-compute is the permanent policy** (`config.py`); the GPU lane is serial. Tokenizer is
+compute is the permanent policy** (`trm/config.py`); the GPU lane is serial. Tokenizer is
 **`r50k_base`** (50257 vocab, `VOCAB_SIZE=50304` padded); the embedding + tied LM head is
 the single biggest VRAM line.
 

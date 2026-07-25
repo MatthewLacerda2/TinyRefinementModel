@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from attention import chunked_causal_attention
-from plan_a_model import CausalRefiner
+from trm.model.attention import chunked_causal_attention
+from trm.model.refiner import CausalRefiner
 
 B, H, D = 1, 4, 8
 
