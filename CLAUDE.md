@@ -225,6 +225,7 @@ experiment (the arch behind the flag):
 | **Config (single source of truth)** | `config.py` — every architecture/training constant, the dtype policy, the arch selector |
 | **Model — live** | `plan_a_model.py` (CausalRefiner), `layers.py` |
 | **Model — control/graveyard** | `model.py` (UniversalReasoner) |
+| **Model contract** | `lm_contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
 | **Training loop** | `trainer.py` (loop + data pipeline; + `plan_a_trainer.py` adapter), `start_training.py` (entry), `grad_step.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
 | **Data** | `prefill.py` (tokenize corpus → `runs/data/`), `data_loaders.py`, `tools/data_curation/` |
 | **Persistence & run state** | `checkpoint_utils.py`, `run_tracker.py`, `metrics_logger.py`, `monitor.py` |

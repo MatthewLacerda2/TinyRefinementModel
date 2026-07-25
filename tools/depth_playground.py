@@ -52,7 +52,7 @@ def generate_at_depth(model, enc, prompt, depth, *, max_new_tokens, temperature,
     for _ in range(max_new_tokens):
         if valid_len >= MAX_SEQ_LEN:
             break
-        out = model(input_ids, max_steps=depth, training=False)
+        out = model(input_ids, depth=depth, training=False)
         logits = out.logits[0, valid_len - 1, :]
         logits = _temperature_truncate(
             logits, temperature if temperature > 0.0 else 1.0, top_k, top_p)

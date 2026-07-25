@@ -54,6 +54,44 @@ def _make_best_manager(checkpoint_path):
     )
 
 
+def restore_tolerating_legacy(read, model, model_key="model"):
+    """Restore, tolerating variables a *past* version of this model saved and the
+    current one no longer defines.
+
+    Orbax matches structure strictly, which is what we want: a checkpoint missing
+    weights the model needs must fail loudly rather than load half a network in
+    silence. But strictness also orphans a checkpoint the moment a buffer is
+    deleted — and #105 deleted the refiner's vestigial hunch buffer, which every
+    base-run checkpoint on disk still carries. So: read with the honest structure
+    first, and only if that mismatches, retry with the buffers the model itself
+    declares its old checkpoints held (`legacy_checkpoint_variables`), dropping
+    them from the result. Both attempts are strict, so nothing else slips through.
+
+    `read(model_target)` performs the actual restore and returns the item dict.
+    """
+    try:
+        return read(nnx.state(model))
+    except ValueError as mismatch:
+        legacy = model.legacy_checkpoint_variables()
+        if not legacy:
+            raise
+        target = nnx.state(model)
+        for name, leaf in legacy.items():
+            if name in target:
+                raise
+            target[name] = nnx.Variable(leaf)
+        try:
+            restored = read(target)
+        except ValueError:
+            # The legacy buffers weren't the explanation — report the real mismatch.
+            raise mismatch
+        print(f"📼 Pre-#105 checkpoint: ignoring {', '.join(legacy)} "
+              f"(vestigial, never read by this model).")
+        for name in legacy:
+            del restored[model_key][name]
+        return restored
+
+
 def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
     """Persist the full training state (model + optimizer + monitor + step) under
     `mngr` at `step`, then block until the write lands. Shared by the
@@ -97,14 +135,17 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
     if not force_new_run and mngr.latest_step() is not None:
         latest_step = mngr.latest_step()
         print(f"📖 Loading Orbax checkpoint from step {latest_step}...")
-        restored = mngr.restore(
-            latest_step,
-            args=ocp.args.Composite(
-                model=ocp.args.StandardRestore(nnx.state(model)),
-                optimizer=ocp.args.StandardRestore(nnx.state(optimizer)),
-                monitor_state=ocp.args.JsonRestore(),
-                step=ocp.args.JsonRestore(),
+        restored = restore_tolerating_legacy(
+            lambda model_target: mngr.restore(
+                latest_step,
+                args=ocp.args.Composite(
+                    model=ocp.args.StandardRestore(model_target),
+                    optimizer=ocp.args.StandardRestore(nnx.state(optimizer)),
+                    monitor_state=ocp.args.JsonRestore(),
+                    step=ocp.args.JsonRestore(),
+                ),
             ),
+            model,
         )
 
         nnx.update(model, restored["model"])

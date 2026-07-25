@@ -13,14 +13,14 @@ import orbax.checkpoint as ocp
 from config import LATENT_DIM, MODEL_ARCH, resolve_root
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
-# reasoner's vestigial hunch_cache is shaped [batch, slots, dim] and its forward
-# asserts on the leading dim, so a reasoner skeleton built at the training batch
-# would fail to restore every checkpoint we have — all written when BATCH_SIZE
-# was 1 — for no benefit, since eval reads a handful of rows.
+# reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
+# the leading dim, so a reasoner skeleton built at the training batch would fail
+# to restore every checkpoint we have — all written when BATCH_SIZE was 1 — for
+# no benefit, since eval reads a handful of rows.
 EVAL_BATCH_SIZE = 1
 from model import UniversalReasoner
 from data_loaders import TextDataGenerator
-from checkpoint_utils import discover_latest_checkpoint_run
+from checkpoint_utils import discover_latest_checkpoint_run, restore_tolerating_legacy
 
 
 def _restore_into(model, checkpoint_path):
@@ -40,9 +40,12 @@ def _restore_into(model, checkpoint_path):
     if latest is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}")
     print(f"📖 Restoring model weights from step {latest} ({checkpoint_path})")
-    restored = mngr.restore(
-        latest,
-        args=ocp.args.Composite(model=ocp.args.StandardRestore(nnx.state(model))),
+    restored = restore_tolerating_legacy(
+        lambda model_target: mngr.restore(
+            latest,
+            args=ocp.args.Composite(model=ocp.args.StandardRestore(model_target)),
+        ),
+        model,
     )
     nnx.update(model, restored["model"])
     return model, latest

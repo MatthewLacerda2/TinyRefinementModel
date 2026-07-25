@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx, struct
-from typing import Dict, Any
 
 from config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS, COMPUTE_DTYPE
 from rope import rope_tables, apply_rope
@@ -12,18 +11,6 @@ class ScanStepOutput:
     shared_state: jnp.ndarray
     forget_val: jnp.ndarray
     step_div: jnp.ndarray
-
-@struct.dataclass
-class ReasonerOutput:
-    logits: jnp.ndarray
-    forget_cost: float
-    diversity_loss: float
-    diag: Dict[str, Any]
-    final_shared: jnp.ndarray
-    # Pre-head states [b, s, d], set instead of `logits` when training: the loss
-    # projects the LM head per-chunk (chunked CE, #19) to avoid the full
-    # [b, s, vocab] f32 logit peak. None at inference, where `logits` is filled.
-    hidden: jnp.ndarray = None
 
 class RotaryAttention(nnx.Module):
     def __init__(self, num_heads, in_features, num_groups=4, rngs=None):
@@ -121,6 +108,11 @@ class StandardReasoningBlock(nnx.Module):
         self.norm1 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
+        # Rounded up to a multiple of 256 here; the refiner's block rounds to 64,
+        # so the two arches' MLPs differ at some dims and agree at others (512:
+        # 1536 vs 1408; 960: both 2560). That divergence is frozen on purpose —
+        # see "Why the two arches don't share block code" in docs/design/plan-a.md
+        # before matching a pair on LATENT_DIM rather than on parameter count.
         hidden_dim = int(256 * ((latent_dim * 8 / 3 + 255) // 256))
         self.gate_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
         self.up_proj = nnx.Linear(latent_dim, hidden_dim, rngs=rngs, dtype=COMPUTE_DTYPE)

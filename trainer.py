@@ -229,13 +229,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
                 # Divergence must be loud and must not poison the optimizer state
-                # or the carried hunch (which the grad step already overwrote).
+                # or any state the model carries (which the grad step already
+                # overwrote).
                 nonfinite_streak += 1
                 print(
                     f"⚠️ Non-finite loss/grad at micro-step {step} "
                     f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — skipping update."
                 )
-                model.hunch_cache[...] = jnp.zeros_like(model.hunch_cache[...])
+                model.reset_state()
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
                     raise RuntimeError(
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "

@@ -135,8 +135,8 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
     assert start_step == 43, "resume must continue at saved step + 1"
 
     tokens = jnp.asarray(np.full((1, 16), 5, dtype=np.int32))
-    ref = np.asarray(tiny_model(tokens, max_steps=2, training=False, should_refresh=True).logits)
-    got = np.asarray(fresh(tokens, max_steps=2, training=False, should_refresh=True).logits)
+    ref = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
+    got = np.asarray(fresh(tokens, depth=2, training=False, new_document=True).logits)
     np.testing.assert_array_equal(ref, got)
 
 

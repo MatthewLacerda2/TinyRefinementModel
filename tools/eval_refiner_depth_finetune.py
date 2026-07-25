@@ -101,7 +101,7 @@ def train_eval(model, train, test, depth, steps, batch, lr, seed):
         idx = jax.random.randint(key, (batch,), 0, tr_in.shape[0])
         inp, tgt, mask = tr_in[idx], tr_tgt[idx], tr_mask[idx]
         def loss_fn(m):
-            logits = m(inp, max_steps=depth, training=True).logits
+            logits = m(inp, depth=depth, training=True).logits
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt)
             return jnp.sum(ce * mask) / jnp.sum(mask)
         loss, grads = nnx.value_and_grad(loss_fn)(model)
@@ -112,7 +112,7 @@ def train_eval(model, train, test, depth, steps, batch, lr, seed):
     def eval_chunk(model, inp, tgt, mask, depth):
         # Chunked: the full test pool's logits ([n_test*seq, VOCAB_SIZE]) would be tens of
         # GB; score batch-sized chunks and accumulate masked sums instead.
-        logits = model(inp, max_steps=depth, training=False).logits
+        logits = model(inp, depth=depth, training=False).logits
         correct = jnp.sum((logits.argmax(-1) == tgt) * mask)
         ce = jnp.sum(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tgt) * mask)
         return correct, ce, jnp.sum(mask)

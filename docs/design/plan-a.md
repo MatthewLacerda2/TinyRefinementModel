@@ -39,9 +39,17 @@ Refinement loop (replaces `_reasoning_loop`) — `jax.lax.scan` over K steps, ca
 - diag per step: drift `‖z_new − z‖` (reuse temporal_drift logic).
 
 **Removed:** the 32 shared slots and slot cross-attention; the InfoNCE slot-stability
-/ diversity loss (no analogue on per-position states); `hunch_cache`, `should_refresh`,
-and the hunch gate (cross-window memory, proven dead — Plan A is within-window only);
-the slot-reading decoder cross-attention.
+/ diversity loss (no analogue on per-position states); `hunch_cache`, the hunch gate,
+and any notion of refreshing carried state (cross-window memory, proven dead — Plan A
+is within-window only); the slot-reading decoder cross-attention.
+
+Until #105 the *trainer* still required all of that, so the adapter had to fake it:
+a zero forget cost and a zero diversity loss for the schedules to multiply, and a
+never-read `hunch_cache` for the loop's bookkeeping to write into. The trainer now
+speaks a neutral contract (`lm_contract.py`) and the fakes are gone — Plan A
+implements a forward pass and nothing else. What a window means for a model that
+carries state between windows is expressed as `new_document`, a fact about the data;
+Plan A ignores it because it genuinely carries nothing.
 
 **Kept:** `RotaryAttention` with explicit causal mask (leak-correct since the scale
 fix); random-depth sampling (`sample_reasoning_depth`); `time_embed`; the
@@ -69,6 +77,38 @@ tiny-config ablation harness:
   causal depth recurrence works — the claim the hunch failed to support.
 - **Grokking watch:** these tasks show clean train→generalization transitions fast;
   depth recurrence is expected to grok where depth-1 cannot.
+
+## Why the two arches don't share block code (the decision, written down once)
+
+`layers.py` (reasoner blocks) and `plan_a_model.py` (the refiner's shared block)
+implement the same SwiGLU transformer block twice. That duplication is
+**deliberately frozen, not waiting to be shared** — and #105 is where the choice
+got recorded instead of re-litigated on sight:
+
+- The reasoner is now a *frozen control*. Its value is that a matched pair can be
+  re-run against it, and the trained v1 control checkpoint can be revived exactly
+  (#134). Refactoring its blocks — even into an identical-looking shared module —
+  risks the one property it exists to have.
+- So the rule is: the refiner's block is the one that evolves; the reasoner's is
+  touched only to keep it *runnable*, never to make it prettier.
+
+The cost of that freeze is worth stating plainly, because it is a trap for exactly
+the comparison this repo cares about. The two round the SwiGLU hidden width
+differently — reasoner up to a multiple of 256, refiner up to a multiple of 64:
+
+| `LATENT_DIM` | reasoner hidden | refiner hidden |
+|---|---|---|
+| 512 | 1536 | 1408 |
+| 960 (current) | 2560 | 2560 |
+
+They agree at 960 and disagree at 512. So "both arches at the same `LATENT_DIM`"
+is matched **by construction at some dims and only by coincidence at others** — at
+512 the reasoner carries a wider MLP for free. Any cross-arch parameter-matched
+claim must therefore quote *parameter counts*, not dim, and re-check them at the
+dim it actually ran (`trainer._param_count` prints them at launch). Note this is
+already the weaker kind of comparison — cross-model, observational, never causal
+(CLAUDE.md); the matched one-variable pair is what carries a cause, and it varies
+one knob within a single arch.
 
 ## Test gates (all green before any real-model run)
 

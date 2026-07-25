@@ -68,7 +68,7 @@ def main():
     final_ce = None
     for step in range(args.steps):
         loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, step, max_steps=args.depth, doc_boundary=False
+            model, batch, step, depth=args.depth, doc_boundary=False
         )
         apply_grads(optimizer, grads, model)
         ce = float(out.diag["token_loss"])

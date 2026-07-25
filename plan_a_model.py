@@ -88,6 +88,9 @@ class Block(nnx.Module):
         self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, chunked=chunked_attention)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+        # Multiple of 64; the reasoner's block (layers.py) rounds to 256, so the
+        # two arches' MLPs are not the same width at every dim. Frozen on purpose —
+        # see "Why the two arches don't share block code" in docs/design/plan-a.md.
         hidden = ((int(8 * dim / 3) + 63) // 64) * 64
         self.gate_proj = nnx.Linear(dim, hidden, rngs=rngs, dtype=dtype)
         self.up_proj = nnx.Linear(dim, hidden, rngs=rngs, dtype=dtype)
