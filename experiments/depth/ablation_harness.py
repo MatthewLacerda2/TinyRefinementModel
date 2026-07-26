@@ -34,6 +34,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
+from instruments.results import emit as emit_result
 from trm.model.refiner import Block, CausalRefiner
 
 
@@ -342,9 +343,13 @@ def main():
         acc, ce, n_params = out[:3]
         results[d] = (acc, ce)
         print(f"{d:>6} {n_params / 1e6:>8.2f}M {acc:>9.4f} {ce:>9.4f} {time.time() - t0:>7.1f}")
+        # The same row again, for instruments/experiment.py rather than for eyes.
+        emit_result(f"d{d}", acc=acc, ce=ce, params=n_params)
         if eval_depths:
             print("  eval_depths: " + " ".join(
                 f"d{k}={a:.4f}/{c:.4f}" for k, (a, c) in out[3].items()))
+            for k, (a, c) in out[3].items():
+                emit_result(f"d{d}_at{k}", acc=a, ce=c, params=n_params)
         if args.readouts:
             extras = out[3]
             print("  pass_acc: " + " ".join(f"{a:.4f}" for a in extras["pass_acc"]))

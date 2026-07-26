@@ -75,6 +75,7 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
+from instruments.results import emit as emit_result
 from trm.model.refiner import Block, CausalRefiner
 
 
@@ -891,6 +892,9 @@ def main():
                              steps=args.steps, seeds=seeds)
         return
 
+    # The sweep point for machine-readable output: the task shape. Arms and seeds
+    # are not part of it — the runner supplies those (instruments/results.py).
+    point = f"K{args.K}m{args.m}"
     print(f"== serial-scratchpad proof (#38): K={args.K} m={args.m} dim={args.dim} "
           f"steps={args.steps} (chance={1/args.m:.3f}) ==")
     print(f"{'arm':>16} {'seed':>5} {'params':>9} {'cut':>5} {'acc@cut':>8} {'final_acc':>10}"
@@ -909,6 +913,8 @@ def main():
                       f"full={r['full_acc']:.4f} halted={r['halted_acc']:.4f} "
                       f"corr={r['corr']:+.3f} p1={r['p1_mass']:.3f} "
                       f"mean_halt={r['mean_halt']:.2f} {time.time()-t0:>7.1f}s", flush=True)
+                emit_result(point, acc=r["halted_acc"], full_acc=r["full_acc"],
+                            corr=r["corr"], mean_halt=r["mean_halt"])
                 continue
             r = train_one_arm(arm, K=args.K, m=args.m,
                               dim=args.dim, steps=args.steps, seed=seed, **anneal_kw)
@@ -916,6 +922,8 @@ def main():
                   f"{r['cut_final_acc']:>8.4f} {r['final_acc']:>10.4f} {time.time()-t0:>7.1f}  "
                   f"cut[{fmt(r['cut_slot_acc'])}] end[{fmt(r['slot_acc'])}]",
                   flush=True)
+            emit_result(point, acc=r["final_acc"], cut_acc=r["cut_final_acc"],
+                        params=r["params"])
 
 
 if __name__ == "__main__":

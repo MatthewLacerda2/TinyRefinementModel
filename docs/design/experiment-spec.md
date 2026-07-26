@@ -1,6 +1,7 @@
 # The experiment spec — a pre-registration a machine can apply
 
-**Status:** build 1 of #40 landed; the runner that consumes these (build 3) is next.
+**Status:** builds 1 and 3 of #40 landed — the spec is a file, `instruments/verdict.py`
+judges it, and `instruments/experiment.py` runs it. Build 4 (the safety layer) is next.
 
 ## Why a file and not prose
 
@@ -27,6 +28,7 @@ its research line like everything else there (#143).
 | `[criteria.<name>]` | one comparison: `rule`, `treatment`, `control`, `sigmas`, `points`, `require` |
 | `[verdict]` | `keep_if` / `kill_if` (lists of criterion names), and `recorded` once it has run |
 | `[readouts]` | observations that explicitly carry **no** keep/kill weight |
+| `[execution]` | how to actually run it (optional — see below) |
 | `[results.<point>]` | per-arm numbers, written **after** the run |
 
 Three comparison rules, which is all the recorded experiments have ever needed:
@@ -77,9 +79,71 @@ can't express what those experiments actually did, the format is wrong*), and
 they earned two changes already — the summary form above, and `require`/`readouts`,
 which #77 needed for its three-way branch and its no-weight observations.
 
-## What this does not do yet
+## Running one — `[execution]` and the runner
 
-It judges; it does not run. Build 3 is the runner that consumes a spec, executes
-the sweep, writes the result rows, and calls this module for the verdict. Until
-then these files are a pre-registration format plus a referee that has been shown
-to agree with every judgement the project has already made.
+A spec with an `[execution]` section can be run, not just judged:
+
+```bash
+python -m instruments.experiment experiments/depth/specs/NNN-thing.toml
+```
+
+The runner gates on `tests/core`, sweeps, journals every measurement as it
+arrives, appends the `[results.*]` tables to the spec, hands the whole thing to
+`verdict.py`, and writes a findings draft into the (gitignored) run folder. It
+never writes to `docs/findings/`: producing evidence is a machine's job,
+publishing a finding is not.
+
+```toml
+[protocol]
+metric_key = "acc"          # which number in the harness's RESULT line is judged
+
+[execution]
+command = ["python", "-m", "experiments.depth.ablation_harness", "--task", "statetrack"]
+seed_flag = "--seed"
+seeds = [0, 1, 2]
+env = { JAX_PLATFORMS = "cpu" }
+
+[arms.islands]
+flags = ["--per-pass-loss", "--islands"]
+```
+
+One subprocess per (arm, seed): `command` + the arm's `flags` + the seed. The
+runner understands no harness's knobs — arms name their own flags — which is
+what keeps `instruments/` from acquiring a dependency on a research line that
+rule 6 will one day delete.
+
+**Legs**, because real experiments here have more than one. #86 trained at depths
+1–8 and then ran a *second* command (depth 8, longer eval sequence, extra eval
+depths) to measure extrapolation past the cap; #77 ran three seeds and then
+extended one arm to six under a fresh pre-registration. A leg carries its own
+flags, and may override the seeds and restrict the arms:
+
+```toml
+[execution.legs.extrapolation]
+flags = ["--depths", "8", "--test-seq", "48", "--eval-depths", "12,16"]
+arms = ["sinusoidal", "table"]
+```
+
+Named legs namespace their points (`extrapolation/d8`), so two legs measuring
+depth 8 under different conditions cannot silently overwrite each other. The
+retrofits falsified the runner exactly as they falsified the format: a
+single-command runner could have run neither #77 nor #86.
+
+**How numbers come back.** Harnesses print a human table *and* one machine line
+per measurement (`instruments/results.py`):
+
+    RESULT {"point": "d8", "acc": 0.7123, "ce": 0.8310}
+
+The harness reports what it measured and which sweep point it was; the runner
+supplies the arm and the seed, because the runner is what launched the process. A
+harness that finished silently is an error, not an empty result.
+
+**Resume.** Every measurement is journalled to `runs/experiments/<id>/results.jsonl`
+as it lands, keyed by a fingerprint of the exact command and environment. A sweep
+that dies at seed 4 of 6 continues; a sweep whose flags changed re-runs.
+
+The three retrofit specs deliberately carry **no** `[execution]` block. Their
+point names (`d12`, `statetrack_6seed`) come from the prose of the findings they
+were transcribed from, not from what a harness emits today, and inventing an
+`[execution]` whose rerun would produce differently-named points would be a spec
+that only looks reproducible. They are records; new specs are jobs.
