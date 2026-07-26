@@ -245,7 +245,7 @@ have different param trees, so a run of one cannot resume the other's checkpoint
 | **Model — control/graveyard** | `trm/model/reasoner.py` (UniversalReasoner) |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py`, `curation/` |
-| **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `run_tracker.py`, `metrics.py`, `monitor.py` |
+| **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, plateau/divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), the `eval_*` depth probes, `playground.py`; `experiments/scratchpad/harness.py` |

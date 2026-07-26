@@ -122,6 +122,28 @@ serial GPU. So it needs:
   unnoticed because no tracked artifact showed liveness.
 - **Resource guards in code, not prose**: disk-headroom precheck, GPU serial-queue
   lock (one job at a time), a compute-budget cap.
+
+Both now exist as `trm/runtime/supervisor.py` (#40 build 4), promoted from the
+bash scripts the #16 base-run campaign wrote under fire:
+
+```bash
+python -m trm.runtime.supervisor --stop-step 2289 --run-dir runs/run_X \
+    --log runs/base.log --issue 16 -- --new-run
+```
+
+It enforces the token budget (the trainer has no hard stop), kills a CE-plateau
+SFT auto-flip that would contaminate a pretrain run, kills a diverging warm
+restart, restarts a wedged one, relaunches after a real crash within a retry
+budget, and heartbeats into a pinned issue. Preflight refuses to launch onto a
+nearly-full disk or a card another run already holds.
+
+**Why it is one process.** The originals were a watchdog and a sentinel talking
+through marker lines in a log, so "did it crash, or did the watchdog stop it?"
+was answered by reading a file the watchdog had not finished writing — and a
+clean finish landing in that window read as a crash and got relaunched. The
+supervisor owns its child, and every decision comes from one pure function whose
+guards are evaluated *before* liveness. `tests/core/test_supervisor.py` states
+that original bug as an assertion.
 - **Resumability**: state visible enough that a fresh session knows exactly where
   the loop left off and continues without re-deriving context.
 
