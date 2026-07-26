@@ -1,0 +1,108 @@
+# Retrofit of a COMPLETED experiment (#40 build 1). See 086's header for what
+# status = "retrofit" means about pre-registration.
+#
+# This one is the format's hardest test of the three, and it is the reason the
+# schema has `require` and a separate `readouts` block: #77 pre-registered a
+# THREE-way branch (keep / partial keep / kill), extended its seed count
+# mid-experiment under a fresh pre-registration, and produced its most
+# interesting observations in readouts that carried no keep/kill weight at all.
+
+[experiment]
+id = "77"
+status = "retrofit"
+title = "Per-pass supervision as a stabilizer for deep recurrence (spun out of #75's readouts)"
+hypothesis = """
+#64 killed truncated backprop: ungraded prefix passes have no training signal and
+collapse to near-chance. Fix under test: grade EVERY pass against the target
+(deep supervision, uniform mean over passes), after which cutting the gradient
+chain at every pass boundary ("islands") might hold accuracy at O(1) activation
+memory in depth.
+"""
+finding = "docs/findings/2026-07-05-per-pass-supervision-islands.md"
+issue = 77
+commit = "3bfe1fd"
+
+[protocol]
+task = "statetrack"
+seeds = [0, 1, 2]
+seed_extension = [3, 4, 5]
+extension_note = """
+The extension was itself pre-registered before running: after arm (c) posted
++1.54 sigma at 3 seeds, "keep (c) iff >= 2 sigma_pooled over 6 seeds" was written
+down BEFORE the extra seeds ran. That ordering is what keeps the extension from
+being a fishing trip, and it is why the criterion below reads 6 seeds.
+"""
+depth = 8
+dim = 96
+steps = 2500
+matched = "same seed => same init/pools/minibatch order"
+command = """
+PYTHONPATH=. python -m experiments.depth.ablation_harness --task statetrack \
+  --depths 8 --steps 2500 --seed {0..5} [--per-pass-loss] [--islands] [--readouts]
+"""
+metric = "held-out accuracy (chance 0.20)"
+
+[arms.control]
+role = "control"
+config_delta = { per_pass_loss = false, islands = false }
+note = "#64's control; seed-0 spot-check reproduced its 0.9580 exactly, validating reuse"
+
+[arms.islands]
+role = "treatment"
+config_delta = { per_pass_loss = true, islands = true }
+
+[arms.supervised]
+role = "treatment"
+config_delta = { per_pass_loss = true, islands = false }
+
+# --- Pre-registered on #77 before any run -----------------------------------
+# Keep:         (b) islands within 2 sigma_pooled of (a).
+# Partial keep: (c) supervised beats (a) by >= 2 sigma.
+# Kill:         neither.
+
+[criteria.islands_hold_parity]
+rule = "within"
+treatment = "islands"
+control = "control"
+sigmas = 2.0
+points = ["statetrack_3seed"]
+
+[criteria.supervised_beats_control]
+rule = "beats"
+treatment = "supervised"
+control = "control"
+sigmas = 2.0
+points = ["statetrack_6seed"]
+
+[verdict]
+keep_if = ["islands_hold_parity", "supervised_beats_control"]
+kill_if = []
+recorded = "INCONCLUSIVE"
+recorded_note = """
+Both keep branches missed, so nothing was kept — formally the kill branch of #75.
+Recorded here as INCONCLUSIVE rather than KILL because #77 pre-registered no
+explicit kill criterion: its "kill" was defined as the absence of both keeps.
+That distinction is exactly what this module's three-valued outcome is for, and
+the finding's own wording ("no mean-accuracy claim is kept") matches it.
+"""
+
+[readouts]
+names = [
+  "parity depth-8 rescue, +6.5 sigma: the one task where deep weight-shared recurrence was known unstable is fixed by grading every pass (control 0.581 +/- 0.048 vs islands+per-pass 0.929 +/- 0.059)",
+  "matched-pair collapse rescue: control seed 3 collapsed to 0.352; arm (c) on the same seed scored 0.988 — one-variable evidence (n=1 event) that supervision removes the collapse mode",
+  "(c) posted 0 collapses in 6 seeds, sigma 0.003 vs the control's working-mode 0.010",
+  "passes converge early and start high: (c)'s pass-1 draft scores 0.61-0.68 vs the control's 0.29, saturating by pass ~5",
+  "cumsum5 (no composition needed) is free for islands (-0.18 sigma) — supervision cannot replace cross-pass credit only where the task needs composed sequential work",
+]
+readouts_note = "None of the above carried keep/kill weight. The stabilizer observation was explicitly logged as preliminary and sent for its own confirmatory test."
+
+# --- Results (per seed, from the finding) ------------------------------------
+# Two points because the two criteria were judged over different seed counts:
+# islands ran 3 seeds; the supervised arm's verdict was extended to 6.
+[results.statetrack_3seed]
+control = [0.958, 0.981, 0.977]
+islands = [0.712, 0.724, 0.485]
+
+[results.statetrack_6seed]
+control = [0.958, 0.981, 0.977, 0.352, 0.972, 0.984]
+supervised = [0.986, 0.989, 0.982, 0.988, 0.983, 0.988]
