@@ -61,7 +61,7 @@ by confidence/ease within the phase: certain small wins first, the experiment la
   run is gated on this, since the run needs the re-tokenized data. (Phase 0 code
   work does not need it.) Custom 32k deferred as a later squeeze.
 
-## Phase 1 — PROOF GATE (nothing in Phase 2 happens until this passes) — #16
+## Phase 1 — PROOF GATE (passed; #16 closed) — #16
 - Does looping the causal block N times beat N=1? **Choose the metric with
   care.** Recurrent-depth / latent-reasoning wins are documented on reasoning
   and compositional tasks, NOT on raw web-text perplexity — so a flat fineweb CE
@@ -141,9 +141,10 @@ Bang-for-buck order; do singly so each gain is attributable.
   folds into the context-window step (#23).
 
 ## Phase 2 — efficiency & recipe levers (post-proof, from the #10 triage)
-Optimizer/training-recipe improvements. They are NOT architecture, so they would
-**confound the proof if introduced now** — gate all of them behind #16 and apply
-to both arms (or only after the verdict). Ordered certain-small-first:
+Optimizer/training-recipe improvements. They are NOT architecture, so introducing
+them mid-proof would have **confounded it** — that is why they were gated behind
+#16. **#16 is closed, so the gate has lifted and these are pickable.** Apply any of
+them to both arms. Ordered certain-small-first:
 - **cautious weight decay** — #25: near-free update mask (sign-agreement); on top of
   the masked AdamW we already run. Cheapest, try first.
 - **Muon optimizer** — #26: orthogonalized-momentum updates for 2D matrices; strong
