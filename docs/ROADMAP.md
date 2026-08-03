@@ -149,7 +149,12 @@ them to both arms. Ordered certain-small-first:
   the masked AdamW we already run. Cheapest, try first.
 - **Muon optimizer** — #26: orthogonalized-momentum updates for 2D matrices; strong
   recent sample-efficiency/wall-clock wins — the lever a single-GPU run wants most.
-  Validate at tiny scale and in f16 (Newton-Schulz likely needs f32).
+  The old "Newton-Schulz likely needs f32" caveat is **resolved**: optax's `mu_dtype`
+  is storage-only (bf16 momentum promotes against our f32 grads, NS runs in f32, the
+  cast back is for storage) — the same trick `optimizers.py` already runs for Adam's
+  first moment. The live hazard is instead the **partition**: optax routes params by
+  `ndim == 2`, which sends our tied `nnx.Embed` table to Muon, and a wrong partition
+  trains happily and silently. Plan, criteria, and sources live on #26.
 
 ## Beyond proof + scale — far future
 - **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
