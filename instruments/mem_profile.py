@@ -10,6 +10,13 @@ model + optimizer at the *current config*, compile the real grad step, and repor
      biggest buffers (e.g. a ``f32[1,512,50304]`` logit slab) so a mystery transient
      becomes a shape you can point at.
 
+Read (2) with care: it aggregates **cumulative** bytes (per-occurrence size x how many
+times the shape appears), so it ranks allocation *traffic*, not what is resident at the
+peak. Only (1) is peak. Confusing the two is what motivated #66, whose top-table entry
+read 37 GiB against a real peak of 0.582 GiB — a 64x gap — and the resulting chunked
+attention bought nothing. Before optimizing a shape here, check it is actually a
+meaningful fraction of temp/scratch.
+
 Static analysis (1) and the HLO scan (2) work even when actually running would OOM, so
 this is usable precisely when you need it most. ``--run`` additionally executes one step
 and reads the driver's peak / largest-allocation stats (skip it if the config OOMs).
@@ -98,9 +105,13 @@ def main():
     print(f"  temp / scratch  (PEAK transient activations): {_gib(tmp)}  <-- what OOMs a run")
     print(f"  ~grad-step footprint (arg+out+temp):         {_gib(arg + out + tmp)}")
 
-    print(f"\n=== largest {args.top} tensor shapes in the compiled HLO (total bytes) ===")
+    print(f"\n=== largest {args.top} tensor shapes in the compiled HLO ===")
+    print("  NOT peak memory: this is CUMULATIVE bytes over every occurrence in the")
+    print("  program (size x count). A shape can top this table and be irrelevant to")
+    print(f"  the peak above — compare against temp/scratch ({_gib(tmp)}), not to itself.")
     for shape, (count, total) in _top_hlo_shapes(compiled.as_text(), args.top):
-        print(f"  {_gib(total)}  x{count:<4}  {shape}")
+        per = total / count if count else 0
+        print(f"  {_gib(total)} cumulative = {_gib(per)} x{count:<5}  {shape}")
 
     if args.run:
         print("\n=== executing one step (driver stats) ===")
