@@ -70,7 +70,7 @@ def test_a_deliberate_kill_is_not_a_crash_either():
     come back as a relaunchable crash on the next look."""
     assert decide(obs(alive=False, plateau_detected=True), LIMITS, State()).outcome == KILLED_PLATEAU
 
-    state = State(divergence_streak=1)
+    state = State(entered_band=True, divergence_streak=1)
     assert decide(obs(alive=False, ce=99.0), LIMITS, state).outcome == KILLED_DIVERGENCE
 
 
@@ -99,24 +99,67 @@ def test_plateau_outranks_everything():
 def test_divergence_needs_a_streak_not_a_blip():
     """One bad reading is noise; the guard exists for a warm restart that is
     actually blowing up, and killing a run on a single spike wastes it."""
-    state = State()
+    state = State(entered_band=True)
     assert decide(obs(ce=99.0), LIMITS, state).action == CONTINUE
     assert state.divergence_streak == 1
     assert decide(obs(ce=99.0), LIMITS, state).outcome == KILLED_DIVERGENCE
 
 
 def test_a_recovered_ce_clears_the_streak():
-    state = State()
+    state = State(entered_band=True)
     decide(obs(ce=99.0), LIMITS, state)
     decide(obs(ce=3.0), LIMITS, state)
     assert state.divergence_streak == 0
     assert decide(obs(ce=99.0), LIMITS, state).action == CONTINUE, "the streak restarted"
 
 
-@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), 7.0])
-def test_non_finite_and_out_of_band_ce_both_count_as_divergence(bad):
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_non_finite_ce_is_divergence_from_the_very_first_step(bad):
+    """NaN/inf is never a young run — it is a broken one, at any age. This one
+    does not wait for the band to arm."""
+    assert decide(obs(step=1, ce=bad), LIMITS, State()).action == CONTINUE
     state = State(divergence_streak=1)
-    assert decide(obs(ce=bad), LIMITS, state).outcome == KILLED_DIVERGENCE
+    assert decide(obs(step=1, ce=bad), LIMITS, state).outcome == KILLED_DIVERGENCE
+
+
+def test_an_out_of_band_ce_is_divergence_once_the_run_has_been_in_band():
+    state = State(entered_band=True, divergence_streak=1)
+    assert decide(obs(ce=7.0), LIMITS, state).outcome == KILLED_DIVERGENCE
+
+
+# --- the band has to arm itself, or it kills every fresh run -------------------
+
+def test_a_fresh_runs_opening_ce_is_not_divergence():
+    """THE launch-blocker this guard shipped with. A from-scratch model starts at
+    ln(50304) ~= 10.8 and the champion run did not get under 6.5 until opt step
+    340, ~2.7 hours in — while the supervisor polls every 5 minutes. An
+    always-armed band killed the run at ~10 minutes, every time, and only looked
+    correct because it was written for a warm restart."""
+    state = State()
+    for step, ce in [(5, 11.08), (10, 10.4), (15, 9.9), (20, 9.7), (40, 8.6)]:
+        assert decide(obs(step=step, ce=ce), LIMITS, state).action == CONTINUE
+    assert state.divergence_streak == 0
+    assert not state.entered_band
+
+
+def test_the_band_arms_the_moment_the_run_gets_under_it():
+    """Descending through the band is what proves the run can be judged by it;
+    after that a climb back out is real divergence."""
+    state = State()
+    decide(obs(step=100, ce=8.0), LIMITS, state)
+    decide(obs(step=340, ce=6.4), LIMITS, state)
+    assert state.entered_band
+    assert decide(obs(step=400, ce=9.0), LIMITS, state).action == CONTINUE
+    assert decide(obs(step=405, ce=9.0), LIMITS, state).outcome == KILLED_DIVERGENCE
+
+
+def test_a_resumed_run_is_armed_by_its_first_reading():
+    """A resume reads a metrics.csv that already holds low CE, so the guard is
+    live from the first poll — the case it was originally written for keeps its
+    protection."""
+    state = State()
+    assert decide(obs(step=500, ce=3.1), LIMITS, state).action == CONTINUE
+    assert state.entered_band
 
 
 def test_a_missing_ce_is_not_divergence():

@@ -105,6 +105,9 @@ class State:
     retries_used: int = 0
     last_step: int = -1
     stalled_polls: int = 0
+    # Whether CE has ever been inside the sane band. Arms the high-CE guard —
+    # see _is_diverged for why it cannot be armed from the start.
+    entered_band: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,11 +117,24 @@ class Decision:
     reason: str
 
 
-def _is_diverged(ce: float | None, max_ce: float) -> bool:
-    """A missing CE is not divergence — it is a run that has not logged yet."""
+def _is_diverged(ce: float | None, max_ce: float, entered_band: bool) -> bool:
+    """A missing CE is not divergence — it is a run that has not logged yet.
+
+    Non-finite CE is divergence whenever it appears. A merely *high* CE is only
+    divergence once the run has been inside the band at least once, because a
+    from-scratch model starts at ln(VOCAB_SIZE) ~= 10.8 and takes hours to come
+    down: the champion run did not reach 6.5 until opt step 340, ~2.7h in. An
+    always-armed band therefore kills every fresh run inside two polls — the
+    guard was only ever right for a resumed run, whose CE is already low. So the
+    band arms itself the moment the run proves it can get under it, which needs
+    no step arithmetic and no separate warmup knob to keep in sync with the LR
+    schedule.
+    """
     if ce is None:
         return False
-    return math.isnan(ce) or math.isinf(ce) or ce > max_ce
+    if math.isnan(ce) or math.isinf(ce):
+        return True
+    return entered_band and ce > max_ce
 
 
 def decide(obs: Observation, limits: Limits, state: State) -> Decision:
@@ -144,7 +160,10 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
         return Decision(KILL, KILLED_PLATEAU,
                         "CE-plateau SFT auto-flip detected; killing to protect the pretrain run")
 
-    if _is_diverged(obs.ce, limits.max_ce):
+    if obs.ce is not None and math.isfinite(obs.ce) and obs.ce <= limits.max_ce:
+        state.entered_band = True
+
+    if _is_diverged(obs.ce, limits.max_ce, state.entered_band):
         streak = state.divergence_streak + 1
         state.divergence_streak = streak
         if streak >= limits.divergence_checks:
