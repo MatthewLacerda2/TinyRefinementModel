@@ -118,17 +118,32 @@ MAX_STEPS_LIMIT = 8
 # BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
 # fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
 # ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
-# fatter micro-steps amortize it. Matched pairs on an idle card: +43% at depth 4
-# (5.0k -> 7.2k tok/s) and +40% at depth 8 (4.2k -> 5.9k). An earlier sweep read
-# +34% but was measured while a training job shared the GPU — same ratio, lower
-# absolutes; trust the idle numbers.
+# fatter micro-steps amortize it. #24 measured that on an idle card with
+# instruments.bench_train_step: +43% at depth 4 (5.0k -> 7.2k tok/s) and +40% at
+# depth 8 (4.2k -> 5.9k), and flipped this pair to 2/64.
+#
+# BATCH_SIZE STAYS 1 — batch 2 does not fit the real trainer. It OOMs on its
+# first optimizer step at dim960/depth8, 2026-08-13:
+#   XLA_PYTHON_CLIENT_MEM_FRACTION=0.85 -> RESOURCE_EXHAUSTED, 626MiB short inside
+#     the BFC arena (5222MB), with a fragmented free list
+#   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
+#     cannot instantiate a CUDA command buffer, 28 alive graphs (random-depth
+#     training compiles one program per sampled depth, x the accumulate/apply
+#     branches). Squeezed from both sides on a 6GB card.
+# bench_train_step times a grad step; it never ran the trainer, which also holds
+# the validation probe and the checkpoint managers. So the +40% was real for what
+# it measured and irrelevant to what we ship — every run that ever finished, both
+# July dim-960 base runs included, used 1/128 (see runs/*/run_metadata.json).
+# Don't re-flip this pair from a bench number alone: land it only after a real
+# trainer launch survives an optimizer apply. Note instruments.vram_headroom_smoke
+# will NOT catch it — it defaults to --batch 1, samples nvidia-smi under the
+# `platform` allocator rather than the trainer's preallocated BFC arena, and
+# reported batch 2 as *cheaper* than batch 1 here, which cannot be true.
+#
 # Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
-# and the learning dynamics are all identical: same model, fewer resources.
-# Going past 2 is not worth it — the return per doubling shrinks fast (the next
-# rung read +19-25% on the contended sweep, unconfirmed since) as the card goes
-# from launch-bound to compute-bound.
-BATCH_SIZE = 2
-ACCUMULATION_STEPS = 64
+# and the learning dynamics are all identical either way: same model, same run.
+BATCH_SIZE = 1
+ACCUMULATION_STEPS = 128
 # Target tokens consumed per optimizer step: each micro-step scores two
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
