@@ -1,6 +1,6 @@
 # Every base run this project ever started died of BFC allocator fragmentation, not of anything about the model
 
-Status: preliminary
+Status: confirmed (2026-08-14 — the live run cleared opt step 1540; see "Confirmation")
 Date: 2026-08-14
 Commit: 5455e4d  Run: runs/run_20260813_214725  Measured with: `python -m trm.runtime.supervisor --stop-step 30518 --run-dir runs/run_20260813_214725 --log runs/run_20260813_214725.log --issue 157 -- --checkpoint-path runs/run_20260813_214725/checkpoints`
 
@@ -77,13 +77,33 @@ does not show up in this workload, so nothing is traded away. Landed as the defa
 at opt step 1255 with zero OOMs, through validation and repeated checkpoint saves, where
 BFC died at step 12–15.
 
+## Confirmation
+
+`run_20260813_214725` cleared the pre-registered milestone. The kill condition written
+into this entry was "dies at opt step 1540 like its predecessors"; it did not.
+
+```
+step    ce      val_ce
+1530  4.3263
+1535  4.3600
+1540  4.3115  4.7422    <- run_20260719_042625 and run_20260720_012843 both died here
+1545  4.2991
+1560  4.2320
+```
+
+Zero `RESOURCE_EXHAUSTED` in the log at that point. The `val_ce` on row 1540 is the
+tell: validation and the rolling checkpoint both fire every 64 opt steps, and
+1536 = 64 × 24, so row 1540 is the first row *after* the heaviest memory event in the
+loop — a full param-tree gather for the checkpoint plus a separately compiled
+validation program. Both July runs died immediately after that cycle, which is the
+churn most likely to push a fragmented arena over the edge. Under cuda_async the same
+cycle passes without incident.
+
 ## Limitations
 
-- **Status is `preliminary` on purpose.** What is established: every past base run
-  terminated in a BFC OOM, and cuda_async survives ~80× past where BFC died. What is
-  *not* yet established: that cuda_async carries a run to the full 4B-token budget. The
-  decisive milestone is **opt step 1540**, where both July runs died; this entry should
-  be promoted to `confirmed` once the live run passes it, and revisited if it does not.
+- Confirmed for the failure mode, not for the whole budget: the run has cleared 1540 of
+  30,518 opt steps. Nothing here claims the remaining ~9 days are guaranteed, only that
+  the specific allocator failure that ended every previous attempt no longer occurs.
 - Fragmentation is a documented property of arena allocators in general; nothing here
   is novel about BFC. What is novel to us is the *attribution* — that this project's
   entire base-run history, and the premise of its base-model bar, rest on it. That is
