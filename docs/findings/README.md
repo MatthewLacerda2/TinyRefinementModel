@@ -31,6 +31,7 @@ things, it doesn't go in this folder.
 - `2026-07-18-sinusoidal-time-signal-depth-extrapolates.md` — #86: sinusoidal step signal matches the learned table at trained depths (2σ parity) and converts never-trained loops 9–16 into +0.11 accuracy under length shift, where the clamped table collapses to chance with NaN loss — depth becomes an open dial
 - `2026-07-19-trajectory-visible-halting-collapses-incentive-not-observability.md` — #123: letting the halting head reread the whole thought trajectory does NOT prevent ACT-style collapse (99.5%+ mass on step 1, corr ≈ 0, every seed, solvable task) — the graveyard failure is an incentive pathology, not an observability one; halting pressure also rots full-depth competence 0.996 → ~0.6
 - `2026-07-24-time-blind-rematch-collapse-cured-step-signal-holds-d8.md` — #138: per-pass grading cures the time-blind collapse (3/3 seeds, including #97's crater seed), but the step signal still earns trained d8 (−5.9σ); the time-blind arm length-extends better (+2.3σ at d16), reversing #122's assignment under per-pass supervision
+- `2026-08-14-bfc-fragmentation-killed-every-base-run.md` — #157/#162: every base run this project ever started died of BFC allocator fragmentation, not of scale — both July runs stopped at opt step 1540 = 201.9M tokens with an OOM as their last line, and one earlier run failed a **720 KiB** allocation on a 6GB card; `cuda_async` fixes it at no cost (4,681 vs 4,583 tok/s). PRELIMINARY until the live run passes step 1540
 
 ## Entry template
 
