@@ -1,266 +1,614 @@
-import csv
-import matplotlib.pyplot as plt
+"""Figures for a training run: one showable curve, two diagnostic sheets.
+
+    python -m instruments.plots [--log runs/<run>/metrics.csv] [--out DIR]
+
+Three images, split by audience (#179):
+
+  training_curve.png      the hero — CE and held-out val CE against *tokens*,
+                          perplexity on the right, and the LR anneal drawn
+                          across the whole token budget so "how far in are we"
+                          is one glance.
+  throughput_progress.png tokens/sec sampled from the supervisor's hourly
+                          heartbeats, progress against the budget, ETA.
+  optimization_health.png gradient norm, sampled depth, zero-grad fraction,
+                          logit health.
+
+Two rules this instrument exists to enforce:
+
+1. **A panel whose data is absent is omitted, not drawn flat.** The previous
+   version drew three panels of reasoner-only quantities (temporal drift,
+   forget cost, diversity loss) on refiner runs, where those terms do not
+   exist (#105) — a flat zero line reads as "we measured zero" when the truth
+   is "there is nothing here to measure". The log decides what gets drawn;
+   nothing is hardcoded on. See `available()` for the two ways data can be
+   missing, and note that what was left out is always reported.
+2. **The model is never instantiated.** Counting parameters by building a
+   whole network — on the wrong architecture, while the card is busy — is the
+   defect this rewrite removes. Parameter counts come analytically from
+   `instruments.model_stats`.
+
+Everything here is CPU-only and read-only: it reads a CSV and two log files
+and writes PNGs. It is safe to run against a live run.
+"""
+
 import os
-import numpy as np
-import sys
-import argparse
-from trm.config import (
-    BATCH_SIZE,
-    MAX_SEQ_LEN,
+
+# This instrument must never touch the card: a training run owns it, and JAX
+# would otherwise grab a GPU slice just to evaluate the LR schedule.
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+
+import argparse  # noqa: E402
+import datetime  # noqa: E402
+import math  # noqa: E402
+import pathlib  # noqa: E402
+import re  # noqa: E402
+import textwrap  # noqa: E402
+
+import matplotlib  # noqa: E402
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402
+import numpy as np  # noqa: E402
+
+from instruments.runlog import load  # noqa: E402
+from trm.config import (  # noqa: E402
     LATENT_DIM,
-    NUM_BLOCKS,
-    SHARED_SLOTS,
     MAX_STEPS_LIMIT,
-    ACCUMULATION_STEPS,
+    MODEL_ARCH,
+    TOKENS_PER_OPT_STEP,
+    TRAIN_TOKEN_BUDGET,
+    VOCAB_SIZE,
+)
+from trm.train.schedules import build_learning_schedule, resolve_decay_steps  # noqa: E402
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# ── palette ──────────────────────────────────────────────────────────────────
+# Dark surface (it screenshots well), but the steps are the validated dark
+# categorical slots, not "bright on black": slots 1-3 clear the colour-vision
+# and contrast gates as a set, so no panel uses more than three series.
+SURFACE = "#1a1a19"
+INK = "#ffffff"
+INK_DIM = "#c3c2b7"
+GRID = "#33332f"
+BLUE, ORANGE, AQUA = "#3987e5", "#d95926", "#199e70"
+
+STYLE = {
+    "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
+    "text.color": INK, "axes.labelcolor": INK_DIM, "axes.titlecolor": INK,
+    "axes.edgecolor": GRID, "xtick.color": INK_DIM, "ytick.color": INK_DIM,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.6, "grid.linestyle": "-",
+    "axes.spines.top": False, "axes.spines.right": False,
+    "legend.frameon": False, "legend.labelcolor": INK_DIM,
+    "font.size": 10, "axes.titlesize": 12.5, "axes.titleweight": "bold",
+    "figure.dpi": 130, "savefig.bbox": "tight",
+}
+
+
+# ── small helpers ────────────────────────────────────────────────────────────
+
+def _clean(steps, values):
+    """Drop points that cannot be drawn (None / NaN / inf) and any replayed
+    step. A torn last CSV row and a resumed run that rewinds its step counter
+    are both normal here, and neither should put a spike in the hero image."""
+    out_s, out_v, last = [], [], -1
+    for s, v in zip(steps, values):
+        if s is None or v is None or s <= last:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(fv):
+            continue
+        out_s.append(int(s))
+        out_v.append(fv)
+        last = int(s)
+    return np.array(out_s, dtype=float), np.array(out_v, dtype=float)
+
+
+def available(runlog, name):
+    """Is this column worth an axis?
+
+    Two ways it is not. It can be *absent* — the architecture never measured it,
+    which since #105 is a blank cell. Or it can be present and constant at zero,
+    which is what runs written before that convention put in the columns their
+    architecture did not measure: `has()` is honestly True and the data is still
+    not a measurement. Both cases must be omitted rather than drawn, because a
+    flat zero line reads as "we measured zero" instead of "there is nothing
+    here" — and the reader is told which of the two it was (see `why_omitted`).
+    """
+    return runlog.has(name) and not runlog.is_constant(name, 0.0)
+
+
+def why_omitted(runlog, columns):
+    """None when at least one of these columns is worth drawing, else the reason
+    the panel is being dropped — in the reader's words, not the code's."""
+    if any(available(runlog, column) for column in columns):
+        return None
+    if any(runlog.has(column) for column in columns):
+        return "constant 0 throughout — logged, but not a measurement"
+    return "not measured by this architecture"
+
+
+def series(runlog, name):
+    """(tokens, values) for a column, cleaned. Empty arrays if it has no data."""
+    if not available(runlog, name):
+        return np.array([]), np.array([])
+    steps, values = _clean(*runlog.column(name))
+    return steps * TOKENS_PER_OPT_STEP, values
+
+
+def smooth(y, window):
+    """Centred moving average, edge-padded so it spans the same x as the raw."""
+    if window < 3 or len(y) < window:
+        return np.asarray(y)
+    kernel = np.ones(window) / window
+    core = np.convolve(y, kernel, mode="valid")
+    front = window // 2
+    return np.pad(core, (front, len(y) - len(core) - front), mode="edge")
+
+
+def smoothing_window(n):
+    return 0 if n < 20 else int(min(101, max(5, n // 20)))
+
+
+def fmt_tokens(n):
+    n = float(n)
+    for scale, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "k")):
+        if abs(n) >= scale:
+            return f"{n / scale:.4g}{suffix}"
+    return f"{n:.0f}"
+
+
+def _token_axis(ax, label="tokens trained"):
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: fmt_tokens(v)))
+    ax.set_xlabel(label)
+
+
+def _log_y(ax):
+    """Log y, with the in-between ticks labelled *when they fit*.
+
+    A CE curve spans less than one decade for most of a run, and a default log
+    axis would then label a single tick — technically a log scale, practically
+    unreadable. Over a wide range the same labels become a wall of text, so the
+    minor formatter decides at draw time, once the limits are final."""
+    ax.set_yscale("log")
+    plain = matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}")
+    ax.yaxis.set_major_formatter(plain)
+    ax.yaxis.set_minor_locator(matplotlib.ticker.LogLocator(subs=tuple(range(2, 10))))
+
+    def minor(value, _):
+        low, high = ax.get_ylim()
+        return f"{value:g}" if low > 0 and high / low <= 20 else ""
+
+    ax.yaxis.set_minor_formatter(matplotlib.ticker.FuncFormatter(minor))
+    ax.tick_params(axis="y", which="minor", labelsize=8)
+
+
+def _legend(ax, **kw):
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(**kw)
+
+
+def _note(ax, text, size=8):
+    """The caveat under a panel: what the number is, and what it is not. Placed
+    a fixed number of points below the axes so tall and short panels agree, and
+    wrapped to the panel's own width."""
+    inches = ax.get_position().width * ax.figure.get_figwidth()
+    ax.annotate(textwrap.fill(text, max(40, int(inches * 72 / (0.55 * size)))),
+                xy=(0, 0), xycoords="axes fraction", xytext=(0, -46),
+                textcoords="offset points", fontsize=size, color=INK_DIM, va="top")
+
+
+# ── run context (metadata, supervisor heartbeats) ────────────────────────────
+
+def budget_and_horizon(runlog):
+    """(token budget, LR decay steps) for the *plotted* run.
+
+    Both come from the run's own metadata when it recorded them: the budget is
+    an environment variable read at launch, so `config.TRAIN_TOKEN_BUDGET` in
+    this process describes this process, not the run on disk. Falling back to
+    the config is only for runs written before the tracker. Budget may be None
+    (no budget was set), in which case the LR horizon is all we can draw."""
+    params = runlog.metadata.get("parameters", {})
+    budget = params.get("TRAIN_TOKEN_BUDGET", TRAIN_TOKEN_BUDGET)
+    decay = params.get("DECAY_STEPS")
+    if decay is None:
+        decay = resolve_decay_steps(budget)
+    return budget, int(decay)
+
+
+_HEARTBEAT = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+\w+:\s*step\s+(\d+)/")
+
+
+def read_heartbeats(runlog):
+    """[(timestamp, opt step)] from the supervisor's hourly status lines.
+
+    This is the only wall-clock a run records against its progress — metrics.csv
+    has no timestamps at all — so throughput here is *sampled hourly*, never
+    measured per step."""
+    run_id = str(runlog.run_id)
+    run_dir = pathlib.Path(getattr(runlog, "run_dir", "") or REPO_ROOT / "runs" / run_id)
+    candidates = [
+        run_dir.parent / f"{run_id}.supervisor.log",   # how the launcher names it
+        run_dir / "supervisor.log",
+        REPO_ROOT / "runs" / f"{run_id}.supervisor.log",
+    ]
+
+    beats, last = [], -1
+    for path in candidates:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            match = _HEARTBEAT.match(line)
+            if not match:
+                continue
+            step = int(match.group(2))
+            if step <= last:  # a relaunch replays steps; keep the advancing ones
+                continue
+            beats.append((datetime.datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"), step))
+            last = step
+        if beats:
+            break
+    return beats
+
+
+# ── figure 1: the hero ───────────────────────────────────────────────────────
+
+def _perplexity_axis(ax):
+    """Perplexity ticks on the right. Not a second measure on a second scale —
+    the same CE curve, relabelled exp(CE), because perplexity is the number
+    that compares to published models."""
+    low, high = ax.get_ylim()
+    twin = ax.twinx()
+    twin.set_yscale(ax.get_yscale())
+    twin.set_ylim(low, high)
+    twin.grid(False)
+    twin.spines["right"].set_visible(True)
+    ticks = [p for p in (2, 3, 5, 10, 20, 50, 100, 200, 500, 1e3, 5e3, 1e4, 5e4)
+             if low <= math.log(p) <= high]
+    twin.set_yticks([math.log(p) for p in ticks])
+    twin.set_yticklabels([f"{p:,.0f}" for p in ticks])
+    twin.minorticks_off()
+    twin.set_ylabel("perplexity", color=INK_DIM)
+    return twin
+
+
+def _param_count():
+    """Headline parameter count, analytic. Guarded: the figures are worth
+    drawing even if the stats module is unavailable — but the model is never
+    built to get this number."""
+    try:
+        from instruments.model_stats import total_params
+
+        return int(total_params())
+    except Exception:
+        return None
+
+
+def training_curve(runlog, outdir):
+    tokens, ce = series(runlog, "ce")
+    if len(ce) == 0:
+        print(f"training_curve: skipped — CE is {why_omitted(runlog, ['ce'])}.")
+        return None
+
+    val_tokens, val_ce = series(runlog, "val_ce")
+    if not len(val_ce):
+        print(f"training_curve: no val CE line — {why_omitted(runlog, ['val_ce'])}.")
+    budget, decay_steps = budget_and_horizon(runlog)
+    horizon = budget if budget else decay_steps * TOKENS_PER_OPT_STEP
+    done = tokens[-1]
+
+    fig = plt.figure(figsize=(13.5, 8.6))
+    grid = fig.add_gridspec(2, 1, height_ratios=[3.0, 1.0], hspace=0.55)
+    ax = fig.add_subplot(grid[0])
+    window = smoothing_window(len(ce))
+
+    ax.plot(tokens, ce, color=BLUE, alpha=0.22, linewidth=1.0)
+    ax.plot(tokens, smooth(ce, window), color=BLUE, linewidth=2.0,
+            label="train CE (window 2)" + (f", {window}-point mean" if window else ""))
+    if len(val_ce):
+        ax.plot(val_tokens, val_ce, color=ORANGE, linewidth=1.8, marker="o",
+                markersize=3, label="held-out val CE")
+
+    uniform = math.log(VOCAB_SIZE)
+    if ce.max() > uniform * 0.9:
+        ax.axhline(uniform, color=INK_DIM, linewidth=0.9, alpha=0.5)
+        ax.text(tokens[0], uniform, f" uniform over {VOCAB_SIZE:,} vocab ({uniform:.2f} nats)",
+                fontsize=8, color=INK_DIM, va="bottom")
+
+    _log_y(ax)
+    ax.set_ylabel("cross-entropy (nats)")
+    _token_axis(ax)
+    ax.set_xlim(0, done * 1.06)
+
+    steps_axis = ax.secondary_xaxis("top", functions=(lambda t: t / TOKENS_PER_OPT_STEP,
+                                                      lambda s: s * TOKENS_PER_OPT_STEP))
+    steps_axis.set_xlabel("optimizer steps", fontsize=9)
+
+    # Direct labels on the two endpoints; the axis carries everything else.
+    ax.annotate(f"{ce[-1]:.3f}", (tokens[-1], smooth(ce, window)[-1]), color=BLUE,
+                fontsize=9, fontweight="bold", xytext=(6, -2), textcoords="offset points")
+    if len(val_ce):
+        ax.annotate(f"{val_ce[-1]:.3f}", (val_tokens[-1], val_ce[-1]), color=ORANGE,
+                    fontsize=9, fontweight="bold", xytext=(6, -2), textcoords="offset points")
+
+    _perplexity_axis(ax)
+    _legend(ax, loc="upper right", bbox_to_anchor=(1.0, 0.93))
+
+    params = _param_count()
+    subtitle = f"{MODEL_ARCH} · dim {LATENT_DIM} · depth ≤{MAX_STEPS_LIMIT}"
+    if params:
+        subtitle += f" · {params / 1e6:.1f}M params"
+    subtitle += f"  |  {fmt_tokens(done)} tokens"
+    if budget:
+        subtitle += f" of {fmt_tokens(budget)} ({100 * done / budget:.1f}% of budget)"
+    ax.set_title(f"{runlog.run_id} — training curve\n{subtitle}", loc="left", linespacing=1.6)
+    _note(ax, "train CE is the second window of each document (more context than the first); "
+              "val CE is a held-out probe, measured every 64 optimizer steps.")
+
+    # ── LR panel: the whole horizon, so the anneal is visible against progress
+    ax_lr = fig.add_subplot(grid[1])
+    schedule = build_learning_schedule(decay_steps)
+    sched_steps = np.linspace(0, decay_steps, 400)
+    ax_lr.plot(sched_steps * TOKENS_PER_OPT_STEP, [float(schedule(s)) for s in sched_steps],
+               color=AQUA, linewidth=1.8)
+    # A finished run can overshoot its horizon by a few steps; keep the marker
+    # inside the panel so its label does not float off the edge.
+    now = min(done, horizon)
+    ax_lr.axvspan(0, now, color=INK, alpha=0.06)
+    ax_lr.axvline(now, color=INK_DIM, linewidth=1.0)
+    ax_lr.annotate(f"now · {fmt_tokens(done)}", (now, 1.0), xycoords=("data", "axes fraction"),
+                   xytext=(-5 if now > 0.85 * horizon else 5, -10), textcoords="offset points",
+                   fontsize=8.5, color=INK, ha="right" if now > 0.85 * horizon else "left")
+    ax_lr.set_yscale("log")
+    ax_lr.set_ylabel("learning rate")
+    ax_lr.set_xlim(0, horizon)
+    _token_axis(ax_lr, "tokens — the full planned budget" if budget
+                else f"tokens — LR horizon ({decay_steps:,} steps; no budget recorded)")
+    ax_lr.set_title("LR schedule over the run's horizon (shaded = done)", loc="left")
+
+    path = pathlib.Path(outdir) / "training_curve.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return {
+        "path": str(path),
+        "panels": ["ce", "lr"] + (["val_ce"] if len(val_ce) else []),
+        "omitted": [] if len(val_ce) else [("val_ce", why_omitted(runlog, ["val_ce"]))],
+    }
+
+
+# ── figure 2: throughput & progress ──────────────────────────────────────────
+
+def throughput_progress(runlog, outdir):
+    beats = read_heartbeats(runlog)
+    budget, _ = budget_and_horizon(runlog)
+    done_tokens = runlog.tokens
+
+    if len(beats) < 2:
+        print("throughput_progress: fewer than two supervisor heartbeats — skipped "
+              "(throughput needs wall-clock, and metrics.csv has none).")
+        return None
+
+    times = [t for t, _ in beats]
+    steps = np.array([s for _, s in beats], dtype=float)
+    hours = np.array([(t - times[0]).total_seconds() / 3600.0 for t in times])
+    tokens = steps * TOKENS_PER_OPT_STEP
+
+    d_hours = np.diff(hours)
+    keep = d_hours > 0
+    rate = np.diff(tokens)[keep] / (d_hours[keep] * 3600.0)
+    rate_hours = hours[1:][keep]
+    recent = float(np.mean(rate[-6:]))
+
+    fig, (ax_rate, ax_prog) = plt.subplots(2, 1, figsize=(12.5, 8.4))
+    fig.subplots_adjust(hspace=0.55)
+
+    ax_rate.plot(rate_hours, rate, color=BLUE, linewidth=1.6, marker="o", markersize=3,
+                 label="tokens/sec (per interval)")
+    ax_rate.axhline(recent, color=ORANGE, linewidth=1.2, linestyle="--",
+                    label=f"recent mean {recent:,.0f} tok/s")
+    ax_rate.set_ylim(0, max(rate.max(), recent) * 1.25)
+    ax_rate.set_ylabel("tokens / second")
+    ax_rate.set_xlabel("hours since the run's first heartbeat")
+    ax_rate.set_title("Throughput — sampled, not measured", loc="left")
+    _legend(ax_rate, loc="lower right")
+    _note(ax_rate, f"each point is one supervisor heartbeat interval "
+                   f"(~{np.median(d_hours):.1f}h apart): Δsteps × {TOKENS_PER_OPT_STEP:,} tokens ÷ Δwall-clock. "
+                   "It includes checkpointing and validation, so it is the honest end-to-end rate.")
+
+    ax_prog.plot(hours, tokens, color=BLUE, linewidth=2.0, label="tokens trained")
+    eta_text = None
+    if budget and recent > 0 and done_tokens < budget:
+        # Against the CSV's position, not the last heartbeat's: the heartbeat is
+        # up to an hour stale, and the hero image counts from the CSV. Two
+        # figures disagreeing about "how far in are we" is worse than an ETA
+        # that is an hour optimistic.
+        remaining_h = (budget - done_tokens) / (recent * 3600.0)
+        finish_h = hours[-1] + remaining_h
+        ax_prog.plot([hours[-1], finish_h], [tokens[-1], budget], color=BLUE,
+                     linewidth=1.4, linestyle="--", alpha=0.6,
+                     label="projection at the recent mean rate")
+        ax_prog.axhline(budget, color=ORANGE, linewidth=1.2)
+        ax_prog.text(finish_h, budget, f"budget {fmt_tokens(budget)} ", color=ORANGE,
+                     fontsize=9, va="bottom", ha="right")
+        eta = times[-1] + datetime.timedelta(hours=remaining_h)
+        eta_text = (f"{100 * done_tokens / budget:.1f}% done · {remaining_h / 24:.1f} days left · "
+                    f"ETA {eta:%Y-%m-%d %H:%M}")
+        ax_prog.set_xlim(0, finish_h * 1.02)
+        ax_prog.set_ylim(0, budget * 1.12)
+    ax_prog.set_ylabel("tokens")
+    ax_prog.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(6))
+    ax_prog.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: fmt_tokens(v)))
+    ax_prog.set_xlabel("hours since the run's first heartbeat")
+    ax_prog.set_title("Progress against the token budget"
+                      + (f" — {eta_text}" if eta_text else ""), loc="left")
+    _legend(ax_prog, loc="lower right")
+    _note(ax_prog, f"{fmt_tokens(done_tokens)} tokens at optimizer step {runlog.last_step:,}. "
+                   "The ETA extrapolates the recent mean rate; it is an estimate, and it assumes "
+                   "no crash-relaunch and no throughput drift.")
+
+    path = pathlib.Path(outdir) / "throughput_progress.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return {"path": str(path), "panels": ["throughput", "progress"], "omitted": []}
+
+
+# ── figure 3: optimization health ────────────────────────────────────────────
+
+def _panel_grad_norm(ax, runlog):
+    tokens, values = series(runlog, "grad_norm_avg")
+    window = smoothing_window(len(values))
+    ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
+    ax.plot(tokens, smooth(values, window), color=BLUE, linewidth=1.8)
+    _log_y(ax)
+    ax.set_ylabel("‖g‖₂")
+    ax.set_title("Gradient norm (raw, pre-clip)", loc="left")
+    _note(ax, "the RAW per-micro-step norm. clip_by_global_norm(1.0) applies to the mean over "
+              f"the {TOKENS_PER_OPT_STEP // (2 * 512):,}-micro-step accumulation, which is not logged — "
+              "these two numbers are not comparable, so do not read this against the 1.0 clip (#180).")
+
+
+def _panel_depth(ax, runlog):
+    tokens, values = series(runlog, "depth_avg")
+    expected = (1 + MAX_STEPS_LIMIT) / 2
+    ax.plot(tokens, values, color=AQUA, alpha=0.25, linewidth=1.0)
+    ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=AQUA, linewidth=1.8)
+    ax.axhline(expected, color=INK_DIM, linewidth=0.9, alpha=0.6)
+    ax.text(tokens[-1] if len(tokens) else 0, expected, f"uniform mean {expected:.1f} ",
+            fontsize=8, color=INK_DIM, va="bottom", ha="right")
+    ax.set_ylabel("mean sampled depth")
+    ax.set_title(f"Sampled reasoning depth (of ≤{MAX_STEPS_LIMIT})", loc="left")
+    _note(ax, "depth is drawn uniformly per micro-step; this is the sampler's realised mean, "
+              "a check that the draw is unbiased — not something the model learns.")
+
+
+def _panel_zero_grad(ax, runlog):
+    tokens, values = series(runlog, "zero_frac_dense_max")
+    # Dots, not a line: this series is spiky by nature (an occasional micro-step
+    # underflows, most do not), and joining the spikes draws a solid wall that
+    # hides both the floor and how often the spikes happen.
+    ax.plot(tokens, values, color=ORANGE, alpha=0.45, linestyle="none", marker=".",
+            markersize=2.5, label="per logged step")
+    window = smoothing_window(len(values))
+    if window:
+        ax.plot(tokens, smooth(values, window), color=AQUA, linewidth=1.4,
+                label=f"{window}-point mean")
+    if len(values) and values.min() > 0:
+        _log_y(ax)
+    ax.set_ylabel("fraction of zero entries")
+    ax.set_title("Zero-gradient fraction (worst dense tensor)", loc="left")
+    # "best" earns its keep here: the spikes and the floor move around, so the
+    # free band between them is not always the same corner.
+    _legend(ax, loc="best", fontsize=8)
+    _note(ax, "the largest zero fraction over the dense parameter tensors at that step. "
+              "Spikes are a live signal of an f16 gradient that underflowed to zero.")
+
+
+def _panel_logits(ax, runlog):
+    for name, colour, label in (("out_entropy", BLUE, "output entropy H"),
+                                ("logz_mean", ORANGE, "mean log Z"),
+                                ("max_abs_logit", AQUA, "max |logit|")):
+        tokens, values = series(runlog, name)
+        if not len(values):
+            continue
+        ax.plot(tokens, values, color=colour, alpha=0.22, linewidth=1.0)
+        ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=colour,
+                linewidth=1.8, label=label)
+    ax.set_ylabel("nats")
+    ax.set_title("Logit health", loc="left")
+    _legend(ax, loc="lower left", fontsize=9)
+    _note(ax, "all three live on the same log-space scale, so they share one axis. Entropy "
+              "falling toward 0 with |logit| climbing is the confident-collapse shape to watch for.")
+
+
+HEALTH_PANELS = (
+    ("grad_norm", ("grad_norm_avg",), _panel_grad_norm),
+    ("depth", ("depth_avg",), _panel_depth),
+    ("zero_grad", ("zero_frac_dense_max",), _panel_zero_grad),
+    ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits),
 )
 
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8')
 
-def smooth(y, box_pts):
-    if len(y) < box_pts:
-        return np.array(y)
-    box = np.ones(box_pts) / box_pts
-    y_smooth = np.convolve(y, box, mode='valid')
-    
-    pad_front = box_pts // 2
-    pad_back = len(y) - len(y_smooth) - pad_front
-    return np.pad(y_smooth, (pad_front, pad_back), mode='edge')
+def optimization_health(runlog, outdir):
+    """Every panel here is conditional on its data. A run of an architecture
+    that does not produce one of these quantities simply gets a smaller sheet —
+    never an axis of zeros standing in for a measurement that never happened.
+    What was left out, and why, is said out loud rather than silently dropped."""
+    drawn, omitted = [], []
+    for key, columns, draw in HEALTH_PANELS:
+        reason = why_omitted(runlog, columns)
+        (omitted.append((key, reason)) if reason else drawn.append((key, draw)))
 
-def calculate_tokens(opt_step):
-    # CSV steps are optimizer steps; each one is ACCUMULATION_STEPS micro-steps
-    # of 2*MAX_SEQ_LEN tokens (the old version forgot the accumulation factor
-    # and under-reported tokens by 128x).
-    return opt_step * ACCUMULATION_STEPS * BATCH_SIZE * (MAX_SEQ_LEN * 2)
+    for key, reason in omitted:
+        print(f"optimization_health: omitted {key} — {reason}.")
+    if not drawn:
+        print("optimization_health: nothing left to draw — skipped.")
+        return None
 
-def print_model_stats():
-    """Parameter/memory stats derived from the live model's nnx.state — counted
-    from real shapes and dtypes, never transcribed formulas (which drift; the
-    old hand-math here wrongly assumed f16 parameter storage)."""
-    print("Calculating model parameters & memory footprint from the live model...")
-    import jax
-    from flax import nnx
-    from trm.model.reasoner import UniversalReasoner
+    cols = 1 if len(drawn) == 1 else 2
+    rows = math.ceil(len(drawn) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(7.6 * cols, 4.9 * rows), squeeze=False)
+    fig.subplots_adjust(hspace=0.75, wspace=0.28)
+    flat = list(axes.flat)
 
-    with jax.default_device(jax.devices("cpu")[0]):
-        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+    for ax, (_, draw) in zip(flat, drawn):
+        draw(ax, runlog)
+        _token_axis(ax)
+    for ax in flat[len(drawn):]:
+        ax.axis("off")
 
-    params = nnx.state(model, nnx.Param)
-    leaves_with_paths = jax.tree_util.tree_flatten_with_path(params)[0]
+    fig.suptitle(f"{runlog.run_id} — optimization health", x=0.09, ha="left",
+                 fontsize=14, fontweight="bold")
+    if omitted:
+        fig.text(0.09, 0.008, "omitted — " + "; ".join(f"{k}: {r}" for k, r in omitted),
+                 fontsize=8, color=INK_DIM)
+    path = pathlib.Path(outdir) / "optimization_health.png"
+    fig.savefig(path)
+    plt.close(fig)
+    return {"path": str(path), "panels": [key for key, _ in drawn],
+            "omitted": omitted}
 
-    def group_of(top_key):
-        if top_key in ("encoder_stack", "decoder_stack", "reasoning_stack"):
-            return top_key
-        if top_key in ("embed", "time_embed", "shared_token"):
-            return "embeddings"
-        return "heads & norms"
 
-    group_params = {}
-    group_bytes = {}
-    for path, leaf in leaves_with_paths:
-        top = str(getattr(path[0], 'key', path[0]))
-        group = group_of(top)
-        group_params[group] = group_params.get(group, 0) + leaf.size
-        group_bytes[group] = group_bytes.get(group, 0) + leaf.size * leaf.dtype.itemsize
+# ── entry point ──────────────────────────────────────────────────────────────
 
-    total_params = sum(group_params.values())
-    total_weight_bytes = sum(group_bytes.values())
+def build(log=None, outdir="."):
+    """Write every figure the run has data for; return what was written."""
+    runlog = load(log)
+    outdir = pathlib.Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    # Optimizer state (AdamW: 2 f32 moments per parameter) and f32 gradients
-    optimizer_bytes = total_params * 4 * 2
-    gradient_bytes = total_params * 4
+    with plt.rc_context(STYLE):
+        figures = [
+            training_curve(runlog, outdir),
+            throughput_progress(runlog, outdir),
+            optimization_health(runlog, outdir),
+        ]
+    figures = [f for f in figures if f]
 
-    # Activation memory (heuristic estimate, f16 compute):
-    # z_seq through the blocks + reasoning slot states across steps
-    act_bytes_est = (BATCH_SIZE * MAX_SEQ_LEN * LATENT_DIM * 2 * NUM_BLOCKS * 2)
-    act_bytes_est += (BATCH_SIZE * MAX_STEPS_LIMIT * SHARED_SLOTS * LATENT_DIM * 2)
+    print(f"run {runlog.run_id}: step {runlog.last_step:,}, {fmt_tokens(runlog.tokens)} tokens")
+    for figure in figures:
+        print(f"  wrote {figure['path']}  [{', '.join(figure['panels'])}]")
+    if not figures:
+        print("  nothing written — the log has no plottable data yet.")
+    return figures
 
-    total_vram_gb = (total_weight_bytes + optimizer_bytes + gradient_bytes + act_bytes_est) / (1024**3)
 
-    print(f"Model Parameters: {total_params:,}")
-    order = ["embeddings", "encoder_stack", "decoder_stack", "reasoning_stack", "heads & norms"]
-    for group in order:
-        if group in group_params:
-            note = f" (1 physical block, shared across {NUM_BLOCKS} iterations)" if group == "reasoning_stack" else ""
-            print(f"  |-- {group:16}: {group_params[group]:>12,}{note}")
-    print("-" * 50)
-    print("ESTIMATED VRAM FOOTPRINT (Training)")
-    print(f"  |-- Weights           : {total_weight_bytes / (1024**2):.2f} MB (f32 storage, f16 compute)")
-    print(f"  |-- Optimizer (AdamW) : {optimizer_bytes / (1024**2):.2f} MB")
-    print(f"  |-- Gradients (f32)   : {gradient_bytes / (1024**2):.2f} MB")
-    print(f"  |-- Activations (Est) : {act_bytes_est / (1024**2):.2f} MB")
-    print(f"  => TOTAL ESTIMATED   : {total_vram_gb:.2f} GB")
-
-def plot_training_history(log_path=None):
-    if log_path is None:
-        # Try to auto-discover the latest metrics.csv from the runs directory
-        discovered = None
-        if os.path.exists("runs"):
-            import glob
-            run_dirs = sorted(glob.glob(os.path.join("runs", "run_*")))
-            for r_dir in reversed(run_dirs):
-                csv_path = os.path.join(r_dir, "metrics.csv")
-                if os.path.exists(csv_path):
-                    discovered = csv_path
-                    break
-        if discovered:
-            print(f"🔎 Auto-discovered latest metrics CSV: {discovered}")
-            log_path = discovered
-        else:
-            print("❌ Error: No training runs or metrics.csv found inside 'runs/'.")
-            return
-    elif not os.path.exists(log_path):
-        print(f"❌ Error: {log_path} not found.")
-        return
-
-    history = []
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--log", default=None,
+                        help="metrics.csv or a run directory (default: the latest run)")
+    parser.add_argument("--out", default=".", help="directory for the PNGs (default: repo root)")
+    args = parser.parse_args()
     try:
-        with open(log_path, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    history.append({
-                        'step': int(row['step']),
-                        'loss':  float(row.get('loss', 0)),
-                        'ce': float(row.get('ce', 0)),
-                        # old CSVs called the first segment's CE "first_ce"
-                        'seg1_ce': float(row.get('seg1_ce') or row.get('first_ce') or 0),
-                        # Arch-optional (#105): a model that has no forget gate or
-                        # slot-diversity term leaves these cells empty rather than
-                        # writing zeros, so read them the sparse way — `float('')`
-                        # would raise, and the ValueError below would silently drop
-                        # every row of the run.
-                        'diversity': float(row.get('diversity_loss') or 0),
-                        'forget_cost': float(row.get('avg_forget_cost') or 0),
-                        'grad_norm': float(row.get('grad_norm_avg') or 0),
-                        'temporal_drift': float(row.get('temporal_drift') or 0),
-                        # old CSVs logged mean_halt_step where new ones log sampled depth
-                        'depth_avg': float(row.get('depth_avg') or row.get('mean_halt_step') or 0),
-                        # sparse: only written every VAL_EVERY_OPT_STEPS, 0 means absent
-                        'val_ce': float(row.get('val_ce') or 0),
-                    })
-                except ValueError:
-                    continue 
-    except Exception as e:
-        print(f"❌ Error reading {log_path}: {e}")
-        return
+        build(log=args.log, outdir=args.out)
+    except FileNotFoundError as missing:
+        raise SystemExit(str(missing))
 
-    if len(history) == 0:
-        print("ℹ️ Warning: No valid training data found in CSV.")
-        return
-
-    # CSVs written before resume-trimming existed contain replayed (non-monotonic)
-    # step ranges; keep only the first occurrence of each advancing step.
-    monotonic = []
-    last_step = -1
-    for entry in history:
-        if entry['step'] > last_step:
-            monotonic.append(entry)
-            last_step = entry['step']
-    if len(monotonic) < len(history):
-        print(f"ℹ️ Dropped {len(history) - len(monotonic)} non-monotonic (replayed) rows from the CSV.")
-    history = monotonic
-
-    steps = np.array([e['step'] for e in history])
-    ce = np.array([e['ce'] for e in history])
-    seg1_ce = np.array([e['seg1_ce'] for e in history])
-    diversity = np.array([e['diversity'] for e in history])
-    forget = np.array([e['forget_cost'] for e in history])
-    grad_norm = np.array([e['grad_norm'] for e in history])
-    temporal_drift = np.array([e['temporal_drift'] for e in history])
-    depth_avg = np.array([e['depth_avg'] for e in history])
-    val_ce = np.array([e['val_ce'] for e in history])
-
-    plt.style.use('dark_background')
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    ((ax1, ax2), (ax3, ax4)) = axes
-
-    smoothing_window = max(5, min(100, len(steps) // 20))
-
-    # --- 1. CONVERGENCE (Segment 2 vs Segment 1 CE) ---
-    ax1.plot(steps, seg1_ce, color='#ff007b', alpha=0.2, linestyle='--', label='Segment 1 CE (fresh slots)')
-    ax1.plot(steps, ce, color='#ff007b', alpha=0.2, label='Segment 2 CE (carried hunch)')
-    ax1.plot(steps, smooth(ce, smoothing_window), color='#ff007b', linewidth=2, label='Smoothed Segment 2 CE')
-    ax1.fill_between(steps, smooth(ce, smoothing_window), smooth(seg1_ce, smoothing_window),
-                     color='#ff007b', alpha=0.1, label='Hunch-Carry Gain')
-    has_val = val_ce > 0
-    if np.any(has_val):
-        ax1.plot(steps[has_val], val_ce[has_val], color='#00e5ff', linewidth=1.5,
-                 marker='o', markersize=3, label='Held-out Validation CE')
-    ax1.set_title('Convergence & Hunch Carry', fontsize=14, fontweight='bold')
-    ax1.set_ylabel('Cross Entropy')
-    if np.all(ce > 0):
-        ax1.set_yscale('log')
-    ax1.legend()
-    ax1.grid(True, alpha=0.1)
-
-    # --- 2. REASONING INTENSITY (Temporal Drift) ---
-    ax2.plot(steps, temporal_drift, color='#adff2f', alpha=0.4, label='Drift (Raw)')
-    ax2.plot(steps, smooth(temporal_drift, smoothing_window), color='#adff2f', linewidth=2, label='Smoothed Drift')
-    ax2.set_title('Latent State Temporal Drift', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Avg Distance per Step', color='#adff2f')
-    ax2.legend(loc='upper left')
-    ax2.grid(True, alpha=0.1)
-
-    # --- 3. RESOURCE COSTS (Forget & Sampled Depth) ---
-    ax3.plot(steps, smooth(forget, smoothing_window), color='#00ff88', linewidth=2, label='Forget Cost')
-    ax3_twin = ax3.twinx()
-    ax3_twin.plot(steps, smooth(depth_avg, smoothing_window), color='#ffaa00', linewidth=1, label='Avg Sampled Depth')
-    ax3_twin.set_ylabel('Avg Sampled Depth', color='#ffaa00')
-    ax3.set_title('Sampled Depth & Resource Penalties', fontsize=14, fontweight='bold')
-    ax3.set_xlabel('Training Step')
-    ax3.set_ylabel('Cost Value')
-    ax3.legend(loc='upper left')
-    ax3_twin.legend(loc='upper right')
-    ax3.grid(True, alpha=0.1)
-
-    # --- 4. MODEL HEALTH (Grad Norm & Diversity) ---
-    ax4.plot(steps, smooth(grad_norm, smoothing_window), color='#ffffff', linewidth=2, label='Grad Norm')
-    ax4_twin = ax4.twinx()
-    ax4_twin.plot(steps, smooth(diversity, smoothing_window), color='#ff00ff', linewidth=1, label='Diversity Loss')
-    ax4_twin.set_ylabel('Diversity Loss', color='#ff00ff')
-    ax4.set_title('Optimization Health', fontsize=14, fontweight='bold')
-    ax4.set_xlabel('Training Step')
-    ax4.set_ylabel('Gradient Norm')
-    if np.any(grad_norm > 0):
-        ax4.set_yscale('log')
-    ax4.legend(loc='upper left')
-    ax4_twin.legend(loc='upper right')
-    ax4.grid(True, alpha=0.1)
-
-    plt.tight_layout()
-    output_image = 'reasoning_analytics.png'
-    plt.savefig(output_image, dpi=150)
-    print(f"✨ Analytics updated: {output_image}")
-    
-    # Post-Training Summary
-    print("-" * 50)
-    print("📊 POST-TRAINING SUMMARY")
-    print("-" * 50)
-    
-    total_tokens = calculate_tokens(steps[-1]) if len(steps) > 0 else 0
-    print(f"Total Tokens Trained     : {total_tokens:,}")
-    
-    if len(ce) > 1:
-        print(f"Recent CE Change         : {ce[-1] - ce[-2]:.5f}")
-    
-    print(f"Lowest CE Observed       : {np.min(ce):.5f}")
-    
-    valid_ce = ce[~np.isnan(ce)]
-    if len(valid_ce) > 0:
-        window_size = min(100, len(valid_ce))
-        print(f"Final 100-step Avg CE    : {np.mean(valid_ce[-window_size:]):.5f}")
-
-    print("-" * 50)
-    print_model_stats()
-    print("-" * 50)
-
-    plt.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--log', type=str, default=None, 
-                        help="Path to the metrics CSV file (defaults to auto-discovering the latest run)")
-    args = parser.parse_args()
-    
-    plot_training_history(log_path=args.log)
+    main()
