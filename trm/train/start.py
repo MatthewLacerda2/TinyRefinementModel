@@ -1,10 +1,27 @@
 import os
 
 # Must be set before JAX initializes (imported transitively via trainer).
-# Preallocated BFC arena: benchmarked 17-22% faster than the old `platform`
-# allocator (synchronous cudaMalloc per buffer) — see docs/PERFORMANCE_PLAN.md
-# results log, 2026-06-10. The display does not run on this GPU, so claiming
-# 85% of VRAM up front is safe. setdefault keeps it overridable from the shell.
+#
+# CUDA's async mempool, not the default preallocated BFC arena. BFC is the faster
+# allocator in the abstract (17-22% over `platform`, whose synchronous cudaMalloc
+# per buffer it replaced — docs/PERFORMANCE_PLAN.md results log, 2026-06-10), and
+# that is still true. It just cannot serve this model on this card: at dim960 the
+# working set leaves ~190MB of slack in the arena, while every optimizer step asks
+# for a *contiguous* ~596MB param-tree buffer (138.7M x f32). BFC fragments until
+# one of those requests cannot be met and the run dies with free memory still on
+# the card — a fragmented free list, not a full one. Measured 2026-08-13 launching
+# the #157 base run:
+#   BFC, batch 2         RESOURCE_EXHAUSTED at opt step 1     (626MiB request)
+#   BFC, batch 1         RESOURCE_EXHAUSTED at opt step ~12   (596MiB request)
+#   cuda_async, batch 1  past opt step 95, through validation and a checkpoint
+# It costs nothing: 4,681 tok/s under cuda_async against 4,583 under BFC — the same
+# step time, so this is not a speed/safety trade.
+#
+# MEM_FRACTION below sizes BFC's preallocation and is inert while cuda_async is
+# selected; it is kept so that overriding the allocator back to a preallocating one
+# still gets a sane arena rather than JAX's 75% default.
+# setdefault keeps both overridable from the shell.
+os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import gc
