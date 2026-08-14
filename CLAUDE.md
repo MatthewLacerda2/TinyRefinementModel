@@ -89,7 +89,13 @@ is how the apparatus that produced it gets cleaned up afterwards:
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
 "drunk" (locally fluent, globally lost). That is not "small models can't work"; it's a
-model that never finished school. At ~138M params the right target is *not* "useful /
+model that never finished school. **And it never finished for a boring reason**: every
+one of those runs was killed by BFC allocator fragmentation, not by anything about the
+model, the data, or the scale — both July runs stopped at opt step 1540, which is
+201.9M tokens exactly, with an OOM as their last log line
+(`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
+Read the "drunk" behaviour as what 200M tokens buys, and nothing more: no conclusion
+about this architecture was ever licensed by those runs. At ~138M params the right target is *not* "useful /
 gets the prompt" (unreachable at this scale) — it's **match GPT-2-small on a standard
 yardstick** (LAMBADA last-word accuracy, or held-out perplexity in the known range).
 Until a *vanilla* model trained to completion hits that floor, no architecture ablation
