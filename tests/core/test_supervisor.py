@@ -28,6 +28,7 @@ from trm.runtime.supervisor import (
     GIVE_UP,
     KILL,
     KILLED_DIVERGENCE,
+    KILLED_OOM,
     KILLED_PLATEAU,
     RELAUNCH,
     RESTART,
@@ -402,3 +403,78 @@ def test_the_supervisor_kills_a_child_that_trips_the_plateau_guard(tmp_path):
     """, Limits(stop_step=10_000, max_retries=0))
 
     assert sup.run() == KILLED_PLATEAU
+
+
+# --- an OOM is not a crash (2026-08-13, 2026-08-15) ----------------------------
+
+def test_an_oom_is_terminal_not_relaunchable():
+    """Three launches were lost to this in one day. An OOM is deterministic: the
+    same config allocating the same tensors on the same card fails identically, so
+    relaunching spends the retry budget and ~15 minutes to reach the same place —
+    and then reports GAVE_UP, which reads like flakiness and sends the next reader
+    hunting for a race instead of looking at memory."""
+    state = State()
+    decision = decide(obs(step=12, alive=False, oom_detected=True), LIMITS, state)
+    assert decision.outcome == KILLED_OOM
+    assert decision.action != RELAUNCH
+    assert state.retries_used == 0, "an OOM must not spend a retry"
+
+
+def test_an_oom_outcome_is_deliberate_not_a_crash():
+    """So the next poll does not pick it back up as something to relaunch."""
+    from trm.runtime.supervisor import DELIBERATE
+    assert KILLED_OOM in DELIBERATE
+
+
+def test_a_crash_without_an_oom_still_relaunches():
+    """The classification must not have swallowed ordinary crashes."""
+    state = State()
+    decision = decide(obs(step=400, alive=False, oom_detected=False), LIMITS, state)
+    assert (decision.action, decision.outcome) == (RELAUNCH, CRASHED)
+
+
+def test_an_oom_while_still_alive_is_not_terminal():
+    """A logged allocator warning that the run recovered from is not a death. Only
+    a dead process plus an OOM in its output ends the run."""
+    assert decide(obs(step=400, alive=True, oom_detected=True), LIMITS, State()).action == CONTINUE
+
+
+# --- the log is append-mode: only THIS launch's output is evidence -------------
+
+def test_a_previous_sessions_markers_are_not_read_as_this_run(tmp_path):
+    """The log is opened in append mode, so a resumed run writes after whatever the
+    last session left. Reading from byte 0, a plateau or an OOM from hours ago is
+    still 'detected' — and the supervisor kills a healthy run on the strength of a
+    dead session's output. This bit nothing yet only because no run had resumed
+    after a failure that printed one."""
+    from trm.runtime.supervisor import oom_in
+
+    log = tmp_path / "train.log"
+    log.write_text("...RESOURCE_EXHAUSTED: Out of memory\n🔄 CE Plateau Detected\n")
+    stale = log.stat().st_size
+
+    assert oom_in(log) and plateau_in(log), "reading from 0 sees the old session"
+    assert not oom_in(log, stale), "reading from this launch's offset does not"
+    assert not plateau_in(log, stale)
+
+    with log.open("a") as f:
+        f.write("Step 0005 | CE: 3.5\n")
+    assert not oom_in(log, stale), "healthy output after the offset stays clean"
+
+    with log.open("a") as f:
+        f.write("CUDA_ERROR_OUT_OF_MEMORY: out of memory\n")
+    assert oom_in(log, stale), "a fresh OOM after the offset is still caught"
+
+
+@pytest.mark.parametrize("marker", [
+    "RESOURCE_EXHAUSTED: Out of memory while trying to allocate 596.39MiB",
+    "cuMemAllocAsync failed: CUDA_ERROR_OUT_OF_MEMORY: out of memory",
+    "Allocator (GPU_0_bfc) ran out of memory trying to allocate 720.0KiB",
+])
+def test_every_allocator_spells_oom_differently(tmp_path, marker):
+    """BFC, cuda_async and the command-buffer path each word it their own way, and
+    this project has now seen all three."""
+    from trm.runtime.supervisor import oom_in
+    log = tmp_path / "train.log"
+    log.write_text(marker + "\n")
+    assert oom_in(log)

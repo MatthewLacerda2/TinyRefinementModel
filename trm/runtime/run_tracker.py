@@ -267,6 +267,18 @@ class RunTracker:
             })
             self.session_index = len(metadata["sections"]) - 1
             self.save_metadata(metadata)
+            # Snapshot on resume too (#173). This branch used to skip it, which
+            # meant the *correct* way to launch a supervised run — pinning
+            # --checkpoint-path, since --new-run would make a crash-relaunch
+            # start from scratch — produced a run with no env_freeze.txt, no
+            # system_snapshot.txt and no worktree.patch. The run dir still looked
+            # populated (run_metadata.json is written either way), so the loss was
+            # invisible until someone tried to revive the weights and couldn't.
+            #
+            # Re-capturing is also more honest than capturing once: a run resumed
+            # at a different commit, or with different uncommitted edits, would
+            # otherwise describe only its first session.
+            self.capture_environment_snapshot(self.run_dir)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 
         return self.run_id
