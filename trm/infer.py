@@ -8,14 +8,15 @@ import time
 from functools import partial
 
 from trm.config import (
+    INFERENCE_DEPTH,
     LATENT_DIM,
     MAX_SEQ_LEN,
+    MODEL_ARCH,
     PAD_TOKEN_ID,
-    MAX_STEPS_LIMIT,
     TOKENIZER_NAME,
     resolve_root,
 )
-from trm.model.reasoner import UniversalReasoner
+from trm.model.contract import LanguageModel
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,10 +24,29 @@ load_dotenv()
 CHECKPOINT_DIR = resolve_root(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 HUNCH_REFRESH_EVERY = 4
 
+
+def build_model(arch=MODEL_ARCH):
+    """The architecture MODEL_ARCH selects — the same choice the trainer makes.
+
+    This used to construct UniversalReasoner unconditionally, while MODEL_ARCH has
+    defaulted to 'refiner' since Plan A became the live bet. The two have different
+    param trees, so serving a refiner checkpoint failed on a structure mismatch and
+    inference was simply unavailable for the architecture we actually train — the
+    same defect the plotter carried (#181), from the same cause: a tool naming one
+    architecture while the run selects another.
+    """
+    if arch == "refiner":
+        # Imported lazily so the baseline path never touches Plan A code, matching
+        # trm/train/trainer.py's init.
+        from trm.model.refiner_lm import RefinerForTraining
+        return RefinerForTraining(LATENT_DIM, nnx.Rngs(0))
+    from trm.model.reasoner import UniversalReasoner
+    return UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+
 def run_model_inference(
-    model: UniversalReasoner,
+    model: LanguageModel,
     tokens: jnp.ndarray,
-    depth: int = MAX_STEPS_LIMIT,
+    depth: int = INFERENCE_DEPTH,
     new_document: bool = True,
 ) -> jnp.ndarray:
     out = model(
@@ -61,7 +81,7 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 
 @partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p'])
 def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature):
-    all_logits = run_model_inference(model, padded_tks, depth=MAX_STEPS_LIMIT, new_document=refresh)
+    all_logits = run_model_inference(model, padded_tks, depth=INFERENCE_DEPTH, new_document=refresh)
     logits = all_logits[0, token_idx, :]
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
@@ -117,11 +137,11 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k
     return tokens_list
 
 def run_inference():
-    print(f"🔮 Initializing TinyRefinementModel (Dim={LATENT_DIM})...")
+    print(f"🔮 Initializing '{MODEL_ARCH}' (Dim={LATENT_DIM}, serving depth {INFERENCE_DEPTH})...")
 
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+    model = build_model()
 
     active_checkpoint_dir = CHECKPOINT_DIR
     if os.environ.get("CHECKPOINT_ROOT") is None:
@@ -148,9 +168,17 @@ def run_inference():
 
     print(f"🔄 Loading weights from step {latest_step}...")
 
-    restored = mngr.restore(latest_step, args=ocp.args.Composite(
-        model=ocp.args.StandardRestore(nnx.state(model)),
-    ))
+    # Tolerate buffers a past version of this model saved and the current one no
+    # longer defines (#105's vestigial hunch buffer, which every base-run
+    # checkpoint before it still carries). Same helper the trainer's resume uses,
+    # so serving and resuming accept exactly the same set of checkpoints.
+    from trm.runtime.checkpoints import restore_tolerating_legacy
+    restored = restore_tolerating_legacy(
+        lambda model_target: mngr.restore(latest_step, args=ocp.args.Composite(
+            model=ocp.args.StandardRestore(model_target),
+        )),
+        model,
+    )
     nnx.update(model, restored['model'])
 
     print("✅ Model loaded and ready!")
