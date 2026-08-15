@@ -57,13 +57,15 @@ BUDGET_COMPLETE = "BUDGET_COMPLETE"
 WALLCLOCK_COMPLETE = "WALLCLOCK_COMPLETE"
 KILLED_PLATEAU = "KILLED_PLATEAU"
 KILLED_DIVERGENCE = "KILLED_DIVERGENCE"
+KILLED_OOM = "KILLED_OOM"
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
-DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_PLATEAU, KILLED_DIVERGENCE)
+DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_PLATEAU, KILLED_DIVERGENCE,
+              KILLED_OOM)
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,9 @@ class Observation:
     plateau_detected: bool
     alive: bool
     elapsed_hours: float = 0.0
+    # Whether THIS launch's output contains an out-of-memory failure. Read from
+    # the log because the exception surfaces in the child, not in our exit code.
+    oom_detected: bool = False
 
 
 @dataclass
@@ -195,6 +200,18 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
                         f"(restart {state.retries_used}/{limits.max_retries})")
 
     if not obs.alive:
+        # An OOM is not a crash worth retrying. It is deterministic: the same
+        # config, on the same card, allocating the same tensors, fails the same
+        # way. Relaunching burns the retry budget and ~15 minutes to arrive at
+        # the identical failure, and — worse — it reports GAVE_UP, which reads
+        # like flakiness and sends the next reader looking for a race.
+        # Naming it is most of the value: "died of an OOM" points at memory,
+        # "crashed twice, gave up" points nowhere. (2026-08-13 lost three
+        # launches to this loop, each stopped by hand.)
+        if obs.oom_detected:
+            return Decision(STOP, KILLED_OOM,
+                            f"died at step {obs.step} with an out-of-memory failure; "
+                            f"relaunching would repeat it exactly")
         if state.retries_used >= limits.max_retries:
             return Decision(GIVE_UP, GAVE_UP,
                             f"died before budget and {limits.max_retries} relaunches were used")
@@ -312,11 +329,40 @@ def read_progress(metrics_csv: pathlib.Path) -> tuple[int, float | None]:
     return 0, None
 
 
-def plateau_in(log_path: pathlib.Path) -> bool:
+# What the trainer prints when the CE-plateau detector actually flips a run into
+# SFT. Only that flip prints this; a plateau that is merely *reported* (the
+# default since SFT_ON_PLATEAU landed) deliberately words itself differently, so
+# reporting a plateau cannot kill the run.
+PLATEAU_MARKER = "CE Plateau Detected"
+# JAX/XLA surface out-of-memory differently depending on the allocator: BFC says
+# RESOURCE_EXHAUSTED, cuda_async says CUDA_ERROR_OUT_OF_MEMORY, and the command
+# buffer path says it a third way. Match any of them.
+OOM_MARKERS = ("RESOURCE_EXHAUSTED", "CUDA_ERROR_OUT_OF_MEMORY", "ran out of memory")
+
+
+def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
+    """The log this launch produced, not everything the file has ever held.
+
+    The offset is the point. The log is opened in append mode, so a relaunch — and
+    every resumed run — writes after whatever a previous session left behind. Read
+    from byte 0 and a plateau or an OOM from *hours ago* is still 'detected', and
+    the supervisor kills a healthy run on the strength of a dead session's output.
+    """
     try:
-        return "CE Plateau Detected" in log_path.read_text(errors="replace")
+        with log_path.open(errors="replace") as f:
+            f.seek(offset)
+            return f.read()
     except OSError:
-        return False
+        return ""
+
+
+def plateau_in(log_path: pathlib.Path, offset: int = 0) -> bool:
+    return PLATEAU_MARKER in read_log_since(log_path, offset)
+
+
+def oom_in(log_path: pathlib.Path, offset: int = 0) -> bool:
+    text = read_log_since(log_path, offset)
+    return any(marker in text for marker in OOM_MARKERS)
 
 
 # --- the loop -----------------------------------------------------------------
@@ -330,12 +376,19 @@ class Supervisor:
     log_path: pathlib.Path
     metrics_csv: pathlib.Path
     poll_seconds: float = 300.0
+    # Byte offset where the current launch's output begins; set by launch(). 0 is
+    # correct before the first launch — there is nothing of ours to skip yet.
+    log_offset: int = 0
     heartbeat_every: int = 12  # polls between status reports
     report: object = print  # callable(str); the heartbeat's destination
     env: dict = field(default_factory=dict)
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Where this launch's output starts. Everything before it belongs to a
+        # previous session (the log is append-mode) and must not be read as this
+        # run's evidence — see read_log_since.
+        self.log_offset = self.log_path.stat().st_size if self.log_path.exists() else 0
         env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1", **self.env}
         log = self.log_path.open("a")
         return subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
@@ -355,11 +408,13 @@ class Supervisor:
 
     def observe(self, proc: subprocess.Popen, started: float) -> Observation:
         step, ce = read_progress(self.metrics_csv)
+        text = read_log_since(self.log_path, self.log_offset)
         return Observation(
             step=step, ce=ce,
-            plateau_detected=plateau_in(self.log_path),
+            plateau_detected=PLATEAU_MARKER in text,
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
+            oom_detected=any(marker in text for marker in OOM_MARKERS),
         )
 
     def run(self) -> str:
