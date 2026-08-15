@@ -24,6 +24,7 @@ from trm.config import (
     MAX_STEPS_LIMIT,
     DATA_SEED,
     MODEL_SEED,
+    SFT_ON_PLATEAU,
     TOKENS_PER_OPT_STEP,
     TRAIN_TOKEN_BUDGET,
     resolve_root,
@@ -59,6 +60,10 @@ MAX_NONFINITE_STREAK = 50
 # blocks the loop (wait_until_finished), so it must stay rare.
 VAL_EVERY_OPT_STEPS = 64
 CHECKPOINT_EVERY_OPT_STEPS = 64
+# Opt steps between "still plateaued" notices. `monitor.push` keeps returning True
+# for every step until CE improves, so an unthrottled notice would print on every
+# one of them and bury the rest of the log.
+PLATEAU_NOTICE_EVERY = 200
 
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 if DATA_ROOT:
@@ -203,6 +208,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # Latest held-out CE from the validation probe, carried so the (less frequent)
     # logging block can record it. None until the first probe fires.
     latest_val_ce = None
+    # Opt step of the last plateau notice, so a persistent plateau reports
+    # periodically instead of on every step. Negative so the first one always prints.
+    last_plateau_notice = -PLATEAU_NOTICE_EVERY
 
     try:
         while True:
@@ -329,6 +337,24 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 run_tracker.update_session_duration()
 
                 plateaued = monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
+                if plateaued and not sft_phase_event.is_set() and not SFT_ON_PLATEAU:
+                    # Report it and keep pretraining. A plateau is a fact about the
+                    # loss curve; it is not a verdict that the run is done, and at a
+                    # high LR it usually means "cannot descend further yet" rather
+                    # than "converged" (see SFT_ON_PLATEAU in trm/config.py).
+                    #
+                    # The wording matters as much as the behaviour: the supervisor
+                    # greps the log for "CE Plateau Detected" and kills the run on
+                    # sight, so this line must NOT contain that phrase. The phrase
+                    # stays reserved for an actual flip, which keeps the
+                    # supervisor's guard working as a backstop.
+                    if opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
+                        last_plateau_notice = opt_step
+                        print(f"📉 [Plateau] CE flat for >{monitor.patience} opt steps "
+                              f"(best windowed CE {monitor.best_avg_ce:.4f}). Pretraining "
+                              f"continues — the SFT auto-flip is off (SFT_ON_PLATEAU).")
+                    plateaued = False
+
                 if plateaued:
                     if sft_phase_event.is_set():
                         print("🛑 Training halted: No improvement in CE during SFT phase.")

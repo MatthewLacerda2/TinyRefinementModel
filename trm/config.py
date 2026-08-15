@@ -148,6 +148,27 @@ ACCUMULATION_STEPS = 128
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
 
+# Whether a CE plateau may flip a pretraining run into the SFT chat phase.
+# OFF, and it should stay off for any run whose product is a base model.
+#
+# This killed the #157 base run at opt step 5,055 of 30,518 (2026-08-15). The
+# detector fired, the trainer switched to the chat mixture and dropped the LR to
+# 10%, CE went 3.31 -> 8.57, and recreating the optimizer OOM'd the card. The
+# plateau itself was REAL — held-out val CE was flat at ~4.06 too — but a run at
+# 16% of its budget with the LR still at 9.9e-5 (the cosine has barely started)
+# has not converged; it is sitting in a basin it cannot leave until the anneal
+# brings the LR down. "Stopped improving" and "finished learning" are different
+# claims, and the detector cannot tell them apart.
+#
+# The supervisor already believed this: it greps the log for the flip and kills
+# the run "to protect the pretrain". One component deliberately triggered a
+# transition the other treated as an emergency — a leftover from when pretrain
+# and SFT were one script. The plateau is still detected and still reported; it
+# just no longer gets to end or contaminate a run. Set SFT_ON_PLATEAU=1 for a
+# run that genuinely wants the chat phase, and the supervisor's kill still
+# applies as a backstop.
+SFT_ON_PLATEAU = os.environ.get("SFT_ON_PLATEAU", "0") == "1"
+
 # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
 # and scores them ONE ROW AT A TIME, deliberately ignoring BATCH_SIZE. Sizing or
 # chunking the eval slice by a training throughput knob would silently redefine
