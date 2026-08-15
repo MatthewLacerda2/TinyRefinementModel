@@ -1,3 +1,4 @@
+import argparse
 import os
 import jax
 import jax.numpy as jnp
@@ -23,6 +24,13 @@ load_dotenv()
 
 CHECKPOINT_DIR = resolve_root(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
 HUNCH_REFRESH_EVERY = 4
+
+# Sampling default. 0.5 was too cold to see the model: it divides the logits, so it
+# *doubles* every gap, and with max|logit| already ~21 partway through the base run
+# that makes sampling effectively greedy — which is the classic way to turn an
+# undertrained LM into a repetition loop ("the ratio of the ratio of the ratio").
+# What you read then is the decoder's failure mode, not the weights'.
+DEFAULT_TEMPERATURE = 0.7
 
 
 def build_model(arch=MODEL_ARCH):
@@ -79,13 +87,14 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 
     return logits
 
-@partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p'])
-def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature):
-    all_logits = run_model_inference(model, padded_tks, depth=INFERENCE_DEPTH, new_document=refresh)
+@partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p', 'depth'])
+def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature, depth):
+    all_logits = run_model_inference(model, padded_tks, depth=depth, new_document=refresh)
     logits = all_logits[0, token_idx, :]
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
-def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k=50, top_p=0.9):
+def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TEMPERATURE,
+                  top_k=50, top_p=0.9, depth=INFERENCE_DEPTH):
     seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 
@@ -114,7 +123,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k
         logits = get_logits_for_token(
             model, input_ids, valid_len - 1,
             refresh=new_document, top_k=top_k, top_p=top_p,
-            temperature=effective_temperature,
+            temperature=effective_temperature, depth=depth,
         )
 
         rng, subkey = jax.random.split(rng)
@@ -136,8 +145,32 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=0.5, top_k
     print()
     return tokens_list
 
-def run_inference():
-    print(f"🔮 Initializing '{MODEL_ARCH}' (Dim={LATENT_DIM}, serving depth {INFERENCE_DEPTH})...")
+def build_arg_parser():
+    ap = argparse.ArgumentParser(
+        description="Interactive generation from the latest checkpoint.")
+    ap.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE,
+                    help="softmax temperature; 0 means greedy argmax "
+                         f"(default {DEFAULT_TEMPERATURE})")
+    ap.add_argument("--top-k", type=int, default=50,
+                    help="keep only the k highest-scoring tokens; 0 disables (default 50)")
+    ap.add_argument("--top-p", type=float, default=0.9,
+                    help="nucleus cutoff, applied after temperature (default 0.9)")
+    ap.add_argument("--max-new-tokens", type=int, default=256,
+                    help="generation length cap (default 256)")
+    ap.add_argument("--depth", type=int, default=INFERENCE_DEPTH,
+                    help="refinement loops per forward pass. The dense sweep put the "
+                         f"accuracy plateau at ~6 (default {INFERENCE_DEPTH}); the "
+                         "sinusoidal time signal is defined at any step, so this "
+                         "extrapolates past the trained range")
+    return ap
+
+
+def run_inference(argv=None):
+    args = build_arg_parser().parse_args(argv)
+
+    print(f"🔮 Initializing '{MODEL_ARCH}' (Dim={LATENT_DIM}, serving depth {args.depth})...")
+    print(f"   sampling: temperature {args.temperature}, top_k {args.top_k}, "
+          f"top_p {args.top_p}, max {args.max_new_tokens} tokens")
 
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
@@ -199,7 +232,10 @@ def run_inference():
             if not user_input:
                 continue
 
-            generate_text(model, enc, user_input)
+            generate_text(model, enc, user_input,
+                          max_new_tokens=args.max_new_tokens,
+                          temperature=args.temperature,
+                          top_k=args.top_k, top_p=args.top_p, depth=args.depth)
             print("-" * 30)
 
         except KeyboardInterrupt:

@@ -53,3 +53,32 @@ def test_both_arches_satisfy_the_contract_the_serving_loop_uses(arch):
     switching MODEL_ARCH would fail at generation time rather than at load."""
     from trm.model.contract import LanguageModel
     assert isinstance(infer.build_model(arch), LanguageModel)
+
+
+# --- sampling is configurable, and the default is not greedy ------------------
+
+def test_the_default_temperature_is_warm_enough_to_see_the_model():
+    """0.5 divided the logits, doubling every gap, and with max|logit| ~21 partway
+    through the base run that made sampling effectively greedy — which turns an
+    undertrained LM into a repetition loop. What you read then is the decoder's
+    failure mode, not the weights'."""
+    assert infer.DEFAULT_TEMPERATURE == 0.7
+    args = infer.build_arg_parser().parse_args([])
+    assert args.temperature == 0.7
+
+
+def test_every_sampling_knob_is_reachable_from_the_cli():
+    args = infer.build_arg_parser().parse_args(
+        ["--temperature", "0.9", "--top-k", "0", "--top-p", "1.0",
+         "--max-new-tokens", "32", "--depth", "8"])
+    assert (args.temperature, args.top_k, args.top_p) == (0.9, 0, 1.0)
+    assert (args.max_new_tokens, args.depth) == (32, 8)
+
+
+def test_depth_defaults_to_the_serving_knee_and_is_overridable():
+    """Depth is the architecture's whole bet, and the sinusoidal time signal is
+    defined at any step — so serving depth should be a dial, not a constant baked
+    into the generation loop."""
+    from trm.config import INFERENCE_DEPTH
+    assert infer.build_arg_parser().parse_args([]).depth == INFERENCE_DEPTH
+    assert infer.build_arg_parser().parse_args(["--depth", "16"]).depth == 16
