@@ -18,7 +18,13 @@ docs/plans/
 # both regenerable from the run snapshot. Never commit them.
 .timemachine/
 
-# Regenerable plot outputs at repo root (plot_history.py / eval scripts).
+# Regenerable plot outputs at repo root (instruments/plots.py / eval scripts).
 # The canonical, dated figures we keep live in docs/findings/.
 /depth_curve.png
+/training_curve.png
+/throughput_progress.png
+/optimization_health.png
+# Retired: the single four-panel image plots.py used to emit (#179). Nothing
+# writes it any more — delete your local copy whenever, this line just keeps a
+# leftover one out of `git status`.
 /reasoning_analytics.png
