@@ -53,6 +53,7 @@ from trm.config import (           # noqa: E402
     VOCAB_SIZE,
 )
 from instruments import model_stats, runlog   # noqa: E402
+from instruments.invariants import clean_column, describe, suspect_rows   # noqa: E402
 
 RULE = "=" * 78
 THIN = "-" * 78
@@ -171,6 +172,24 @@ def _learning_rate(log, step):
         return None, None
 
 
+def _print_suspect(suspect):
+    """Say plainly that some rows are excluded, and why.
+
+    Silently dropping them would be worse than reporting the bad numbers: a
+    reader who is not told cannot tell a filtered series from a clean run, and
+    the whole point of the check is to make a corrupted accumulator visible.
+    """
+    if not suspect:
+        return
+    print(f"\n  ! {len(suspect)} row(s) excluded from every figure below — an "
+          f"invariant that cannot be violated by any model was violated, so the "
+          f"row's accumulator is wrong and nothing on it is trustworthy:")
+    for line in describe(suspect):
+        print(f"      {line}")
+    print("    (the row is still in metrics.csv; see #194 for the resume artifact "
+          "that causes this, and #195 for the check)")
+
+
 def print_run(log):
     print(f"\nRUN  {log.run_id}")
     print(f"  source: {log.csv_path}")
@@ -212,12 +231,14 @@ def print_run(log):
     if lr is not None:
         print(f"  LR now: {lr:.2e}  (cosine to step {decay_steps:,})   [estimated — the run's recorded schedule]")
 
-    _print_losses(log)
+    suspect = suspect_rows(log)
+    _print_suspect(suspect)
+    _print_losses(log, suspect)
     _print_diagnostics(log)
 
 
-def _print_losses(log):
-    _, ce = log.column("ce")
+def _print_losses(log, suspect=None):
+    _, ce = clean_column(log, "ce", suspect)
     if ce:
         last, best = ce[-1], min(ce)
         tail = _mean(ce[-100:])
@@ -225,7 +246,7 @@ def _print_losses(log):
         print(f"    best {best:.4f} (ppl {_perplexity(best):,.1f}) · "
               f"last-{min(100, len(ce))} mean {tail:.4f} (ppl {_perplexity(tail):,.1f})   [measured]")
     if log.has("val_ce"):
-        steps, val = log.column("val_ce")
+        steps, val = clean_column(log, "val_ce", suspect)
         print(f"  val CE:   {val[-1]:.4f} (ppl {_perplexity(val[-1]):,.1f}) at step {steps[-1]:,}   "
               f"[sampled — the held-out probe's fixed rows]")
         print(f"    best {min(val):.4f} (ppl {_perplexity(min(val)):,.1f}) over {len(val)} evals   [sampled]")

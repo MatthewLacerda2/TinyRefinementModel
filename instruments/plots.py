@@ -52,6 +52,7 @@ import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
 
 from instruments.runlog import load  # noqa: E402
+from instruments.invariants import clean_column, suspect_rows  # noqa: E402
 from trm.config import (  # noqa: E402
     LATENT_DIM,
     MAX_STEPS_LIMIT,
@@ -132,11 +133,17 @@ def why_omitted(runlog, columns):
     return "not measured by this architecture"
 
 
-def series(runlog, name):
-    """(tokens, values) for a column, cleaned. Empty arrays if it has no data."""
+def series(runlog, name, suspect=None):
+    """(tokens, values) for a column, cleaned. Empty arrays if it has no data.
+
+    Rows failing an invariant (#195) are dropped here rather than in each caller,
+    so no figure can accidentally plot one. The resume artifact (#194) puts a
+    ~40% downward spike in the curve otherwise — a dip the model never had.
+    """
     if not available(runlog, name):
         return np.array([]), np.array([])
-    steps, values = _clean(*runlog.column(name))
+    bad = suspect_rows(runlog) if suspect is None else suspect
+    steps, values = _clean(*clean_column(runlog, name, bad))
     return steps * TOKENS_PER_OPT_STEP, values
 
 
