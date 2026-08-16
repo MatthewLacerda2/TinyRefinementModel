@@ -478,3 +478,55 @@ def test_every_allocator_spells_oom_differently(tmp_path, marker):
     log = tmp_path / "train.log"
     log.write_text(marker + "\n")
     assert oom_in(log)
+
+
+# --- the heartbeat is for humans, and humans stop reading -----------------------
+
+def test_routine_reports_are_daily_not_hourly():
+    """At hourly cadence a nine-day run posts ~270 identical RUNNING lines to its
+    tracking issue — #157 had 57 in two days — burying the launch decision, the
+    findings and the diagnoses the issue exists to record. A status feed nobody
+    can read is not a status feed."""
+    from trm.runtime.supervisor import Supervisor
+    import pathlib
+    sup = Supervisor(command=(), limits=Limits(stop_step=1),
+                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"))
+    assert sup.heartbeat_every * sup.poll_seconds / 3600 == 24.0
+
+
+def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
+    """Hours, not poll counts — the cadence a person cares about should not require
+    dividing by a polling interval they did not choose."""
+    from trm.runtime import supervisor as sup_mod
+
+    captured = {}
+
+    class Stub:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+        def run(self):
+            return sup_mod.BUDGET_COMPLETE
+
+    original = sup_mod.Supervisor
+    sup_mod.Supervisor = Stub
+    try:
+        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock",
+                      "--heartbeat-hours", "6", "--poll-seconds", "300"])
+    finally:
+        sup_mod.Supervisor = original
+
+    assert captured["heartbeat_every"] == 72, "6h at a 300s poll is 72 polls"
+
+
+def test_a_decision_always_reports_regardless_of_cadence():
+    """Quieting the routine case must not quiet the events that matter. Every
+    non-CONTINUE decision posts immediately — that is what makes a daily heartbeat
+    safe rather than negligent."""
+    from pathlib import Path
+    from trm.runtime import supervisor as sup_mod
+    source = Path(sup_mod.__file__).read_text()
+    assert "decision.action != CONTINUE" in source, (
+        "decisions must bypass the heartbeat interval"
+    )

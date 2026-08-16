@@ -379,7 +379,16 @@ class Supervisor:
     # Byte offset where the current launch's output begins; set by launch(). 0 is
     # correct before the first launch — there is nothing of ours to skip yet.
     log_offset: int = 0
-    heartbeat_every: int = 12  # polls between status reports
+    # Polls between routine "still running" reports. Every *decision* posts
+    # regardless (see run()), so this only paces the no-news case — and no-news
+    # deserves very little airtime. At the default 300s poll, 288 is once a day.
+    #
+    # It was 12 (hourly), which put 57 comments on issue #157 in the first two
+    # days of a nine-day run and was on course for ~270. That buries the things
+    # the issue exists to record — the launch decision, the allocator finding,
+    # the plateau diagnosis — under a wall of identical RUNNING lines. A status
+    # feed nobody can read is not a status feed.
+    heartbeat_every: int = 288
     report: object = print  # callable(str); the heartbeat's destination
     env: dict = field(default_factory=dict)
 
@@ -485,6 +494,10 @@ def main(argv=None) -> int:
     ap.add_argument("--max-hours", type=float, default=None)
     ap.add_argument("--min-free-gb", type=float, default=Limits.min_free_gb)
     ap.add_argument("--poll-seconds", type=float, default=300.0)
+    ap.add_argument("--heartbeat-hours", type=float, default=None,
+                    help="hours between routine 'still running' reports (default 24). "
+                         "Every decision — kill, relaunch, completion — reports "
+                         "regardless; this only paces the no-news case")
     ap.add_argument("--no-gpu-lock", action="store_true",
                     help="for a CPU run; the lock exists for the single card")
     ap.add_argument("trainer_args", nargs="*",
@@ -509,6 +522,8 @@ def main(argv=None) -> int:
         metrics_csv=args.run_dir / "metrics.csv",
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
+        **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
+           if args.heartbeat_hours is not None else {}),
     )
 
     lock = GpuLock(label=f"stop_step={args.stop_step}")
