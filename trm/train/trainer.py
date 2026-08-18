@@ -32,6 +32,7 @@ from trm.config import (
 from trm.model.reasoner import UniversalReasoner
 from trm.runtime.checkpoints import save_checkpoint
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
+from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.optimizers import optimizer_chain, create_sft_optimizer
 from trm.train.schedules import (
@@ -207,6 +208,13 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     loss_scaler = DynamicLossScale()
     print(f"🔍 [LossScale] dynamic f16 loss scaling active, starting at "
           f"{loss_scaler.value:g} (#199)")
+    # The clip in the optimizer chain only ever sees the mean of ACCUMULATION_STEPS
+    # micro-steps; this one sees each micro-step (#201). Also not checkpointed — the
+    # EMA re-converges inside its warmup, and a stale estimate would be a worse
+    # ceiling than a freshly measured one.
+    grad_guard = GradientNormGuard()
+    print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
+          f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     accum_loss = 0.0
     accum_token_loss = 0.0
     accum_grad_norm = 0.0
@@ -236,13 +244,19 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             depth = sample_reasoning_depth(step)
 
+            # The ceiling is built from the micro-steps already seen, so it is
+            # known before this one runs — an outlier cannot widen the gate it is
+            # about to be measured against.
+            ceiling = grad_guard.threshold
             loss, out, grads, grad_norm = compute_grad_step(
                 model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,
                 loss_scale=jnp.float32(loss_scaler.value),
+                clip_norm=jnp.float32(jnp.inf if ceiling is None else ceiling),
             )
 
             current_loss = float(loss)
             current_grad_norm = float(grad_norm)
+            grad_guard.observe(current_grad_norm)
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
                 # Divergence must be loud and must not poison the optimizer state
@@ -340,6 +354,17 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 print(
                     f"🧊 [ZeroGrad] dense max: {zero_frac_dense:.4f} | "
                     + " ".join(f"{k}={v:.3f}" for k, v in zero_fracs.items())
+                )
+                # The clip rate is the guard's own vital sign (#201): a few percent
+                # means it is catching the tail it was built for, ~0% means the
+                # ceiling has drifted too high to catch anything, and a large
+                # fraction means it is clipping ordinary steps and reshaping training.
+                ceiling_now = grad_guard.threshold
+                print(
+                    f"✂️ [GradGuard] clipped {grad_guard.clip_rate:.2%} of "
+                    f"{grad_guard.observed:,} micro-steps | typical norm "
+                    f"{grad_guard.ema:.1f} | ceiling "
+                    + ("warming up" if ceiling_now is None else f"{ceiling_now:.1f}")
                 )
 
                 if not sft_phase_event.is_set():

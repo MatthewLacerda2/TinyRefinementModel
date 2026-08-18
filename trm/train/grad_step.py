@@ -30,7 +30,8 @@ def compute_total_loss(ce1, ce2, graded_aux):
 
 
 @nnx.jit(static_argnames=['depth'])
-def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss_scale=1.0):
+def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss_scale=1.0,
+                      clip_norm=jnp.inf):
     # Whether this batch opens a new document is a fact about the data stream;
     # what a model does with it (start fresh, or continue from carried state) is
     # the model's business.
@@ -108,6 +109,22 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
+
+    # Clip THIS micro-step, not the accumulated mean (#201). MultiSteps wraps the
+    # optimizer chain, so optax's clip_by_global_norm only ever sees the average of
+    # ACCUMULATION_STEPS of these — and with a p99/p50 ratio above 50, one outlier
+    # decides the direction of that average while the clip merely resizes it. The
+    # ceiling is a multiple of the run's own typical norm, computed by the caller,
+    # so it tracks the model instead of a constant that expires.
+    #
+    # grad_norm is returned UNCLIPPED: it is the run's oldest continuous telemetry
+    # ("raw per-micro-step, BEFORE clip" — grad_zero_fractions' sibling in the CSV),
+    # and rewriting its meaning would silently break every historical comparison.
+    # A non-finite norm leaves the gradients untouched: the trainer skips the whole
+    # micro-step anyway, and 0/inf would turn a skip into a NaN.
+    safe_norm = jnp.where(jnp.isfinite(grad_norm), grad_norm, 1.0)
+    clip_factor = jnp.minimum(1.0, clip_norm / jnp.maximum(safe_norm, 1e-12))
+    grads = jax.tree_util.tree_map(lambda g: g * clip_factor, grads)
 
     return loss, out, grads, grad_norm
 
