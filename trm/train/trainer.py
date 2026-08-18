@@ -32,6 +32,7 @@ from trm.config import (
 from trm.model.reasoner import UniversalReasoner
 from trm.runtime.checkpoints import save_checkpoint
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
+from trm.train.loss_scale import DynamicLossScale
 from trm.train.optimizers import optimizer_chain, create_sft_optimizer
 from trm.train.schedules import (
     CURRICULUM_START_WEIGHTS,
@@ -199,6 +200,13 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     val_probe = ValidationProbe(DATA_ROOT)
     step = start_step
 
+    # f16 gradients underflow to exactly zero without this, which is what destroyed
+    # the model at opt step 11,140 on 2026-08-18 (#199). Not restored from the
+    # checkpoint: S re-finds its ceiling within a few hundred micro-steps, and a
+    # stale value would be a worse starting guess than the standard one.
+    loss_scaler = DynamicLossScale()
+    print(f"🔍 [LossScale] dynamic f16 loss scaling active, starting at "
+          f"{loss_scaler.value:g} (#199)")
     accum_loss = 0.0
     accum_token_loss = 0.0
     accum_grad_norm = 0.0
@@ -229,7 +237,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             depth = sample_reasoning_depth(step)
 
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step), depth, doc_boundary=doc_boundary
+                model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,
+                loss_scale=jnp.float32(loss_scaler.value),
             )
 
             current_loss = float(loss)
@@ -240,9 +249,16 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # or any state the model carries (which the grad step already
                 # overwrote).
                 nonfinite_streak += 1
+                # With loss scaling on, the overwhelmingly likely cause is that S
+                # climbed past what the f16 backward can hold (#199), so back it off
+                # and let the next micro-step try again. A genuine divergence keeps
+                # producing non-finite steps as S falls, and the streak abort below
+                # still ends the run.
+                scale_now = loss_scaler.record_overflow()
                 print(
                     f"⚠️ Non-finite loss/grad at micro-step {step} "
-                    f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — skipping update."
+                    f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — "
+                    f"skipping update, loss scale → {scale_now:g}."
                 )
                 model.reset_state()
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
@@ -253,6 +269,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 step += 1
                 continue
             nonfinite_streak = 0
+            if loss_scaler.record_good_step():
+                print(f"🔍 [LossScale] raised to {loss_scaler.value:g} after "
+                      f"{loss_scaler.growth_interval} clean micro-steps (#199)")
 
             # Underflow instrument (#82) sampling happens BEFORE the update:
             # apply_grads donates the grad buffers (#128), so this micro-step's

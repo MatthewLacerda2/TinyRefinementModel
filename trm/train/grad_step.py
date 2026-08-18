@@ -30,7 +30,7 @@ def compute_total_loss(ce1, ce2, graded_aux):
 
 
 @nnx.jit(static_argnames=['depth'])
-def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False):
+def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss_scale=1.0):
     # Whether this batch opens a new document is a fact about the data stream;
     # what a model does with it (start fresh, or continue from carried state) is
     # the model's business.
@@ -86,9 +86,21 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False):
             'token_loss': jax.lax.stop_gradient(ce2),
         }
         out2 = out2.replace(logits=None, hidden=None, diag=new_diag)
-        return total_loss, out2
+        # Scaled for the backward pass only (#199): every intermediate gradient is
+        # loss_scale times larger while it is held in f16, so the small ones clear
+        # the subnormal floor instead of rounding to exactly zero. Undone below,
+        # before anything reads a gradient — in exact arithmetic this is a no-op.
+        return total_loss * loss_scale, out2
 
     (loss, out), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+
+    # Unscale before ANYTHING reads these (#199): the optimizer must see the true
+    # gradient, and grad_norm has to stay comparable with every step this run
+    # already recorded. An overflow to inf survives the division as inf, so the
+    # trainer's non-finite branch still catches it — that is what tells the scaler
+    # it went too high.
+    loss = loss / loss_scale
+    grads = jax.tree_util.tree_map(lambda g: g / loss_scale, grads)
 
     # Let the model settle whatever it carries into the next step. A stateless
     # architecture does nothing here.
