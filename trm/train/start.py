@@ -24,6 +24,20 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
+import sys
+
+# A resumed run's LR horizon has to come from the run, not from whichever shell
+# relaunched it (#197) — and it has to be settled *here*, because trm.config bakes
+# TRAIN_TOKEN_BUDGET into schedules.DECAY_STEPS the moment it is imported below.
+# run_budget is stdlib-only for exactly that reason: nothing it touches can pull
+# config in early. An explicit env var still wins.
+from trm.runtime.run_budget import adopt_recorded_budget, checkpoint_path_from_argv, horizon_mismatch
+
+if adopt_recorded_budget(checkpoint_path_from_argv(sys.argv)):
+    # The number itself lands in the LR horizon banner a few lines into startup;
+    # what this says is where it came from.
+    print("🗓️ Recovered TRAIN_TOKEN_BUDGET from the resumed run's own metadata (#197)")
+
 import gc
 import argparse
 import threading
@@ -32,6 +46,7 @@ import multiprocessing as mp
 from flax import nnx
 
 from trm.train.optimizers import create_sft_optimizer
+from trm.train.schedules import DECAY_STEPS
 from trm.train.trainer import (
     init_model_and_optimizer,
     setup_data_pipeline,
@@ -82,6 +97,15 @@ if __name__ == "__main__":
     # 2. Start/Resume Run Tracker session
     run_tracker = RunTracker()
     run_tracker.start_session(run_id=checkpoint_run_id)
+
+    # Adoption above covers every launch that names its checkpoint path — including
+    # the supervisor's unattended crash relaunch. A resume that instead let the run
+    # be auto-discovered had no path to read that early, so the horizon is checked
+    # once here, where the run directory is finally known (#197).
+    complaint = horizon_mismatch(run_tracker.run_dir, DECAY_STEPS)
+    if complaint is not None:
+        raise SystemExit(f"❌ {complaint}")
+
     if active_checkpoint_path is None:
         active_checkpoint_path = os.path.join(run_tracker.run_dir, "checkpoints")
 
