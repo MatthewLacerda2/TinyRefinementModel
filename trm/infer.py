@@ -87,7 +87,21 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 
     return logits
 
-@partial(nnx.jit, static_argnames=['refresh', 'top_k', 'top_p', 'depth'])
+# `refresh` is deliberately NOT static (#207). It flips every HUNCH_REFRESH_EVERY
+# tokens, so as a jit cache key it built two executables for one computation — two
+# resident programs and two sets of CUDA graphs, which is the driver-memory pressure
+# trm/config.py already blames for squeezing batch-2 from outside the BFC arena.
+#
+# Traced is correct for both architectures rather than only the live one. The
+# refiner ignores the flag outright (Plan A carries no state between windows, so
+# each window is a standalone causal prediction), and the reasoner reads it only
+# through jax.lax.cond — at reasoner.py:207 and end_step — which takes a traced
+# predicate natively. Nothing in the tree branches on it in Python.
+#
+# The other three must stay static: top_k and top_p gate Python-level branches in
+# _temperature_truncate (and lax.top_k needs a static k), and depth is the trip
+# count of the refinement loop.
+@partial(nnx.jit, static_argnames=['top_k', 'top_p', 'depth'])
 def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature, depth):
     all_logits = run_model_inference(model, padded_tks, depth=depth, new_document=refresh)
     logits = all_logits[0, token_idx, :]
