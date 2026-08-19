@@ -94,8 +94,14 @@ def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, te
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
 def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TEMPERATURE,
-                  top_k=50, top_p=0.9, depth=INFERENCE_DEPTH):
-    seed = int(time.time() * 1000) % (2**31)
+                  top_k=50, top_p=0.9, depth=INFERENCE_DEPTH, seed=None, quiet=False):
+    # The interactive CLI wants a fresh roll every time, so the wall clock stays the
+    # default. An explicit seed makes the same checkpoint reproduce the same text,
+    # which is what the transcript logbook needs to compare two checkpoints at all
+    # (#203) — and, held constant across depths, is what makes depth the only
+    # variable moving between two completions.
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
     rng = jax.random.PRNGKey(seed)
 
     tokens_list = enc.encode(prompt)
@@ -109,7 +115,8 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
     # Initialize tensor ONCE
     input_ids = jnp.array([padded_array], dtype=jnp.int32)
 
-    print("🤖 Assistant: ", end="", flush=True)
+    if not quiet:
+        print("🤖 Assistant: ", end="", flush=True)
 
     for i in range(max_new_tokens):
         if valid_len >= MAX_SEQ_LEN:
@@ -137,12 +144,14 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
             break
 
         tokens_list.append(next_token)
-        print(enc.decode([next_token]), end="", flush=True)
+        if not quiet:
+            print(enc.decode([next_token]), end="", flush=True)
 
         input_ids = input_ids.at[0, valid_len].set(next_token)
         valid_len += 1
 
-    print()
+    if not quiet:
+        print()
     return tokens_list
 
 def build_arg_parser():
