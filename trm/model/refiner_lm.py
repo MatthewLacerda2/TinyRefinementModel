@@ -56,7 +56,8 @@ class RefinerForTraining(LanguageModel):
             chunked_attention=chunked_attention, time_signal=time_signal,
         )
 
-    def __call__(self, tokens, depth=INFERENCE_DEPTH, training=False, new_document=True):
+    def __call__(self, tokens, depth=INFERENCE_DEPTH, training=False, new_document=True,
+                 logits_at=None):
         # training selects pre-head states vs logits. new_document is part of the
         # contract for models that carry state across windows; Plan A carries none,
         # so each window is a standalone causal LM prediction either way.
@@ -70,7 +71,8 @@ class RefinerForTraining(LanguageModel):
             # (#19), avoiding the full [b, s, vocab] f32 logit peak.
             hidden = self.refiner(tokens, depth=depth, pad_mask=pad_mask, return_hidden=True)
             return LMOutput(hidden=hidden)
-        return LMOutput(logits=self.refiner(tokens, depth=depth, pad_mask=pad_mask))
+        return LMOutput(logits=self.refiner(tokens, depth=depth, pad_mask=pad_mask,
+                                            logits_at=logits_at))
 
     def legacy_checkpoint_variables(self):
         # Every refiner checkpoint written before #105 carries the vestigial

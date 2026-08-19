@@ -56,9 +56,11 @@ def run_model_inference(
     tokens: jnp.ndarray,
     depth: int = INFERENCE_DEPTH,
     new_document: bool = True,
+    logits_at=None,
 ) -> jnp.ndarray:
     out = model(
-        tokens, depth=depth, training=False, new_document=new_document
+        tokens, depth=depth, training=False, new_document=new_document,
+        logits_at=logits_at,
     )
     return out.logits
 
@@ -103,8 +105,14 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 # count of the refinement loop.
 @partial(nnx.jit, static_argnames=['top_k', 'top_p', 'depth'])
 def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, temperature, depth):
-    all_logits = run_model_inference(model, padded_tks, depth=depth, new_document=refresh)
-    logits = all_logits[0, token_idx, :]
+    # Ask for the one row we are about to sample from, rather than projecting the
+    # tied head over all MAX_SEQ_LEN positions and slicing (#206). token_idx is
+    # traced, so the old `all_logits[0, token_idx, :]` was a dynamic slice that XLA
+    # could not dead-code — every emitted token paid ~24.7 GMAC and a ~103MB f32
+    # transient for 511 rows nobody reads. The model returns [b, 1, vocab] now.
+    row = run_model_inference(model, padded_tks, depth=depth, new_document=refresh,
+                              logits_at=token_idx)
+    logits = row[0, 0, :]
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
 def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TEMPERATURE,
