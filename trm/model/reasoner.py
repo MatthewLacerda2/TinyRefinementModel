@@ -179,7 +179,8 @@ class UniversalReasoner(LanguageModel):
         return final_shared, all_outputs
 
 
-    def __call__(self, tokens, depth=MAX_STEPS_LIMIT, training=False, new_document=True):
+    def __call__(self, tokens, depth=MAX_STEPS_LIMIT, training=False, new_document=True,
+                 logits_at=None):
         batch_size = tokens.shape[0]
         assert batch_size == self.hunch_cache[...].shape[0], (
             f"Batch size {batch_size} does not match the hunch cache built for batch "
@@ -250,6 +251,10 @@ class UniversalReasoner(LanguageModel):
             # the activation that OOM'd dim960 (#16) — are never materialized.
             logits, hidden = None, normed
         else:
+            if logits_at is not None:
+                # Generation reads one row per forward; project only that row
+                # rather than all MAX_SEQ_LEN and discarding the rest (#206).
+                normed = jax.lax.dynamic_slice_in_dim(normed, logits_at, 1, axis=1)
             embed_t = self.embed.embedding[...].astype(COMPUTE_DTYPE).T
             logits = jnp.matmul(normed, embed_t, preferred_element_type=jnp.float32)
             hidden = None

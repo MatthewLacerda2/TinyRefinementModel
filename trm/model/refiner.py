@@ -168,7 +168,7 @@ class CausalRefiner(nnx.Module):
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
                  grad_last=None, islands=False, return_all_iters=False,
-                 return_all_states=False, allow_depth_overrun=False):
+                 return_all_states=False, allow_depth_overrun=False, logits_at=None):
         depth = self.max_depth if depth is None else depth
         # The time embedding has rows for steps 0..max_depth only. Past that,
         # rows are untrained (training never samples above max_depth) and then
@@ -278,6 +278,15 @@ class CausalRefiner(nnx.Module):
             # Training path: let the loss project + score the LM head per-chunk
             # (chunked CE, #19) instead of materializing full [b, s, vocab] logits.
             return z.astype(self.dtype)
+        if logits_at is not None:
+            # Generation path: one token is emitted per forward, so only that row
+            # is ever read (#206). Projecting all MAX_SEQ_LEN positions and then
+            # slicing costs ~24.7 GMAC and a ~103MB f32 transient per token — about
+            # a fifth of per-token generation compute — to discard 511 of 512 rows.
+            # XLA cannot dead-code them because the index is traced, so the slice
+            # has to happen here, before the matmul. Exact, not approximate: the
+            # surviving row is the same dot products either way.
+            z = jax.lax.dynamic_slice_in_dim(z, logits_at, 1, axis=1)
         embed_t = self.embed.embedding[...].astype(self.dtype).T
         logits = jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
         return logits

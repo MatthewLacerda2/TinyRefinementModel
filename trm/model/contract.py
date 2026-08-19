@@ -41,12 +41,23 @@ class LMOutput:
 class LanguageModel(nnx.Module):
     """Base class carrying the neutral defaults. Subclass and override as needed."""
 
-    def __call__(self, tokens, depth, training=False, new_document=True) -> LMOutput:
+    def __call__(self, tokens, depth, training=False, new_document=True,
+                 logits_at=None) -> LMOutput:
         """Score `tokens` using `depth` units of compute.
 
         `new_document` says whether this window starts a fresh document — a fact
         about the data stream, which a model carrying state across windows needs
         and a stateless one can ignore.
+
+        `logits_at` is the generation seam (#206): when it names a position, fill
+        `logits` for that position ALONE, shaped [b, 1, vocab]. Generation emits
+        one token per forward and reads one row, so projecting the tied head over
+        every position is ~a fifth of per-token compute spent on rows that are
+        thrown away — and the index is traced, so XLA cannot remove them. Unlike
+        the other three arguments this one is not optional to honour: a model that
+        accepted it and ignored it would return full logits and the caller would
+        read row 0. Implement it or do not accept it — an arch that omits it from
+        its signature fails loudly at the call, which is the safe direction.
         """
         raise NotImplementedError
 
