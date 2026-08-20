@@ -187,3 +187,55 @@ class TestDeviceSafety:
         """No nvidia-smi is a dev box, not a busy card."""
         monkeypatch.setattr("instruments.dump_transcripts.gpu_memory_used_mib", lambda: None)
         select_device("gpu")
+
+
+class TestProvenanceTiming:
+    """`tool_commit` must describe the code that generated the text (#214).
+
+    It was read while assembling the frontmatter, after every completion. On a
+    GPU pass that gap is seconds; on the CPU fallback a full entry takes ~1h48m,
+    and the first real entry recorded `5893bd7` for text generated on `e25be42`
+    because #207 and #206 both merged mid-run — #206 changing the inference path.
+
+    The field exists so a future session can tell which code produced a
+    transcript, so being wrong on exactly the long runs is the whole failure.
+
+    Source-order rather than behavioural: exercising the real timing would mean
+    restoring a checkpoint and generating, which is far too heavy for this tier.
+    The repo already inspects source this way in `tests/core/test_infer_arch.py`.
+    """
+
+    def _main_source(self):
+        from pathlib import Path
+
+        import instruments.dump_transcripts as tool
+
+        source = Path(tool.__file__).read_text()
+        return source.split("def main(")[1].split("\ndef ")[0]
+
+    def test_the_commit_is_read_before_any_generation(self):
+        body = self._main_source()
+        captured = body.index("tool_commit = git_head()")
+        generated = body.index("for depth in depths:")
+
+        assert captured < generated, (
+            "tool_commit is read after generation starts — a long run will stamp "
+            "itself with whatever merged while it was working")
+
+    def test_the_frontmatter_uses_the_captured_value(self):
+        """A second `git_head()` call at write time would reintroduce the bug
+        even with the early capture sitting right above it."""
+        body = self._main_source()
+        fields = body.split('"tool_commit":')[1].split(",")[0]
+
+        assert "git_head()" not in fields, (
+            "the frontmatter calls git_head() again instead of using the value "
+            "captured before generation")
+
+    def test_the_checkpoint_derived_fields_were_never_affected(self):
+        """`model_commit` comes from run_metadata.json and `checkpoint_step` from
+        the restored checkpoint — both read before generation, both already
+        correct. Pinned so a future refactor does not move them the wrong way."""
+        body = self._main_source()
+
+        assert body.index("restore_model(") < body.index("for depth in depths:")
