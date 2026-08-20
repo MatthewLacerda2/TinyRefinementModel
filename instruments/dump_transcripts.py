@@ -283,6 +283,14 @@ def main():
     if model_commit:
         model_commit = model_commit[:7]
 
+    # Read before a single token is generated, not while writing the frontmatter
+    # (#214). A CPU entry takes ~1h48m; anything merged in that window would
+    # otherwise be stamped onto a run that never executed it. The first real
+    # entry recorded 5893bd7 for text generated on e25be42, because #207 and #206
+    # both landed mid-run — and #206 changed the inference path. A provenance
+    # field is wrong exactly when the run was long enough for it to matter.
+    tool_commit = git_head()
+
     results = []
     print(f"▶ {len(prompts)} prompts x {len(depths)} depths = "
           f"{len(prompts) * len(depths)} completions, seed {args.seed}, on {args.device}")
@@ -330,7 +338,7 @@ def main():
         "model_arch": MODEL_ARCH,
         "model_commit": model_commit,
         "model_commit_dirty": model_dirty,
-        "tool_commit": git_head(),
+        "tool_commit": tool_commit,
         "tokens_per_second": throughput,
         "generated": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
     }
