@@ -38,3 +38,62 @@ straight:
 
 The registry mostly serves the second kind, plus warm-starting: a stored base model lets
 a new idea **fine-tune or branch from it** instead of pretraining from scratch.
+
+## Loading an archived model
+
+This is the section that makes the registry useful rather than decorative: picking up an old
+model months later, to compare against a new one or to warm-start from.
+
+### Archive layout
+
+Every archive under `/mnt/d_drive/TRM_cold/weights/<name>/` looks like this:
+
+```
+<name>/
+  <step>/              <- NUMERIC. this is the whole trick, see below
+    model/  optimizer/  monitor_state/  step/  _CHECKPOINT_METADATA
+  SHA256SUMS           <- per-file hashes; the card records sha256 OF THIS FILE
+  run_metadata.json    metrics.csv      (+ whatever else the run produced)
+```
+
+**The step directory must keep its numeric name.** Orbax's `CheckpointManager` discovers
+checkpoints by scanning for numerically-named subdirectories. An archive whose step dir is
+called anything else — `checkpoint/`, `weights/`, `final/` — returns `all_steps() == []` and
+looks empty and corrupt, with no error explaining why. The three July 2026 archives were
+stored that way and were silently unloadable until relaid out on 2026-08-25.
+
+### Load it
+
+```bash
+# 1. verify the archive is intact before trusting it
+cd /mnt/d_drive/TRM_cold/weights/<name> && sha256sum -c SHA256SUMS
+
+# 2. the archive path IS a checkpoint path — pass it straight in.
+#    MODEL_ARCH must match the arch the card names: the two arches have
+#    different param trees, so restoring a refiner into a reasoner skeleton
+#    fails on the structure, not on anything informative.
+MODEL_ARCH=refiner PYTHONPATH=. python -m instruments.dump_transcripts \
+    --checkpoint-path /mnt/d_drive/TRM_cold/weights/<name> --device gpu
+```
+
+Any tool that takes `--checkpoint-path` works the same way, since they all resolve through
+`trm/runtime/restore.py`.
+
+### Treat the HDD as dumb blob storage
+
+Per `CLAUDE.md`, don't train off the cold tier and don't rely on its permissions or symlinks
+(it is a non-POSIX mount — note the `777` on everything). Reading a checkpoint to restore
+from is fine. Writing a run there is not: **copy back to the SSD first.**
+
+### Before archiving a new one
+
+1. Copy the checkpoint dir keeping its numeric name.
+2. Copy `run_metadata.json`, `metrics.csv`, and `worktree.patch` if the run was dirty — the
+   patch is part of the recipe when the SHA alone doesn't reproduce the tree.
+3. Generate the manifest, from inside the archive so paths stay relative:
+   ```bash
+   find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+   ```
+4. Record `sha256sum SHA256SUMS` in the card, and confirm `CheckpointManager(<archive>)
+   .all_steps()` is non-empty **before** you rely on it. An archive nobody has ever loaded is
+   a backup nobody has ever tested.
