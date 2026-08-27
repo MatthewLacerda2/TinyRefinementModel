@@ -41,10 +41,18 @@ VOCAB_SIZE = 50304
 # 15 heads → head_dim = 960/15 = 64, the tensor-core-clean size on Turing f16.
 # (16 heads would give head_dim 60, not a multiple of 8 → XLA pads to 64: you pay
 # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
-# asserts pass (dim%heads==0, head_dim even for RoPE); baseline GQA NUM_GROUPS=15//4=3,
-# and 15%3==0 so the jnp.repeat that expands KV groups tiles cleanly (layers.py:82).
+# asserts pass (dim%heads==0, head_dim even for RoPE).
 NUM_HEADS = 15
+# Floor division *picks* the group count (~4 query heads per KV group); it does not
+# guarantee the divisibility the GQA K/V expansion needs, so assert it here. That
+# expansion is an integer jnp.repeat (layers.py), so a non-dividing pair fails far
+# from its cause: NUM_HEADS=14 quietly picks 3 groups, repeats K/V to 12 heads, and
+# crashes on a shape mismatch against Q's 14 inside attention.
 NUM_GROUPS = NUM_HEADS // 4
+assert NUM_HEADS % NUM_GROUPS == 0, (
+    f"NUM_HEADS ({NUM_HEADS}) must be divisible by NUM_GROUPS ({NUM_GROUPS}); "
+    "pick a head count whose //4 divides it (15→3 ✓, 16→4 ✓, 14→3 ✗)."
+)
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
