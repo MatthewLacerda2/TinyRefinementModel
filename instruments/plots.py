@@ -391,6 +391,38 @@ def training_curve(runlog, outdir):
 
 # ── figure 2: throughput & progress ──────────────────────────────────────────
 
+# How much longer than the usual beat spacing an interval may be before we stop
+# believing it measures throughput. Heartbeats land on a fixed poll schedule, so
+# a much longer gap means beats went *missing* — and the wall-clock inside it
+# counts time the trainer was not running.
+GAP_FACTOR = 2.5
+
+
+def usable_intervals(hours, tokens):
+    """(rate, rate_hours, dropped, cadence) — throughput over the intervals that
+    actually measure throughput.
+
+    Δtokens ÷ Δwall-clock is only a rate if the trainer ran for the whole
+    interval. Across a logging gap — a crash, a manual stop, an eval borrowing
+    the card — the same ratio measures *duty cycle*, and it renders on the plot
+    as a throughput collapse that never happened (run_20260813_214725 showed a
+    fake dip to 1,000 tok/s and a fake decline to 2,900 against a true, flat
+    ~4,500). Drop those intervals and hand back the count so the caller can say
+    what went, rather than silently narrowing the data.
+    """
+    d_hours, d_tokens = np.diff(hours), np.diff(tokens)
+    positive = d_hours > 0
+    if not positive.any():
+        return np.array([]), np.array([]), 0, 0.0
+    cadence = float(np.median(d_hours[positive]))
+    clean = positive & (d_hours <= GAP_FACTOR * cadence)
+    dropped = int((positive & ~clean).sum())
+    if not clean.any():
+        return np.array([]), np.array([]), dropped, cadence
+    return (d_tokens[clean] / (d_hours[clean] * 3600.0),
+            hours[1:][clean], dropped, cadence)
+
+
 def throughput_progress(runlog, outdir):
     beats = read_heartbeats(runlog)
     budget, _ = budget_and_horizon(runlog)
@@ -406,10 +438,22 @@ def throughput_progress(runlog, outdir):
     hours = np.array([(t - times[0]).total_seconds() / 3600.0 for t in times])
     tokens = steps * TOKENS_PER_OPT_STEP
 
-    d_hours = np.diff(hours)
-    keep = d_hours > 0
-    rate = np.diff(tokens)[keep] / (d_hours[keep] * 3600.0)
-    rate_hours = hours[1:][keep]
+    # How much of the run the heartbeats actually witnessed. They are a separate
+    # stream from metrics.csv — the supervisor's stdout — so they stop the moment
+    # a relaunch redirects that stdout or lengthens --heartbeat-hours, while the
+    # run itself carries happily on. run_20260813_214725 lost them at step 13,890
+    # of 30,520 and this figure drew 45% of a run as though it were the whole
+    # thing, with a "recent mean" computed from six-day-old data. metrics.csv is
+    # the authority on how far the run got; compare against it and say so.
+    last_beat_step = int(steps[-1])
+    coverage = last_beat_step / runlog.last_step if runlog.last_step else 0.0
+    stale = coverage < 0.98
+
+    rate, rate_hours, dropped, cadence = usable_intervals(hours, tokens)
+    if rate.size == 0:
+        print("throughput_progress: every heartbeat interval spans a logging gap "
+              "— skipped (no interval measures throughput rather than downtime).")
+        return None
     recent = float(np.mean(rate[-6:]))
 
     fig, (ax_rate, ax_prog) = plt.subplots(2, 1, figsize=(12.5, 8.4))
@@ -422,15 +466,30 @@ def throughput_progress(runlog, outdir):
     ax_rate.set_ylim(0, max(rate.max(), recent) * 1.25)
     ax_rate.set_ylabel("tokens / second")
     ax_rate.set_xlabel("hours since the run's first heartbeat")
-    ax_rate.set_title("Throughput — sampled, not measured", loc="left")
+    title = "Throughput — sampled, not measured"
+    if stale:
+        title += (f"  ⚠ heartbeats cover only {100 * coverage:.0f}% of the run "
+                  f"(to step {last_beat_step:,} of {runlog.last_step:,})")
+    ax_rate.set_title(title, loc="left", **({"color": ORANGE} if stale else {}))
     _legend(ax_rate, loc="lower right")
-    _note(ax_rate, f"each point is one supervisor heartbeat interval "
-                   f"(~{np.median(d_hours):.1f}h apart): Δsteps × {TOKENS_PER_OPT_STEP:,} tokens ÷ Δwall-clock. "
-                   "It includes checkpointing and validation, so it is the honest end-to-end rate.")
+    note = (f"each point is one supervisor heartbeat interval (~{cadence:.1f}h apart): "
+            f"Δsteps × {TOKENS_PER_OPT_STEP:,} tokens ÷ Δwall-clock. "
+            "It includes checkpointing and validation, so it is the honest end-to-end rate.")
+    if dropped:
+        note += (f"\n{dropped} interval(s) spanning a logging gap were dropped — across a gap this "
+                 "ratio measures duty cycle (downtime included), not throughput.")
+    if stale:
+        note += (f"\n⚠ the supervisor stopped logging at step {last_beat_step:,}; the run reached "
+                 f"{runlog.last_step:,}. Everything after that is UNPLOTTED, not flat — this panel "
+                 "describes the first part of the run only.")
+    _note(ax_rate, note)
 
     ax_prog.plot(hours, tokens, color=BLUE, linewidth=2.0, label="tokens trained")
     eta_text = None
-    if budget and recent > 0 and done_tokens < budget:
+    # No projection off stale heartbeats. The ETA is anchored to times[-1], so a
+    # heartbeat stream that died days ago yields a confidently-wrong finish date
+    # — worse than no date at all.
+    if budget and recent > 0 and done_tokens < budget and not stale:
         # Against the CSV's position, not the last heartbeat's: the heartbeat is
         # up to an hour stale, and the hero image counts from the CSV. Two
         # figures disagreeing about "how far in are we" is worse than an ETA
@@ -455,14 +514,34 @@ def throughput_progress(runlog, outdir):
     ax_prog.set_title("Progress against the token budget"
                       + (f" — {eta_text}" if eta_text else ""), loc="left")
     _legend(ax_prog, loc="lower right")
-    _note(ax_prog, f"{fmt_tokens(done_tokens)} tokens at optimizer step {runlog.last_step:,}. "
-                   "The ETA extrapolates the recent mean rate; it is an estimate, and it assumes "
-                   "no crash-relaunch and no throughput drift.")
+    prog_note = f"{fmt_tokens(done_tokens)} tokens at optimizer step {runlog.last_step:,}. "
+    if stale:
+        # The curve is drawn from heartbeats and therefore stops early, while this
+        # note quotes metrics.csv. Saying so beats letting the reader assume the
+        # run stalled where the line ends.
+        prog_note += (f"The curve stops at step {last_beat_step:,} because the heartbeats do; "
+                      "the run continued past it. No ETA is drawn — projecting from a dead "
+                      "heartbeat stream gives a confident wrong answer.")
+    else:
+        prog_note += ("The ETA extrapolates the recent mean rate; it is an estimate, and it "
+                      "assumes no crash-relaunch and no throughput drift.")
+    _note(ax_prog, prog_note)
+
+    # Loud on stdout too: whoever regenerates the plots should learn the panel is
+    # partial without having to notice orange text inside the image.
+    if stale:
+        print(f"⚠ throughput_progress: supervisor heartbeats stop at step {last_beat_step:,} "
+              f"of {runlog.last_step:,} ({100 * coverage:.0f}% of the run) — the throughput panel "
+              "describes only that portion, and no ETA was drawn.")
+    if dropped:
+        print(f"  throughput_progress: dropped {dropped} heartbeat interval(s) spanning a logging "
+              "gap (they measure duty cycle, not throughput).")
 
     path = pathlib.Path(outdir) / "throughput_progress.png"
     fig.savefig(path)
     plt.close(fig)
-    return {"path": str(path), "panels": ["throughput", "progress"], "omitted": []}
+    return {"path": str(path), "panels": ["throughput", "progress"],
+            "omitted": [], "coverage": coverage, "dropped_intervals": dropped}
 
 
 # ── figure 3: optimization health ────────────────────────────────────────────
