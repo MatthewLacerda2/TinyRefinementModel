@@ -91,3 +91,20 @@ require = "any"
 [verdict]
 keep_if = ["parity_at_every_depth"]
 kill_if = ["loses_at_a_depth"]
+
+# --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
+[results.d1]
+postnorm = [0.7912, 0.7207, 0.7550]
+prenorm = [0.7726, 0.7841, 0.8248]
+
+[results.d2]
+postnorm = [0.8427, 0.8530, 0.8006]
+prenorm = [0.8587, 0.9081, 0.8816]
+
+[results.d4]
+postnorm = [0.9540, 0.9712, 0.9671]
+prenorm = [0.8385, 0.9747, 0.9784]
+
+[results.d8]
+postnorm = [0.9772, 0.9838, 0.9803]
+prenorm = [0.7893, 0.9824, 0.9748]

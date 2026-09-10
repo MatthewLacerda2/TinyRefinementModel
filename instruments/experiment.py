@@ -128,6 +128,13 @@ def load_execution(spec: Spec) -> Execution:
     command = tuple(str(part) for part in ex["command"])
     if not command:
         raise ValueError(f"spec {spec.id}: [execution] command is empty")
+    if command[0] in ("python", "python3"):
+        # Run the sweep under the SAME interpreter as the runner, which is what
+        # GATE_COMMAND already does. A bare "python" resolves against PATH — the
+        # system interpreter, with no jax — so a spec would pass its gate and then
+        # every arm would die on ModuleNotFoundError. The alternative is baking a
+        # venv path into a committed spec, which is worse.
+        command = (sys.executable, *command[1:])
 
     arm_flags = {name: tuple(str(f) for f in body.get("flags", ()))
                  for name, body in spec.meta.get("arms", {}).items()}
