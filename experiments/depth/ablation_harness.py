@@ -143,6 +143,7 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
               per_pass_loss=False, islands=False, readouts=False, time_signal="table",
+              post_norm=False,
               eval_depths=None, n_pool=32768, n_test=4096, eval_batch=256,
               train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
@@ -168,7 +169,8 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
         model = CausalRefiner(dim=dim, vocab_size=vocab, num_heads=heads,
                               num_encoder_layers=enc, max_depth=max(depth, 1),
                               max_seq_len=max(train_seq, test_seq), gate_bias=gate_bias,
-                              time_signal=time_signal, rngs=nnx.Rngs(seed))
+                              time_signal=time_signal, post_norm=post_norm,
+                              rngs=nnx.Rngs(seed))
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
 
@@ -305,6 +307,10 @@ def main():
                     help="cut the gradient chain at every pass boundary (#75) — pair with --per-pass-loss. refiner-only.")
     ap.add_argument("--readouts", action="store_true",
                     help="print #75 readouts: per-pass accuracy, gate openness per pass, depth-transfer curve (eval at depths 1..12). refiner-only.")
+    ap.add_argument("--post-norm", action="store_true",
+                    help="normalize each residual branch's output before adding it back "
+                         "(#235). Bounds the SwiGLU product that reaches 99.1%% of the f16 "
+                         "ceiling on the 4B champion; this measures what it costs.")
     ap.add_argument("--time-signal", default="table", choices=["table", "sinusoidal", "none"],
                     help="#86: 'table' = learned per-step embedding (rows end at max_depth); "
                          "'sinusoidal' = diffusion-style continuous encoding, defined at any depth. refiner-only.")
@@ -329,7 +335,7 @@ def main():
     eval_depths = [int(d) for d in args.eval_depths.split(",")] if args.eval_depths else None
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} post_norm={args.post_norm} lr={args.lr} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
@@ -338,7 +344,8 @@ def main():
                         steps=args.steps, seed=args.seed, gate_bias=args.gate_bias,
                         grad_last=args.grad_last, per_pass_loss=args.per_pass_loss,
                         islands=args.islands, readouts=args.readouts,
-                        time_signal=args.time_signal, eval_depths=eval_depths, lr=args.lr,
+                        time_signal=args.time_signal, post_norm=args.post_norm,
+                        eval_depths=eval_depths, lr=args.lr,
                         train_seq=args.train_seq, test_seq=test_seq)
         acc, ce, n_params = out[:3]
         results[d] = (acc, ce)

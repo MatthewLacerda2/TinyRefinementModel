@@ -1,0 +1,110 @@
+# PRE-REGISTERED. Criteria written and committed BEFORE any run; git records that
+# this commit precedes the [results] the runner appends. status = "open" is the
+# opposite of the three "retrofit" specs already here — this is the first spec in
+# the repo written the way the format intends.
+
+[experiment]
+id = "235"
+status = "open"
+title = "Post-norm on the residual branches: does bounding the SwiGLU output cost capability?"
+hypothesis = """
+The champion's encoder block 7 turns a norm2 input of magnitude 6 into a branch
+output of 64,896 on code -- 99.1% of the f16 ceiling -- because SwiGLU multiplies
+two projections that are each ~5x larger on code-shaped input. The pre-norms bound
+what enters each residual branch; nothing bounds what leaves it. That is the root
+cause of #229's whole-window NaN.
+
+Normalizing each branch's OUTPUT before the residual add ("sandwich"/post-norm, as
+in Gemma 2) bounds it by construction: measured on the champion's own trained
+weights and the real overflowing input, the MLP branch drops 64,896 -> 7.3.
+
+The open question is not whether it bounds the activation -- that is arithmetic --
+but whether it costs the model anything. Post-norm constrains every branch to a
+learned scale regardless of how much the branch wanted to contribute, and it makes
+the zero-init down_proj residual trick inert. This experiment measures that cost on
+the task depth recurrence was proven on.
+"""
+issue = 235
+
+[protocol]
+task = "statetrack"
+metric_key = "acc"
+metric = "held-out accuracy (chance 0.20)"
+matched = "same seed => same init, same pools, same minibatch order; only post_norm differs"
+notes = """
+statetrack because it is the task Plan A's depth benefit was established on
+(docs/findings/2026-06-13-plan-a-depth-recurrence-works.md) -- a change that bounds
+activations must not blunt the mechanism the architecture exists for.
+
+dim 96 / 2500 steps / seeds 0,1,2 matches the #86 protocol so the noise floor is
+comparable to a measurement we already trust.
+
+This CANNOT test the overflow itself: down_proj is zero-initialized, so an untrained
+model's MLP branch contributes exactly nothing and the blowup is a trained property
+at dim960/f16 on code. Bounding is verified separately on the champion's weights;
+this measures capability only.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.depth.ablation_harness",
+           "--task", "statetrack", "--dim", "96", "--steps", "2500",
+           "--depths", "1,2,4,8"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+
+[arms.prenorm]
+role = "control"
+flags = []
+
+[arms.postnorm]
+role = "treatment"
+flags = ["--post-norm"]
+
+# --- Pre-registered criteria -------------------------------------------------
+# KEEP if post-norm is within 2 sigma of the control at EVERY trained depth. This
+# is a parity bar, not a win bar: the change is justified by the f16 headroom it
+# buys, so it only has to avoid costing capability. Demanding a win would be moving
+# the goalpost onto a benefit it was never argued to provide.
+#
+# KILL if it loses by >= 2 sigma at ANY depth. A change that blunts depth recurrence
+# is not worth buying numerical headroom with -- the depth mechanism is the project.
+#
+# Deliberately NOT a criterion: activation magnitude. It is bounded by construction
+# and measured elsewhere; scoring it here would be scoring arithmetic.
+
+[criteria.parity_at_every_depth]
+rule = "within"
+treatment = "postnorm"
+control = "prenorm"
+sigmas = 2.0
+points = ["d1", "d2", "d4", "d8"]
+require = "all"
+
+[criteria.loses_at_a_depth]
+rule = "loses"
+treatment = "postnorm"
+control = "prenorm"
+sigmas = 2.0
+points = ["d1", "d2", "d4", "d8"]
+require = "any"
+
+[verdict]
+keep_if = ["parity_at_every_depth"]
+kill_if = ["loses_at_a_depth"]
+
+# --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
+[results.d1]
+postnorm = [0.7912, 0.7207, 0.7550]
+prenorm = [0.7726, 0.7841, 0.8248]
+
+[results.d2]
+postnorm = [0.8427, 0.8530, 0.8006]
+prenorm = [0.8587, 0.9081, 0.8816]
+
+[results.d4]
+postnorm = [0.9540, 0.9712, 0.9671]
+prenorm = [0.8385, 0.9747, 0.9784]
+
+[results.d8]
+postnorm = [0.9772, 0.9838, 0.9803]
+prenorm = [0.7893, 0.9824, 0.9748]

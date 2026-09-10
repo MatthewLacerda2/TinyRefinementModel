@@ -403,3 +403,56 @@ def test_a_kill_verdict_is_reported_as_such(tmp_path, monkeypatch):
     spec = load_spec(spec_path)
     verdict = evaluate(spec, load_recorded_results(spec_path))
     assert verdict.outcome == KILL
+
+
+def test_a_string_command_is_rejected_rather_than_split_into_characters(tmp_path):
+    """A string is iterable, so `tuple(part for part in command)` turned
+    "python -m x" into one argument PER CHARACTER — a 103-argument launch whose
+    failure would have named none of the cause. Caught while writing the first
+    non-retrofit spec (#235), which is exactly the case this guards: the mistake is
+    invisible until a sweep has already been queued."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = "python -m thing --flag v"
+        seeds = [0]
+    ''')
+    with pytest.raises(ValueError, match="must be a LIST"):
+        experiment.load_execution(load_spec(spec_path))
+
+
+def test_a_list_command_is_still_accepted(tmp_path):
+    """The counter-test: the guard must reject strings without rejecting the
+    correct form it is steering people toward."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog", "-m", "thing", "--flag", "v"]
+        seeds = [0]
+    ''')
+    ex = experiment.load_execution(load_spec(spec_path))
+    assert ex.command == ("prog", "-m", "thing", "--flag", "v")
+
+
+def test_a_bare_python_runs_under_the_same_interpreter_as_the_runner(tmp_path):
+    """`python` resolves against PATH, which here is the system interpreter with no
+    jax — so a spec passed its gate (the gate already uses sys.executable) and then
+    every arm died on ModuleNotFoundError. Found on the runner's first real use
+    (#235). Baking a venv path into a committed spec is the worse alternative."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["python", "-m", "thing"]
+        seeds = [0]
+    ''')
+    ex = experiment.load_execution(load_spec(spec_path))
+    assert ex.command[0] == sys.executable
+    assert ex.command[1:] == ("-m", "thing")
+
+
+def test_a_non_python_command_is_left_alone(tmp_path):
+    """The counter-test: only a bare `python` is rewritten. A spec that launches
+    something else must reach the shell as written."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["bash", "run.sh"]
+        seeds = [0]
+    ''')
+    assert experiment.load_execution(load_spec(spec_path)).command == ("bash", "run.sh")
