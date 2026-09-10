@@ -133,13 +133,30 @@ def test_the_jitted_sampling_step_reads_the_row_it_asked_for(toy_refiner, padded
     assert int(jnp.argmax(got)) == int(jnp.argmax(expected))
 
 
-def test_generation_still_produces_a_reproducible_sequence(toy_refiner):
+
+class _InVocabEncoder:
+    """A tokenizer whose ids fit TOY_VOCAB.
+
+    The real `r50k_base` emits ids in the tens of thousands, and `generate_text`
+    pads with the *config* PAD_TOKEN_ID (50256) on top of that. One out-of-range
+    id makes this model return all-NaN logits for the entire window (#233) — so
+    with the real tokenizer this test sampled every token from NaN, and passed
+    only because NaN is deterministic. The #229 guard is what surfaced it.
+    """
+
+    def encode(self, text):
+        return [1 + (ord(c) % (TOY_VOCAB - 2)) for c in text]
+
+    def decode(self, ids):
+        return "".join(chr(97 + (i % 26)) for i in ids)
+
+
+def test_generation_still_produces_a_reproducible_sequence(toy_refiner, monkeypatch):
     """End to end. Seeded, so it also pins that the change did not disturb the
     sampling stream — a shifted RNG would be a silent behaviour change even if
     every individual row were correct."""
-    import tiktoken
-
-    enc = tiktoken.get_encoding("r50k_base")
+    monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
+    enc = _InVocabEncoder()
 
     def run():
         return infer.generate_text(
