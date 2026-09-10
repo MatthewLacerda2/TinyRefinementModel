@@ -107,6 +107,18 @@ if TIME_SIGNAL not in ("table", "sinusoidal"):
 # peak; the two sit 64x apart in that report (now labelled, see instruments/mem_profile).
 # Re-test if #23 widens the context: seq² grows 4x at 1024 and the trade may invert.
 CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
+
+# Normalize each residual BRANCH's output before it is added back ("sandwich" /
+# post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
+# MLP; nothing bounds what comes out, and on the 4B champion that is measurably a
+# problem: encoder block 7's SwiGLU product reaches 39,104 on code from a norm2
+# input of 6 (SwiGLU multiplies two projections, each ~5x larger on code-shaped
+# input), and down_proj carries it to 64,896 -- 99.1% of f16's 65,504 ceiling.
+# That is the root cause of #229's whole-window NaN. See #235.
+#
+# Default OFF: it changes what the model is, so no stored checkpoint survives it
+# and it must earn its place through a matched ablation before a run adopts it.
+POST_NORM = os.environ.get("POST_NORM", "0") == "1"
 # Plan A: number of causal encoder layers beneath the single shared refine block
 # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
 # near the reasoner baseline; init prints the actual count for both arches.

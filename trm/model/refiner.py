@@ -84,10 +84,19 @@ class CausalAttention(nnx.Module):
 class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, chunked_attention=False):
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, chunked_attention=False,
+                 post_norm=False):
         self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, chunked=chunked_attention)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+        # Post-norm on each residual branch (#235). norm1/norm2 bound the branch
+        # INPUT; these bound its OUTPUT, which is the quantity that overflows —
+        # a SwiGLU product multiplies two projections, so an input that merely
+        # aligns with high-gain directions in both comes out quadratically large.
+        self.post_norm = post_norm
+        if post_norm:
+            self.attn_out_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+            self.mlp_out_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         # Multiple of 64; the reasoner's block (layers.py) rounds to 256, so the
         # two arches' MLPs are not the same width at every dim. Frozen on purpose —
         # see "Why the two arches don't share block code" in docs/design/plan-a.md.
@@ -97,9 +106,11 @@ class Block(nnx.Module):
         self.down_proj = nnx.Linear(hidden, dim, kernel_init=jax.nn.initializers.zeros, rngs=rngs, dtype=dtype)
 
     def __call__(self, x, pad_bias=None):
-        x = x + self.attn(self.norm1(x), pad_bias)
+        attn_out = self.attn(self.norm1(x), pad_bias)
+        x = x + (self.attn_out_norm(attn_out) if self.post_norm else attn_out)
         h = self.norm2(x)
-        x = x + self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
+        mlp_out = self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
+        x = x + (self.mlp_out_norm(mlp_out) if self.post_norm else mlp_out)
         return x
 
 
@@ -126,7 +137,7 @@ class CausalRefiner(nnx.Module):
     """
 
     def __init__(self, *, dim, vocab_size, num_heads=4, num_encoder_layers=2,
-                 max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0,
+                 max_depth=8, max_seq_len=512, use_gate=True, gate_bias=0.0, post_norm=False,
                  chunked_attention=False, time_signal="table", rngs, dtype=jnp.float32):
         # time_signal (#86): "table" is the learned per-step embedding — rows end
         # at max_depth, so depth is hard-capped. "sinusoidal" is the diffusion-
@@ -148,11 +159,13 @@ class CausalRefiner(nnx.Module):
             self.time_embed = nnx.Embed(max_depth + 1, dim, rngs=rngs, dtype=dtype)
 
         self.encoder = nnx.List([
-            Block(dim, num_heads, max_seq_len, rngs, dtype, chunked_attention=chunked_attention)
+            Block(dim, num_heads, max_seq_len, rngs, dtype, chunked_attention=chunked_attention,
+                  post_norm=post_norm)
             for _ in range(num_encoder_layers)
         ])
         self.refine_block = Block(dim, num_heads, max_seq_len, rngs, dtype,
-                                  chunked_attention=chunked_attention)  # shared, looped
+                                  chunked_attention=chunked_attention,
+                                  post_norm=post_norm)  # shared, looped
 
         self.time_norm = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         if time_signal != "none":
