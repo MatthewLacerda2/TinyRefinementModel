@@ -89,6 +89,57 @@ def _temperature_truncate(logits, temperature, top_k, top_p):
 
     return logits
 
+class NonFiniteLogits(RuntimeError):
+    """The model produced logits that cannot be sampled from.
+
+    Raised instead of returning a token, because every sampler in this file
+    degrades *silently* on non-finite input: `jnp.argmax` over an all-NaN row
+    returns index 0, and `jax.random.categorical` returns some index as well.
+    Both look exactly like a real prediction, so a checkpoint that overflows
+    emits plausible token ids forever and nothing downstream can tell (#229).
+    """
+
+
+def reject_unsampleable(logits, *, where):
+    """Raise `NonFiniteLogits` unless `logits` is something we can sample from.
+
+    `jnp.isfinite` is the wrong test here: top-k and top-p set rejected entries
+    to -inf on purpose, so -inf is the normal state of nearly the whole row.
+    What is never legitimate:
+
+    - **NaN** — an overflow upstream. It passes through truncation untouched,
+      because every comparison against NaN is False, so it is still NaN by the
+      time a sampler sees it.
+    - **+inf** — an f16 overflow in the encoder or the head, which softmax then
+      turns into NaN anyway.
+    - **every entry -inf** — truncation ate the whole row, leaving no
+      distribution at all. Not the #229 failure, but the same silent kind.
+
+    Costs one host transfer, batched into a single array, on a path that already
+    synchronizes once per token to read the sampled id.
+    """
+    n_nan, n_posinf, n_neginf = jnp.stack([
+        jnp.isnan(logits).sum(),
+        jnp.isposinf(logits).sum(),
+        jnp.isneginf(logits).sum(),
+    ]).tolist()
+    size = int(logits.size)
+
+    if n_nan or n_posinf:
+        raise NonFiniteLogits(
+            f"{where}: {n_nan} NaN and {n_posinf} +inf among {size} logits. "
+            f"The forward pass overflowed. Under COMPUTE_DTYPE=float16 this has "
+            f"been checkpoint- and corpus-specific rather than a broken weight "
+            f"(#229) — re-run the same input with FORCE_F32_COMPUTE=1 to confirm "
+            f"it is the dtype and not the checkpoint."
+        )
+    if n_neginf == size:
+        raise NonFiniteLogits(
+            f"{where}: all {size} logits are -inf, so truncation left nothing to "
+            f"sample from. Check top_k and top_p."
+        )
+
+
 # `refresh` is deliberately NOT static (#207). It flips every HUNCH_REFRESH_EVERY
 # tokens, so as a jit cache key it built two executables for one computation — two
 # resident programs and two sets of CUDA graphs, which is the driver-memory pressure
@@ -154,6 +205,9 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
             refresh=new_document, top_k=top_k, top_p=top_p,
             temperature=effective_temperature, depth=depth,
         )
+        # Before sampling, not after: both samplers below turn an unsampleable
+        # row into an ordinary-looking token id (#229).
+        reject_unsampleable(logits, where=f"token {i}, position {valid_len - 1}, depth {depth}")
 
         rng, subkey = jax.random.split(rng)
 
