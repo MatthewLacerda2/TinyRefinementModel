@@ -61,6 +61,30 @@ class LanguageModel(nnx.Module):
         """
         raise NotImplementedError
 
+    def capture_trajectory(self, tokens, depth):
+        """Every latent state a forward pass passes through — for instruments.
+
+        Deliberately NOT part of `__call__`. This class is what the *training
+        loop* requires, and the loop never asks for a trajectory; widening the
+        hot-path signature for something only instruments read would put a flag
+        on the jitted call the trainer runs millions of times, for no gain.
+
+        Returns `(trajectory, gates)` where trajectory is [depth+1, b, s, dim] —
+        index 0 is the encoder output, before any refinement — and gates is the
+        per-pass mean gate openness, or None for an architecture without a gate.
+
+        Only meaningful for an architecture whose depth is iterative. The default
+        refuses rather than returning something shaped right and meaningless,
+        because an instrument that silently measured a non-recurrent model would
+        produce a flat trajectory and invite the conclusion that depth does
+        nothing (#225).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no refinement trajectory to capture. "
+            f"This instrument requires a depth-recurrent architecture "
+            f"(MODEL_ARCH=refiner)."
+        )
+
     def grade_aux(self, window_aux, opt_step):
         """Weight this step's auxiliary terms into named scalars for the loss.
 
