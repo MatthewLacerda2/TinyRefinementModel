@@ -139,7 +139,25 @@ def test_the_arguments_that_must_stay_static_did_not_get_swept_up():
         assert f"'{name}'" in signature, f"{name} must remain a static jit argument"
 
 
-def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens):
+
+class _InVocabEncoder:
+    """A tokenizer whose ids fit TOY_VOCAB.
+
+    The real `r50k_base` emits ids in the tens of thousands, and `generate_text`
+    pads with the *config* PAD_TOKEN_ID (50256) on top of that. One out-of-range
+    id makes this model return all-NaN logits for the entire window (#233) — so
+    with the real tokenizer this test sampled every token from NaN, and passed
+    only because NaN is deterministic. The #229 guard is what surfaced it.
+    """
+
+    def encode(self, text):
+        return [1 + (ord(c) % (TOY_VOCAB - 2)) for c in text]
+
+    def decode(self, ids):
+        return "".join(chr(97 + (i % 26)) for i in ids)
+
+
+def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens, monkeypatch):
     """End to end through `generate_text`, which is where `refresh` actually
     alternates (every HUNCH_REFRESH_EVERY tokens). The unit tests above use one
     call at a time; this is the loop that made the duplicate compile happen, and
@@ -148,9 +166,8 @@ def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens
 
     Seeded, so it doubles as a determinism check on the generation path.
     """
-    import tiktoken
-
-    enc = tiktoken.get_encoding("r50k_base")
+    monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
+    enc = _InVocabEncoder()
     del padded_tokens  # generate_text tokenizes its own prompt
 
     def run():
