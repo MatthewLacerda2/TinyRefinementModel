@@ -74,6 +74,22 @@ class RefinerForTraining(LanguageModel):
         return LMOutput(logits=self.refiner(tokens, depth=depth, pad_mask=pad_mask,
                                             logits_at=logits_at))
 
+    def capture_trajectory(self, tokens, depth=INFERENCE_DEPTH):
+        """The refinement trajectory at production scale (#225).
+
+        `[depth+1, b, s, dim]`, index 0 being the encoder output before any
+        refinement. 8.8 MB at the live config (depth 8, seq 512, dim 960, f16),
+        which is why this has been affordable the whole time — what was expensive
+        was the per-pass *logits* it used to be bundled with.
+
+        The final state is the same array the ordinary forward pass produces, so
+        an instrument reading this is measuring the computation the model
+        actually runs, not a parallel one.
+        """
+        pad_mask = tokens != self.pad_token_id
+        return self.refiner(tokens, depth=depth, pad_mask=pad_mask,
+                            return_trajectory=True)
+
     def legacy_checkpoint_variables(self):
         # Every refiner checkpoint written before #105 carries the vestigial
         # [1, 1, dim] hunch buffer the old trainer wrote into. It never held

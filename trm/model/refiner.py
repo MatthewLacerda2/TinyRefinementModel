@@ -168,7 +168,8 @@ class CausalRefiner(nnx.Module):
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,
                  grad_last=None, islands=False, return_all_iters=False,
-                 return_all_states=False, allow_depth_overrun=False, logits_at=None):
+                 return_all_states=False, allow_depth_overrun=False, logits_at=None,
+                 return_trajectory=False):
         depth = self.max_depth if depth is None else depth
         # The time embedding has rows for steps 0..max_depth only. Past that,
         # rows are untrained (training never samples above max_depth) and then
@@ -258,8 +259,34 @@ class CausalRefiner(nnx.Module):
             z, g_mean = refine_iter(z, t_signal)
             if self.use_gate:
                 gate_means.append(g_mean)
-            if return_all_iters:
+            if return_all_iters or return_trajectory:
                 all_z.append(z)
+
+        if return_trajectory:
+            # #225: the refinement trajectory, for instruments — every state the
+            # loop passed through, including z_0.
+            #
+            # Deliberately NOT return_all_states, which is entangled with
+            # return_all_iters and therefore drags the [depth, b, s, vocab] logit
+            # tensor along. States alone are cheap; the coupling is what made them
+            # unaffordable. At production shape this is
+            #   9 x 1 x 512 x 960 x 2 bytes = 8.8 MB.
+            #
+            # z_enc leads the stack because the encoder output is where refinement
+            # STARTS, and no other return path exposes it. Without it there is no
+            # first step to measure and the trajectory is missing its origin.
+            # Normed one state at a time and stacked afterwards, NOT stacked and
+            # normed in one call. RMSNorm is per-position either way in exact
+            # arithmetic, but float ops are not shape-invariant: XLA picks a
+            # different kernel for a [depth+1, b, s, dim] operand than for a
+            # [b, s, dim] one, and the CPU emitter disagrees with CUDA about the
+            # result. Stacked-then-normed is bit-identical to the ordinary
+            # forward on the GPU and NOT on the CPU, which is the worst possible
+            # failure: an instrument that agrees with the model only on the
+            # backend you happened to check. Same lesson as #206.
+            trajectory = jnp.stack([self.out_norm(s) for s in [z_enc] + all_z])
+            gates = jnp.stack(gate_means) if self.use_gate else None
+            return trajectory.astype(self.dtype), gates
 
         if return_all_iters:
             z_all = self.out_norm(jnp.stack(all_z))  # [depth, b, s, dim]
