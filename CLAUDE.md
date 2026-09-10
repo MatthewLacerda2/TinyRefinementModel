@@ -191,6 +191,22 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
 
+**Spotting a bug mid-task.** Claude decides what to do with it — fix it in the current
+task, record it on a related issue, open its own issue, or surface it for the owner to
+call. **If there is nothing to decide, don't ask:** fix it in the next related PR, or
+file the issue and work it. Bring it to the owner only when there is a real choice to
+make — a fix that changes what the model *is*, one that would swell the PR past what a
+reviewer can hold, or a defect whose right answer is genuinely unclear.
+
+The failure mode this exists to prevent is a bug going *unrecorded* because it was
+inconvenient to the task in hand. A bug found and left unwritten is worse than one never
+found, because now nobody will look again. Two habits follow:
+
+- **A bug found while building something else still gets written down**, even if it is
+  not fixed. If it is not in this PR, it is an issue, and the PR says so.
+- **Say plainly what a fix does NOT cover.** "Guarded the symptom, root cause on #N" is a
+  complete answer; "fixed" when only the symptom was addressed is not.
+
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
