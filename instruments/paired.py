@@ -169,6 +169,12 @@ def _main(argv=None):
     ap.add_argument("--rows", type=int, default=16)
     ap.add_argument("--corpora", default="pretrain/codeparrot,pretrain/fineweb-edu",
                     help="comma-separated; at least two")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="selects a DIFFERENT held-out document sample, by offsetting "
+                         "the skip. The model and the tokens are deterministic, so the "
+                         "only honest source of variation across repeats is which "
+                         "documents get scored — that is what a spec's seeds must vary "
+                         "here, and it is what its sigma then means.")
     ap.add_argument("--skip", type=int, default=3_000_000,
                     help="rows to skip past trained-through data. Smaller corpora "
                          "need a smaller value (finemath has 19 chunks to the "
@@ -181,7 +187,10 @@ def _main(argv=None):
 
     model, _ = restore_model(args.checkpoint)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
-    corpora = {n: load_eval_batches(n, num_rows=args.rows, skip=args.skip) for n in names}
+    # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
+    # cannot overlap even at the largest --rows this is run with.
+    skip = args.skip + args.seed * args.rows * 2
+    corpora = {n: load_eval_batches(n, num_rows=args.rows, skip=skip) for n in names}
 
     print(f"paired: depth {args.treatment_depth} (treatment) vs depth "
           f"{args.control_depth} (control); positive = treatment better\n")
