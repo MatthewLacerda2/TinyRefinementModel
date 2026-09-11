@@ -456,3 +456,51 @@ def test_a_non_python_command_is_left_alone(tmp_path):
         seeds = [0]
     ''')
     assert experiment.load_execution(load_spec(spec_path)).command == ("bash", "run.sh")
+
+
+def test_a_constant_arm_is_not_run_but_can_still_be_compared_against(tmp_path):
+    """The referee can only express RELATIVE comparisons, which is a problem when a
+    question needs an absolute floor: two arms that both fail a task are trivially
+    "within 2 sigma" of each other, and that reads as parity rather than as a null
+    result. A `constant = true` arm supplies its values from the spec's [results] so
+    a criterion can name it, without the sweep launching it. Found on the runner's
+    third real use (#246)."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''', criteria='''
+        [criteria.treated_wins]
+        rule = "beats"
+        treatment = "treated"
+        control = "chance"
+        sigmas = 2.0
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+''')
+    ex = experiment.load_execution(load_spec(spec_path))
+    arms_run = {arm for _, arm, _ in ex.runs()}
+
+    assert "chance" not in arms_run, "a constant arm must never be launched"
+    assert arms_run == {"control", "treated"}
+
+
+def test_a_criterion_naming_a_misspelled_arm_still_fails(tmp_path):
+    """The counter-test. Constant arms must not become a hole in the typo check —
+    that check exists so a spec fails at load rather than two hours into a sweep."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''', criteria='''
+        [criteria.treated_wins]
+        rule = "beats"
+        treatment = "treated"
+        control = "contrl"
+        sigmas = 2.0
+    ''')
+    with pytest.raises(ValueError, match="section defines"):
+        experiment.load_execution(load_spec(spec_path))

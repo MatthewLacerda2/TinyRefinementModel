@@ -136,13 +136,21 @@ def load_execution(spec: Spec) -> Execution:
         # venv path into a committed spec, which is worse.
         command = (sys.executable, *command[1:])
 
+    all_arms = spec.meta.get("arms", {})
+    # An arm marked `constant = true` is NOT run: its values are supplied in the
+    # spec's [results] as a Summary. This exists because the referee can otherwise
+    # only express RELATIVE comparisons, and some questions need an absolute floor --
+    # two arms that both fail a task are trivially "within 2 sigma" of each other,
+    # and without a floor that reads as parity rather than as a null result. Declaring
+    # it explicitly (rather than inferring "no flags means constant") keeps the
+    # typo check below honest: a misspelled arm name still fails loudly.
     arm_flags = {name: tuple(str(f) for f in body.get("flags", ()))
-                 for name, body in spec.meta.get("arms", {}).items()}
+                 for name, body in all_arms.items() if not body.get("constant")}
     if not arm_flags:
-        raise ValueError(f"spec {spec.id}: no [arms.*] to run")
+        raise ValueError(f"spec {spec.id}: no runnable [arms.*] — every arm is constant")
 
     named = {c.treatment for c in spec.criteria.values()} | {c.control for c in spec.criteria.values()}
-    missing = sorted(named - set(arm_flags))
+    missing = sorted(named - set(all_arms))
     if missing:
         raise ValueError(
             f"spec {spec.id}: criteria compare arms that no [arms.*] section defines: {missing}")

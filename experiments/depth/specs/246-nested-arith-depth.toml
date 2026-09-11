@@ -1,0 +1,142 @@
+# PRE-REGISTERED. Criteria committed before any results; git records the order.
+#
+# This is the experiment the architecture was designed for and has never had.
+
+[experiment]
+id = "246"
+status = "open"
+title = "Does recurrence pay on nested evaluation — the task depth recurrence was built for?"
+hypothesis = """
+Every toy task in this repo is a CHAIN. parity, cumsum5 and statetrack all fold left
+to right, and position t needs every input <= t; depth helps them because aggregation
+is cumulative in SEQUENCE LENGTH.
+
+The owner's original reason for wanting depth was different and has never been tested
+(#245): evaluating ((a+b)*(c+d)) does not require scanning. It requires evaluating two
+independent subtrees and combining them. The compute needed scales with NESTING
+DEPTH, not sequence length, and a block that can do one level of the tree per pass
+should need about `nest` passes.
+
+Real data points the same way from the other side: the single place depth measurably
+pays on the corpus is bracket nesting in code, rising from +0.00086 at nest 0 to
++0.00541 at nest 4+.
+
+So: on a task that is genuinely a tree, does looping ONE block beat having that many
+DISTINCT blocks at the same compute?
+
+The arms are compute-matched by construction -- refiner runs 2 encoder layers plus one
+block looped D times; vanilla runs 2 encoder layers plus D distinct blocks. Same
+number of block applications. What differs is PARAMETERS: the refiner shares one
+block's weights where vanilla has D sets. That is the actual trade recurrence offers,
+and it is what this measures.
+
+Registered prediction: recurrence holds parity with vanilla at high nesting while
+using a fraction of the parameters, and the refiner's own accuracy tracks nesting
+depth (nest 4 needs more passes than nest 2).
+
+Caveat on the author, recorded because it has cost three times this week: every prior
+prediction I have registered about this loop was wrong, all in the direction of
+crediting it too much.
+"""
+issue = 246
+
+[protocol]
+task = "arith"
+metric_key = "acc"
+metric = "held-out accuracy on the expression's value, chance 1/7 = 0.143"
+matched = "same seed => same init, same expression pools, same minibatch order; only the architecture differs"
+notes = """
+Supervision is deliberately SPARSE -- one graded position per sequence, at the final
+token of the expression. A dense target would let the model copy a value it had
+already emitted rather than compute one.
+
+Legs are nesting depths. A balanced tree of depth d serialises to 4*2^d-3 tokens, so
+each leg raises --train-seq with its nest: 13, 29, 61. Sequence length is therefore
+confounded with nesting BY CONSTRUCTION and cannot be separated -- a deeper tree is a
+longer string. The comparison is between ARMS at the same leg, which is unaffected;
+no criterion compares one leg to another.
+
+Chance is 0.143. An arm that cannot evaluate the tree cannot beat it, which makes the
+floor meaningful rather than a formality.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.depth.ablation_harness",
+           "--task", "arith", "--dim", "96", "--steps", "2500",
+           "--depths", "1,2,4,8"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+
+[execution.legs.nest2]
+flags = ["--nest", "2", "--train-seq", "13"]
+
+[execution.legs.nest3]
+flags = ["--nest", "3", "--train-seq", "29"]
+
+[execution.legs.nest4]
+flags = ["--nest", "4", "--train-seq", "61"]
+
+[arms.vanilla]
+role = "control"
+flags = ["--arch", "vanilla"]
+
+[arms.refiner]
+role = "treatment"
+flags = ["--arch", "refiner"]
+
+# Not run: an absolute floor for the beats_chance criterion. 1/7 for a uniform
+# guess over the seven residues. sigma is nominal -- chance does not vary.
+[arms.chance]
+role = "floor"
+constant = true
+
+# --- Pre-registered criteria -------------------------------------------------
+# KEEP requires BOTH:
+#
+#   recurrence_holds_at_deep_nesting -- at the hardest leg and the deepest setting
+#       (nest4/d8), the refiner is WITHIN 2 sigma of vanilla. Parity, not a win: the
+#       refiner uses one block's parameters where vanilla uses eight, so matching is
+#       the win. Demanding it also beat vanilla would be moving the goalpost onto a
+#       benefit recurrence was never argued to provide.
+#
+#   beats_chance_at_deep_nesting -- the refiner must clear 0.143 at nest4/d8 by a
+#       wide margin. Two arms that both fail the task are trivially "within 2 sigma"
+#       of each other, and that must not read as a pass. This is the criterion that
+#       stops a null result masquerading as parity.
+#
+# KILL if the refiner LOSES to vanilla by >= 2 sigma at nest4/d8: on the one task
+# built for it, recurrence costs accuracy as well as the 1.875x compute it costs on
+# language. That retires the mechanism with evidence.
+
+[criteria.recurrence_holds_at_deep_nesting]
+rule = "within"
+treatment = "refiner"
+control = "vanilla"
+sigmas = 2.0
+points = ["nest4/d8"]
+require = "all"
+
+[criteria.beats_chance_at_deep_nesting]
+rule = "beats"
+treatment = "refiner"
+control = "chance"
+sigmas = 2.0
+points = ["nest4/d8"]
+require = "all"
+
+[criteria.recurrence_loses_where_it_should_win]
+rule = "loses"
+treatment = "refiner"
+control = "vanilla"
+sigmas = 2.0
+points = ["nest4/d8"]
+require = "all"
+
+[verdict]
+keep_if = ["recurrence_holds_at_deep_nesting", "beats_chance_at_deep_nesting"]
+kill_if = ["recurrence_loses_where_it_should_win"]
+
+# A constant arm: chance for a 1-in-7 choice. Declared as a Summary so the
+# beats_chance criterion has something to compare against without a run.
+[results."nest4/d8"]
+chance = { mean = 0.1429, sigma = 0.0001, n = 3 }

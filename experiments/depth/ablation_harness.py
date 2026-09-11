@@ -112,6 +112,85 @@ def state_tracking_task(key, batch, seq, n_states=5, n_gen=4):
     return toks.astype(jnp.int32), targets, mask
 
 
+
+# --- nested arithmetic: a TREE, where every other task here is a chain ---------
+#
+# parity / cumsum5 / statetrack are all sequential scans: fold left to right, and
+# position t needs every input <= t. Depth helps them because aggregation is
+# cumulative in SEQUENCE LENGTH.
+#
+# This one is different, and it is the task the architecture was actually designed
+# for (#245). Evaluating ((a+b)*(c+d)) does not require scanning -- it requires
+# evaluating two independent subtrees and combining them. The compute needed scales
+# with NESTING DEPTH, not with sequence length, and a recurrent block that can do
+# one level of the tree per pass should need about `depth` passes.
+#
+# That yields a prediction no chain task can make: the refinement depth required
+# should track the expression's nesting depth, and stay flat in its length.
+#
+# Real data points the same way from the other side -- the one place depth
+# measurably pays on the corpus is bracket nesting in code (+0.00086 at nest 0
+# rising to +0.00541 at nest 4+).
+
+ARITH_OPS = ("+", "*")
+
+
+def _arith_tokens(mod):
+    """Vocabulary: values 0..mod-1, then the operators and parens.
+
+    Targets are values, so they share the low ids and the vocab is just the token
+    table size -- the same arrangement statetrack uses.
+    """
+    return list(range(mod)) + [mod + i for i in range(len(ARITH_OPS) + 2)]
+
+
+def nested_arith_task(key, batch, seq, mod=7, nest=3):
+    """Balanced binary expression trees of nesting depth `nest`, evaluated mod `mod`.
+
+    Serialised infix with full parentheses, so the structure is explicit in the
+    tokens and nothing has to be inferred about precedence. The target is the value
+    of the WHOLE expression and it is supervised at the final expression token only
+    -- deliberately sparse, because a dense target would let the model copy a value
+    it had already emitted instead of computing one.
+
+    Chance is 1/mod. A model that cannot evaluate the tree cannot beat it.
+    """
+    import numpy as _np
+
+    rng = _np.random.default_rng(int(jax.random.randint(key, (), 0, 2**31 - 1)))
+    op_base = mod
+    lpar, rpar = mod + len(ARITH_OPS), mod + len(ARITH_OPS) + 1
+
+    def build(d):
+        """Returns (token list, value). Depth d means d levels of operators."""
+        if d == 0:
+            v = int(rng.integers(0, mod))
+            return [v], v
+        lt, lv = build(d - 1)
+        rt, rv = build(d - 1)
+        op = int(rng.integers(0, len(ARITH_OPS)))
+        val = (lv + rv) % mod if ARITH_OPS[op] == "+" else (lv * rv) % mod
+        return [lpar] + lt + [op_base + op] + rt + [rpar], val
+
+    need = 4 * (2 ** nest) - 3
+    if need > seq:
+        raise SystemExit(
+            f"nest={nest} needs {need} tokens but --train-seq is {seq}. A balanced "
+            f"tree of depth d is 4*2^d-3 tokens; pass --train-seq {need} or more.")
+
+    inp = _np.zeros((batch, seq), dtype=_np.int32)
+    tgt = _np.zeros((batch, seq), dtype=_np.int32)
+    mask = _np.zeros((batch, seq), dtype=_np.float32)
+    for b in range(batch):
+        toks, val = build(nest)
+        inp[b, :len(toks)] = toks
+        # Supervise where the expression ends: the last token the model reads before
+        # it must know the answer.
+        tgt[b, len(toks) - 1] = val
+        mask[b, len(toks) - 1] = 1.0
+    return jnp.asarray(inp), jnp.asarray(tgt), jnp.asarray(mask)
+
+
 def memorize_task(n_pairs):
     """Pure-memorization probe: a FIXED dictionary of n_pairs random key→value pairs
     (values drawn once from a constant seed, same dictionary every call). No rule
@@ -133,10 +212,15 @@ TASKS = {
     "parity": lambda key, batch, seq: cumulative_task(key, batch, seq, 2),
     "cumsum5": lambda key, batch, seq: cumulative_task(key, batch, seq, 5),
     "statetrack": lambda key, batch, seq: state_tracking_task(key, batch, seq, 5, 4),
+    # nest is set from --nest in main(); this entry exists so --task lists it.
+    "arith": lambda key, batch, seq: nested_arith_task(key, batch, seq),
 }
 # Vocab must cover both input tokens and targets. statetrack: inputs in [0,n_gen),
 # targets (states) in [0,n_states) -> vocab = max(n_gen, n_states).
-VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5}
+ARITH_MOD = 7
+# values 0..mod-1 plus two operators and two parens
+VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5,
+         "arith": ARITH_MOD + len(ARITH_OPS) + 2}
 # `memorize` is built per-run (vocab = --mem-pairs), see main().
 
 
@@ -307,6 +391,11 @@ def main():
                     help="cut the gradient chain at every pass boundary (#75) — pair with --per-pass-loss. refiner-only.")
     ap.add_argument("--readouts", action="store_true",
                     help="print #75 readouts: per-pass accuracy, gate openness per pass, depth-transfer curve (eval at depths 1..12). refiner-only.")
+    ap.add_argument("--nest", type=int, default=3,
+                    help="arith task: nesting depth of the expression tree. A balanced "
+                         "tree of depth d serialises to 4*2^d-3 tokens, so raise "
+                         "--train-seq with it (d=3 -> 29, d=4 -> 61). This is the knob "
+                         "the whole experiment turns on (#245).")
     ap.add_argument("--post-norm", action="store_true",
                     help="normalize each residual branch's output before adding it back "
                          "(#235). Bounds the SwiGLU product that reaches 99.1%% of the f16 "
@@ -323,7 +412,12 @@ def main():
                     help="eval length; > train-seq makes it a length-generalization probe (default: = train-seq)")
     args = ap.parse_args()
 
-    if args.task == "memorize":
+    if args.task == "arith":
+        def task_fn(key, batch, seq, _nest=args.nest):
+            return nested_arith_task(key, batch, seq, nest=_nest)
+        vocab = VOCAB["arith"]
+        task_desc = f"arith[nest={args.nest}, chance {1/ARITH_MOD:.3f}]"
+    elif args.task == "memorize":
         task_fn = memorize_task(args.mem_pairs)
         vocab = args.mem_pairs
         task_desc = f"memorize[N={args.mem_pairs}]"
