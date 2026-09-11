@@ -4,9 +4,24 @@ What the CPU suite can't cover: CPU XLA cannot lower the f16-with-f32-accumulati
 matmuls (config.py), so the real numerical risk — f16 underflow/overflow in the deep
 unrolled refine loop — and the 6GB VRAM fit only show up on the GPU. This drives the
 *production* grad step (compute_grad_step + apply_grads) at LATENT_DIM/VOCAB_SIZE/
-MAX_SEQ_LEN on random tokens (text content is irrelevant to numerical health), across
-every depth 1..MAX_STEPS_LIMIT, and asserts finite loss + finite, nonzero grads, then
-runs a few optimizer steps. Random tokens, no data pipeline, no run dirs.
+MAX_SEQ_LEN across every depth 1..MAX_STEPS_LIMIT, asserts finite loss + finite,
+nonzero grads AND f16 activation headroom, then runs a few optimizer steps.
+
+**Token content is NOT irrelevant, and this file used to say it was.** The overflow
+that eventually mattered (#229 -> #235) is corpus-specific: the encoder's output
+reaches 65,120 on code against 47.7 on prose, with an f16 ceiling of 65,504. Random
+tokens produce prose-like magnitudes, so this smoke ran clean through an entire
+10-day run while the model trained itself to 0.6% of the ceiling.
+
+Two consequences, both fixed here:
+
+- with DATA_ROOT set the smoke reads REAL tokens and prefers **code**, the
+  distribution that actually stresses activations; random tokens stay the fallback so
+  the no-corpus path still works.
+- finiteness is not a sufficient assertion. A model at 99.4% of the ceiling is finite
+  and passes -- the champion passes today. So the smoke now measures peak activation
+  as a fraction of the f16 max and fails below a headroom margin. That is the
+  difference between a gate and a post-mortem.
 
 Also reads the underflow instrument (#82) on every grad step: per-group zero-gradient
 fractions. Embedding rows for absent tokens are legitimately zero; the dense groups
@@ -30,6 +45,59 @@ from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.model.refiner_lm import RefinerForTraining
 from trm.train.optimizers import optimizer_chain
+
+
+# f16's largest finite value. The margin is what the smoke demands is left unused.
+F16_MAX = 65504.0
+# The champion sits at 0.6% headroom and is one rounding from #229's whole-window
+# NaN. 50% (a factor of two) is the smallest bar that would have caught it while
+# leaving ordinary activation growth alone -- prose runs at 47.7, six orders below.
+MIN_HEADROOM = 0.50
+
+
+def encoder_headroom(model, tokens):
+    """Peak |activation| through the encoder, and the f16 headroom it leaves.
+
+    Reported per layer because #235's growth was not gradual: six blocks behaved
+    identically on both corpora and the seventh multiplied by ~794. A single
+    end-of-encoder number says a run is unsafe; the per-layer trace says where.
+    """
+    r = model.refiner
+    pad_bias = (((tokens != model.pad_token_id).astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
+    z = r.embed(tokens)
+    peaks = []
+    for blk in r.encoder:
+        z = blk(z, pad_bias)
+        peaks.append(float(jnp.max(jnp.abs(z.astype(jnp.float32)))))
+    worst = max(peaks)
+    return peaks, worst, 1.0 - worst / F16_MAX
+
+
+def load_batch(rng):
+    """Real tokens when a corpus is reachable, preferring code.
+
+    Random ids are drawn uniformly over the vocabulary, which is nothing like text
+    and -- crucially -- nothing like the code that actually drives the encoder to
+    the f16 ceiling. Falling back to random keeps the no-corpus path (CI, a fresh
+    clone) working, but it is the weaker test and says so.
+    """
+    root = os.environ.get("DATA_ROOT", "")
+    if root:
+        from trm.config import resolve_root
+        from trm.data.loaders import TextDataGenerator
+        for source in ("codeparrot", "fineweb-edu"):
+            path = f"{resolve_root(root)}/pretrain/{source}"
+            if not os.path.isdir(path):
+                continue
+            gen = TextDataGenerator(path)
+            gen.skip_count = 3_000_000
+            row, _ = gen.get_batch(1)
+            if row is not None:
+                print(f"📚 real tokens from {source} (the distribution that stresses f16)")
+                return jnp.asarray(row[:, :2 * MAX_SEQ_LEN + 1].astype(np.int32))
+    print("🎲 random tokens — DATA_ROOT unset, so the corpus-specific overflow "
+          "(#235) CANNOT be caught by this run")
+    return jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
 
 
 def main():
@@ -57,7 +125,20 @@ def main():
         blk.down_proj.kernel[...] = 0.02 * jax.random.normal(sub, kernel.shape, kernel.dtype)
 
     rng = np.random.default_rng(0)
-    batch = jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = load_batch(rng)
+
+    # Headroom BEFORE the grad steps: this is a property of the weights and the
+    # tokens, and reading it first means a doomed run is refused before it spends
+    # anything. Measured on one window, the shape the encoder actually sees.
+    peaks, worst, headroom = encoder_headroom(model, batch[:, :MAX_SEQ_LEN])
+    print("📏 encoder activation peak per block: "
+          + "  ".join(f"{v:,.0f}" for v in peaks))
+    print(f"   worst {worst:,.1f} of f16 max {F16_MAX:,.0f} → headroom {headroom:.1%}")
+    assert headroom >= MIN_HEADROOM, (
+        f"encoder activations reach {worst:,.0f}, leaving {headroom:.1%} of f16 headroom "
+        f"(need {MIN_HEADROOM:.0%}). This is #235: the residual branches are unbounded, "
+        f"and #229's whole-window NaN is what running out looks like. POST_NORM=1 bounds "
+        f"the branch outputs.")
 
     # Worst-case VRAM and the deepest f16 unroll first: if depth-8 fits with the
     # optimizer resident, every shallower depth training samples does too. Loss is
