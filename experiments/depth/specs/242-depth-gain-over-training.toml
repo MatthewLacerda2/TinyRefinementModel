@@ -114,3 +114,14 @@ require = "all"
 [verdict]
 keep_if = ["gain_grows_on_code", "prose_stays_neutral"]
 kill_if = ["gain_was_there_from_the_start"]
+
+# --- Results (per seed, written by instruments/experiment.py; metric = mean) ---
+[results."pretrain/codeparrot"]
+early = [-6.2523, -6.2035, -6.1118, -6.1118]
+late = [0.0012, 0.0019, 0.0011, 0.0012]
+mid = [0.0055, 0.0078, 0.0039, 0.0037]
+
+[results."pretrain/fineweb-edu"]
+early = [-5.2498, -5.2891, -5.2732, -5.3123]
+late = [-0.0001, -0.0001, -0.0002, -0.0002]
+mid = [-0.0005, -0.0003, -0.0004, -0.0003]
