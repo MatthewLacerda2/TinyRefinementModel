@@ -1,0 +1,116 @@
+# PRE-REGISTERED. Criteria committed before any run; git records the order.
+# The measurement this asks about has NOT been taken — the gain is known on the
+# final checkpoint only, and whether it grows is genuinely open.
+
+[experiment]
+id = "242"
+status = "open"
+title = "Does the code-specific depth gain grow over training, or is it there from early on?"
+hypothesis = """
+Depth recurrence buys the champion +0.003454 nats on code (t=+15.8, n=204,380) and
+nothing measurable on prose or math. That is the final checkpoint only.
+
+Two readings fit it, and they mean different things:
+
+  LEARNED   — the model gradually learns to use the refine loop on structured input.
+              The gain should be small or absent early and grow with training.
+  STRUCTURAL— looping a causal block just helps on code-shaped input, for reasons
+              having nothing to do with training. The gain should be roughly as
+              large at 0.66B tokens as at 3.99B.
+
+The second would make the whole 'the model learned where depth pays' framing wrong,
+and would redirect the question from the training recipe to the architecture. So this
+is a fork worth resolving before anything is written up.
+
+Prediction registered: LEARNED. The gate observations behind it (#225) show the
+refine loop writing to 6 of 960 channels on prose and up to 447 on code, which is a
+routing the model had to arrive at -- gate_bias initialises balanced at sigmoid(0).
+"""
+issue = 242
+
+[protocol]
+metric_key = "mean"
+metric = "paired per-position CE difference, depth 8 vs depth 1, in nats (positive = depth helps)"
+matched = "identical documents, identical depths, identical instrument; only the checkpoint differs"
+notes = """
+Seeds vary the held-out DOCUMENT SAMPLE, not model init -- the checkpoints are fixed
+and the forward pass is deterministic, so document sampling is the only honest source
+of variation and sigma here means sampling variability over documents. It is NOT
+#17's seed-to-seed training noise floor (sigma ~ 0.03 nats), which is the wrong bar
+by two orders of magnitude and the specific mistake instruments/paired.py exists to
+prevent.
+
+Rungs are what survived retention: 0.66B (step 647167), 3.20B (step 3121279) and
+3.99B (the champion). The 1.45B checkpoints are labelled collapse_onset/collapsed and
+are excluded as damaged rather than quietly averaged in.
+
+The 3.20B rung returns all-NaN logits on ~10% of code documents (#229). paired.py
+drops and COUNTS non-finite positions rather than averaging over them, so that rung
+reports on fewer positions and says so. It is carried as a third arm for the table
+but is deliberately not part of any criterion, because a checkpoint that fails on a
+tenth of the corpus cannot anchor a trend.
+"""
+
+[execution]
+command = ["python", "-m", "instruments.paired",
+           "--treatment-depth", "8", "--control-depth", "1",
+           "--rows", "200",
+           "--corpora", "pretrain/codeparrot,pretrain/fineweb-edu"]
+seeds = [0, 1, 2, 3]
+seed_flag = "--seed"
+
+[execution.env]
+DATA_ROOT = "runs/data"
+MODEL_ARCH = "refiner"
+
+[arms.early]
+role = "control"
+flags = ["--checkpoint", "/mnt/d_drive/TRM_cold/run_20260813_214725_archive/checkpoints_quarantine"]
+
+[arms.late]
+role = "treatment"
+flags = ["--checkpoint", "runs/run_20260813_214725/checkpoints"]
+
+[arms.mid]
+role = "reference"
+flags = ["--checkpoint", "runs/run_20260813_214725/checkpoints/best"]
+
+# --- Pre-registered criteria -------------------------------------------------
+# KEEP the LEARNED reading if the gain on code grows by >= 2 sigma from 0.66B to
+# 3.99B, AND prose stays indistinguishable across the same span (depth must be
+# prose-neutral throughout, not merely at the end -- a gain that appeared on prose
+# early and vanished would be a different phenomenon wearing the same final number).
+#
+# KILL it if the code gain at 0.66B is already within 2 sigma of the final gain:
+# that is the STRUCTURAL reading, and it would redirect the question away from the
+# training recipe entirely.
+#
+# The two are mutually exclusive by construction, so exactly one fires.
+
+[criteria.gain_grows_on_code]
+rule = "beats"
+treatment = "late"
+control = "early"
+sigmas = 2.0
+points = ["pretrain/codeparrot"]
+require = "all"
+
+[criteria.prose_stays_neutral]
+rule = "within"
+treatment = "late"
+control = "early"
+sigmas = 2.0
+points = ["pretrain/fineweb-edu"]
+require = "all"
+
+[criteria.gain_was_there_from_the_start]
+rule = "within"
+treatment = "late"
+control = "early"
+sigmas = 2.0
+points = ["pretrain/codeparrot"]
+require = "all"
+
+[verdict]
+keep_if = ["gain_grows_on_code", "prose_stays_neutral"]
+kill_if = ["gain_was_there_from_the_start"]
