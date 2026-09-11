@@ -1,0 +1,116 @@
+# PRE-REGISTERED. Criteria committed before any results; git records the order.
+#
+# This is the test the project's core architectural bet is on probation for. If
+# post-norm does not remove the collapse, depth recurrence is being paid 1.875x
+# compute for +0.2% CE on one corpus of three, and removing it is the correct call.
+
+[experiment]
+id = "238"
+status = "open"
+title = "Does post-norm remove the depth-8 collapse?"
+hypothesis = """
+Two facts, established separately, may have one cause.
+
+#242 measured the 0.66B checkpoint on real code: depth 1 scores 2.200 nats, depth 2
+scores 7.892 -- against 10.82 for uniform random. ONE refine pass is fine; the second
+destroys the prediction. By 3.99B the model has driven all eight passes to a near
+identity (1.528 / 1.528 / 1.529 / 1.529), i.e. it spent the run learning to switch
+the loop off rather than to use it.
+
+#235 found the mechanism candidate: nothing bounds a residual branch's OUTPUT. The
+encoder's reaches 99.4% of the f16 ceiling on code. A shared block LOOPED K times
+compounds whatever it emits, so an unbounded branch is exactly what would make the
+second pass diverge.
+
+If those are one problem, bounding the branch output should remove the collapse. If
+they are two, it will not, and the collapse is intrinsic to looping a shared block --
+which is the evidence needed to retire the mechanism with a finding rather than a
+hunch.
+
+Registered prediction: post-norm REMOVES the collapse. Recorded with a caveat about
+its author -- two readings of this loop in two days were wrong, both crediting it too
+much (#225's gate story, #242's "learns to use depth"). Weight accordingly.
+"""
+issue = 238
+
+[protocol]
+task = "statetrack"
+metric_key = "acc"
+metric = "held-out accuracy (chance 0.20)"
+matched = "same seed => same init, same pools, same minibatch order; only post_norm differs"
+notes = """
+The metric is deliberately a WITHIN-RUN scalar, not a per-depth mean.
+
+instruments/verdict.py separates arms by (mean_t - mean_c) / RMS(sigma_t, sigma_c) --
+an effect size, not a t-statistic. It does not shrink with more seeds, and the
+control's sigma sits in the denominator. So a claim of the form "the control is
+erratic" is UNMEETABLE when phrased as a per-depth mean comparison: the more erratic
+the control, the harder it is to beat. #235 hit exactly this, reading +0.59σ at d4
+and +0.84σ at d8 while the control had a seed scoring 0.7893 at depth 8 -- below its
+own depth 2.
+
+`min_deep` (worst accuracy at any depth >= 2) collapses the question into one number
+per run. A run whose deep recurrence diverged scores low however well its depth-1 arm
+did, and that IS a mean comparison the referee can judge. Depth 1 is excluded because
+one pass cannot compound.
+
+8 seeds, not 3: the claim is about a tail -- roughly one control seed in three
+collapsed at 3 seeds -- and a tail cannot be estimated from three draws.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.depth.ablation_harness",
+           "--task", "statetrack", "--dim", "96", "--steps", "2500",
+           "--depths", "1,2,4,8"]
+seeds = [0, 1, 2, 3, 4, 5, 6, 7]
+seed_flag = "--seed"
+
+[arms.prenorm]
+role = "control"
+flags = []
+
+[arms.postnorm]
+role = "treatment"
+flags = ["--post-norm"]
+
+# --- Pre-registered criteria -------------------------------------------------
+# KEEP (post-norm removes the collapse) requires BOTH:
+#
+#   collapse_removed  -- post-norm beats the control on min_deep by >= 2 sigma.
+#                        This is the claim.
+#   benefit_is_depth_specific -- post-norm is WITHIN 2 sigma of the control at d1.
+#                        If post-norm simply trains better everywhere, it is a
+#                        general improvement and says nothing about compounding.
+#                        Depth 1 cannot collapse, so it is the honest placebo arm.
+#
+# KILL if post-norm is within 2 sigma of the control on min_deep: the collapse is
+# not an activation-scale problem, and depth recurrence goes on trial for removal
+# with this as the evidence.
+
+[criteria.collapse_removed]
+rule = "beats"
+treatment = "postnorm"
+control = "prenorm"
+sigmas = 2.0
+points = ["min_deep"]
+require = "all"
+
+[criteria.benefit_is_depth_specific]
+rule = "within"
+treatment = "postnorm"
+control = "prenorm"
+sigmas = 2.0
+points = ["d1"]
+require = "all"
+
+[criteria.collapse_survives]
+rule = "within"
+treatment = "postnorm"
+control = "prenorm"
+sigmas = 2.0
+points = ["min_deep"]
+require = "all"
+
+[verdict]
+keep_if = ["collapse_removed", "benefit_is_depth_specific"]
+kill_if = ["collapse_survives"]
