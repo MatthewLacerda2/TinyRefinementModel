@@ -44,7 +44,9 @@ import time
 from dataclasses import dataclass
 
 from instruments import results as result_lines
-from instruments.verdict import Spec, evaluate, load_spec, mean_sigma
+from instruments.verdict import (
+    Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNS_DIR = REPO_ROOT / "runs" / "experiments"
@@ -302,14 +304,52 @@ def _toml_key(name: str) -> str:
     return name if re.fullmatch(r"[A-Za-z0-9_-]+", name) else json.dumps(name)
 
 
-def render_results_toml(results: dict[str, dict[str, list[float]]], metric: str) -> str:
+def render_results_toml(results, metric: str) -> str:
+    """Render `[results.*]` tables.
+
+    An arm's value is either a list of per-seed numbers or a Summary mapping
+    ({mean, sigma, n}) — the latter being how a `constant = true` floor declares
+    itself, and how #86-style retrofits record published summaries.
+    """
     lines = ["", f"# --- Results (per seed, written by instruments/experiment.py; metric = {metric}) ---"]
     for point, arms in results.items():
         lines.append(f"[results.{_toml_key(point)}]")
         for arm, values in arms.items():
-            lines.append(f"{arm} = [{', '.join(f'{v:.4f}' for v in values)}]")
+            summary = values if isinstance(values, dict) else (
+                {"mean": values.mean, "sigma": values.sigma, "n": values.n}
+                if hasattr(values, "mean") else None)
+            if summary is not None:
+                body = ", ".join(f"{k} = {v}" for k, v in summary.items())
+                lines.append(f"{arm} = {{ {body} }}")
+            else:
+                lines.append(f"{arm} = [{', '.join(f'{v:.4f}' for v in values)}]")
         lines.append("")
     return "\n".join(lines)
+
+
+def merge_constants(spec, results, spec_path):
+    """Fold a spec's `constant = true` arms into a sweep's measured results.
+
+    Constants are declared in `[results]` and never run, so they are absent from
+    whatever the sweep produced. Both the referee AND the file need them: without
+    this, `record_results` wrote a second `[results."<point>"]` table for the same
+    point (TOML keeps the last, so the declared floor vanished) and `evaluate` was
+    handed results with no floor arm at all, failing with "point has no arm
+    'chance'" only after every run had completed.
+    """
+    constants = {name for name, body in (spec.meta.get("arms") or {}).items()
+                 if body.get("constant")}
+    if not constants:
+        return results
+    # Parsed, not raw: verdict.py needs a Summary object, and the raw TOML table
+    # is a plain dict that mean_sigma would iterate as strings.
+    declared = load_recorded_results(spec_path)
+    merged = {point: dict(arms) for point, arms in results.items()}
+    for point, arms in declared.items():
+        for arm, value in arms.items():
+            if arm in constants:
+                merged.setdefault(point, {})[arm] = value
+    return merged
 
 
 def record_results(spec_path: pathlib.Path, results, metric: str, *, force: bool = False) -> bool:
@@ -333,6 +373,11 @@ def record_results(spec_path: pathlib.Path, results, metric: str, *, force: bool
     if measured and set(measured) - constants and not force:
         print(f"\nspec already carries measured results — not overwriting {spec_path} (use --force)")
         return False
+
+    if constants and "[results." in text:
+        results = merge_constants(load_spec(spec_path), results, spec_path)
+        text = text[:text.index("[results.")].rstrip("\n")
+
     spec_path.write_text(text.rstrip("\n") + "\n" + render_results_toml(results, metric))
     print(f"\nrecorded results into {spec_path}")
     return True
@@ -379,8 +424,13 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
         lines += [f"### {point}", "", "| arm | mean | sigma | n | per seed |", "|---|---|---|---|---|"]
         for arm, values in arms.items():
             mean, sigma = mean_sigma(values)
-            lines.append(f"| {arm} | {mean:.4f} | {sigma:.4f} | {len(values)} | "
-                         f"{', '.join(f'{v:.4f}' for v in values)} |")
+            # A constant arm (a declared floor) or a retrofit summary has no per-seed
+            # values to list — it is a Summary, not a sequence.
+            if hasattr(values, "mean"):
+                n, per_seed = values.n, "declared, not run"
+            else:
+                n, per_seed = len(values), ", ".join(f"{v:.4f}" for v in values)
+            lines.append(f"| {arm} | {mean:.4f} | {sigma:.4f} | {n} | {per_seed} |")
         lines.append("")
 
     lines += ["## Criteria", "", "| criterion | rule | comparison | separation | met |", "|---|---|---|---|---|"]
@@ -429,7 +479,7 @@ def main(argv=None) -> int:
         run_gate(REPO_ROOT)
 
     rows = sweep(spec, execution, resume=not args.no_resume)
-    results = collect(rows, execution.metric)
+    results = merge_constants(spec, collect(rows, execution.metric), args.spec)
     record_results(args.spec, results, execution.metric, force=args.force)
 
     verdict = evaluate(spec, results)

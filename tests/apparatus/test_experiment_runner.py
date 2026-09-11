@@ -547,3 +547,30 @@ treated = [0.7]
     assert not experiment.record_results(
         spec_path, {"d1": {"control": [0.9], "treated": [0.9]}}, "acc")
     assert "0.9" not in spec_path.read_text()
+
+
+def test_a_declared_floor_survives_its_own_experiment(tmp_path):
+    """Recording used to APPEND, leaving two `[results."<point>"]` tables for the
+    same point. TOML keeps the last, so the declared floor silently vanished and the
+    criterion naming it failed with "point has no arm 'chance'" — *after* the sweep
+    had already finished. Merging is the only arrangement where a floor survives."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+
+[results.d1]
+chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
+''')
+    assert experiment.record_results(
+        spec_path, {"d1": {"control": [0.5], "treated": [0.7]}}, "acc")
+
+    reloaded = load_spec(spec_path).meta["results"]["d1"]
+    assert set(reloaded) == {"chance", "control", "treated"}
+    assert reloaded["chance"]["mean"] == 0.2106
+    assert spec_path.read_text().count("[results.d1]") == 1, "one table per point"

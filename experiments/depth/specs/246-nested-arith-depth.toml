@@ -155,5 +155,53 @@ kill_if = ["recurrence_loses_where_it_should_win"]
 
 # A constant arm: chance for a 1-in-7 choice. Declared as a Summary so the
 # beats_chance criterion has something to compare against without a run.
+
+# --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
+[results."nest2/d1"]
+refiner = [1.0000, 1.0000, 1.0000]
+vanilla = [1.0000, 1.0000, 1.0000]
+
+[results."nest2/d2"]
+refiner = [1.0000, 1.0000, 1.0000]
+vanilla = [1.0000, 1.0000, 1.0000]
+
+[results."nest2/d4"]
+refiner = [1.0000, 1.0000, 1.0000]
+vanilla = [1.0000, 1.0000, 1.0000]
+
+[results."nest2/d8"]
+refiner = [1.0000, 1.0000, 1.0000]
+vanilla = [1.0000, 1.0000, 1.0000]
+
+[results."nest3/d1"]
+refiner = [0.9856, 0.9902, 0.9873]
+vanilla = [0.9514, 0.9746, 0.9753]
+
+[results."nest3/d2"]
+refiner = [0.9927, 1.0000, 0.9951]
+vanilla = [0.9819, 0.9785, 0.9937]
+
+[results."nest3/d4"]
+refiner = [1.0000, 1.0000, 0.9524]
+vanilla = [0.9985, 0.9968, 0.9954]
+
+[results."nest3/d8"]
+refiner = [0.9871, 0.9998, 0.1968]
+vanilla = [0.9944, 0.9934, 1.0000]
+
+[results."nest4/d1"]
+refiner = [0.1960, 0.1946, 0.2043]
+vanilla = [0.1973, 0.2058, 0.2065]
+
+[results."nest4/d2"]
+refiner = [0.2046, 0.2026, 0.2075]
+vanilla = [0.1978, 0.2097, 0.2036]
+
+[results."nest4/d4"]
+refiner = [0.1946, 0.1921, 0.1997]
+vanilla = [0.1909, 0.2009, 0.2046]
+
 [results."nest4/d8"]
+refiner = [0.1997, 0.2012, 0.2000]
+vanilla = [0.1912, 0.2002, 0.2029]
 chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
