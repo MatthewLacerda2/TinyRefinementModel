@@ -107,5 +107,18 @@ def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=3_000_000
             break
         batches.append(row)
     if not batches:
-        raise SystemExit(f"No eval data available in {source_dir} after skipping {skip} samples.")
+        # "No eval data available" alone sends you looking for a missing corpus.
+        # The actual cause is almost always that the default skip -- sized for the
+        # 30-chunk corpora -- overruns a smaller one: finemath has 19 chunks and
+        # runs out well before 3,000,000 samples. Say which, and say the number
+        # that would work, because the alternative (silently clamping the skip)
+        # would quietly evaluate on tokens the run trained through.
+        import glob
+        chunks = sorted(glob.glob(f"{source_dir}/*.npy"))
+        detail = (f" It holds {len(chunks)} chunk(s)." if chunks
+                  else " No .npy chunks found there at all — check the path.")
+        raise SystemExit(
+            f"No eval data in {source_dir} after skipping {skip:,} samples.{detail} "
+            f"A smaller corpus needs a smaller --skip; the skip exists to stay clear "
+            f"of trained-through data, so reduce it deliberately rather than to zero.")
     return batches
