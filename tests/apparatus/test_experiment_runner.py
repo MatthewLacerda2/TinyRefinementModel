@@ -504,3 +504,46 @@ def test_a_criterion_naming_a_misspelled_arm_still_fails(tmp_path):
     ''')
     with pytest.raises(ValueError, match="section defines"):
         experiment.load_execution(load_spec(spec_path))
+
+
+def test_a_declared_floor_does_not_block_recording(tmp_path):
+    """A `constant = true` arm's values live in [results] by design — that is how a
+    floor is declared without running it. Their presence must not read as "this sweep
+    already completed", or declaring a floor silently prevents the sweep from ever
+    recording. On #246 that dropped 18 completed runs on the floor."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+
+[results.d1]
+chance = { mean = 0.2, sigma = 0.001, n = 3 }
+''')
+    wrote = experiment.record_results(
+        spec_path, {"d1": {"control": [0.5], "treated": [0.7]}}, "acc")
+
+    assert wrote, "a spec carrying only a declared floor must still accept results"
+    assert "treated" in spec_path.read_text()
+
+
+def test_real_recorded_results_still_block_a_rewrite(tmp_path):
+    """The counter-test, and the property that matters most: silently rewriting a
+    measured number is how a pre-registration stops meaning anything."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[results.d1]
+control = [0.5]
+treated = [0.7]
+''')
+    assert not experiment.record_results(
+        spec_path, {"d1": {"control": [0.9], "treated": [0.9]}}, "acc")
+    assert "0.9" not in spec_path.read_text()

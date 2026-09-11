@@ -315,12 +315,23 @@ def render_results_toml(results: dict[str, dict[str, list[float]]], metric: str)
 def record_results(spec_path: pathlib.Path, results, metric: str, *, force: bool = False) -> bool:
     """Append the `[results.*]` tables to the spec file.
 
-    Refuses to touch a spec that already carries results unless forced: silently
-    rewriting a recorded number is how a pre-registration stops meaning anything.
+    Refuses to touch a spec that already carries MEASURED results unless forced:
+    silently rewriting a recorded number is how a pre-registration stops meaning
+    anything.
+
+    A `constant = true` arm is the exception. Its values live in `[results]` by
+    design (that is how a floor is declared without running it), so their presence
+    must not look like a completed sweep — otherwise declaring a floor silently
+    prevents the sweep from ever recording, which is exactly what happened on #246:
+    18 runs completed and were then dropped on the floor.
     """
     text = spec_path.read_text()
-    if "[results." in text and not force:
-        print(f"\nspec already carries results — not overwriting {spec_path} (use --force)")
+    constants = {name for name, body in (load_spec(spec_path).meta.get("arms") or {}).items()
+                 if body.get("constant")}
+    measured = re.findall(r"^\s*([A-Za-z_][\w-]*)\s*=", text[text.index("[results."):], re.M) \
+        if "[results." in text else []
+    if measured and set(measured) - constants and not force:
+        print(f"\nspec already carries measured results — not overwriting {spec_path} (use --force)")
         return False
     spec_path.write_text(text.rstrip("\n") + "\n" + render_results_toml(results, metric))
     print(f"\nrecorded results into {spec_path}")

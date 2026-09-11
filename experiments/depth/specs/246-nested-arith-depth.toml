@@ -5,7 +5,7 @@
 [experiment]
 id = "246"
 status = "open"
-title = "Does recurrence pay on nested evaluation — the task depth recurrence was built for?"
+title = "Does recurrence pay on nested evaluation? (build 2 — build 1 failed by design)"
 hypothesis = """
 Every toy task in this repo is a CHAIN. parity, cumsum5 and statetrack all fold left
 to right, and position t needs every input <= t; depth helps them because aggregation
@@ -34,16 +34,30 @@ Registered prediction: recurrence holds parity with vanilla at high nesting whil
 using a fraction of the parameters, and the refiner's own accuracy tracks nesting
 depth (nest 4 needs more passes than nest 2).
 
-Caveat on the author, recorded because it has cost three times this week: every prior
-prediction I have registered about this loop was wrong, all in the direction of
-crediting it too much.
+BUILD 1 FAILED BY DESIGN and is recorded here rather than deleted. It used +/* mod 7.
+Multiplication mod 7 makes zero absorbing, so 34% of nest-4 expressions evaluate to 0
+and "always guess 0" scores 0.340 -- while this spec had registered chance as
+1/7 = 0.143. Both arms scored 0.334-0.341, i.e. both learned the majority class and
+nothing else, and the registered floor was too low to notice. A floor COMPUTED from
+the task instead of assumed would have caught it before 18 runs were spent.
+
+Build 2 composes fixed permutations instead. Composition leaves the final state
+near-uniform (measured majority class 0.211 at nest 4 against 0.200 uniform), and it
+is non-abelian, so there is no sum-or-count shortcut -- the Liu et al. "Transformers
+Learn Shortcuts to Automata" regime that statetrack already uses, but arranged as a
+TREE rather than a chain, which is the entire point.
+
+Caveat on the author, recorded because it has now cost four times this week: every
+prior prediction I registered about this loop was wrong, all in the direction of
+crediting it too much, and build 1's floor was wrong in the direction of flattering
+the result.
 """
 issue = 246
 
 [protocol]
 task = "arith"
 metric_key = "acc"
-metric = "held-out accuracy on the expression's value, chance 1/7 = 0.143"
+metric = "held-out accuracy on the composed permutation's image of state 0"
 matched = "same seed => same init, same expression pools, same minibatch order; only the architecture differs"
 notes = """
 Supervision is deliberately SPARSE -- one graded position per sequence, at the final
@@ -56,8 +70,10 @@ confounded with nesting BY CONSTRUCTION and cannot be separated -- a deeper tree
 longer string. The comparison is between ARMS at the same leg, which is unaffected;
 no criterion compares one leg to another.
 
-Chance is 0.143. An arm that cannot evaluate the tree cannot beat it, which makes the
-floor meaningful rather than a formality.
+The floor is the MAJORITY-CLASS rate, measured from the generator rather than assumed
+from the vocabulary: 0.211 at nest 4 (uniform would be 0.200). Build 1 assumed 1/7 and
+was wrong by 2.4x in the direction that flatters the result -- both arms sat exactly at
+a majority-class strategy and the criterion could not see it.
 """
 
 [execution]
@@ -84,8 +100,9 @@ flags = ["--arch", "vanilla"]
 role = "treatment"
 flags = ["--arch", "refiner"]
 
-# Not run: an absolute floor for the beats_chance criterion. 1/7 for a uniform
-# guess over the seven residues. sigma is nominal -- chance does not vary.
+# Not run: the absolute floor, MEASURED from the task generator over 5,000 samples
+# rather than assumed from the vocabulary. 0.2106 is the majority-class rate at
+# nest 4; uniform would be 0.200. sigma is nominal -- a constant does not vary.
 [arms.chance]
 role = "floor"
 constant = true
@@ -139,4 +156,4 @@ kill_if = ["recurrence_loses_where_it_should_win"]
 # A constant arm: chance for a 1-in-7 choice. Declared as a Summary so the
 # beats_chance criterion has something to compare against without a run.
 [results."nest4/d8"]
-chance = { mean = 0.1429, sigma = 0.0001, n = 3 }
+chance = { mean = 0.2106, sigma = 0.0001, n = 3 }

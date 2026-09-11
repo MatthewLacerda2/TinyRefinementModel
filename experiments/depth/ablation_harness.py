@@ -132,45 +132,61 @@ def state_tracking_task(key, batch, seq, n_states=5, n_gen=4):
 # measurably pays on the corpus is bracket nesting in code (+0.00086 at nest 0
 # rising to +0.00541 at nest 4+).
 
-ARITH_OPS = ("+", "*")
+# Composition is over a fixed set of permutations, NOT arithmetic. The first
+# version of this task used +/* mod 7 and was uninformative, for a reason worth
+# recording: multiplication mod 7 makes zero absorbing, so 34% of nest-4
+# expressions evaluate to 0 and "always guess 0" scores 0.340. Both architectures
+# scored 0.334-0.341 -- i.e. both learned the majority class and nothing else,
+# while the spec had registered chance as 1/7 = 0.143. A floor computed from the
+# task instead of assumed would have caught it before the sweep.
+#
+# Permutation composition fixes it: composing random permutations leaves the final
+# state near-uniform, so the majority class sits at ~1/n_states, and the operation
+# is non-abelian so there is no sum/count shortcut (the Liu et al. "Transformers
+# Learn Shortcuts to Automata" regime that statetrack already uses -- but arranged
+# as a TREE rather than a chain, which is the whole point).
+ARITH_N_STATES = 5
+ARITH_N_GEN = 4
 
 
-def _arith_tokens(mod):
-    """Vocabulary: values 0..mod-1, then the operators and parens.
+def _arith_perms():
+    """The fixed generator set, shared across every call so the task is stable."""
+    gen_key = jax.random.PRNGKey(12345)
+    return jnp.stack([
+        jax.random.permutation(jax.random.fold_in(gen_key, i), ARITH_N_STATES)
+        for i in range(ARITH_N_GEN)
+    ])
 
-    Targets are values, so they share the low ids and the vocab is just the token
-    table size -- the same arrangement statetrack uses.
-    """
-    return list(range(mod)) + [mod + i for i in range(len(ARITH_OPS) + 2)]
 
+def nested_arith_task(key, batch, seq, nest=3):
+    """Balanced binary trees of permutation composition, depth `nest`.
 
-def nested_arith_task(key, batch, seq, mod=7, nest=3):
-    """Balanced binary expression trees of nesting depth `nest`, evaluated mod `mod`.
+    Serialised infix with full parentheses, so structure is explicit in the tokens
+    and nothing about precedence has to be inferred. The target is the state that
+    the composed permutation sends 0 to, supervised at the FINAL token only --
+    deliberately sparse, because a dense target would let the model copy a value it
+    had already emitted rather than compute one.
 
-    Serialised infix with full parentheses, so the structure is explicit in the
-    tokens and nothing has to be inferred about precedence. The target is the value
-    of the WHOLE expression and it is supervised at the final expression token only
-    -- deliberately sparse, because a dense target would let the model copy a value
-    it had already emitted instead of computing one.
-
-    Chance is 1/mod. A model that cannot evaluate the tree cannot beat it.
+    Evaluating this does not require scanning. ((a.b).(c.d)) is two independent
+    subtrees combined, so the compute scales with NESTING DEPTH rather than with
+    sequence length -- which is the property no other task here has.
     """
     import numpy as _np
 
+    perms = _np.asarray(_arith_perms())
     rng = _np.random.default_rng(int(jax.random.randint(key, (), 0, 2**31 - 1)))
-    op_base = mod
-    lpar, rpar = mod + len(ARITH_OPS), mod + len(ARITH_OPS) + 1
+    op, lpar, rpar = ARITH_N_STATES, ARITH_N_STATES + 1, ARITH_N_STATES + 2
 
     def build(d):
-        """Returns (token list, value). Depth d means d levels of operators."""
+        """Returns (tokens, permutation as an array mapping state -> state)."""
         if d == 0:
-            v = int(rng.integers(0, mod))
-            return [v], v
-        lt, lv = build(d - 1)
-        rt, rv = build(d - 1)
-        op = int(rng.integers(0, len(ARITH_OPS)))
-        val = (lv + rv) % mod if ARITH_OPS[op] == "+" else (lv * rv) % mod
-        return [lpar] + lt + [op_base + op] + rt + [rpar], val
+            g = int(rng.integers(0, ARITH_N_GEN))
+            return [g], perms[g]
+        lt, lp = build(d - 1)
+        rt, rp = build(d - 1)
+        # Apply left first, then right: composition is non-abelian, so the order is
+        # load-bearing and a model that averages the two subtrees cannot be right.
+        return [lpar] + lt + [op] + rt + [rpar], rp[lp]
 
     need = 4 * (2 ** nest) - 3
     if need > seq:
@@ -182,11 +198,9 @@ def nested_arith_task(key, batch, seq, mod=7, nest=3):
     tgt = _np.zeros((batch, seq), dtype=_np.int32)
     mask = _np.zeros((batch, seq), dtype=_np.float32)
     for b in range(batch):
-        toks, val = build(nest)
+        toks, perm = build(nest)
         inp[b, :len(toks)] = toks
-        # Supervise where the expression ends: the last token the model reads before
-        # it must know the answer.
-        tgt[b, len(toks) - 1] = val
+        tgt[b, len(toks) - 1] = int(perm[0])      # where the composition sends state 0
         mask[b, len(toks) - 1] = 1.0
     return jnp.asarray(inp), jnp.asarray(tgt), jnp.asarray(mask)
 
@@ -217,10 +231,10 @@ TASKS = {
 }
 # Vocab must cover both input tokens and targets. statetrack: inputs in [0,n_gen),
 # targets (states) in [0,n_states) -> vocab = max(n_gen, n_states).
-ARITH_MOD = 7
-# values 0..mod-1 plus two operators and two parens
+# generator ids 0..n_gen-1 and target states 0..n_states-1 share the low ids;
+# then the composition operator and two parens.
 VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5,
-         "arith": ARITH_MOD + len(ARITH_OPS) + 2}
+         "arith": ARITH_N_STATES + 3}
 # `memorize` is built per-run (vocab = --mem-pairs), see main().
 
 
@@ -416,7 +430,7 @@ def main():
         def task_fn(key, batch, seq, _nest=args.nest):
             return nested_arith_task(key, batch, seq, nest=_nest)
         vocab = VOCAB["arith"]
-        task_desc = f"arith[nest={args.nest}, chance {1/ARITH_MOD:.3f}]"
+        task_desc = f"arith[nest={args.nest}, states {ARITH_N_STATES}]"
     elif args.task == "memorize":
         task_fn = memorize_task(args.mem_pairs)
         vocab = args.mem_pairs
