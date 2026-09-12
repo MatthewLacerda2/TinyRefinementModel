@@ -41,9 +41,9 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
-from trm.model.refiner_lm import RefinerForTraining
 from trm.train.optimizers import optimizer_chain
 
 
@@ -101,10 +101,15 @@ def load_batch(rng):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description="real-config GPU smoke, f16 path")
+    add_arch_argument(ap)
+    args = ap.parse_args()
+
     print(f"JAX backend: {jax.default_backend()} | devices: {jax.devices()}")
     assert jax.default_backend() == "gpu", "smoke must run on GPU (unset JAX_PLATFORMS / FORCE_F32_COMPUTE)"
 
-    model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    model = arch_build(args.arch, dim=LATENT_DIM, seed=42)
     n = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     print(f"📐 refiner: {n / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as

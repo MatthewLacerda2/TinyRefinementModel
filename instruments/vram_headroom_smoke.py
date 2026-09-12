@@ -41,6 +41,7 @@ from flax import nnx
 import optax
 
 from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
+from trm.config import MODEL_ARCH
 from trm.model.refiner_lm import RefinerForTraining
 from trm.train.grad_step import compute_grad_step, apply_grads
 
@@ -89,6 +90,14 @@ def main():
     ap.add_argument("--encoder-layers", type=int, default=7)
     ap.add_argument("--batch", type=int, default=1, help="micro-batch (per accumulation step)")
     ap.add_argument("--depth", type=int, default=8, help="refinement depth; 8 = the deepest sampled, peak memory")
+    ap.add_argument("--arch", default=MODEL_ARCH, choices=("plain", "refiner", "reasoner"),
+                    help="architecture to size; defaults to MODEL_ARCH. This used to build "
+                         "RefinerForTraining unconditionally, so the tool that sizes a run "
+                         "to the card would have sized the WRONG architecture once the "
+                         "default changed (2026-09-12).")
+    ap.add_argument("--layers", type=int, default=None,
+                    help="block count for --arch plain (default: config PLAIN_LAYERS). "
+                         "--encoder-layers is the refiner's equivalent.")
     ap.add_argument("--bf16-mu", action="store_true", help="store Adam's first moment in bf16 (#18)")
     ap.add_argument("--steps", type=int, default=4, help="grad steps to run (reach steady peak incl. opt state)")
     args = ap.parse_args()
@@ -96,9 +105,23 @@ def main():
     if args.dim % args.heads:
         raise SystemExit(f"--dim {args.dim} not divisible by --heads {args.heads}")
 
-    model = RefinerForTraining(
-        args.dim, nnx.Rngs(0), num_heads=args.heads, encoder_layers=args.encoder_layers
-    )
+    if args.arch == "plain":
+        from trm.config import PLAIN_LAYERS
+        from trm.model.plain import PlainTransformer
+        layers = PLAIN_LAYERS if args.layers is None else args.layers
+        model = PlainTransformer(args.dim, nnx.Rngs(0), num_heads=args.heads,
+                                 num_layers=layers)
+        shape = f"plain, {layers} layers"
+    elif args.arch == "refiner":
+        model = RefinerForTraining(
+            args.dim, nnx.Rngs(0), num_heads=args.heads, encoder_layers=args.encoder_layers
+        )
+        shape = f"refiner, {args.encoder_layers} encoder + looped, depth {args.depth}"
+    else:
+        from trm.model.reasoner import UniversalReasoner
+        model = UniversalReasoner(args.dim, nnx.Rngs(0))
+        shape = "reasoner"
+    print(f"🏗  sizing {shape} at dim {args.dim}, {args.heads} heads, batch {args.batch}")
 
     mu_dtype = jnp.bfloat16 if args.bf16_mu else jnp.float32
     chain = optax.MultiSteps(
@@ -125,8 +148,8 @@ def main():
         time.sleep(0.3)  # let the sampler catch the final peak
 
     print(
-        f"dim={args.dim} heads={args.heads} enc={args.encoder_layers} batch={args.batch} "
-        f"depth={args.depth} bf16mu={args.bf16_mu} | params={param_count(model)/1e6:.1f}M "
+        f"dim={args.dim} heads={args.heads} {shape} batch={args.batch} "
+        f"bf16mu={args.bf16_mu} | params={param_count(model)/1e6:.1f}M "
         f"| peak={sampler.peak_mib/1024:.2f}GB"
     )
 

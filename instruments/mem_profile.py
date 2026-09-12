@@ -50,12 +50,10 @@ def _gib(n):
 
 
 def _build(arch):
-    rngs = nnx.Rngs(0)
-    if arch == "refiner":
-        from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(LATENT_DIM, rngs)
-    from trm.model.reasoner import UniversalReasoner
-    return UniversalReasoner(LATENT_DIM, rngs, batch_size=1)
+    # Shared selector (instruments/arch.py), not a private branch: a private one is
+    # how this file kept building the refiner after the default stopped being it.
+    from instruments.arch import build
+    return build(arch, dim=LATENT_DIM)
 
 
 def _top_hlo_shapes(hlo_text, top):
