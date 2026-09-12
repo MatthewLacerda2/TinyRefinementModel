@@ -368,6 +368,28 @@ def main():
     best_d = max(results, key=lambda d: results[d][0])
     print(f"\ndepth {depths[0]}: acc {base_acc:.4f}  ->  best depth {best_d}: acc {results[best_d][0]:.4f}  |  gain {results[best_d][0] - base_acc:+.4f}")
 
+    # Two WITHIN-RUN scalars, so a spec can ask about the depth-8 collapse (#238).
+    #
+    # Per-depth points cannot express it. instruments/verdict.py separates arms by
+    # (mean_t - mean_c) / RMS(sigma_t, sigma_c) -- an effect size, not a t-statistic,
+    # so it does not shrink with more seeds and the CONTROL's variance sits in the
+    # denominator. A claim of the form "the control is erratic" is therefore
+    # unmeetable when phrased as a per-depth mean comparison: the more erratic the
+    # control, the harder it is to beat.
+    #
+    # Collapsing the question into one number per run fixes that. A run where deep
+    # recurrence diverged has a low `min_deep` however well its depth-1 arm did, and
+    # that is a mean comparison the referee can judge.
+    deep = [results[d][0] for d in depths if d >= 2]
+    if deep:
+        # Worst accuracy at any depth >= 2: the collapse indicator. Depth 1 is
+        # excluded because one pass cannot compound, so it cannot collapse.
+        emit_result("min_deep", acc=min(deep))
+    if max(depths) in results:
+        # Within-run depth benefit. Negative means depth actively hurt THIS run,
+        # which is the failure the champion spent 4B tokens learning to suppress.
+        emit_result("deepest_minus_d1", acc=results[max(depths)][0] - base_acc)
+
 
 if __name__ == "__main__":
     main()
