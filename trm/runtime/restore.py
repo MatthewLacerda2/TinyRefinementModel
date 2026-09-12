@@ -54,6 +54,9 @@ def build_model():
     """Fresh skeleton matching MODEL_ARCH. The two arches have different param
     trees, so a restore must build the same arch the checkpoint was trained as
     (select it at launch, e.g. MODEL_ARCH=refiner)."""
+    if MODEL_ARCH == "plain":
+        from trm.model.plain import PlainTransformer
+        return PlainTransformer(LATENT_DIM, nnx.Rngs(42))
     if MODEL_ARCH == "refiner":
         from trm.model.refiner_lm import RefinerForTraining
         return RefinerForTraining(LATENT_DIM, nnx.Rngs(42))

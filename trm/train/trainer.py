@@ -103,7 +103,14 @@ def samples_from_micro_steps(micro_steps, weights, batch_size=BATCH_SIZE):
 
 
 def init_model_and_optimizer():
-    if MODEL_ARCH == "refiner":
+    if MODEL_ARCH == "plain":
+        # Imported lazily, like the others: a run of one arch never pays to import
+        # the code of another.
+        from trm.config import PLAIN_LAYERS
+        from trm.model.plain import PlainTransformer
+        print(f"🚀 Initializing PlainTransformer (Dim={LATENT_DIM}, layers={PLAIN_LAYERS})...")
+        model = PlainTransformer(LATENT_DIM, nnx.Rngs(MODEL_SEED))
+    elif MODEL_ARCH == "refiner":
         # Imported lazily so the baseline path never touches Plan A code.
         from trm.model.refiner_lm import RefinerForTraining
         print(f"🚀 Initializing Plan A CausalRefiner "

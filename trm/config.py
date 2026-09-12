@@ -57,23 +57,33 @@ assert NUM_HEADS % NUM_GROUPS == 0, (
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
 #   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence.
-#                The default: it is the live bet, proven on the toy gate and
-#                through pretraining (findings 2026-06-13 / 06-16 / 06-18).
+#                RETIRED as the default on 2026-09-12. The mechanism works on
+#                sequential composition (findings 2026-06-13 / 06-16 / 06-18,
+#                unretracted) and is actively SUPPRESSED on language: the trained
+#                gate routes to 6 of 960 channels on prose, the second refine pass
+#                costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the
+#                activation scale does not recover it. See
+#                docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md.
+#                Kept selectable: it is the architecture of the 4B champion, and
+#                MODEL_ARCH=refiner is required to load or resume it.
 #   "reasoner" — UniversalReasoner, the cross-window-hunch baseline. The hunch
 #                is proven inert (finding 2026-06-13), so this is effectively a
 #                vanilla random-depth transformer, kept as the control —
 #                select it explicitly (MODEL_ARCH=reasoner) for control runs.
-# The two arches have different param trees, so a checkpoint from one cannot be
-# resumed by the other — resuming an old reasoner run now requires the env var.
-MODEL_ARCH = os.environ.get("MODEL_ARCH", "refiner")
-_KNOWN_ARCHES = ("refiner", "reasoner")
+#   "plain"    — PlainTransformer: N distinct causal blocks, no loop, no gate, no
+#                time signal, no depth dial. The default since depth recurrence
+#                was retired.
+# The arches have different param trees, so a checkpoint from one cannot be resumed
+# by another — resuming the 4B champion now requires MODEL_ARCH=refiner.
+MODEL_ARCH = os.environ.get("MODEL_ARCH", "plain")
+_KNOWN_ARCHES = ("plain", "refiner", "reasoner")
 if MODEL_ARCH not in _KNOWN_ARCHES:
     # Fail closed at import (#104): the selector otherwise falls through to a
     # default, so a typo would silently train the wrong architecture for the
     # whole run — the one failure mode a launch banner does not reliably catch.
     raise SystemExit(
         f"MODEL_ARCH={MODEL_ARCH!r} is not a known architecture; "
-        f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'refiner')")
+        f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'plain')")
 # Refiner time signal (#86): how each refinement pass is told which step it is.
 #   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
 #                  so inference depth is an open dial (finding
@@ -123,6 +133,13 @@ POST_NORM = os.environ.get("POST_NORM", "0") == "1"
 # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
 # near the reasoner baseline; init prints the actual count for both arches.
 REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
+
+# PlainTransformer depth. 8 matches what the refiner actually ran at depth 1 --
+# 7 encoder blocks plus one application of the refine block -- so the retirement
+# changes what the model IS without silently changing how big it is. Sizing it
+# upward is a separate decision with its own VRAM measurement
+# (instruments/vram_headroom_smoke); do not raise this by eye.
+PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "8"))
 
 # Refiner serving depth. The dense 1→8 sweep
 # (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy

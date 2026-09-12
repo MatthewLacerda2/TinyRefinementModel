@@ -178,6 +178,18 @@ tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
 
+- **Depth recurrence as the live architecture bet** — KILLED 2026-09-12. It works
+  on sequential composition (`plan-a-depth-recurrence-works`, unretracted) and is
+  *actively suppressed* on language: +0.003454 nats on code and nothing on prose or
+  math, for 1.875× compute; the second refine pass costs 5.7 nats at 0.66B and
+  nothing at 3.99B; the trained gate routes to 6 of 960 channels on prose. Post-norm
+  bounds the activation blow-up (#235) and does **not** rescue it (#238, KILL). On
+  the tree task the mechanism was designed for, depth 1 already solves every nesting
+  level the setup can learn (#246). Full record:
+  `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
+  **Not killed:** the mechanism on tasks that need cumulative computation, and
+  `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
+
 ### Post-mortems (non-novel; full record in PR history, guards in the tests)
 - **slot-future-leak** (2026-06-11, fixed f24f238): the v1 latent-scratchpad slots
   leaked future tokens into past predictions — a bidirectional summary exposed to

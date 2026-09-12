@@ -44,6 +44,14 @@ a new idea **fine-tune or branch from it** instead of pretraining from scratch.
 This is the section that makes the registry useful rather than decorative: picking up an old
 model months later, to compare against a new one or to warm-start from.
 
+**Name the architecture explicitly.** `MODEL_ARCH` defaults to `plain` since depth
+recurrence was retired (2026-09-12), and the arches have different param trees — so
+every checkpoint archived before that date needs its own value set, or the restore
+fails on a structure mismatch. The 4B champion is `MODEL_ARCH=refiner`; each card
+records its own in the config table. This is the same trap the registry already
+documents for numeric step directories: the failure is loud, but only if you know
+which knob it is.
+
 ### Archive layout
 
 Every archive under `/mnt/d_drive/TRM_cold/weights/<name>/` looks like this:
@@ -69,9 +77,10 @@ stored that way and were silently unloadable until relaid out on 2026-08-25.
 cd /mnt/d_drive/TRM_cold/weights/<name> && sha256sum -c SHA256SUMS
 
 # 2. the archive path IS a checkpoint path — pass it straight in.
-#    MODEL_ARCH must match the arch the card names: the two arches have
-#    different param trees, so restoring a refiner into a reasoner skeleton
-#    fails on the structure, not on anything informative.
+#    MODEL_ARCH must match the arch the card names. The arches have different
+#    param trees, so restoring a refiner into the default plain skeleton fails on
+#    the structure, not on anything informative — and since the default changed
+#    on 2026-09-12, every pre-existing archive needs its value named explicitly.
 MODEL_ARCH=refiner PYTHONPATH=. python -m instruments.dump_transcripts \
     --checkpoint-path /mnt/d_drive/TRM_cold/weights/<name> --device gpu
 ```

@@ -21,6 +21,7 @@ from trm.config import MODEL_ARCH
 def test_build_model_follows_the_arch_selector():
     """The selector is the single source of truth for which network exists; a
     serving path that ignores it cannot load what the trainer wrote."""
+    assert type(infer.build_model("plain")).__name__ == "PlainTransformer"
     assert type(infer.build_model("refiner")).__name__ == "RefinerForTraining"
     assert type(infer.build_model("reasoner")).__name__ == "UniversalReasoner"
 
@@ -28,26 +29,28 @@ def test_build_model_follows_the_arch_selector():
 def test_the_default_is_the_configured_arch():
     """Called with no argument — the way run_inference() calls it — it must build
     what MODEL_ARCH says, not a hardcoded choice."""
-    expected = "RefinerForTraining" if MODEL_ARCH == "refiner" else "UniversalReasoner"
+    expected = {"plain": "PlainTransformer",
+                "refiner": "RefinerForTraining",
+                "reasoner": "UniversalReasoner"}[MODEL_ARCH]
     assert type(infer.build_model()).__name__ == expected
 
 
 def test_infer_does_not_hardcode_a_model_class_at_module_level():
-    """Both arches must be imported lazily, inside the branch that needs them —
+    """Every arch must be imported lazily, inside the branch that needs it —
     otherwise importing the serving path drags in Plan A code on a baseline run,
     and (more to the point) a module-level import is how the old hardcoding
     survived unnoticed."""
     from pathlib import Path
     source = Path(infer.__file__).read_text()
     header = source.split("def build_model")[0]
-    for cls in ("UniversalReasoner", "RefinerForTraining"):
+    for cls in ("UniversalReasoner", "RefinerForTraining", "PlainTransformer"):
         assert f"import {cls}" not in header, (
             f"{cls} should be imported inside build_model, not at module level"
         )
 
 
-@pytest.mark.parametrize("arch", ["refiner", "reasoner"])
-def test_both_arches_satisfy_the_contract_the_serving_loop_uses(arch):
+@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
+def test_every_arch_satisfies_the_contract_the_serving_loop_uses(arch):
     """run_model_inference calls model(tokens, depth=..., training=False,
     new_document=...) and reads `.logits`. Both arches must honour that, or
     switching MODEL_ARCH would fail at generation time rather than at load."""

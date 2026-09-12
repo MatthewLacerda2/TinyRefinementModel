@@ -267,25 +267,33 @@ as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -
 `experiments/` or `instruments/`, and one research line never imports another — so
 tombstoning a line stays a single folder deletion (rule 6). The same test holds that line.
 
-Two architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/config.py`); they
-have different param trees, so a run of one cannot resume the other's checkpoint:
+Three architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/config.py`); they
+have different param trees, so a run of one cannot resume another's checkpoint:
+- **`plain`** — `PlainTransformer` in `trm/model/plain.py`: N distinct causal blocks,
+  no loop, no gate, no time signal, no depth dial. **The default** since depth
+  recurrence was retired.
 - **`refiner`** — Plan A, `CausalRefiner` in `trm/model/refiner.py`: causal within-window
-  depth recurrence (a shared block looped K times under a causal mask). The **live bet**
-  — the depth-recurrence mechanism the project is built on.
-  (`docs/findings/2026-06-13-plan-a-depth-recurrence-works.md`.)
+  depth recurrence (a shared block looped K times under a causal mask). **Retired as the
+  live bet 2026-09-12** — it works on sequential composition
+  (`docs/findings/2026-06-13-plan-a-depth-recurrence-works.md`, unretracted) and is
+  actively *suppressed* on language: the trained gate routes to 6 of 960 channels on
+  prose, and bounding the activation scale does not recover it
+  (`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`). Kept
+  selectable — it is the 4B champion's architecture, and loading or resuming that
+  checkpoint requires `MODEL_ARCH=refiner`.
 - **`reasoner`** — `UniversalReasoner` in `trm/model/reasoner.py`: the original
   cross-window "hunch" design. The hunch is **proven inert**
   (`docs/findings/2026-06-13-cross-window-hunch-inert.md`), so this is effectively a
   vanilla random-depth transformer — kept as the control baseline, selected explicitly
-  with `MODEL_ARCH=reasoner`. The default is `refiner` (the live bet); resuming an old
-  reasoner run now requires the env var.
+  with `MODEL_ARCH=reasoner`. The default is `plain`; resuming any older run requires
+  naming its architecture explicitly.
 
 | Concern | Files |
 |---|---|
 | **Config (single source of truth)** | `trm/config.py` — every architecture/training constant, the dtype policy, the arch selector |
 | **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
-| **Model — live** | `trm/model/refiner.py` (CausalRefiner, deliberately config-free so the toy harness shares it), `refiner_lm.py` (the production contract impl), `layers.py`, `attention.py`, `rope.py` |
-| **Model — control/graveyard** | `trm/model/reasoner.py` (UniversalReasoner) |
+| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `layers.py`, `attention.py`, `rope.py` |
+| **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` (UniversalReasoner) |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py`, `curation/` |
 | **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, plateau/divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
