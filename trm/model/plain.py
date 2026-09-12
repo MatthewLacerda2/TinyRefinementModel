@@ -70,6 +70,19 @@ class PlainTransformer(LanguageModel):
         # use: compute per token is fixed, and no state crosses windows.
         del depth, new_document
 
+        # An id outside the table is NOT a local error here: nnx.Embed lowers to
+        # jnp.take, whose default mode="fill" returns NaN for an out-of-range index
+        # (direct indexing clamps instead, which is why a quick probe suggests
+        # otherwise). One NaN then reaches EVERY position, because attention masking
+        # is additive -- NaN + (-1e9) is NaN, so a single poisoned key makes every
+        # query's softmax row all-NaN, including causally earlier ones. Measured:
+        # one bad id turned 18,944 of 18,944 logits non-finite (#233).
+        #
+        # Clamping converts that into a wrong token at one position instead of a
+        # destroyed window. It does NOT tell you the data was wrong -- that check
+        # belongs where it can raise, at the data boundary, and is separate.
+        tokens = jnp.clip(tokens, 0, self.embed.embedding.shape[0] - 1)
+
         pad_mask = tokens != self.pad_token_id
         pad_bias = ((pad_mask.astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
 

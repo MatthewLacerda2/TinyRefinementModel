@@ -212,6 +212,12 @@ class CausalRefiner(nnx.Module):
         # recomputes.
         remat = jax.checkpoint if jax.default_backend() == "gpu" else (lambda f: f)
 
+        # Out-of-range ids return NaN from jnp.take (mode="fill"), and additive
+        # attention masking spreads one NaN to every position -- 18,944 of 18,944
+        # logits, including causally earlier ones (#233). Clamp to a wrong token
+        # rather than a destroyed window; the loud check belongs at the data
+        # boundary, where it can raise.
+        tokens = jnp.clip(tokens, 0, self.embed.embedding.shape[0] - 1)
         z = self.embed(tokens)
         # Same rematerialization as the refine loop below (#128): the encoder is
         # 7 distinct blocks and the grad step holds TWO windows' graphs at once,

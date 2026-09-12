@@ -1,7 +1,7 @@
 import numpy as np
 import jax.numpy as jnp
 import fsspec
-from trm.config import MAX_SEQ_LEN, DATA_SEED
+from trm.config import MAX_SEQ_LEN, DATA_SEED, VOCAB_SIZE
 
 class TextDataGenerator:
     def __init__(self, directory, max_seq_len=MAX_SEQ_LEN, rng=None):
@@ -76,6 +76,21 @@ class TextDataGenerator:
 
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
+
+        # The one place a bad id can be caught LOUDLY. The model clamps out-of-range
+        # ids (#233) because it cannot raise from inside jit, and a clamp turns a
+        # destroyed window into a wrong token — but it also hides the cause. Here we
+        # are in numpy, outside any trace, so a corrupted shard or a tokenizer change
+        # fails with its own name instead of surfacing days later as f16 instability.
+        # One max() over ~1k ints per batch; unmeasurable against a forward pass.
+        if batch.size:
+            worst = int(batch.max())
+            if worst >= VOCAB_SIZE:
+                raise ValueError(
+                    f"token id {worst} in {self.directory} exceeds VOCAB_SIZE "
+                    f"{VOCAB_SIZE}. The model would clamp it to a wrong token rather "
+                    f"than crash (#233), so this is the only place it can be caught: "
+                    f"the shard is corrupt, or it was written by a different tokenizer.")
         
         # doc_boundary: marks batches that start a new file, i.e. the previous
         # document's carried state is no longer relevant downstream.
