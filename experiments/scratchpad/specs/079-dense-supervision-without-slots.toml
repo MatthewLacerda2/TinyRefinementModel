@@ -18,6 +18,17 @@ issue = 79
 commit = "3accd14"
 
 [protocol]
+floor_note = """
+No floor declared. Added retrospectively (2026-09-12) and worth reading, because this
+spec is the closest the repo came to the failure the rule exists for: the densedepth
+arm scored 0.1323-0.2703 against a chance of 0.143 -- AT or BELOW chance. It did not
+learn the task.
+
+The comparison stayed meaningful only because the serial control sat at 0.9790-0.9988.
+Had both arms collapsed together, grade_alone_suffices would have passed on two
+failures and the finding would have been exactly backwards. A declared floor would
+have made that impossible rather than fortunate.
+"""
 task = "affine_chain"
 K = 4
 m = 7

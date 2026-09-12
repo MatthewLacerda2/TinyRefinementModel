@@ -22,6 +22,14 @@ issue = 86
 commit = "c1b0201"
 
 [protocol]
+floor_note = """
+No floor declared. Added retrospectively (2026-09-12) and verifiable from the
+[results] below: at the trained depths this criterion covers, both arms scored
+0.7910-0.9746 against a chance of 0.20, so parity there was between two arms that
+plainly do the task. Note the clamped control DOES sit at chance (0.2042-0.2052) past
+depth 8 -- but that is the extends_past_the_cap criterion, where the control failing
+is the point being measured rather than a masked null.
+"""
 task = "statetrack"
 seeds = [0, 1, 2]
 dim = 96
