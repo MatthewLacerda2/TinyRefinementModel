@@ -29,11 +29,33 @@ import optax
 from flax import nnx
 from dotenv import load_dotenv
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, NUM_BLOCKS
+from trm.config import LATENT_DIM, MAX_SEQ_LEN, MODEL_ARCH, NUM_BLOCKS
 from trm.model.reasoner import UniversalReasoner
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 load_dotenv()
+
+
+def _build(args):
+    """The architecture MODEL_ARCH selects — the one a run launched now would train.
+
+    This used to construct UniversalReasoner unconditionally. That is the CONTROL
+    architecture, so the pre-launch gate in CI has never smoked the model actually
+    being trained: the refiner was the live bet for months and never passed through
+    here. Same defect as smoke_refiner_gpu testing f16 overflow on random tokens
+    (#235) — a gate aimed at something other than what ships.
+
+    batch_size is pinned at 1 for the reasoner, not the training BATCH_SIZE: this
+    smoke feeds a single row and the reasoner's hunch cache asserts on the leading
+    dim. The other two carry no cross-window state and do not take the argument.
+    """
+    if args.arch == "plain":
+        from trm.model.plain import PlainTransformer
+        return PlainTransformer(args.dim, nnx.Rngs(0), num_layers=args.blocks)
+    if args.arch == "refiner":
+        from trm.model.refiner_lm import RefinerForTraining
+        return RefinerForTraining(args.dim, nnx.Rngs(0), encoder_layers=args.blocks)
+    return UniversalReasoner(args.dim, nnx.Rngs(0), num_blocks=args.blocks, batch_size=1)
 
 
 def main():
@@ -47,11 +69,12 @@ def main():
                         help="model width (shrink for CPU CI; must divide NUM_HEADS)")
     parser.add_argument("--blocks", type=int, default=NUM_BLOCKS,
                         help="number of blocks (shrink for CPU CI; must be even)")
+    parser.add_argument("--arch", default=MODEL_ARCH, choices=("plain", "refiner", "reasoner"),
+                        help="architecture to smoke; defaults to MODEL_ARCH, i.e. whatever "
+                             "a run launched right now would actually train")
     args = parser.parse_args()
 
-    # batch_size pinned at 1, not the training BATCH_SIZE: this smoke feeds a
-    # single row, and the reasoner's hunch cache asserts on the leading dim.
-    model = UniversalReasoner(args.dim, nnx.Rngs(0), num_blocks=args.blocks, batch_size=1)
+    model = _build(args)
     optimizer = nnx.Optimizer(
         model,
         optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(args.lr)),

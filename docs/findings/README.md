@@ -32,6 +32,7 @@ things, it doesn't go in this folder.
 - `2026-07-19-trajectory-visible-halting-collapses-incentive-not-observability.md` — #123: letting the halting head reread the whole thought trajectory does NOT prevent ACT-style collapse (99.5%+ mass on step 1, corr ≈ 0, every seed, solvable task) — the graveyard failure is an incentive pathology, not an observability one; halting pressure also rots full-depth competence 0.996 → ~0.6
 - `2026-07-24-time-blind-rematch-collapse-cured-step-signal-holds-d8.md` — #138: per-pass grading cures the time-blind collapse (3/3 seeds, including #97's crater seed), but the step signal still earns trained d8 (−5.9σ); the time-blind arm length-extends better (+2.3σ at d16), reversing #122's assignment under per-pass supervision
 - `2026-08-14-bfc-fragmentation-killed-every-base-run.md` — #157/#162: every base run this project ever started died of BFC allocator fragmentation, not of scale — both July runs stopped at opt step 1540 = 201.9M tokens with an OOM as their last line, and one earlier run failed a **720 KiB** allocation on a 6GB card; `cuda_async` fixes it at no cost (4,681 vs 4,583 tok/s). CONFIRMED — run_20260813_214725 cleared step 1540, including the checkpoint+validation cycle at 1536 that preceded both deaths
+- `2026-09-12-depth-recurrence-is-suppressed-not-exploited.md` — #242/#238/#246: depth recurrence works on chains but is actively switched off on language — the gate routes to 6 of 960 channels on prose, and bounding the activation scale does not rescue it (kill)
 
 ## Entry template
 

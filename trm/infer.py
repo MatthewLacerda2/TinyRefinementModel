@@ -43,6 +43,9 @@ def build_model(arch=MODEL_ARCH):
     same defect the plotter carried (#181), from the same cause: a tool naming one
     architecture while the run selects another.
     """
+    if arch == "plain":
+        from trm.model.plain import PlainTransformer
+        return PlainTransformer(LATENT_DIM, nnx.Rngs(0))
     if arch == "refiner":
         # Imported lazily so the baseline path never touches Plan A code, matching
         # trm/train/trainer.py's init.
