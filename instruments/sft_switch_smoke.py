@@ -33,8 +33,8 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
+from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
-from trm.model.refiner_lm import RefinerForTraining
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 
@@ -58,10 +58,11 @@ def main():
     ap.add_argument("--dim", type=int, default=512)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--depth", type=int, default=8)
+    add_arch_argument(ap)
     args = ap.parse_args()
 
     dev = jax.devices()[0]
-    model = RefinerForTraining(args.dim, nnx.Rngs(0))
+    model = arch_build(args.arch, dim=args.dim)
     opt = build_optimizer(model)
 
     batch = jax.random.randint(

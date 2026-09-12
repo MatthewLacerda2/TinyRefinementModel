@@ -32,8 +32,8 @@ import jax.numpy as jnp
 from flax import nnx
 import optax
 
+from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import MAX_SEQ_LEN
-from trm.model.refiner_lm import RefinerForTraining
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 
@@ -68,9 +68,9 @@ def load_batches(dim_stride, n_seqs):
     return jnp.asarray(seqs)
 
 
-def run(mu_dtype, batches, depth, steps, batch, lr):
+def run(mu_dtype, batches, depth, steps, batch, lr, arch=None):
     """Fresh model+opt at a fixed seed; same batches every call → only mu_dtype differs."""
-    model = RefinerForTraining(512, nnx.Rngs(0), num_heads=16, encoder_layers=7)
+    model = arch_build(arch, dim=512, num_heads=16)
     opt = build_optimizer(model, mu_dtype, lr)
     doc_boundary = jnp.zeros((batch,), dtype=bool)
     losses = []
@@ -88,13 +88,14 @@ def main():
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--depth", type=int, default=6, help="fixed refinement depth for a clean A/B")
     ap.add_argument("--lr", type=float, default=3e-4)
+    add_arch_argument(ap)
     args = ap.parse_args()
 
     stride = 2 * MAX_SEQ_LEN + 1
     batches = load_batches(stride, args.steps * args.batch)
 
-    f32_losses, f32_hist = run(jnp.float32, batches, args.depth, args.steps, args.batch, args.lr)
-    bf16_losses, bf16_hist = run(jnp.bfloat16, batches, args.depth, args.steps, args.batch, args.lr)
+    f32_losses, f32_hist = run(jnp.float32, batches, args.depth, args.steps, args.batch, args.lr, args.arch)
+    bf16_losses, bf16_hist = run(jnp.bfloat16, batches, args.depth, args.steps, args.batch, args.lr, args.arch)
 
     finite = all(np.isfinite(bf16_losses))
     has_bf16 = any("bfloat16" in d for d in bf16_hist)
