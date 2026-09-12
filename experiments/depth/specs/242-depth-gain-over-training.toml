@@ -29,6 +29,21 @@ routing the model had to arrive at -- gate_bias initialises balanced at sigmoid(
 issue = 242
 
 [protocol]
+floor_note = """
+A floor does not apply to this metric, and that is the documented exemption rather
+than an oversight.
+
+The measurement is a PAIRED CE DIFFERENCE in nats, not an accuracy. Its null is
+exactly zero -- no difference between depths -- and "both arms at the null" is a
+legitimate finding here (depth changes nothing), not a masked failure the way two
+arms sitting at a majority-class baseline would be. There is no degenerate strategy
+that scores above zero on a paired difference.
+
+What DID need declaring in this spec, and was not, is that the arms differ by three
+orders of magnitude (-6.25 nats against -0.0001), which makes the sigma frame
+meaningless at +283 sigma. That is recorded on the issue and in
+docs/design/experiment-spec.md.
+"""
 metric_key = "mean"
 metric = "paired per-position CE difference, depth 8 vs depth 1, in nats (positive = depth helps)"
 matched = "identical documents, identical depths, identical instrument; only the checkpoint differs"

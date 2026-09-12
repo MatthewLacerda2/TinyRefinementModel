@@ -27,6 +27,12 @@ the task depth recurrence was proven on.
 issue = 235
 
 [protocol]
+floor_note = """
+No floor declared. Added retrospectively (2026-09-12) and verifiable from the
+[results] below: every arm at every depth scored 0.7149-0.9838 against a chance of
+0.20, so both arms plainly do the task and parity between them is a real comparison.
+A floor would have been cleared by a factor of ~4 at every point.
+"""
 task = "statetrack"
 metric_key = "acc"
 metric = "held-out accuracy (chance 0.20)"

@@ -34,6 +34,14 @@ much (#225's gate story, #242's "learns to use depth"). Weight accordingly.
 issue = 238
 
 [protocol]
+floor_note = """
+No floor declared. Added retrospectively (2026-09-12) and verifiable from the
+[results] below: at d1, where benefit_is_depth_specific applies, both arms scored
+0.6864-0.8237 against a chance of 0.20. Parity there is between two competent arms.
+
+The KEEP branch did not rest on parity alone in any case -- collapse_removed had to
+fire as well, and it did not, so this spec's verdict was KILL.
+"""
 task = "statetrack"
 metric_key = "acc"
 metric = "held-out accuracy (chance 0.20)"

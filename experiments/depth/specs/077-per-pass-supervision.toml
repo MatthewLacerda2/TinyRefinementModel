@@ -23,6 +23,14 @@ issue = 77
 commit = "3bfe1fd"
 
 [protocol]
+floor_note = """
+No floor declared. Added retrospectively (2026-09-12) and verifiable from the
+[results] below: the control arm scored 0.9580-0.9810 against a chance of 0.20 --
+nearly 5x -- so the parity test was between a competent control and a challenger,
+not between two failures. islands_hold_parity duly FAILED at 0.4850-0.7240, which
+is the finding. A floor would have been cleared trivially by the control and would
+not have changed the verdict.
+"""
 task = "statetrack"
 seeds = [0, 1, 2]
 seed_extension = [3, 4, 5]
