@@ -50,6 +50,19 @@ is how the apparatus that produced it gets cleaned up afterwards:
    own past deltas have sat *inside* the noise (0.001–0.005 nats) — that is what an
    unguarded comparison looks like.
 
+   **Compute the floor from the task; never assume it from the vocabulary.** Two arms
+   that both *fail* are trivially "within 2σ" of each other, so a parity criterion
+   without an absolute floor beside it reads a shared failure as a pass. #246 build 1
+   registered chance as 1/7 = 0.143 on a mod-7 task; multiplication mod 7 makes zero
+   absorbing, the real majority-class floor was 0.34, both arms scored 0.334–0.341 —
+   they had learned "always guess the mode" and nothing else — and the criterion called
+   it parity. Measure the floor by sampling the generator, and declare it as an arm.
+
+   **A check that can only fire after the failure is a post-mortem, not a gate.** Gate
+   on *margin*. `smoke_refiner_gpu` asserted loss and gradients were finite and ran
+   green through a whole 10-day run while the model trained itself to 0.6% of the f16
+   ceiling — finite the entire way (#235).
+
 2. **One variable per experiment, matched pairs.** An ablation only attributes cause if
    exactly one thing changes and everything else is held fixed — **same seed, same data
    order**, same config but the one knob. Pull a piece out, keep the rest identical,
@@ -61,6 +74,14 @@ is how the apparatus that produced it gets cleaned up afterwards:
    "must beat its matched control by ≥2σ on the toy task, or it's dead"). You're not
    predicting the result; you're tying your own hands so enthusiasm can't move the
    goalpost after you see the number.
+
+   **Register the prediction too, beside the criterion.** The threshold tests the idea;
+   the prediction tests the person holding it, and only the second one exposes a
+   *pattern*. Four predictions about the depth-recurrence loop were registered across
+   #238/#242/#246 and all four were wrong **in the same direction** — every one
+   crediting the mechanism too much. That is visible in a page of registered
+   predictions and invisible in a page of thresholds. Write down what you expect, and
+   write down that you were wrong last time.
 
 4. **Earn the comparison with a strong baseline.** A win over a weak or undertuned
    baseline is a mirage. Before any architecture bet is judged, the vanilla control it's
