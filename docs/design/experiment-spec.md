@@ -147,3 +147,43 @@ point names (`d12`, `statetrack_6seed`) come from the prose of the findings they
 were transcribed from, not from what a harness emits today, and inventing an
 `[execution]` whose rerun would produce differently-named points would be a spec
 that only looks reproducible. They are records; new specs are jobs.
+
+## Two ways a criterion can be quietly meaningless
+
+Both were hit on real sweeps, both by criteria that parsed, ran, and returned a
+verdict nobody could act on.
+
+**Separation is an effect size, not a t-statistic.** `instruments/verdict.py`
+separates arms by `(mean_t − mean_c) / RMS(σ_t, σ_c)`. That denominator is the
+*spread of the arms*, so it does **not** shrink as you add seeds, and the control's
+own variance is in it. A claim of the form "the control is erratic" is therefore
+unmeetable when phrased as a per-depth mean comparison — the more erratic the
+control, the harder it is to beat. #235 read +0.84σ at depth 8 while the control
+held a seed scoring 0.7893 there, below its own depth 2.
+
+The fix is to collapse the claim into **one number per run** and compare *those*
+means. #238's `min_deep` (worst accuracy at any depth ≥ 2) does this: a run whose
+recurrence diverged scores low however well its depth-1 arm did.
+
+**σ-phrased criteria assume the arms are comparable in magnitude.** #242 compared a
+checkpoint whose depth gain was −6.25 nats against one at −0.0001, with a sampling
+sigma of ~0.0004, and reported "+124σ" and "+283σ". Those numbers are arithmetic,
+not evidence. When arms can differ by orders of magnitude, say so in `[protocol]
+notes` and read the raw table — a separation in the hundreds means the sigma frame
+has stopped applying, not that the result is overwhelming.
+
+## Constant arms
+
+An arm marked `constant = true` is never run; its values are declared in
+`[results]` as an inline summary. This exists because the referee can otherwise only
+express *relative* comparisons, and a parity criterion needs an absolute floor
+beside it — two arms that both fail a task are trivially "within 2σ" of each other.
+
+Declare the floor by **measuring the task generator**, not by assuming uniformity
+over the vocabulary. #246 build 1 assumed 1/7 = 0.143 where the majority-class rate
+was 0.34, and both arms sat exactly at a majority-class strategy while the criterion
+called it parity.
+
+Constants are merged into the results before *both* judging and recording, so a
+declared floor survives its own experiment and appears in the finding's table as
+`declared, not run`.
