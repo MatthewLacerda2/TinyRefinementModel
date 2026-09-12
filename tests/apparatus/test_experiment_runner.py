@@ -456,3 +456,121 @@ def test_a_non_python_command_is_left_alone(tmp_path):
         seeds = [0]
     ''')
     assert experiment.load_execution(load_spec(spec_path)).command == ("bash", "run.sh")
+
+
+def test_a_constant_arm_is_not_run_but_can_still_be_compared_against(tmp_path):
+    """The referee can only express RELATIVE comparisons, which is a problem when a
+    question needs an absolute floor: two arms that both fail a task are trivially
+    "within 2 sigma" of each other, and that reads as parity rather than as a null
+    result. A `constant = true` arm supplies its values from the spec's [results] so
+    a criterion can name it, without the sweep launching it. Found on the runner's
+    third real use (#246)."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''', criteria='''
+        [criteria.treated_wins]
+        rule = "beats"
+        treatment = "treated"
+        control = "chance"
+        sigmas = 2.0
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+''')
+    ex = experiment.load_execution(load_spec(spec_path))
+    arms_run = {arm for _, arm, _ in ex.runs()}
+
+    assert "chance" not in arms_run, "a constant arm must never be launched"
+    assert arms_run == {"control", "treated"}
+
+
+def test_a_criterion_naming_a_misspelled_arm_still_fails(tmp_path):
+    """The counter-test. Constant arms must not become a hole in the typo check —
+    that check exists so a spec fails at load rather than two hours into a sweep."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''', criteria='''
+        [criteria.treated_wins]
+        rule = "beats"
+        treatment = "treated"
+        control = "contrl"
+        sigmas = 2.0
+    ''')
+    with pytest.raises(ValueError, match="section defines"):
+        experiment.load_execution(load_spec(spec_path))
+
+
+def test_a_declared_floor_does_not_block_recording(tmp_path):
+    """A `constant = true` arm's values live in [results] by design — that is how a
+    floor is declared without running it. Their presence must not read as "this sweep
+    already completed", or declaring a floor silently prevents the sweep from ever
+    recording. On #246 that dropped 18 completed runs on the floor."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+
+[results.d1]
+chance = { mean = 0.2, sigma = 0.001, n = 3 }
+''')
+    wrote = experiment.record_results(
+        spec_path, {"d1": {"control": [0.5], "treated": [0.7]}}, "acc")
+
+    assert wrote, "a spec carrying only a declared floor must still accept results"
+    assert "treated" in spec_path.read_text()
+
+
+def test_real_recorded_results_still_block_a_rewrite(tmp_path):
+    """The counter-test, and the property that matters most: silently rewriting a
+    measured number is how a pre-registration stops meaning anything."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[results.d1]
+control = [0.5]
+treated = [0.7]
+''')
+    assert not experiment.record_results(
+        spec_path, {"d1": {"control": [0.9], "treated": [0.9]}}, "acc")
+    assert "0.9" not in spec_path.read_text()
+
+
+def test_a_declared_floor_survives_its_own_experiment(tmp_path):
+    """Recording used to APPEND, leaving two `[results."<point>"]` tables for the
+    same point. TOML keeps the last, so the declared floor silently vanished and the
+    criterion naming it failed with "point has no arm 'chance'" — *after* the sweep
+    had already finished. Merging is the only arrangement where a floor survives."""
+    spec_path = write_spec(tmp_path, '''
+        [execution]
+        command = ["prog"]
+        seeds = [0]
+    ''')
+    spec_path.write_text(spec_path.read_text() + '''
+[arms.chance]
+role = "floor"
+constant = true
+
+[results.d1]
+chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
+''')
+    assert experiment.record_results(
+        spec_path, {"d1": {"control": [0.5], "treated": [0.7]}}, "acc")
+
+    reloaded = load_spec(spec_path).meta["results"]["d1"]
+    assert set(reloaded) == {"chance", "control", "treated"}
+    assert reloaded["chance"]["mean"] == 0.2106
+    assert spec_path.read_text().count("[results.d1]") == 1, "one table per point"
