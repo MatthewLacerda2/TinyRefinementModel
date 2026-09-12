@@ -20,13 +20,18 @@ class MetricsLogger:
             'temporal_drift', 'forget_density',
             'forget_cost', 'diversity_loss', 'tau',
             'out_entropy', 'logz_mean', 'max_abs_logit',
+            # Peak |activation| through the stack. The number that decides whether
+            # this model can be served in f16 at all, and the one nothing watched
+            # during the 4B run: it finished at 65,120 against a 65,504 ceiling and
+            # that was found two weeks later, by hand (#235).
+            'act_max',
         ]
         # Full set of fields for CSV
         self.fields = [
             "step", "ce", "loss", "seg1_ce",
             "grad_norm_avg", "zero_frac_dense_max", "avg_forget_cost",
             "diversity_loss", "temporal_drift", "forget_density", "tau",
-            "out_entropy", "logz_mean", "max_abs_logit",
+            "out_entropy", "logz_mean", "max_abs_logit", "act_max",
             "depth_avg", "val_ce",
         ]
         # Warn once per metric name when a non-finite value shows up, so a broken

@@ -87,14 +87,28 @@ class PlainTransformer(LanguageModel):
         pad_bias = ((pad_mask.astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
 
         z = self.embed(tokens)
+        # Peak |activation| through the stack, carried out on `diag` so it lands in
+        # metrics.csv with everything else.
+        #
+        # This is the number that decides whether the model can be served in f16 at
+        # all, and it has never been measured DURING a run. The 4B champion trained
+        # itself to 65,120 against an f16 ceiling of 65,504 -- 0.6% of headroom, and
+        # #229's whole-window NaN is what running out looks like. It was found two
+        # weeks after the run ended, by hand, because nothing watched it (#235).
+        #
+        # One max-reduce per block against a forward pass: unmeasurable. Detached,
+        # so it cannot perturb the gradient it is reporting on.
+        act_max = jnp.max(jnp.abs(z.astype(jnp.float32)))
         for blk in self.blocks:
             z = blk(z, pad_bias)
+            act_max = jnp.maximum(act_max, jnp.max(jnp.abs(z.astype(jnp.float32))))
         z = self.out_norm(z)
+        diag = {"act_max": jax.lax.stop_gradient(act_max)}
 
         if training:
             # Pre-head states; the loss projects the tied head per chunk (#19) so the
             # full [b, s, vocab] f32 logit tensor is never materialized.
-            return LMOutput(hidden=z.astype(self.dtype))
+            return LMOutput(hidden=z.astype(self.dtype), diag=diag)
         if logits_at is not None:
             # Generation reads one row per forward (#206); slicing before the matmul
             # keeps ~a fifth of per-token compute from being spent on rows nobody
@@ -103,4 +117,4 @@ class PlainTransformer(LanguageModel):
         embed_t = self.embed.embedding[...].astype(self.dtype).T
         logits = jnp.matmul(z.astype(self.dtype), embed_t,
                             preferred_element_type=jnp.float32)
-        return LMOutput(logits=logits)
+        return LMOutput(logits=logits, diag=diag)
