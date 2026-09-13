@@ -11,7 +11,7 @@ import ast
 import pathlib
 
 from instruments import vram_headroom_smoke as smoke
-from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT
+from trm.config import MAX_STEPS_LIMIT
 
 SOURCE = pathlib.Path(smoke.__file__).read_text()
 TREE = ast.parse(SOURCE)
