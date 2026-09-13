@@ -28,6 +28,7 @@ from trm.runtime.supervisor import (
     GIVE_UP,
     KILL,
     KILLED_DIVERGENCE,
+    KILLED_DISK,
     KILLED_OOM,
     KILLED_PLATEAU,
     RELAUNCH,
@@ -43,6 +44,7 @@ from trm.runtime.supervisor import (
     State,
     check_disk_headroom,
     decide,
+    DELIBERATE,
     plateau_in,
     read_progress,
 )
@@ -698,3 +700,55 @@ def test_what_a_relaunch_does_not_reset():
 def test_the_budget_stop_holds_in_every_regime(regime):
     decisions, _ = _play(_alive(regime), Limits(stop_step=_alive(regime)[-1][0]))
     assert decisions[-1].outcome == BUDGET_COMPLETE
+
+
+# --- the disk is checked while the run consumes it, not once at launch (#190) ---
+
+def _disk(free_gb, checkpoint_gb, alive=True, step=5000):
+    return Observation(step=step, ce=3.4, plateau_detected=False, alive=alive,
+                       free_gb=free_gb, checkpoint_gb=checkpoint_gb)
+
+
+def test_a_run_that_would_not_fit_its_next_checkpoint_stops_cleanly():
+    """The next write lands in the rolling and best dirs at once; stop before it,
+    with a TERM the trainer survives, not after a torn write."""
+    d = decide(_disk(free_gb=4.0, checkpoint_gb=1.7), Limits(stop_step=30_000), State())
+    assert (d.action, d.outcome) == (STOP, KILLED_DISK)
+    assert KILLED_DISK in DELIBERATE, "a disk stop is not a crash to relaunch"
+
+
+def test_the_157_steady_state_is_healthy_not_a_refusal():
+    """19GB free with 1.7GB checkpoints: below the 20GB launch floor, which is what
+    would have refused the run's own relaunch. In-run the requirement is the next
+    write, and 19GB clears it easily."""
+    limits = Limits(stop_step=30_000)
+    assert decide(_disk(free_gb=19.0, checkpoint_gb=1.7), limits, State()).action == CONTINUE
+
+
+def test_a_dead_run_on_a_full_disk_is_not_relaunched_into_a_torn_write():
+    d = decide(_disk(free_gb=3.0, checkpoint_gb=1.7, alive=False), Limits(stop_step=30_000), State())
+    assert d.outcome == KILLED_DISK
+
+
+def test_before_the_first_checkpoint_the_launch_floor_is_all_there_is():
+    """No checkpoint yet means no known requirement; the guard stays out of it
+    rather than guess, and the launch precheck already covered this moment."""
+    assert decide(_disk(free_gb=0.5, checkpoint_gb=None), Limits(stop_step=30_000), State()).action == CONTINUE
+
+
+def test_the_budget_stop_outranks_the_disk_guard():
+    d = decide(_disk(free_gb=1.0, checkpoint_gb=1.7, step=30_000), Limits(stop_step=30_000), State())
+    assert d.outcome == BUDGET_COMPLETE
+
+
+def test_largest_checkpoint_counts_rolling_and_best_and_ignores_torn_writes(tmp_path):
+    from trm.runtime.supervisor import largest_checkpoint_gb
+
+    assert largest_checkpoint_gb(tmp_path / "nope") is None
+    for rel, size, finalized in (("100", 1000, True), ("best_val_ce/100", 3000, True), ("200", 9000, False)):
+        step = tmp_path / rel
+        step.mkdir(parents=True)
+        (step / "blob").write_bytes(b"x" * size)
+        if finalized:
+            (step / "_CHECKPOINT_METADATA").write_text("{}")
+    assert largest_checkpoint_gb(tmp_path) == (3000 + 2) / 1e9

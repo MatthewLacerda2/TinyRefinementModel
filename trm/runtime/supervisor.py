@@ -58,6 +58,7 @@ WALLCLOCK_COMPLETE = "WALLCLOCK_COMPLETE"
 KILLED_PLATEAU = "KILLED_PLATEAU"
 KILLED_DIVERGENCE = "KILLED_DIVERGENCE"
 KILLED_OOM = "KILLED_OOM"
+KILLED_DISK = "KILLED_DISK"
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
@@ -65,7 +66,7 @@ GAVE_UP = "GAVE_UP"
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
 DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_PLATEAU, KILLED_DIVERGENCE,
-              KILLED_OOM)
+              KILLED_OOM, KILLED_DISK)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,8 @@ class Limits:
     max_retries: int = 2
     max_hours: float | None = None
     min_free_gb: float = 20.0
+    # Room kept free beyond the next checkpoint write, once the run is going (#190).
+    disk_margin_gb: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,10 @@ class Observation:
     # Whether THIS launch's output contains an out-of-memory failure. Read from
     # the log because the exception surfaces in the child, not in our exit code.
     oom_detected: bool = False
+    # Disk, seen from the run's own directory: free space, and the size of the
+    # largest checkpoint it has written (None until it has written one).
+    free_gb: float | None = None
+    checkpoint_gb: float | None = None
 
 
 @dataclass
@@ -204,6 +211,21 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     # stalled for three days unnoticed, because a process that is alive and doing
     # nothing looks exactly like a process that is working. It is alive, so it
     # has to be killed before it can be relaunched.
+    # The launch precheck asks for a flat min_free_gb, once. A run then consumes its
+    # own headroom — #157 settled at 19GB free against a 20GB floor — so the check
+    # that mattered never ran again, and a run that fills the disk mid-flight dies
+    # with a corrupt final checkpoint: the compute AND the artifact (#190). Once a
+    # run has written a checkpoint the real requirement is known: the next write,
+    # which lands in the rolling and the best dir at the same step, plus a margin.
+    # This one floor serves both a running run and its relaunch, so a relaunch is
+    # never refused over space the run it is recovering already holds.
+    if (obs.free_gb is not None and obs.checkpoint_gb is not None
+            and obs.free_gb < 2 * obs.checkpoint_gb + limits.disk_margin_gb):
+        return Decision(STOP, KILLED_DISK,
+                        f"{obs.free_gb:.1f}GB free; the next checkpoint write needs "
+                        f"~{2 * obs.checkpoint_gb:.1f}GB plus a {limits.disk_margin_gb}GB margin — "
+                        f"stopping cleanly instead of dying mid-write (never delete runs/data/)")
+
     if obs.alive and state.stalled_polls >= limits.stall_polls:
         if state.retries_used >= limits.max_retries:
             return Decision(GIVE_UP, GAVE_UP,
@@ -258,6 +280,16 @@ def check_disk_headroom(path: pathlib.Path, min_free_gb: float) -> float:
             f"only {free_gb:.1f}GB free at {path}, need {min_free_gb}GB — "
             f"archive to the HDD before launching (never delete runs/data/)")
     return free_gb
+
+
+def largest_checkpoint_gb(checkpoint_dir: pathlib.Path) -> float | None:
+    """Size of the largest finalized checkpoint under a run's checkpoint dir (the
+    rolling steps and the best subdir alike), or None if it has none yet."""
+    if not checkpoint_dir.is_dir():
+        return None
+    sizes = [sum(f.stat().st_size for f in marker.parent.rglob("*") if f.is_file())
+             for marker in checkpoint_dir.rglob("_CHECKPOINT_METADATA")]
+    return max(sizes) / 1e9 if sizes else None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -443,7 +475,10 @@ class Supervisor:
     def observe(self, proc: subprocess.Popen, started: float) -> Observation:
         step, ce = read_progress(self.metrics_csv)
         text = read_log_since(self.log_path, self.log_offset)
+        run_dir = self.metrics_csv.parent
         return Observation(
+            free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
+            checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
             plateau_detected=PLATEAU_MARKER in text,
             alive=proc.poll() is None,
