@@ -94,3 +94,15 @@ def test_a_declared_floor_is_not_left_empty(path):
             f"[results]. A constant arm is never run, so its value can only come "
             f"from the spec; without one, every criterion naming it fails at "
             f"judging time — after the sweep has already been spent.")
+
+
+@pytest.mark.parametrize("path", _specs())
+def test_no_spec_still_carries_a_scaffold_placeholder(path):
+    """`--new` writes TODOs on purpose: an unfilled spec should fail loudly rather
+    than run with a placeholder hypothesis nobody meant. A spec is committed BEFORE
+    it runs, so a TODO that reached the repo is one that was never filled in."""
+    text = path.read_text()
+    assert "TODO" not in text, (
+        f"{path.name} still carries a scaffold placeholder. Fill every TODO before "
+        f"committing — the criteria are only criteria because git records that they "
+        f"preceded the numbers, and a placeholder preceded nothing.")

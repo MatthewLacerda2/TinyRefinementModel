@@ -450,6 +450,94 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
 
 # --- entry point --------------------------------------------------------------
 
+SCAFFOLD = """\
+# PRE-REGISTERED. Commit this file BEFORE running it: git recording that the
+# criteria preceded the numbers is the only thing that makes them criteria.
+
+[experiment]
+id = "{id}"
+status = "open"
+title = "TODO one line: the question, not the answer"
+hypothesis = \"\"\"
+TODO. What you think is true, why, and what would have to be seen for it to be
+false. Register the PREDICTION here as well as the reasoning -- the criterion tests
+the idea, the prediction tests the person holding it, and only the second exposes a
+pattern of being wrong in one direction.
+\"\"\"
+issue = 0
+
+[protocol]
+metric_key = "acc"
+metric = "TODO what the number means, including its units"
+matched = "same seed => same init, same data order; only the one knob differs"
+floor_note = \"\"\"
+TODO, or delete this and declare a floor arm below. Two arms that both FAIL are
+trivially "within 2 sigma" of each other, so a parity criterion needs an absolute
+floor beside it -- MEASURED from the task generator, never assumed from the
+vocabulary (#246 build 1 assumed 1/7 where the majority class was 0.34).
+Delete this note if the metric is a difference whose null is genuinely zero.
+\"\"\"
+
+[execution]
+# A LIST, not a string. A string is iterable, so it becomes one argument per
+# CHARACTER and the sweep launches 103 single-character arguments.
+command = ["python", "-m", "experiments.TODO.harness", "--steps", "2500"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+
+[arms.control]
+role = "control"
+flags = []
+
+[arms.treatment]
+role = "treatment"
+flags = ["--TODO"]
+
+# An absolute floor, never run; its value is declared here. Measure it by sampling
+# the task generator. Delete this arm only if floor_note explains why.
+# [arms.chance]
+# role = "floor"
+# constant = true
+#
+# [results.TODO_point]
+# chance = {{ mean = 0.0, sigma = 0.0001, n = 3 }}
+
+[criteria.treatment_wins]
+rule = "beats"
+treatment = "treatment"
+control = "control"
+sigmas = 2.0
+
+[criteria.treatment_loses]
+rule = "loses"
+treatment = "treatment"
+control = "control"
+sigmas = 2.0
+
+[verdict]
+keep_if = ["treatment_wins"]
+kill_if = ["treatment_loses"]
+"""
+
+
+def write_scaffold(path: pathlib.Path) -> int:
+    """A valid skeleton with the traps pre-avoided.
+
+    Both of the runner's blocking defects were things a first-time spec author would
+    type: `command` as a string (iterated per character) and a bare `python` (the
+    system interpreter, no jax). Neither is discoverable from the error. The scaffold
+    is where that knowledge lives, rather than in whoever happens to remember.
+    """
+    if path.exists():
+        raise SystemExit(f"{path} already exists — refusing to overwrite a spec")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SCAFFOLD.format(id=path.stem.split("-")[0]))
+    print(f"wrote {path}\n\nFill every TODO, then COMMIT IT BEFORE RUNNING. "
+          f"tests/apparatus/test_spec_floor_lint.py refuses a spec that still "
+          f"carries one.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("spec", type=pathlib.Path, help="path to an experiment spec TOML")
@@ -461,7 +549,14 @@ def main(argv=None) -> int:
                     help="ignore the journal and re-run every (arm, seed)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite results already recorded in the spec file")
+    ap.add_argument("--new", action="store_true",
+                    help="write a pre-registration skeleton at SPEC and stop, with the "
+                         "runner's two blocking traps already avoided (command as a "
+                         "list, not a string; the interpreter question settled)")
     args = ap.parse_args(argv)
+
+    if args.new:
+        return write_scaffold(args.spec)
 
     spec = load_spec(args.spec)
     execution = load_execution(spec)

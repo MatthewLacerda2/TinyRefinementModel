@@ -99,6 +99,15 @@ is how the apparatus that produced it gets cleaned up afterwards:
    - The novelty test is operational: Claude doesn't know it and can't find it online.
      State the verdict in the PR ("novel because…" / "settled by…"). **Uncertain →
      treat as novel** — deleting a finding later is cheap, re-discovering one isn't.
+   - **A findings entry names where it came from.** Either `Spec: <path>` (the
+     pre-registered spec that judged it, and it must resolve) or
+     `Evidence: observational — <why no control applies>`. Observational is a real
+     category — #229's all-NaN logits were found by accident while running something
+     else — not a loophole. Enforced by
+     `tests/apparatus/test_findings_cite_their_evidence.py`; entries before
+     2026-09-12 are grandfathered, since rewriting their provenance now would be
+     inventing it. **Exploration needs no ceremony; publication does.** Start a spec
+     with `python -m instruments.experiment <path> --new`.
 
 6. **A tombstone takes its apparatus with it.** The knowledge is what we keep; the
    scaffolding that produced it is not. So the PR that writes a graveyard entry also
