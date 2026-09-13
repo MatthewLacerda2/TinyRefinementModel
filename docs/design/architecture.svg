@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" font-family="ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8aa0b8"/>
+    </marker>
+    <marker id="aLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5fc8f5"/>
+    </marker>
+    <marker id="aTie" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#d97757"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="900" fill="#0a0e14"/>
+
+  <text x="56" y="52" fill="#e8eef6" font-size="27" font-weight="600">CausalRefiner</text>
+  <text x="278" y="52" fill="#6f8296" font-size="17">TinyRefinementModel · trm/model/refiner.py</text>
+  <text x="56" y="78" fill="#8aa0b8" font-size="15">A causal LM whose depth is a loop: seven blocks used once each, then one block used again and again.</text>
+
+  <!-- ================= main flow ================= -->
+
+  <!-- tokens -->
+  <rect x="92" y="112" width="356" height="40" rx="20" fill="#121a24" stroke="#33445a"/>
+  <text x="270" y="138" fill="#c9d6e4" font-size="15" text-anchor="middle">tokens · [b, 512] · r50k_base</text>
+  <line x1="270" y1="152" x2="270" y2="180" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- embed -->
+  <rect x="92" y="182" width="356" height="54" rx="9" fill="#1d1611" stroke="#d97757" stroke-width="1.6"/>
+  <text x="270" y="206" fill="#f0c3ac" font-size="16" font-weight="600" text-anchor="middle">Embed</text>
+  <text x="270" y="226" fill="#b08a74" font-size="13" text-anchor="middle">50304 × 960 — the model's largest tensor</text>
+  <line x1="270" y1="236" x2="270" y2="266" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- encoder stack: three offset plates to read as "a stack" -->
+  <rect x="112" y="284" width="316" height="62" rx="9" fill="#141b25" stroke="#33445a"/>
+  <rect x="102" y="276" width="336" height="62" rx="9" fill="#161e29" stroke="#3b4c63"/>
+  <rect x="92" y="268" width="356" height="62" rx="9" fill="#18212d" stroke="#44586f"/>
+  <text x="270" y="292" fill="#dae6f2" font-size="16" font-weight="600" text-anchor="middle">Encoder — 7 × Block</text>
+  <text x="270" y="312" fill="#8aa0b8" font-size="13" text-anchor="middle">seven separate sets of weights, each applied once</text>
+  <line x1="270" y1="346" x2="270" y2="378" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- z_enc -->
+  <rect x="140" y="380" width="260" height="34" rx="17" fill="#121a24" stroke="#33445a"/>
+  <text x="270" y="402" fill="#c9d6e4" font-size="14" text-anchor="middle">z₀ = z_enc · [b, 512, 960]</text>
+  <line x1="270" y1="414" x2="270" y2="446" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- ============ the loop ============ -->
+  <rect x="44" y="448" width="452" height="286" rx="14" fill="#0c1620" stroke="#5fc8f5" stroke-width="1.6" stroke-dasharray="7 5"/>
+  <text x="60" y="472" fill="#5fc8f5" font-size="14" font-weight="600">REFINEMENT LOOP</text>
+  <text x="480" y="472" fill="#5fc8f5" font-size="13" text-anchor="end">depth K</text>
+
+  <!-- time signal -->
+  <rect x="150" y="486" width="298" height="46" rx="9" fill="#121a24" stroke="#33445a"/>
+  <text x="299" y="506" fill="#c9d6e4" font-size="14" text-anchor="middle">z + time signal for pass k</text>
+  <text x="299" y="524" fill="#7b8ca3" font-size="12" text-anchor="middle">sinusoidal sin/cos ladder — defined at any k</text>
+  <line x1="299" y1="532" x2="299" y2="558" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- shared refine block -->
+  <rect x="150" y="560" width="298" height="60" rx="9" fill="#0e2231" stroke="#5fc8f5" stroke-width="2"/>
+  <text x="299" y="584" fill="#bfe9ff" font-size="16" font-weight="600" text-anchor="middle">Refine Block — SHARED</text>
+  <text x="299" y="604" fill="#7fb8d6" font-size="13" text-anchor="middle">one set of weights, applied K times</text>
+  <line x1="299" y1="620" x2="299" y2="646" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- gate -->
+  <rect x="150" y="648" width="298" height="62" rx="9" fill="#121a24" stroke="#33445a"/>
+  <text x="299" y="669" fill="#c9d6e4" font-size="14" text-anchor="middle">Gate   g = σ( W [ z_new ; z ] )</text>
+  <text x="299" y="691" fill="#9fd6a8" font-size="14" text-anchor="middle">z ← g · z_new + (1 − g) · z</text>
+
+  <!-- back edge -->
+  <path d="M150 679 L106 679 L106 509 L150 509" fill="none" stroke="#5fc8f5" stroke-width="1.8" marker-end="url(#aLoop)"/>
+  <text x="98" y="600" fill="#5fc8f5" font-size="15" font-weight="600" text-anchor="middle" transform="rotate(-90 98 600)">× K</text>
+
+  <line x1="270" y1="734" x2="270" y2="762" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- out norm -->
+  <rect x="140" y="764" width="260" height="36" rx="9" fill="#121a24" stroke="#33445a"/>
+  <text x="270" y="787" fill="#c9d6e4" font-size="14" text-anchor="middle">RMSNorm</text>
+  <line x1="270" y1="800" x2="270" y2="826" stroke="#8aa0b8" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- lm head -->
+  <rect x="92" y="828" width="356" height="46" rx="9" fill="#1d1611" stroke="#d97757" stroke-width="1.6"/>
+  <text x="270" y="847" fill="#f0c3ac" font-size="15" font-weight="600" text-anchor="middle">LM head — TIED to Embed</text>
+  <text x="270" y="865" fill="#b08a74" font-size="12" text-anchor="middle">logits = z · Embedᵀ · [b, 512, 50304]</text>
+
+  <!-- tie line: embed down the left edge to the head -->
+  <path d="M92 209 L64 209 L64 851 L92 851" fill="none" stroke="#d97757" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#aTie)"/>
+
+  <!-- ================= right column ================= -->
+
+  <text x="560" y="122" fill="#e8eef6" font-size="17" font-weight="600">Inside one Block</text>
+  <text x="560" y="144" fill="#7b8ca3" font-size="13">Identical for all eight — the seven encoder blocks and the shared one.</text>
+
+  <rect x="560" y="162" width="660" height="196" rx="12" fill="#101822" stroke="#2d3d51"/>
+
+  <!-- attention branch -->
+  <text x="584" y="192" fill="#8aa0b8" font-size="13">x</text>
+  <rect x="606" y="176" width="122" height="38" rx="7" fill="#16202c" stroke="#3b4c63"/>
+  <text x="667" y="200" fill="#c9d6e4" font-size="13" text-anchor="middle">RMSNorm</text>
+  <line x1="728" y1="195" x2="752" y2="195" stroke="#8aa0b8" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="754" y="170" width="300" height="50" rx="7" fill="#16202c" stroke="#3b4c63"/>
+  <text x="904" y="190" fill="#c9d6e4" font-size="13.5" text-anchor="middle">Causal self-attention · RoPE · q/k RMSNorm</text>
+  <text x="904" y="209" fill="#7b8ca3" font-size="12" text-anchor="middle">15 heads × 64 · GQA, 3 KV groups · mask t ≤ position</text>
+  <line x1="1054" y1="195" x2="1078" y2="195" stroke="#8aa0b8" stroke-width="1.4" marker-end="url(#a)"/>
+  <circle cx="1094" cy="195" r="13" fill="#16202c" stroke="#4a6079"/>
+  <text x="1094" y="200" fill="#c9d6e4" font-size="15" text-anchor="middle">+</text>
+  <path d="M584 195 L584 240 L1094 240 L1094 210" fill="none" stroke="#4a6079" stroke-width="1.3" stroke-dasharray="4 4"/>
+  <text x="820" y="256" fill="#6f8296" font-size="11.5" text-anchor="middle">residual</text>
+
+  <!-- mlp branch -->
+  <rect x="606" y="286" width="122" height="38" rx="7" fill="#16202c" stroke="#3b4c63"/>
+  <text x="667" y="310" fill="#c9d6e4" font-size="13" text-anchor="middle">RMSNorm</text>
+  <line x1="728" y1="305" x2="752" y2="305" stroke="#8aa0b8" stroke-width="1.4" marker-end="url(#a)"/>
+  <rect x="754" y="280" width="300" height="50" rx="7" fill="#16202c" stroke="#3b4c63"/>
+  <text x="904" y="300" fill="#c9d6e4" font-size="13.5" text-anchor="middle">SwiGLU MLP · 960 → 2560 → 960</text>
+  <text x="904" y="319" fill="#7b8ca3" font-size="12" text-anchor="middle">silu(gate_proj) · up_proj, down_proj zero-init</text>
+  <line x1="1054" y1="305" x2="1078" y2="305" stroke="#8aa0b8" stroke-width="1.4" marker-end="url(#a)"/>
+  <circle cx="1094" cy="305" r="13" fill="#16202c" stroke="#4a6079"/>
+  <text x="1094" y="310" fill="#c9d6e4" font-size="15" text-anchor="middle">+</text>
+  <path d="M584 305 L584 348 L1094 348 L1094 320" fill="none" stroke="#4a6079" stroke-width="1.3" stroke-dasharray="4 4"/>
+  <line x1="1094" y1="222" x2="1094" y2="268" stroke="#8aa0b8" stroke-width="1.4" marker-end="url(#a)"/>
+  <line x1="584" y1="240" x2="584" y2="292" stroke="#4a6079" stroke-width="1.3"/>
+
+  <!-- ============ what the picture is claiming ============ -->
+  <text x="560" y="404" fill="#e8eef6" font-size="17" font-weight="600">The two things this diagram is for</text>
+
+  <rect x="560" y="420" width="660" height="92" rx="10" fill="#0e2231" stroke="#5fc8f5" stroke-width="1.4"/>
+  <text x="584" y="446" fill="#bfe9ff" font-size="14.5" font-weight="600">Depth is a loop, not a stack.</text>
+  <text x="584" y="468" fill="#a9cfe4" font-size="13">Seven blocks are ordinary. The eighth runs K times over its own output, so depth</text>
+  <text x="584" y="486" fill="#a9cfe4" font-size="13">costs compute but almost no parameters — that is the bet the whole repo tests.</text>
+  <text x="584" y="504" fill="#7fb8d6" font-size="12.5">K sampled 1–8 while training · fixed at 6 for serving (the 2026-06-19 sweep knee)</text>
+
+  <rect x="560" y="524" width="660" height="74" rx="10" fill="#1d1611" stroke="#d97757" stroke-width="1.4"/>
+  <text x="584" y="550" fill="#f0c3ac" font-size="14.5" font-weight="600">The head is the embedding, transposed.</text>
+  <text x="584" y="572" fill="#d6ab93" font-size="13">One 50304 × 960 tensor does both jobs. It is the largest thing in the model, and</text>
+  <text x="584" y="590" fill="#d6ab93" font-size="13">tying it is most of why a model this small fits a 6 GB card at all.</text>
+
+  <!-- ============ facts ============ -->
+  <text x="560" y="640" fill="#e8eef6" font-size="17" font-weight="600">Shapes and policy</text>
+  <line x1="560" y1="652" x2="1220" y2="652" stroke="#2d3d51"/>
+
+  <text x="560" y="678" fill="#7b8ca3" font-size="13">width</text>
+  <text x="690" y="678" fill="#c9d6e4" font-size="13">960 — widest that fits 6 GB with bf16 optimizer moments</text>
+  <text x="560" y="702" fill="#7b8ca3" font-size="13">context</text>
+  <text x="690" y="702" fill="#c9d6e4" font-size="13">512 tokens, causal — no state carried between windows</text>
+  <text x="560" y="726" fill="#7b8ca3" font-size="13">vocab</text>
+  <text x="690" y="726" fill="#c9d6e4" font-size="13">50304 — r50k_base padded to a multiple of 128</text>
+  <text x="560" y="750" fill="#7b8ca3" font-size="13">blocks</text>
+  <text x="690" y="750" fill="#c9d6e4" font-size="13">7 encoder + 1 shared refiner = 8 sets of block weights</text>
+  <text x="560" y="774" fill="#7b8ca3" font-size="13">precision</text>
+  <text x="690" y="774" fill="#c9d6e4" font-size="13">float16 compute, float32 params — Turing has no bfloat16</text>
+  <text x="560" y="798" fill="#7b8ca3" font-size="13">time signal</text>
+  <text x="690" y="798" fill="#c9d6e4" font-size="13">sinusoidal — defined at any k, so depth is an open dial</text>
+  <text x="560" y="822" fill="#7b8ca3" font-size="13">hardware</text>
+  <text x="690" y="822" fill="#c9d6e4" font-size="13">one RTX 2060, 6 GB</text>
+
+  <!-- legend -->
+  <rect x="560" y="842" width="660" height="38" rx="8" fill="#101822" stroke="#2d3d51"/>
+  <rect x="578" y="854" width="16" height="14" rx="3" fill="#0e2231" stroke="#5fc8f5" stroke-width="1.6"/>
+  <text x="602" y="866" fill="#8aa0b8" font-size="12.5">weights reused across depth</text>
+  <rect x="800" y="854" width="16" height="14" rx="3" fill="#1d1611" stroke="#d97757" stroke-width="1.6"/>
+  <text x="824" y="866" fill="#8aa0b8" font-size="12.5">one tensor, two jobs (tied)</text>
+  <text x="1030" y="866" fill="#6f8296" font-size="12.5">dashed = same weights</text>
+</svg>

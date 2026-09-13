@@ -1,6 +1,6 @@
 # No-loss-scaling f16 shows no dense-kernel gradient underflow at this scale
 
-Status: preliminary (init-adjacent smoke; the base run's early stretch is the confirming read — see #16)
+Status: retracted (2026-09-13 addendum) — the base run this entry named as its confirming read refuted it at opt step 11,140 (#199)
 Date: 2026-07-15
 Commit: aa36bb5  Run: GPU smoke (no runs/ id)  Measured with: `PYTHONPATH=. python tools/smoke_refiner_gpu.py` (RTX 2060, f16 compute)
 
@@ -49,3 +49,22 @@ training.
   without loss scaling holds at this scale/architecture with tied embeddings —
   is a measured recipe fact for this repo, cheap to delete later if literature
   surfaces it.
+
+## Addendum 2026-09-13 — retracted by the run it deferred to
+
+This entry's own Limitations named the confirming measurement: the base run's
+`zero_frac_dense_max`, with loss scaling as the pre-named fallback if it rose. It
+rose. On 2026-08-18, `run_20260813_214725` (#157) hit f16 underflow at opt step
+11,140: the refiner's `gate` went from a 0.002 zero-gradient fraction to **1.000**
+at step 11,075, `refine_block` starved at 26–71%, and 65 steps later the output
+distribution was uniform (val CE 10.82 against ln(50304) = 10.83). Nothing was
+non-finite at any point (#199).
+
+The init-adjacent numbers above stand as measured; the conclusion they were read
+to support — that no loss scaling is needed at this scale — does not. Gradient
+magnitudes shrink as the loss falls, exactly as the Limitations warned. The
+remedy, dynamic loss scaling (`trm/train/loss_scale.py`), has been live since
+#199 and was part of the champion's recipe. The instrument that recorded the
+failure was the one this entry introduced (#82); what was missing was anything
+wired to act on it. Also since then: the zero-fraction reading is now taken on
+the gradient the optimizer applies, not one micro-step's (#191).

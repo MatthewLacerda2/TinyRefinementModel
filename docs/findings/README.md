@@ -25,7 +25,7 @@ things, it doesn't go in this folder.
 - `2026-07-07-dense-supervision-without-slots-collapses.md` — #79: the serial arm's exact supervision without slots collapses at the composition point; the offload is load-bearing
 - `2026-07-10-grade-annealing-scaffold-not-crutch.md` — #73: the grade is a scaffold — annealed to zero mid-run the chain survives on final-answer loss (within 2σ), but seed variance grows ~7×
 - `2026-07-12-anneal-floor-wins-onset-is-a-state.md` — #95: anneal to a floor of λ≈0.1 (control-level σ, 7× calmer than zero); no fixed earlier onset is reliable — the grade must stay until the chain is decodable through the deep slots
-- `2026-07-15-f16-no-loss-scaling-no-dense-underflow.md` — #82: dense-kernel zero-grad fraction 0.0003 vs the 0.05 bar on the f16 no-loss-scaling path — underflow measurable but negligible at init; base run's early stretch is the confirming read
+- `2026-07-15-f16-no-loss-scaling-no-dense-underflow.md` — #82: RETRACTED (2026-09-13 addendum) — the init-adjacent zero-grad fraction was 0.0003, but the base run it deferred to underflowed to a uniform output at opt step 11,140 (#199); dynamic loss scaling has been live since
 - `2026-07-16-budget-scratchpad-recall-rerun-readout-fine-writer-leaks.md` — #114: corrected-eval rerun of #63 phase 2 — the readout combines two values at 0.99 (old diagnosis dead), but the token-visible writer leaks the answer past the S=1 control, so retention is still untested
 - `2026-07-18-budget-scratchpad-retention-win-slot-parking.md` — #116: retention under capacity pressure is real — leak closed, 2 slots for 5 writes hits 1.0000 on every seed by parking r_1 (~99.5% of later writes routed away from it), while the 1-slot in-vector carry trains unreliably
 - `2026-07-18-sinusoidal-time-signal-depth-extrapolates.md` — #86: sinusoidal step signal matches the learned table at trained depths (2σ parity) and converts never-trained loops 9–16 into +0.11 accuracy under length shift, where the clamped table collapses to chance with NaN loss — depth becomes an open dial
@@ -52,14 +52,3 @@ The numbers and plots. State the baseline being compared against.
 ## Limitations
 Scale caveats, confounds, what would strengthen or kill the claim.
 ```
-
-## Candidate entries (to be written once the clean 8k run reports)
-
-- ACT-style learned halting collapses to minimum depth at small scale; the failure
-  survives reward shaping and only disappears when halting is removed.
-- Training with randomly sampled reasoning depth costs nothing in convergence
-  versus fixed shallow depth, and makes inference-time depth monotonically helpful.
-- Depth-curve methodology: held-out CE versus reasoning depth, with the hard-token
-  quartile ranked at depth 1 so the slice is fixed before depth varies.
-- Post-mortem: a double-applied attention scaling survived weeks of training and
-  log analysis; reference-numerics tests as the only reliable detector class.
