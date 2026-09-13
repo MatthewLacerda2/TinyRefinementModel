@@ -59,6 +59,9 @@ KILLED_PLATEAU = "KILLED_PLATEAU"
 KILLED_DIVERGENCE = "KILLED_DIVERGENCE"
 KILLED_OOM = "KILLED_OOM"
 KILLED_DISK = "KILLED_DISK"
+# Checkpoints one save boundary can write at once: rolling, best (on a val
+# improvement at the same probe step) and a milestone (#187).
+CHECKPOINTS_PER_WRITE = 3
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
@@ -216,14 +219,15 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     # that mattered never ran again, and a run that fills the disk mid-flight dies
     # with a corrupt final checkpoint: the compute AND the artifact (#190). Once a
     # run has written a checkpoint the real requirement is known: the next write,
-    # which lands in the rolling and the best dir at the same step, plus a margin.
+    # which can land in the rolling, best and milestone dirs at the same step (#187),
+    # plus a margin.
     # This one floor serves both a running run and its relaunch, so a relaunch is
     # never refused over space the run it is recovering already holds.
     if (obs.free_gb is not None and obs.checkpoint_gb is not None
-            and obs.free_gb < 2 * obs.checkpoint_gb + limits.disk_margin_gb):
+            and obs.free_gb < CHECKPOINTS_PER_WRITE * obs.checkpoint_gb + limits.disk_margin_gb):
         return Decision(STOP, KILLED_DISK,
                         f"{obs.free_gb:.1f}GB free; the next checkpoint write needs "
-                        f"~{2 * obs.checkpoint_gb:.1f}GB plus a {limits.disk_margin_gb}GB margin — "
+                        f"~{CHECKPOINTS_PER_WRITE * obs.checkpoint_gb:.1f}GB plus a {limits.disk_margin_gb}GB margin — "
                         f"stopping cleanly instead of dying mid-write (never delete runs/data/)")
 
     if obs.alive and state.stalled_polls >= limits.stall_polls:
