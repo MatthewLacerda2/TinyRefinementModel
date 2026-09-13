@@ -271,6 +271,9 @@ one home, and the rule is short enough to hold in your head:
 Nothing goes in the repo root — there are no `.py` files there, and
 `tests/core/test_package_layout.py` fails the build if one appears. Entry points are run
 as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -m trm.infer`.
+The front door is the `Makefile` (`make test`, `make test-affected`, `make gate`,
+`make launch BUDGET=…`, `make report RUN=…`): launch a base run through it, never by
+assembling supervisor flags by hand.
 
 **The direction is enforced, not just intended:** `trm/` never imports from
 `experiments/` or `instruments/`, and one research line never imports another — so

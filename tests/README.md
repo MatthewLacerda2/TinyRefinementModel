@@ -46,3 +46,7 @@ RUN_TESTS_ON_GPU=1 pytest tests/    # the real f16 path, GPU must be free
 
 Tests default to CPU (`FORCE_F32_COMPUTE`) so the suite stays runnable while a
 training process owns the card.
+
+## Running less than everything
+
+`make test-affected` (`tests/affected.py`) selects the tests a change can reach through imports, or that name its tree by path. It fails open: anything it cannot reason about runs `make test`. It is for the local loop; CI always runs both tiers.
