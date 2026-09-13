@@ -21,6 +21,7 @@ things, it doesn't go in this folder.
 - `2026-07-05-budget-scratchpad-overwrite-carries-chain.md` — #63 phase 1: a single physically-overwritten slot matches K append-only slots
 - `2026-07-05-budget-scratchpad-recall-inconclusive-readout-confound.md` — #63 phase 2: RETRACTED (2026-07-16 addendum) — the eval scored recall arms against the wrong target, so the run decided nothing; rerun under the corrected eval
 - `2026-07-05-truncated-backprop-depth-kill.md` — #64: gradient through only the last refinement steps collapses state-tracking — the trajectory gradient is load-bearing (kill)
+- `2026-07-05-per-depth-loss-accelerates-shallow-depths.md` — #74 (recovered 2026-09-13 from an abandoned branch; mechanism retired): grading the token loss at every refinement iteration misses the final-accuracy bar (+0.026, 1.5σ) but makes shallow iterations far more capable (d1 +0.19 / 5.2σ, d2 +0.20 / 5.7σ, d3 +0.11 / 3.3σ), reproduced at K=8
 - `2026-07-05-per-pass-supervision-islands.md` — #75: per-pass grades cannot replace the trajectory gradient (islands killed), but they stabilize deep recurrence (parity d8 rescued)
 - `2026-07-07-dense-supervision-without-slots-collapses.md` — #79: the serial arm's exact supervision without slots collapses at the composition point; the offload is load-bearing
 - `2026-07-10-grade-annealing-scaffold-not-crutch.md` — #73: the grade is a scaffold — annealed to zero mid-run the chain survives on final-answer loss (within 2σ), but seed variance grows ~7×
