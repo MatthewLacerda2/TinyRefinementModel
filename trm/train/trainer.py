@@ -30,7 +30,7 @@ from trm.config import (
     resolve_root,
 )
 from trm.model.reasoner import UniversalReasoner
-from trm.runtime.checkpoints import save_checkpoint
+from trm.runtime.checkpoints import make_milestone_manager, milestone_due, save_checkpoint
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
@@ -258,6 +258,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     window = LogWindow()
+    milestone_mngr = make_milestone_manager(mngr.directory)
     t_compute = 0.0
     nonfinite_streak = 0
     # Latest held-out CE from the validation probe, carried so the (less frequent)
@@ -369,6 +370,10 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
                                     sft_phase_event.is_set(), run_tracker.run_id)
+                    # Milestones: never evicted by recency (#187), in their own dir.
+                    if milestone_due(opt_step, CHECKPOINT_EVERY_OPT_STEPS, TOKENS_PER_OPT_STEP):
+                        save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
+                                        sft_phase_event.is_set(), run_tracker.run_id)
 
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
