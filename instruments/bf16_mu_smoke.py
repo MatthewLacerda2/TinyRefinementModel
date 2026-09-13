@@ -33,8 +33,12 @@ from flax import nnx
 import optax
 
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import MAX_SEQ_LEN
+from trm.config import BATCH_SIZE, MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step, apply_grads
+
+
+# Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
+CONFIG_DIVERGENCES = {"--depth": "one fixed depth keeps the f32/bf16 A/B to a single compile per arm"}
 
 
 def build_optimizer(model, mu_dtype, lr):
@@ -85,7 +89,7 @@ def run(mu_dtype, batches, depth, steps, batch, lr, arch=None):
 def main():
     ap = argparse.ArgumentParser(description="#18 bf16-mu correctness smoke")
     ap.add_argument("--steps", type=int, default=120)
-    ap.add_argument("--batch", type=int, default=2)
+    ap.add_argument("--batch", type=int, default=BATCH_SIZE)
     ap.add_argument("--depth", type=int, default=6, help="fixed refinement depth for a clean A/B")
     ap.add_argument("--lr", type=float, default=3e-4)
     add_arch_argument(ap)

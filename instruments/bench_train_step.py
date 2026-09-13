@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import BATCH_SIZE, MAX_SEQ_LEN, VOCAB_SIZE
+from trm.config import BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import compute_grad_step, apply_grads
 
@@ -43,7 +43,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=60, help="timed micro-steps per mode")
     parser.add_argument("--warmup", type=int, default=10, help="untimed steps (includes compile)")
-    parser.add_argument("--depth", type=int, default=8, help="reasoning steps (curriculum depth)")
+    parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="reasoning steps (curriculum depth)")
     parser.add_argument("--modes", type=str, default="loop,kernel")
     parser.add_argument("--batch", type=int, default=BATCH_SIZE,
                         help="micro-batch rows (default: config BATCH_SIZE). Sweeping this "

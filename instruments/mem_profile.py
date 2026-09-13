@@ -40,7 +40,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, LATENT_DIM, NUM_HEADS
+from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
 
 _DT_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "s32": 4, "s8": 1, "u32": 4, "pred": 1, "f64": 8}
 
@@ -75,7 +75,7 @@ def _top_hlo_shapes(hlo_text, top):
 def main():
     ap = argparse.ArgumentParser(description="grad-step VRAM profiler")
     ap.add_argument("--arch", choices=["reasoner", "refiner"], default="reasoner")
-    ap.add_argument("--depth", type=int, default=8, help="reasoning depth (8 = deepest, peak)")
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="reasoning depth (8 = deepest, peak)")
     ap.add_argument("--top", type=int, default=12, help="how many largest HLO shapes to list")
     ap.add_argument("--run", action="store_true", help="also execute one step (skip if it OOMs)")
     args = ap.parse_args()

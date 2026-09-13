@@ -41,6 +41,8 @@ from instruments.yardstick.yardstick import (
 )
 
 GPT2_CONTEXT = 1024
+# Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
+CONFIG_DIVERGENCES = {"--batch": "examples per GPT-2 eval forward, not our training micro-batch"}
 GPT2_EOT = 50256  # end-of-text doubles as pad, exactly as in our own runs
 
 
