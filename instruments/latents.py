@@ -34,7 +34,7 @@ import dataclasses
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import MAX_SEQ_LEN
+from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
 
@@ -148,7 +148,7 @@ def _main(argv=None):
     ap.add_argument("--checkpoint", required=True,
                     help="checkpoint MANAGER ROOT (the dir holding numeric step dirs), "
                          "not a step dir")
-    ap.add_argument("--depth", type=int, default=8)
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT)
     ap.add_argument("--source", default="pretrain/fineweb-edu")
     ap.add_argument("--rows", type=int, default=1)
     args = ap.parse_args(argv)

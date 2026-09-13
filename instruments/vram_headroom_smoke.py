@@ -41,6 +41,7 @@ from flax import nnx
 import optax
 
 from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
+from trm.config import BATCH_SIZE, LATENT_DIM, MAX_STEPS_LIMIT, NUM_HEADS, REFINER_ENCODER_LAYERS
 from trm.config import MODEL_ARCH
 from trm.model.refiner_lm import RefinerForTraining
 from trm.train.grad_step import compute_grad_step, apply_grads
@@ -85,11 +86,11 @@ class GpuMemSampler:
 
 def main():
     ap = argparse.ArgumentParser(description="training VRAM headroom probe")
-    ap.add_argument("--dim", type=int, default=512, help="LATENT_DIM (must be divisible by --heads)")
-    ap.add_argument("--heads", type=int, default=16)
-    ap.add_argument("--encoder-layers", type=int, default=7)
-    ap.add_argument("--batch", type=int, default=1, help="micro-batch (per accumulation step)")
-    ap.add_argument("--depth", type=int, default=8, help="refinement depth; 8 = the deepest sampled, peak memory")
+    ap.add_argument("--dim", type=int, default=LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
+    ap.add_argument("--heads", type=int, default=NUM_HEADS)
+    ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS)
+    ap.add_argument("--batch", type=int, default=BATCH_SIZE, help="micro-batch (per accumulation step)")
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="refinement depth; 8 = the deepest sampled, peak memory")
     ap.add_argument("--arch", default=MODEL_ARCH, choices=("plain", "refiner", "reasoner"),
                     help="architecture to size; defaults to MODEL_ARCH. This used to build "
                          "RefinerForTraining unconditionally, so the tool that sizes a run "

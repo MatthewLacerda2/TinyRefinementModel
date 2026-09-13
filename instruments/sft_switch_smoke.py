@@ -35,6 +35,7 @@ import optax
 
 from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
+from trm.config import BATCH_SIZE, LATENT_DIM, MAX_STEPS_LIMIT
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 
@@ -55,9 +56,9 @@ def build_optimizer(model, lr_scale=1.0):
 def main():
     ap = argparse.ArgumentParser(description="#30 SFT optimizer-switch VRAM smoke")
     ap.add_argument("--mode", choices=["double", "host"], required=True)
-    ap.add_argument("--dim", type=int, default=512)
-    ap.add_argument("--batch", type=int, default=1)
-    ap.add_argument("--depth", type=int, default=8)
+    ap.add_argument("--dim", type=int, default=LATENT_DIM)
+    ap.add_argument("--batch", type=int, default=BATCH_SIZE)
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT)
     add_arch_argument(ap)
     args = ap.parse_args()
 

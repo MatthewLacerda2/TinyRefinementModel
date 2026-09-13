@@ -35,6 +35,9 @@ from trm.train.grad_step import compute_grad_step, apply_grads
 
 load_dotenv()
 
+# Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
+CONFIG_DIVERGENCES = {"--depth": "memorizing one batch needs one fixed, cheap depth: a single compile"}
+
 
 def _build(args):
     """The architecture MODEL_ARCH selects — the one a run launched now would train.
