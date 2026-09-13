@@ -32,6 +32,7 @@ The loader is also the one place that knows the shape of the artifact:
 from __future__ import annotations
 
 import csv
+import datetime
 import glob
 import json
 import os
@@ -45,6 +46,18 @@ METADATA_FILENAME = "run_metadata.json"
 # DictReader parks fields beyond the header under this key; naming it keeps a
 # widened row from inventing a column called `None`.
 _OVERFLOW = "__extra__"
+
+
+def _parse_wall_clock(raw):
+    """metrics.csv's UTC timestamp (#186), or None for an older run's empty cell."""
+    try:
+        return datetime.datetime.strptime(raw.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except (AttributeError, ValueError):
+        return None
+
+
+# Columns that are not numbers. Everything else parses as a float.
+_TEXT_COLUMNS = {"wall_clock": _parse_wall_clock, "mix": lambda raw: (raw or "").strip() or None}
 
 
 def _parse_float(raw):
@@ -204,7 +217,7 @@ def _read_rows(csv_path):
             row = {"step": step}
             for name in fields:
                 if name != "step":
-                    row[name] = _parse_float(raw.get(name))
+                    row[name] = _TEXT_COLUMNS.get(name, _parse_float)(raw.get(name))
             rows.append(row)
 
     # Keep only advancing steps: a pre-trimming resume re-logs a range it

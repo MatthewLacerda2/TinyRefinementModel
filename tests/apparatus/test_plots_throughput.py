@@ -81,3 +81,57 @@ def test_empty_and_single_beat_are_handled():
         rate, rate_hours, dropped, cadence = usable_intervals(hours, tokens)
         assert rate.size == 0 and rate_hours.size == 0
         assert dropped == 0 and cadence == 0.0
+
+
+# --- measured from the run's own clock when it has one (#186, #177) ------------
+
+def _clocked_run(tmp_path, rows, header="step,ce,wall_clock,mix"):
+    import datetime
+    from instruments import runlog
+
+    run_dir = tmp_path / "run_20990101_000000"
+    run_dir.mkdir()
+    start = datetime.datetime(2099, 1, 1, tzinfo=datetime.timezone.utc)
+    lines = [header] + [f"{step},3.0,{(start + datetime.timedelta(seconds=sec)):%Y-%m-%dT%H:%M:%SZ},"
+                        f"fineweb-edu=0.850 codeparrot=0.100 finemath=0.050" for step, sec in rows]
+    (run_dir / "metrics.csv").write_text("\n".join(lines) + "\n")
+    return runlog.load(str(run_dir / "metrics.csv"))
+
+
+def test_wall_clock_and_mix_are_read_as_what_they_are(tmp_path):
+    import datetime
+    log = _clocked_run(tmp_path, [(5, 0), (10, 150)])
+    assert log.metrics[1]["wall_clock"] == datetime.datetime(2099, 1, 1, 0, 2, 30, tzinfo=datetime.timezone.utc)
+    assert log.metrics[0]["mix"].startswith("fineweb-edu=0.850")
+
+
+def test_throughput_uses_logged_rows_thinned_to_end_to_end_intervals(tmp_path):
+    """A row every ~2.5 minutes, thinned to >=30-minute intervals, so a point is a
+    rate across checkpoints and probes rather than five opt steps of noise."""
+    from instruments.plots import clock_samples
+    rows = [(5 * i, 150 * i) for i in range(1, 100)]
+    samples, source = clock_samples(_clocked_run(tmp_path, rows))
+    assert source == "metrics"
+    gaps = [(b[0] - a[0]).total_seconds() for a, b in zip(samples, samples[1:])]
+    assert all(g >= 1800 for g in gaps[:-1]), "every interval but the tail is end-to-end"
+    assert samples[0][1] == 5 and samples[-1][1] == rows[-1][0], "first and last rows always kept"
+
+
+def test_a_run_without_wall_clock_falls_back_to_heartbeats(tmp_path):
+    from instruments import runlog
+    from instruments.plots import clock_samples
+    run_dir = tmp_path / "run_20260101_000000"
+    run_dir.mkdir()
+    (run_dir / "metrics.csv").write_text("step,ce\n5,3.0\n10,2.9\n")
+    _, source = clock_samples(runlog.load(str(run_dir / "metrics.csv")))
+    assert source == "heartbeats"
+
+
+def test_the_figure_says_measured_when_it_is(tmp_path, capsys):
+    import matplotlib
+    matplotlib.use("Agg")
+    from instruments import plots
+    rows = [(5 * i, 150 * i) for i in range(1, 200)]
+    result = plots.throughput_progress(_clocked_run(tmp_path, rows), tmp_path)
+    assert result is not None and result["coverage"] == 1.0
+    assert "heartbeat" not in capsys.readouterr().out
