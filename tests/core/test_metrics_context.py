@@ -1,0 +1,68 @@
+"""metrics.csv carries what a row cannot be read without (#186), and writes every
+column it declares.
+
+The second half is not hypothetical: `act_max` sat in the header from #252 on, and
+`log()` never filled it — the f16-margin telemetry existed as an always-empty
+column, and the invariant reading it could never fire.
+"""
+
+import csv
+import datetime
+from types import SimpleNamespace
+
+import jax.numpy as jnp
+
+from trm.runtime.metrics import MetricsLogger
+from trm.train.trainer import PRETRAIN_SOURCES, SFT_SOURCES, mixture_label
+
+
+def _log_one(tmp_path, **overrides):
+    path = tmp_path / "metrics.csv"
+    logger = MetricsLogger(str(path))
+    out = SimpleNamespace(diag={k: jnp.array(1.5) for k in logger.diag_keys})
+    kwargs = dict(grad_norm_avg=0.5, seg1_ce=3.0, depth_avg=1.0, val_ce=3.1,
+                  zero_frac_dense_max=0.0, mix="a=1.000")
+    kwargs.update(overrides)
+    logger.log(10, 3.2, 3.3, out, 0.1, **kwargs)
+    with open(path, newline="") as f:
+        return logger, list(csv.DictReader(f))
+
+
+def test_every_declared_column_is_written_when_its_input_exists(tmp_path):
+    logger, rows = _log_one(tmp_path)
+    empty = [name for name in logger.fields if rows[0][name] == ""]
+    assert not empty, f"declared in the header but never written: {empty}"
+    assert float(rows[0]["act_max"]) == 1.5
+
+
+def test_a_row_says_when_it_was_written(tmp_path):
+    before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    _, rows = _log_one(tmp_path)
+    stamp = datetime.datetime.strptime(rows[0]["wall_clock"], "%Y-%m-%dT%H:%M:%SZ"
+                                       ).replace(tzinfo=datetime.timezone.utc)
+    assert before <= stamp <= before + datetime.timedelta(minutes=1)
+
+
+def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
+    label = mixture_label(PRETRAIN_SOURCES, [0.6, 0.25, 0.15])
+    assert label == "fineweb-edu=0.600 codeparrot=0.250 finemath=0.150"
+    _, rows = _log_one(tmp_path, mix=label)
+    assert rows[0]["mix"] == label
+
+
+def test_the_mixture_label_covers_every_source_the_mixer_serves():
+    from trm.train.schedules import CURRICULUM_START_WEIGHTS, SFT_MIX_WEIGHTS
+    assert len(PRETRAIN_SOURCES) == len(CURRICULUM_START_WEIGHTS)
+    assert len(SFT_SOURCES) == len(SFT_MIX_WEIGHTS)
+    assert SFT_SOURCES[1:] == PRETRAIN_SOURCES, "SFT reuses the pretrain loaders, in order"
+
+
+def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):
+    path = tmp_path / "metrics.csv"
+    path.write_text("step,ce\n5,3.0\n15,2.9\n")
+    MetricsLogger(str(path), start_opt_step=10)
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert "wall_clock" in reader.fieldnames and "mix" in reader.fieldnames
+    assert [r["step"] for r in rows] == ["5"]

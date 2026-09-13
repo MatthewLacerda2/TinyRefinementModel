@@ -74,6 +74,21 @@ else:
     print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
 
 
+# Data sources, in mixer order. One list feeds both the loaders and the `mix`
+# column of metrics.csv, so the recorded mixture cannot name a source other than
+# the one that was served.
+PRETRAIN_SOURCES = ("pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
+SFT_ONLY_SOURCE = "chat/ultrachat"
+SFT_SOURCES = (SFT_ONLY_SOURCE, *PRETRAIN_SOURCES)
+
+
+def mixture_label(sources, weights):
+    """`fineweb-edu=0.600 codeparrot=0.250 finemath=0.150` — the mixture a CE was
+    measured on, readable without today's curriculum constants (#186)."""
+    assert len(sources) == len(weights), "a mixture must name every source it weights"
+    return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights))
+
+
 def _param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
@@ -136,19 +151,10 @@ def init_model_and_optimizer():
 
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, samples_seen=None):
     print("🚀 Initializing Dynamic Data Phases...")
-    pretrain_sources = [
-        TextDataGenerator(f"{DATA_ROOT}/pretrain/fineweb-edu"),
-        TextDataGenerator(f"{DATA_ROOT}/pretrain/codeparrot"),
-        TextDataGenerator(f"{DATA_ROOT}/pretrain/finemath"),
-    ]
+    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
-    sft_sources = [
-        TextDataGenerator(f"{DATA_ROOT}/chat/ultrachat"),
-        pretrain_sources[0],
-        pretrain_sources[1],
-        pretrain_sources[2],
-    ]
+    sft_sources = [TextDataGenerator(f"{DATA_ROOT}/{SFT_ONLY_SOURCE}"), *pretrain_sources]
     sft_mixer = DataMixer(sft_sources, SFT_MIX_WEIGHTS)
 
     if start_step > 1:
@@ -354,6 +360,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     depth_avg=float(accum_depth),
                     val_ce=latest_val_ce,
                     zero_frac_dense_max=zero_frac_dense,
+                    mix=(mixture_label(SFT_SOURCES, SFT_MIX_WEIGHTS) if sft_phase_event.is_set()
+                         else mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step))),
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = None

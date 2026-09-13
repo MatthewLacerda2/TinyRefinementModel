@@ -1,4 +1,5 @@
 import csv
+import datetime
 import math
 import fsspec
 import jax.numpy as jnp
@@ -33,6 +34,11 @@ class MetricsLogger:
             "diversity_loss", "temporal_drift", "forget_density", "tau",
             "out_entropy", "logz_mean", "max_abs_logit", "act_max",
             "depth_avg", "val_ce",
+            # Context a row cannot be read without, and that cannot be backfilled
+            # (#186): when it was written — the only clock the run keeps against its
+            # progress — and the data mixture its CE was measured on, which the
+            # curriculum moves every step.
+            "wall_clock", "mix",
         ]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
@@ -72,7 +78,7 @@ class MetricsLogger:
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
-            zero_frac_dense_max=None):
+            zero_frac_dense_max=None, mix=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -123,5 +129,11 @@ class MetricsLogger:
                 "max_abs_logit": _fmt(diag_dict, "max_abs_logit", 2),
                 "depth_avg": f"{depth_avg:.4f}" if depth_avg is not None else "",
                 "val_ce": f"{val_ce:.4f}" if val_ce is not None else "",
+                # Listed in fields and diag_keys since #252 but never written: the
+                # column existed and was always empty, so the f16-margin invariant
+                # reading it could not fire.
+                "act_max": _fmt(diag_dict, "act_max", 1),
+                "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "mix": mix or "",
             }
             writer.writerow(row)
