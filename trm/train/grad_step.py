@@ -176,6 +176,26 @@ def grad_zero_fractions(grads):
     return {g: zeros[g] / sizes[g] for g in zeros}
 
 
+def applied_gradient(opt, grads):
+    """The gradient the optimizer applies at this micro-step, when it is the last of
+    its accumulation window (#191).
+
+    optax.MultiSteps with use_grad_mean keeps a running mean of the window's first
+    k-1 micro-steps in `acc_grads`; the apply uses that mean folded with this
+    micro-step's grads. Read it BEFORE apply_grads, which donates both. Only
+    meaningful at an apply boundary — mid-window it is a partial mean.
+
+    Why it matters: the underflow instrument read one micro-step's grads, and
+    reported 0.500 on 13% of steps — a per-micro-step artifact (a depth-1 draw
+    zeroes half of one norm's gradient), not underflow in anything that updates
+    the weights, yet indistinguishable from it in the column.
+    """
+    state = opt.opt_state
+    seen = jax.tree_util.tree_leaves(state.mini_step)[0]
+    return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
+                                  nnx.to_pure_dict(state.acc_grads), nnx.to_pure_dict(grads))
+
+
 def dense_zero_frac_max(zero_fracs):
     """Worst zero-fraction among the dense groups — the #82 decision-rule scalar.
 

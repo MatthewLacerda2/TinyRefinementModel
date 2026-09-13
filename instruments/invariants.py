@@ -85,6 +85,7 @@ def build_invariants():
          f"{mean:.2f} +/- {sigma:.3f}, so {DEPTH_SIGMA_TOLERANCE:.0f} sigma is "
          f"[{depth_low:.2f}, {depth_high:.2f}]"),
         ("zero_frac_dense_max", 0.0, 1.0, "it is a fraction"),
+        ("applied_zero_frac_dense_max", 0.0, 1.0, "it is a fraction"),
         ("forget_density", 0.0, 1.0, "it is a fraction"),
         # Entropy IS bounded above by the uniform distribution's, unlike CE:
         # entropy is a property of the model's own output distribution, and no

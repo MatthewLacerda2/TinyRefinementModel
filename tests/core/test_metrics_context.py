@@ -21,7 +21,7 @@ def _log_one(tmp_path, **overrides):
     logger = MetricsLogger(str(path))
     out = SimpleNamespace(diag={k: jnp.array(1.5) for k in logger.diag_keys})
     kwargs = dict(grad_norm_avg=0.5, seg1_ce=3.0, depth_avg=1.0, val_ce=3.1,
-                  zero_frac_dense_max=0.0, mix="a=1.000")
+                  zero_frac_dense_max=0.0, applied_zero_frac_dense_max=0.0, mix="a=1.000")
     kwargs.update(overrides)
     logger.log(10, 3.2, 3.3, out, 0.1, **kwargs)
     with open(path, newline="") as f:

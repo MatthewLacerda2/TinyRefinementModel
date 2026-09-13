@@ -580,7 +580,10 @@ def _panel_depth(ax, runlog):
 
 
 def _panel_zero_grad(ax, runlog):
-    tokens, values = series(runlog, "zero_frac_dense_max")
+    # The applied (window-mean) gradient when the run recorded it (#191); older runs
+    # only have one micro-step's, which is labelled as such below.
+    applied = runlog.has("applied_zero_frac_dense_max")
+    tokens, values = series(runlog, "applied_zero_frac_dense_max" if applied else "zero_frac_dense_max")
     # Dots, not a line: this series is spiky by nature (an occasional micro-step
     # underflows, most do not), and joining the spikes draws a solid wall that
     # hides both the floor and how often the spikes happen.
@@ -593,7 +596,8 @@ def _panel_zero_grad(ax, runlog):
     if len(values) and values.min() > 0:
         _log_y(ax)
     ax.set_ylabel("fraction of zero entries")
-    ax.set_title("Zero-gradient fraction (worst dense tensor)", loc="left")
+    ax.set_title("Zero-gradient fraction (worst dense tensor, "
+                 + ("applied gradient)" if applied else "one micro-step)"), loc="left")
     # "best" earns its keep here: the spikes and the floor move around, so the
     # free band between them is not always the same corner.
     _legend(ax, loc="best", fontsize=8)

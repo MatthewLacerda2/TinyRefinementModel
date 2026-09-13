@@ -30,7 +30,7 @@ class MetricsLogger:
         # Full set of fields for CSV
         self.fields = [
             "step", "ce", "loss", "seg1_ce",
-            "grad_norm_avg", "zero_frac_dense_max", "avg_forget_cost",
+            "grad_norm_avg", "zero_frac_dense_max", "applied_zero_frac_dense_max", "avg_forget_cost",
             "diversity_loss", "temporal_drift", "forget_density", "tau",
             "out_entropy", "logz_mean", "max_abs_logit", "act_max",
             "depth_avg", "val_ce",
@@ -78,7 +78,7 @@ class MetricsLogger:
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
-            zero_frac_dense_max=None, mix=None):
+            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, mix=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -118,7 +118,12 @@ class MetricsLogger:
                 "loss": f"{loss:.4f}",
                 "seg1_ce": f"{seg1_ce:.4f}" if seg1_ce is not None else "",
                 "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
+                # One micro-step's grads (#82's original reading), and the window mean
+                # the optimizer actually applies (#191). Only the second can say f16
+                # underflow reached the weights.
                 "zero_frac_dense_max": f"{zero_frac_dense_max:.6f}" if zero_frac_dense_max is not None else "",
+                "applied_zero_frac_dense_max": (f"{applied_zero_frac_dense_max:.6f}"
+                                                if applied_zero_frac_dense_max is not None else ""),
                 "avg_forget_cost": _fmt(diag_dict, "forget_cost", 4),
                 "diversity_loss": _fmt(diag_dict, "diversity_loss", 6),
                 "temporal_drift": _fmt(diag_dict, "temporal_drift", 6),
