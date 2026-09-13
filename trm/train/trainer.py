@@ -30,7 +30,8 @@ from trm.config import (
     resolve_root,
 )
 from trm.model.reasoner import UniversalReasoner
-from trm.runtime.checkpoints import make_milestone_manager, milestone_due, save_checkpoint
+from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
+                                     wait_for_pending_saves)
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
@@ -360,7 +361,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         # retention never evict each other.
                         if monitor.push_val(val_ce):
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
-                                            sft_phase_event.is_set(), run_tracker.run_id)
+                                            sft_phase_event.is_set(), run_tracker.run_id, wait=False)
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
@@ -369,11 +370,11 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # is saved on the validation probe, above.
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
-                                    sft_phase_event.is_set(), run_tracker.run_id)
+                                    sft_phase_event.is_set(), run_tracker.run_id, wait=False)
                     # Milestones: never evicted by recency (#187), in their own dir.
                     if milestone_due(opt_step, CHECKPOINT_EVERY_OPT_STEPS, TOKENS_PER_OPT_STEP):
                         save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
-                                        sft_phase_event.is_set(), run_tracker.run_id)
+                                        sft_phase_event.is_set(), run_tracker.run_id, wait=False)
 
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
@@ -481,5 +482,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             step += 1
     finally:
+        # An asynchronous checkpoint write may still be landing (#218) — a crash, a
+        # budget stop's TERM, or a plateau kill must not cut the last one short.
+        wait_for_pending_saves()
         # Guarantee run metadata is finalized on exit
         run_tracker.update_session_duration()

@@ -126,10 +126,32 @@ def restore_tolerating_legacy(read, model, model_key="model"):
         return restored
 
 
-def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
+# Managers whose last save may still be writing to disk (#218).
+_PENDING = []
+
+
+def wait_for_pending_saves():
+    """Block until every asynchronous checkpoint write has landed. Called before
+    the next save, and on the way out of training — including a SIGTERM."""
+    while _PENDING:
+        _PENDING.pop().wait_until_finished()
+
+
+def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, wait=True):
     """Persist the full training state (model + optimizer + monitor + step) under
-    `mngr` at `step`, then block until the write lands. Shared by the
-    rolling-latest and best-only managers — they use one save schema.
+    `mngr` at `step`. Shared by every manager — they use one save schema.
+
+    With `wait=False` it returns once the state is copied to host, and the disk
+    write finishes in orbax's background thread while training goes on (#218):
+    the blocking write held the GPU at 0% for ~12s per checkpoint. Measured safe
+    on the RTX 2060 at the shipping config: save() returned after the 2.4s copy,
+    129 micro-steps and an optimizer apply then ran during the write — reusing the
+    donated buffers — and the restored model and optimizer were bit-identical to
+    the state at save time. Two rules keep it that way:
+      * at most one write in flight: a new save first waits for the previous one,
+        so host RAM holds one ~1.7GB copy, not one per coinciding manager;
+      * nothing mutable is handed over by reference (ce_history is copied), since
+        serialization may happen after this returns.
 
     Raises if orbax declines the save. It returns False — no exception, no log —
     for any step at or below the newest checkpoint it can see, so a run resumed
@@ -137,13 +159,14 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
     on for days writing nothing (#188). `python -m trm.runtime.rewind` is the way
     to resume from an earlier step.
     """
+    wait_for_pending_saves()
     saved = mngr.save(
         step,
         args=ocp.args.Composite(
             model=ocp.args.StandardSave(nnx.state(model)),
             optimizer=ocp.args.StandardSave(nnx.state(optimizer)),
             monitor_state=ocp.args.JsonSave({
-                "ce_history": monitor.ce_history,
+                "ce_history": list(monitor.ce_history),
                 "best_ce": monitor.best_ce,
                 "best_loss": monitor.best_loss,
                 "best_avg_ce": monitor.best_avg_ce,
@@ -167,7 +190,27 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
             f"orbax declined to save step {step} in {mngr.directory}: its newest checkpoint is "
             f"step {mngr.latest_step()}. Checkpoints newer than the resume point are still in "
             f"view — set them aside with `python -m trm.runtime.rewind`.")
-    mngr.wait_until_finished()
+    if wait:
+        mngr.wait_until_finished()
+    else:
+        _PENDING.append(mngr)
+
+
+def exit_cleanly_on_sigterm():
+    """Turn SIGTERM into SystemExit, so `finally` blocks run.
+
+    The supervisor stops a run with TERM, then KILL after a 60s grace. Python's
+    default TERM action ends the process without unwinding — harmless while every
+    save blocked, fatal to an asynchronous one: the budget-stop TERM can land while
+    the run's final checkpoint is still being written. Unwinding lets the trainer
+    wait for that write (~16s at the shipping config) inside the grace.
+    """
+    import signal
+
+    def _raise(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _raise)
 
 
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
