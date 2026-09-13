@@ -30,6 +30,9 @@ from dataclasses import dataclass, field
 
 from trm.runtime.supervisor import GpuLock, _pid_alive
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {}  # ranks issues and says why; prints no quantities
+
 TYPE_ORDER = ("architecture", "tools", "ideas", "optimization", "documentation")
 UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
 
