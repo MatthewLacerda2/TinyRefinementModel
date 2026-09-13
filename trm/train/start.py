@@ -55,7 +55,8 @@ from trm.train.trainer import (
     train_loop,
 )
 from trm.runtime.run_tracker import RunTracker
-from trm.runtime.checkpoints import discover_latest_run, discover_latest_checkpoint_run, load_or_create_checkpoint
+from trm.runtime.checkpoints import (discover_latest_run, discover_latest_checkpoint_run, exit_cleanly_on_sigterm,
+                                     load_or_create_checkpoint)
 
 if __name__ == "__main__":
     try:
@@ -137,4 +138,5 @@ if __name__ == "__main__":
     data_queue = setup_data_pipeline(start_step, sft_phase_event, monitor.sft_start_step,
                                      samples_seen=monitor.samples_seen or None)
 
+    exit_cleanly_on_sigterm()  # so a TERM waits for an in-flight checkpoint write (#218)
     train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker)
