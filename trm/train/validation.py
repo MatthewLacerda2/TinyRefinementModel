@@ -5,11 +5,11 @@ the one decisions should read. The trainer drives it on its own cadence
 """
 
 import jax.numpy as jnp
-import optax
 from flax import nnx
 
 from trm.config import EVAL_ROWS, MAX_SEQ_LEN, PAD_TOKEN_ID
 from trm.data.loaders import TextDataGenerator
+from trm.train.losses import chunked_cross_entropy_rows
 
 VAL_ROWS = EVAL_ROWS
 VAL_FIXED_DEPTH = 4
@@ -21,19 +21,26 @@ VAL_SKIP_SAMPLES = 3_000_000
 @nnx.jit
 def _val_ce_sums(model, batch):
     """Masked CE sums over both windows, mirroring the training segment structure
-    (window 1 opens the document, window 2 continues it) at a fixed depth."""
+    (window 1 opens the document, window 2 continues it) at a fixed depth.
+
+    Scored exactly the way the grad step scores (#208): the model hands back
+    pre-head states and the tied LM head is projected chunk by chunk, so the two
+    [1, 512, 50304] f32 logit tensors (~206 MB) are never built. This probe runs
+    inside the trainer's allocator on a fixed cadence, and a large, periodic,
+    short-lived allocation is the shape that fragments an arena — the documented
+    killer of every base run. `training=True` only selects the output form (plus
+    remat, which is math-identical); no model uses it for dropout or noise.
+    """
     seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
     seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
-    out1 = model(seq1_in, depth=VAL_FIXED_DEPTH, training=False, new_document=True)
-    out2 = model(seq2_in, depth=VAL_FIXED_DEPTH, training=False, new_document=False)
-    total = jnp.array(0.0)
-    count = jnp.array(0)
-    for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
-        mask = targets != PAD_TOKEN_ID
-        ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
-        total += jnp.sum(ce * mask)
-        count += jnp.sum(mask)
-    return total, count
+    out1 = model(seq1_in, depth=VAL_FIXED_DEPTH, training=True, new_document=True)
+    out2 = model(seq2_in, depth=VAL_FIXED_DEPTH, training=True, new_document=False)
+    loss_sums, counts, _ = chunked_cross_entropy_rows(
+        jnp.concatenate([out1.hidden, out2.hidden], axis=0),
+        model.embed.embedding[...],
+        jnp.concatenate([seq1_out, seq2_out], axis=0),
+        PAD_TOKEN_ID)
+    return loss_sums.sum(), counts.sum()
 
 
 class ValidationProbe:
