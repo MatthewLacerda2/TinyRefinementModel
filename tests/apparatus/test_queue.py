@@ -103,3 +103,19 @@ def test_blocker_references_parse_lists():
 
 def test_a_pr_claims_the_issue_it_closes():
     assert claimed_by_pr([{"number": 7, "title": "x", "body": "Fixes #3\nresolves #4"}]) == {3: 7, 4: 7}
+
+
+# --- pushed work nobody can find (#74's failure) -------------------------------
+
+def test_a_branch_with_old_commits_and_no_pr_is_stray_and_a_fresh_or_pr_backed_one_is_not():
+    import datetime
+    from instruments.queue import stray_branches
+    now = datetime.datetime(2026, 9, 14, tzinfo=datetime.timezone.utc)
+    branches = [
+        {"name": "main", "committed_at": "2026-05-01T00:00:00Z"},
+        {"name": "claude/nice-hypatia", "committed_at": "2026-07-05T12:00:00Z"},   # #74, 71 days
+        {"name": "wip-today", "committed_at": "2026-09-12T12:00:00Z"},            # in progress
+        {"name": "has-a-pr", "committed_at": "2026-06-01T00:00:00Z"},
+    ]
+    assert stray_branches(branches, {"has-a-pr"}, now) == [("claude/nice-hypatia", 70)]
+    assert stray_branches(branches, {"has-a-pr", "claude/nice-hypatia"}, now) == []

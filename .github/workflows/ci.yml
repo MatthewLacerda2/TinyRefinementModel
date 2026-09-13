@@ -64,6 +64,15 @@ jobs:
         # are the same check — no flags to keep in sync in two places.
         run: ruff check .
 
+      - name: No stray branches
+        # A pushed branch with no PR and no commit in a week is work nobody can
+        # find: #74 sat finished on one for ten weeks. Fails the build on main so
+        # it surfaces within days. Needs only the token the runner already has.
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m instruments.queue --strays
+
   test:
     name: pytest (CPU)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}

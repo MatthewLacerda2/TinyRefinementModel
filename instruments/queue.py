@@ -23,6 +23,7 @@ surfaced, not guessed into a tier.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import subprocess
@@ -172,6 +173,41 @@ def card_state() -> Card:
     return Card(True, "no lock, no compute processes")
 
 
+STRAY_AFTER_DAYS = 7
+
+
+def stray_branches(branches: list[dict], open_pr_heads: set[str], now: datetime.datetime,
+                   after_days: int = STRAY_AFTER_DAYS) -> list[tuple[str, int]]:
+    """[(branch, days since its last commit)] for pushed work nobody can find.
+
+    #74 was finished — wiring, three seeds, a written finding — and pushed on
+    2026-07-05 to a branch that never got a PR, a comment or an assignee. From the
+    outside it was indistinguishable from an issue nobody had started, for ten
+    weeks. A branch is stray once its newest commit is older than `after_days` and
+    no open PR has it as head; younger ones are work in progress.
+    `branches` are {"name", "committed_at": ISO-8601}.
+    """
+    found = []
+    for b in branches:
+        if b["name"] == "main" or b["name"] in open_pr_heads:
+            continue
+        committed = datetime.datetime.fromisoformat(b["committed_at"].replace("Z", "+00:00"))
+        days = (now - committed).days
+        if days >= after_days:
+            found.append((b["name"], days))
+    return sorted(found, key=lambda x: -x[1])
+
+
+def remote_branches() -> list[dict]:
+    """Every branch on origin with its last commit date, from the GitHub API."""
+    rows = gh_json("api", "--paginate", "repos/{owner}/{repo}/branches?per_page=100")
+    out = []
+    for row in rows:
+        commit = gh_json("api", f"repos/{{owner}}/{{repo}}/commits/{row['commit']['sha']}")
+        out.append({"name": row["name"], "committed_at": commit["commit"]["committer"]["date"]})
+    return out
+
+
 def gh_json(*args: str) -> list[dict]:
     return json.loads(subprocess.run(["gh", *args], capture_output=True, text=True,
                                      check=True).stdout)
@@ -197,11 +233,24 @@ def render(q: Queue) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    argparse.ArgumentParser(description=__doc__.split("\n")[0]).parse_args(argv)
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--strays", action="store_true",
+                    help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
+                         "exit 1 if any (CI runs this on every push)")
+    args = ap.parse_args(argv)
+    prs = gh_json("pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,body,headRefName")
+    strays = stray_branches(remote_branches(), {p["headRefName"] for p in prs},
+                            datetime.datetime.now(datetime.timezone.utc))
+    if args.strays:
+        for name, days in strays:
+            print(f"stray branch: {name} — last commit {days} days ago, no open PR. Open a PR "
+                  f"(a draft counts), or delete it; a pushed branch nobody can find is #74 again.")
+        return 1 if strays else 0
     issues = gh_json("issue", "list", "--state", "open", "--limit", "500",
                      "--json", "number,title,labels,assignees,body")
-    prs = gh_json("pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,body")
-    print(render(build_queue(issues, prs, card_state())), end="")
+    q = build_queue(issues, prs, card_state())
+    q.needs_human += [(0, f"stray branch {name}: last commit {days} days ago, no open PR") for name, days in strays]
+    print(render(q), end="")
     return 0
 
 
