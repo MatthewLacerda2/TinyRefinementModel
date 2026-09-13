@@ -191,6 +191,12 @@ its PR.
   `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
 
 ### Post-mortems (non-novel; full record in PR history, guards in the tests)
+- **double-applied attention scaling** (pre-June 2026): q was pre-scaled by
+  1/√head_dim on top of `dot_product_attention`'s own scaling, and it survived weeks
+  of training and log analysis — a scaled-twice softmax still trains, just worse.
+  Only a reference-numerics test caught it. Guard:
+  `tests/core/test_attention_numerics.py` (an independent naive recomputation of
+  the score math, the one detector class that finds this kind of bug).
 - **slot-future-leak** (2026-06-11, fixed f24f238): the v1 latent-scratchpad slots
   leaked future tokens into past predictions — a bidirectional summary exposed to
   causal decode positions, the textbook non-causal-path bug. Pre-fix "depth lowers
