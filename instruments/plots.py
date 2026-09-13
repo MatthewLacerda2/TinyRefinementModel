@@ -63,6 +63,12 @@ from trm.config import (  # noqa: E402
 )
 from trm.train.schedules import build_learning_schedule, resolve_decay_steps  # noqa: E402
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "training curves": ("measured", "metrics.csv as recorded, rows failing an invariant dropped"),
+    "throughput": ("sampled", "tokens between supervisor heartbeats: a rate between polls, never per step"),
+}
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 # ── palette ──────────────────────────────────────────────────────────────────

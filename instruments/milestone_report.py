@@ -36,6 +36,9 @@ import sys
 import time
 import traceback
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {}  # assembles other tools' sections; each number is declared by the tool that produced it
+
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
 

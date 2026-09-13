@@ -47,6 +47,12 @@ from instruments.yardstick.yardstick import (
     summarize,
 )
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "LAMBADA acc, ppl": ("measured", "the full LAMBADA test set; with --limit it is a subsample and not the bar"),
+    "held-out ppl": ("sampled", "a fixed slice of held-out rows from our corpus"),
+}
+
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per eval forward, not the training micro-batch"}
 

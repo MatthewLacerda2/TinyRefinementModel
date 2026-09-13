@@ -35,6 +35,9 @@ import hashlib
 import argparse
 import subprocess
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {}  # reconstructs a run's world; prints paths and provenance, no quantities
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TM_ROOT = os.path.join(REPO_ROOT, ".timemachine")
 RUNS_ROOT = os.path.join(REPO_ROOT, "runs")

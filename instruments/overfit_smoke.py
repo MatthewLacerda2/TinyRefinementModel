@@ -33,6 +33,11 @@ from trm.config import LATENT_DIM, MAX_SEQ_LEN, MODEL_ARCH, NUM_BLOCKS
 from trm.model.reasoner import UniversalReasoner
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "CE initial -> final": ("measured", "window-2 CE on the one batch being memorized: training CE on seen data, not generalization"),
+}
+
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "a tiny correctness smoke; inert anyway under cuda_async, and it asserts learning, not memory"}
 

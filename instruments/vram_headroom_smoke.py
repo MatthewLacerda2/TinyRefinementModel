@@ -61,6 +61,12 @@ from trm.train.grad_step import apply_grads, compute_grad_step
 from trm.train.optimizers import optimizer_chain
 from trm.train.validation import _val_ce_sums
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "arena peak / headroom": ("measured", "memory_stats() peak_bytes_in_use against bytes_limit under production's allocator"),
+    "outside arena": ("sampled", "nvidia-smi poll minus the arena limit; a transient can be missed"),
+}
+
 CARD_MIB = 6144
 
 

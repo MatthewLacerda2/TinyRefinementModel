@@ -46,6 +46,12 @@ from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.train.optimizers import optimizer_chain
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "f16 headroom": ("sampled", "worst |activation| over the probed rows and depths only, against the f16 max"),
+    "loss, grad_norm": ("measured", "per probed step; checks finiteness, not quality"),
+}
+
 
 # f16's largest finite value. The margin is what the smoke demands is left unused.
 F16_MAX = 65504.0
