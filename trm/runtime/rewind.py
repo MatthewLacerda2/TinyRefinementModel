@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 # Kept in step with trm/runtime/checkpoints.py; a test holds the two together.
 BEST_SUBDIR = "best_val_ce"
+MILESTONE_SUBDIR = "milestones"
 SET_ASIDE_PREFIX = "set_aside_"
 
 
@@ -44,7 +45,7 @@ class Checkpoint:
 
     def describe(self) -> str:
         phase = {True: "SFT", False: "pretrain", None: "phase unknown"}[self.sft_active]
-        return f"{self.path.parent.name + '/' if self.path.parent.name == BEST_SUBDIR else ''}" \
+        return f"{self.path.parent.name + '/' if self.path.parent.name in (BEST_SUBDIR, MILESTONE_SUBDIR) else ''}" \
                f"{self.step:>9}  opt {self.opt_step:>6}  {phase}"
 
 
@@ -79,13 +80,16 @@ def resolve(checkpoints: list[Checkpoint], to_opt_step: int) -> Checkpoint:
 
 def rewind(checkpoint_dir: pathlib.Path, to_opt_step: int, accumulation_steps: int,
            now: datetime.datetime | None = None) -> tuple[Checkpoint, list[pathlib.Path]]:
-    """Set aside every checkpoint newer than the chosen one — in the rolling dir and
-    the best dir alike, since either would make orbax refuse the resumed run's saves."""
+    """Set aside every checkpoint newer than the chosen one — in the rolling, best and
+    milestone dirs alike, since any of them would make orbax refuse the resumed run's
+    saves. Milestones are set aside too, not kept in place: a milestone from the
+    abandoned stretch is still on disk, just out of the resumed run's way."""
     chosen = resolve(checkpoints_in(checkpoint_dir, accumulation_steps), to_opt_step)
     stamp = (now or datetime.datetime.now()).strftime("%Y%m%d_%H%M%S")
     shelf = checkpoint_dir / f"{SET_ASIDE_PREFIX}{stamp}_to_opt_{chosen.opt_step}"
     moved = []
-    for directory, sub in ((checkpoint_dir, ""), (checkpoint_dir / BEST_SUBDIR, BEST_SUBDIR)):
+    for sub in ("", BEST_SUBDIR, MILESTONE_SUBDIR):
+        directory = checkpoint_dir / sub
         for ckpt in checkpoints_in(directory, accumulation_steps):
             if ckpt.step > chosen.step:
                 target = shelf / sub / ckpt.path.name
@@ -109,7 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         args.accumulation_steps = ACCUMULATION_STEPS
 
     if args.to_opt_step is None:
-        for directory in (args.checkpoint_dir, args.checkpoint_dir / BEST_SUBDIR):
+        for directory in (args.checkpoint_dir, args.checkpoint_dir / BEST_SUBDIR,
+                          args.checkpoint_dir / MILESTONE_SUBDIR):
             for ckpt in checkpoints_in(directory, args.accumulation_steps):
                 print(ckpt.describe())
         return 0

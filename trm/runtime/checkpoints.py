@@ -44,6 +44,38 @@ def discover_latest_checkpoint_run(runs_root="runs"):
 BEST_SUBDIR = "best_val_ce"
 CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
 
+# Sibling subdir holding milestone checkpoints, which nothing evicts (#187).
+# Retention keeps the newest, and when a run goes bad the newest are the broken
+# ones: #157's SFT flip came within two saves of evicting every clean checkpoint.
+# A milestone every MILESTONE_EVERY_TOKENS is kept regardless of recency — the
+# recovery point when a run goes wrong, and the branch point the registry wants
+# ("fine-tune from the 1B-token checkpoint"), which rolling retention has always
+# deleted by the time a run ends.
+MILESTONE_SUBDIR = "milestones"
+MILESTONE_EVERY_TOKENS = int(os.environ.get("MILESTONE_EVERY_TOKENS", 500_000_000))
+
+
+def make_milestone_manager(checkpoint_path):
+    return ocp.CheckpointManager(
+        os.path.join(str(checkpoint_path), MILESTONE_SUBDIR),
+        item_names=CHECKPOINT_ITEMS,
+        options=ocp.CheckpointManagerOptions(max_to_keep=None, create=True),
+    )
+
+
+def milestone_due(opt_step, every_opt_steps, tokens_per_opt_step, every_tokens=MILESTONE_EVERY_TOKENS):
+    """Whether a token milestone was crossed since the previous checkpoint boundary.
+
+    Checked only where a rolling checkpoint is written, so a milestone lands on the
+    first boundary at or past each multiple of `every_tokens` — exact multiples
+    never line up with the save cadence, and crossing is what matters.
+    """
+    if every_tokens <= 0:
+        return False
+    tokens_now = opt_step * tokens_per_opt_step
+    tokens_before = max(opt_step - every_opt_steps, 0) * tokens_per_opt_step
+    return tokens_now // every_tokens > tokens_before // every_tokens
+
 
 def _make_best_manager(checkpoint_path):
     """Best-only manager: a sibling 'best_val_ce/' dir holding the best-val-CE checkpoints,
