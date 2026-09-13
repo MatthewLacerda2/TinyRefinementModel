@@ -50,6 +50,9 @@ from instruments.yardstick.yardstick import (
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per eval forward, not the training micro-batch"}
 
+# Where this differs from production's environment, and why (#166).
+ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
+
 # .env supplies DATA_ROOT (read at runtime by the held-out probe); config's own
 # env knobs are process-level and must be set in the shell, as everywhere else.
 load_dotenv()

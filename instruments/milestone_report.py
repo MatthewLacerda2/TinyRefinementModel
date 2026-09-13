@@ -36,6 +36,9 @@ import sys
 import time
 import traceback
 
+# Where this differs from production's environment, and why (#166).
+ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CKPT_ITEMS = ("model", "optimizer", "monitor_state", "step")
 
