@@ -10,6 +10,18 @@ def _fmt(diags, key, places):
     return f"{diags[key]:.{places}f}" if key in diags else ""
 
 
+def _arena_peak_mib():
+    """peak_bytes_in_use in MiB, or empty where the allocator keeps no statistics
+    (CPU, the platform allocator)."""
+    import jax
+    try:
+        stats = jax.local_devices()[0].memory_stats() or {}
+    except (AttributeError, RuntimeError):
+        stats = {}
+    peak = stats.get("peak_bytes_in_use")
+    return f"{peak / 2**20:.0f}" if peak else ""
+
+
 class MetricsLogger:
     def __init__(self, history_file, start_opt_step=None):
         self.history_file = history_file
@@ -39,6 +51,10 @@ class MetricsLogger:
             # progress — and the data mixture its CE was measured on, which the
             # curriculum moves every step.
             "wall_clock", "mix",
+            # The allocator's own high-water mark so far (#168): exact, not a poll.
+            # Every run records how close it came to its limit, and the fit gate
+            # reads it from the probe run's first row.
+            "arena_peak_mib",
         ]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
@@ -135,5 +151,6 @@ class MetricsLogger:
                 "act_max": _fmt(diag_dict, "act_max", 1),
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
+                "arena_peak_mib": _arena_peak_mib(),
             }
             writer.writerow(row)

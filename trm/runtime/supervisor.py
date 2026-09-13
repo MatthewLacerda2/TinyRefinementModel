@@ -36,6 +36,7 @@ import datetime
 import math
 import os
 import pathlib
+import re
 import shutil
 import signal
 import subprocess
@@ -284,6 +285,127 @@ def check_disk_headroom(path: pathlib.Path, min_free_gb: float) -> float:
             f"only {free_gb:.1f}GB free at {path}, need {min_free_gb}GB — "
             f"archive to the HDD before launching (never delete runs/data/)")
     return free_gb
+
+
+@dataclass(frozen=True)
+class FitResult:
+    ok: bool
+    reason: str
+    arena_peak_mib: float | None = None
+    tokens_per_second: float | None = None
+    seconds: float = 0.0
+
+
+FIT_GATE_ENV = {
+    # Validation and a checkpoint on every opt step, so five opt steps cross each of
+    # them five times — instead of 8,192 micro-steps before the first of either.
+    "VAL_EVERY_OPT_STEPS": "1",
+    "CHECKPOINT_EVERY_OPT_STEPS": "1",
+}
+FIT_GATE_LOG_ROWS_OPT_STEPS = 5  # trainer LOG_REAL_STEPS: the first metrics row lands here
+_COMPUTE = re.compile(r"Compute: ([0-9.]+)s")
+
+
+def _first_row(metrics_csv: pathlib.Path):
+    try:
+        with metrics_csv.open() as f:
+            return next(csv.DictReader(f), None)
+    except (OSError, csv.Error):
+        return None
+
+
+def _without_path_flags(trainer_args):
+    """The launch's trainer arguments minus the ones that point at a real run."""
+    out, skip = [], False
+    for arg in trainer_args:
+        if skip:
+            skip = False
+            continue
+        if arg == "--checkpoint-path":
+            skip = True
+            continue
+        if arg.startswith("--checkpoint-path=") or arg == "--new-run":
+            continue
+        out.append(arg)
+    return out
+
+
+def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0,
+                  tokens_per_opt_step=None, workroot: pathlib.Path = RUNS_DIR) -> FitResult:
+    """Run the real trainer until its first metrics row, then throw it away (#168).
+
+    Every launch that died on 2026-08-13 died of memory, at an optimizer apply, a
+    validation pass or a checkpoint save — and each instrument that could have said
+    so diverged from production in the dimension that decided it (#160, #161, #66).
+    So the gate IS the trainer: same code, same allocator, same arguments, with
+    validation and checkpointing on every opt step, run to the first logged row (five
+    opt steps: five applies, probes and saves). Minutes, against a run of days.
+
+    It runs from its own directory under runs/, whose relative `runs/` holds the
+    probe's run dir and checkpoints, so nothing it writes is where a real resume or
+    `discover_latest_checkpoint_run` would look; the directory is removed however
+    the gate ends.
+    """
+    if command is None and "PYTEST_CURRENT_TEST" in os.environ:
+        raise RuntimeError("the fit gate would launch the real trainer inside a test "
+                           "(one did, for ten minutes): pass --skip-fit-gate or stub preflight_fit")
+    started = time.time()
+    # A gate killed outright (SIGKILL, a power cut) cannot run its cleanup; the GPU
+    # lock guarantees no other gate is live, so any earlier probe dir is garbage.
+    for stale in workroot.glob(".fitgate_*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    work = workroot / f".fitgate_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+    run_dir = work / "runs" / "run_fitgate"
+    log_path = work / "fitgate.log"
+    run_dir.mkdir(parents=True)
+    data_root = os.environ.get("DATA_ROOT")
+    if not data_root:
+        # The trainer would find it in .env and resolve it against ITS cwd, which is
+        # the probe dir. Read only this one key; nothing else in .env is touched.
+        from dotenv import dotenv_values
+        data_root = dotenv_values(REPO_ROOT / ".env").get("DATA_ROOT")
+    env = {**os.environ, **FIT_GATE_ENV, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1"}
+    if data_root and "://" not in data_root:
+        env["DATA_ROOT"] = str((REPO_ROOT / data_root).resolve())  # the probe runs from another cwd
+    argv = command or [sys.executable, "-m", "trm.train.start",
+                       *_without_path_flags(trainer_args),
+                       "--checkpoint-path", str(run_dir / "checkpoints")]
+    proc = None
+    try:
+        with log_path.open("w") as log:
+            proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
+        while True:
+            text = read_log_since(log_path)
+            if any(marker in text for marker in OOM_MARKERS):
+                return FitResult(False, "out of memory before the first logged row — this config does not fit",
+                                 seconds=time.time() - started)
+            row = _first_row(run_dir / "metrics.csv")
+            if row is not None:
+                peak = row.get("arena_peak_mib") or None
+                compute = _COMPUTE.search(text)
+                if compute and tokens_per_opt_step is None:
+                    from trm.config import TOKENS_PER_OPT_STEP as tokens_per_opt_step
+                rate = (FIT_GATE_LOG_ROWS_OPT_STEPS * tokens_per_opt_step / float(compute.group(1))
+                        if compute and float(compute.group(1)) > 0 else None)
+                return FitResult(True, "survived five optimizer applies, validation passes and checkpoint saves",
+                                 float(peak) if peak else None, rate, time.time() - started)
+            if proc.poll() is not None:
+                tail = " | ".join(text.strip().splitlines()[-3:])
+                return FitResult(False, f"the trainer exited ({proc.returncode}) before its first logged row: {tail}",
+                                 seconds=time.time() - started)
+            if time.time() - started > timeout_s:
+                return FitResult(False, f"no logged row within {timeout_s / 60:.0f} minutes",
+                                 seconds=time.time() - started)
+            time.sleep(poll_s)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=30)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def largest_checkpoint_gb(checkpoint_dir: pathlib.Path) -> float | None:
@@ -583,6 +705,9 @@ def main(argv=None) -> int:
                          "the heartbeat file gets one hourly regardless). "
                          "Every decision — kill, relaunch, completion — reports "
                          "regardless; this only paces the no-news case")
+    ap.add_argument("--skip-fit-gate", action="store_true",
+                    help="launch without first proving the config survives an apply, a probe and a "
+                         "checkpoint (#168) — only when you know it fits")
     ap.add_argument("--no-gpu-lock", action="store_true",
                     help="for a CPU run; the lock exists for the single card")
     ap.add_argument("trainer_args", nargs="*",
@@ -616,6 +741,15 @@ def main(argv=None) -> int:
     try:
         if not args.no_gpu_lock:
             lock.acquire()
+        if not args.skip_fit_gate:
+            print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
+            fit = preflight_fit(args.trainer_args)
+            if not fit.ok:
+                raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
+            print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
+                  f"{fit.arena_peak_mib if fit.arena_peak_mib is not None else '?'} MiB, "
+                  + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
+                  flush=True)
         outcome = supervisor.run()
     except Preflight as exc:
         print(f"preflight: {exc}", file=sys.stderr)
