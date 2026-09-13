@@ -1,34 +1,48 @@
-"""Measure real training VRAM at a given model size / batch, to size the run to the GPU.
+"""How much of the card does training take? Measured on the path we ship (#161).
 
-The question this answers: "how big a model + batch fills ~5 GB of the 6 GB card
-without spiking past it?" We can't read that off param counts alone — the optimizer
-state, the full-vocab logits, and the backward pass all cost memory. So this builds
-the *real* refiner, runs the *real* grad step (`grad_step.compute_grad_step`) on
-synthetic random tokens at the true shapes (seq 512, two windows = [B, 1025]) and the
-deepest sampled depth, then reads JAX's peak in-use bytes.
+    python -m instruments.vram_headroom_smoke                      # the config a launch would run
+    python -m instruments.vram_headroom_smoke --layers 10          # a candidate plain stack
+    for L in 8 9 10; do python -m instruments.vram_headroom_smoke --layers $L; done
 
-No real data needed — VRAM depends on tensor shapes, not token values — so this runs
-on the idle GPU while the corpus tokenizes. One config per invocation (a fresh process
-per config keeps the peak measurement clean); sweep with a shell loop.
+The question is always the same: will a launch at this config survive? The old
+version answered something adjacent, precisely and confidently, and was cited as
+clearance anyway. It ran the `platform` allocator, which cannot fragment, while
+fragmentation killed every base run; it polled nvidia-smi every 150ms and
+reported the sampled maximum as a peak (batch 2 once read *lower* than batch 1);
+it built its own optimizer with an f32 first moment; and it never crossed an
+optimizer apply or ran the validation probe the trainer also runs.
 
-    XLA_PYTHON_CLIENT_PREALLOCATE=false  is set below so peak_bytes_in_use reflects
-    actual usage instead of JAX's default 75 % land-grab.
+Now, in one fresh process per config:
+  * production's allocator and memory fraction, from the same keys trm/train/start.py
+    sets (tests/apparatus/test_instrument_environment.py holds them together);
+  * production's optimizer chain (bf16 first moment, masked weight decay, MultiSteps);
+  * ACCUMULATION_STEPS + 1 micro-steps, so the optimizer apply is inside the
+    measurement, cycling every sampled depth so each depth's program is compiled
+    (for the plain stack there is only one);
+  * then one validation probe, as the trainer runs on its cadence.
 
-Example:
-    ./venv/bin/python -m instruments.vram_headroom_smoke --dim 512 --batch 1
-    ./venv/bin/python -m instruments.vram_headroom_smoke --dim 640 --batch 2 --bf16-mu
+Two numbers, kept apart because they fail differently:
+  * arena peak against the arena's limit — `memory_stats()` `peak_bytes_in_use`
+    and `bytes_limit`, both exact. Under cuda_async at MEM_FRACTION 0.85 the pool is
+    reserved up front, so nvidia-smi reads ~the limit whatever the model uses;
+    the headroom that decides an OOM is limit minus peak, and only the allocator
+    knows it.
+  * outside the arena — nvidia-smi's used minus that limit: the CUDA context and
+    the driver's compiled-graph buffers (#160's OOM was there). A poll, so a
+    sample; it is labelled as one.
+
+Still not covered: the checkpoint managers' host-side staging and a real data
+pipeline. Synthetic tokens are fine for memory — VRAM depends on shapes, not
+values. The only complete answer remains a real launch through its first
+optimizer apply and checkpoint.
 """
 
 import os
 
-# Must precede the jax import. The on-demand "platform" allocator (same as
-# instruments.bench_train_step) sizes each allocation exactly and never pre-grabs, so
-# peak_bytes_in_use is the true high-water mark — and, unlike the default BFC
-# allocator with preallocation off, it does not throw false OOMs from fragmented
-# free space (which made an earlier sweep report spurious failures).
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-# Deliberately NOT setting FORCE_F32_COMPUTE — we want the real f16 GPU footprint.
+# Production's environment, not a convenient one: the same setdefault lines as
+# trm/train/start.py, so an override from the shell still reaches both.
+os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import argparse
 import subprocess
@@ -38,31 +52,27 @@ import time
 import jax
 import jax.numpy as jnp
 from flax import nnx
-import optax
 
-from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
-from trm.config import BATCH_SIZE, LATENT_DIM, MAX_STEPS_LIMIT, NUM_HEADS, REFINER_ENCODER_LAYERS
-from trm.config import MODEL_ARCH
-from trm.model.refiner_lm import RefinerForTraining
-from trm.train.grad_step import compute_grad_step, apply_grads
+from instruments import results
+from instruments.arch import add_arch_argument, build
+from trm.config import (ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT,
+                        NUM_HEADS, PLAIN_LAYERS, REFINER_ENCODER_LAYERS, VOCAB_SIZE)
+from trm.train.grad_step import apply_grads, compute_grad_step
+from trm.train.optimizers import optimizer_chain
+from trm.train.validation import _val_ce_sums
 
-# Where this differs from production's environment, and why (#166).
-ENV_DIVERGENCES = {
-    "XLA_PYTHON_CLIENT_ALLOCATOR": "platform frees exactly, so this measures live bytes. It CANNOT see fragmentation, the failure that killed every base run, so its number is a floor, not clearance (#161).",
-}
+CARD_MIB = 6144
 
 
 def param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
 
-class GpuMemSampler:
-    """Polls nvidia-smi for peak GPU memory. The platform allocator gives no
-    memory_stats(), and it allocates on demand, so the only honest peak is what the
-    driver reports — sampled fast enough to catch the backward/compile spike. Assumes
-    the card is otherwise idle (true here: tokenization is CPU-only)."""
+class CardSampler:
+    """nvidia-smi's memory.used, polled: the reserved pool plus everything outside
+    it. A poll, so reported as a sample and never as a peak."""
 
-    def __init__(self, interval=0.15):
+    def __init__(self, interval=0.05):
         self.interval = interval
         self.peak_mib = 0
         self._stop = threading.Event()
@@ -72,11 +82,9 @@ class GpuMemSampler:
         while not self._stop.is_set():
             try:
                 out = subprocess.check_output(
-                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                    text=True,
-                )
+                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], text=True)
                 self.peak_mib = max(self.peak_mib, max(int(x) for x in out.split()))
-            except Exception:
+            except (OSError, subprocess.SubprocessError, ValueError):
                 pass
             time.sleep(self.interval)
 
@@ -89,75 +97,65 @@ class GpuMemSampler:
         self._thread.join(timeout=1.0)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="training VRAM headroom probe")
+def depth_schedule(arch, micro_steps, max_depth=MAX_STEPS_LIMIT):
+    """Depths to run, cycling 1..max so every depth program is compiled — the
+    trainer samples them all, and each compiled graph costs driver memory. The plain
+    stack ignores depth, so one value compiles its one program."""
+    if arch == "plain":
+        return [max_depth] * micro_steps
+    return [(i % max_depth) + 1 for i in range(micro_steps)]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    add_arch_argument(ap)
     ap.add_argument("--dim", type=int, default=LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
     ap.add_argument("--heads", type=int, default=NUM_HEADS)
-    ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS)
+    ap.add_argument("--layers", type=int, default=PLAIN_LAYERS, help="block count for --arch plain")
+    ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS, help="for --arch refiner")
     ap.add_argument("--batch", type=int, default=BATCH_SIZE, help="micro-batch (per accumulation step)")
-    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="refinement depth; 8 = the deepest sampled, peak memory")
-    ap.add_argument("--arch", default=MODEL_ARCH, choices=("plain", "refiner", "reasoner"),
-                    help="architecture to size; defaults to MODEL_ARCH. This used to build "
-                         "RefinerForTraining unconditionally, so the tool that sizes a run "
-                         "to the card would have sized the WRONG architecture once the "
-                         "default changed (2026-09-12).")
-    ap.add_argument("--layers", type=int, default=None,
-                    help="block count for --arch plain (default: config PLAIN_LAYERS). "
-                         "--encoder-layers is the refiner's equivalent.")
-    ap.add_argument("--bf16-mu", action="store_true", help="store Adam's first moment in bf16 (#18)")
-    ap.add_argument("--steps", type=int, default=4, help="grad steps to run (reach steady peak incl. opt state)")
-    args = ap.parse_args()
-
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="deepest sampled depth (refiner/reasoner)")
+    ap.add_argument("--micro-steps", type=int, default=ACCUMULATION_STEPS + 1,
+                    help="default crosses one optimizer apply (ACCUMULATION_STEPS + 1)")
+    args = ap.parse_args(argv)
     if args.dim % args.heads:
         raise SystemExit(f"--dim {args.dim} not divisible by --heads {args.heads}")
 
-    if args.arch == "plain":
-        from trm.config import PLAIN_LAYERS
-        from trm.model.plain import PlainTransformer
-        layers = PLAIN_LAYERS if args.layers is None else args.layers
-        model = PlainTransformer(args.dim, nnx.Rngs(0), num_heads=args.heads,
-                                 num_layers=layers)
-        shape = f"plain, {layers} layers"
-    elif args.arch == "refiner":
-        model = RefinerForTraining(
-            args.dim, nnx.Rngs(0), num_heads=args.heads, encoder_layers=args.encoder_layers
-        )
-        shape = f"refiner, {args.encoder_layers} encoder + looped, depth {args.depth}"
-    else:
-        from trm.model.reasoner import UniversalReasoner
-        model = UniversalReasoner(args.dim, nnx.Rngs(0))
-        shape = "reasoner"
-    print(f"🏗  sizing {shape} at dim {args.dim}, {args.heads} heads, batch {args.batch}")
+    overrides = {"plain": {"num_heads": args.heads, "num_layers": args.layers},
+                 "refiner": {"num_heads": args.heads, "encoder_layers": args.encoder_layers},
+                 "reasoner": {}}[args.arch]
+    model = build(args.arch, dim=args.dim, **overrides)
+    shape = {"plain": f"{args.layers} layers", "refiner": f"{args.encoder_layers} encoder + loop to depth {args.depth}",
+             "reasoner": "reasoner"}[args.arch]
+    print(f"sizing {args.arch} ({shape}) at dim {args.dim}, {args.heads} heads, batch {args.batch}, "
+          f"{param_count(model) / 1e6:.1f}M params, allocator {os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']}")
 
-    mu_dtype = jnp.bfloat16 if args.bf16_mu else jnp.float32
-    chain = optax.MultiSteps(
-        optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(1e-4, mu_dtype=mu_dtype),
-        ),
-        every_k_schedule=ACCUMULATION_STEPS,
-        use_grad_mean=True,
-    )
-    opt = nnx.Optimizer(model, chain, wrt=nnx.Param)
-
-    # Synthetic batch at the exact training shape: two 512-token windows + 1.
-    batch = jax.random.randint(
-        jax.random.PRNGKey(0), (args.batch, 2 * MAX_SEQ_LEN + 1), 0, VOCAB_SIZE, dtype=jnp.int32
-    )
+    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+    batch = jax.random.randint(jax.random.PRNGKey(0), (args.batch, 2 * MAX_SEQ_LEN + 1), 0, VOCAB_SIZE,
+                               dtype=jnp.int32)
     doc_boundary = jnp.zeros((args.batch,), dtype=bool)
+    device = jax.local_devices()[0]
 
-    with GpuMemSampler() as sampler:
-        for s in range(args.steps):
-            loss, _out, grads, _gn = compute_grad_step(model, batch, s, args.depth, doc_boundary)
-            apply_grads(opt, grads, model)
-        loss.block_until_ready()
-        time.sleep(0.3)  # let the sampler catch the final peak
+    with CardSampler() as card:
+        for step, depth in enumerate(depth_schedule(args.arch, args.micro_steps, args.depth)):
+            loss, _out, grads, _gn = compute_grad_step(model, batch, step, depth, doc_boundary)
+            apply_grads(optimizer, grads, model)
+        float(loss)
+        with model.isolated_state():
+            model.reset_state()
+            float(_val_ce_sums(model, batch[:1])[0])
+        time.sleep(0.5)
 
-    print(
-        f"dim={args.dim} heads={args.heads} {shape} batch={args.batch} "
-        f"bf16mu={args.bf16_mu} | params={param_count(model)/1e6:.1f}M "
-        f"| peak={sampler.peak_mib/1024:.2f}GB"
-    )
+    stats = device.memory_stats()
+    arena_mib, limit_mib = stats["peak_bytes_in_use"] / 2**20, stats["bytes_limit"] / 2**20
+    outside_mib = max(card.peak_mib - limit_mib, 0.0)
+    print(f"arena peak (exact):      {arena_mib:6.0f} MiB of a {limit_mib:.0f} MiB limit "
+          f"({arena_mib / limit_mib:.1%}) — headroom {limit_mib - arena_mib:.0f} MiB")
+    print(f"outside arena (sampled): {outside_mib:6.0f} MiB (context + driver graph buffers; "
+          f"{CARD_MIB - card.peak_mib:.0f} MiB of the card never touched)")
+    print(f"crossed {args.micro_steps // ACCUMULATION_STEPS} optimizer apply(s) and one validation probe")
+    results.emit(f"{args.arch}-{shape.split()[0]}", arena_peak_mib=arena_mib, arena_limit_mib=limit_mib,
+                 headroom_mib=limit_mib - arena_mib, outside_arena_sampled_mib=outside_mib)
 
 
 if __name__ == "__main__":
