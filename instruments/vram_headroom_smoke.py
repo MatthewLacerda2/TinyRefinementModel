@@ -46,6 +46,11 @@ from trm.config import MODEL_ARCH
 from trm.model.refiner_lm import RefinerForTraining
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# Where this differs from production's environment, and why (#166).
+ENV_DIVERGENCES = {
+    "XLA_PYTHON_CLIENT_ALLOCATOR": "platform frees exactly, so this measures live bytes. It CANNOT see fragmentation, the failure that killed every base run, so its number is a floor, not clearance (#161).",
+}
+
 
 def param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))

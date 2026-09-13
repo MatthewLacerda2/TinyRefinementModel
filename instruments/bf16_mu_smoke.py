@@ -36,6 +36,11 @@ from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import BATCH_SIZE, MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# Where this differs from production's environment, and why (#166).
+ENV_DIVERGENCES = {
+    "XLA_PYTHON_CLIENT_ALLOCATOR": "two models live in one process for the A/B; platform frees the first before the second. A correctness smoke, not a memory measurement.",
+}
+
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--depth": "one fixed depth keeps the f32/bf16 A/B to a single compile per arm"}

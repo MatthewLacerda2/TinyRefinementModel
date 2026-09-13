@@ -20,7 +20,9 @@ import os
 # MEM_FRACTION below sizes BFC's preallocation and is inert while cuda_async is
 # selected; it is kept so that overriding the allocator back to a preallocating one
 # still gets a sane arena rather than JAX's 75% default.
-# setdefault keeps both overridable from the shell.
+# setdefault keeps both overridable from the shell. These lines are production's
+# environment as instruments are checked against it: one that sets either key to
+# anything else must say why (tests/apparatus/test_instrument_environment.py, #166).
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 

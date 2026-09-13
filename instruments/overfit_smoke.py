@@ -33,6 +33,9 @@ from trm.config import LATENT_DIM, MAX_SEQ_LEN, MODEL_ARCH, NUM_BLOCKS
 from trm.model.reasoner import UniversalReasoner
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# Where this differs from production's environment, and why (#166).
+ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "a tiny correctness smoke; inert anyway under cuda_async, and it asserts learning, not memory"}
+
 load_dotenv()
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
