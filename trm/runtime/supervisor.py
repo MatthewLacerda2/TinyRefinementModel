@@ -390,6 +390,15 @@ class Supervisor:
     # feed nobody can read is not a status feed.
     heartbeat_every: int = 288
     report: object = print  # callable(str); the heartbeat's destination
+    # The supervisor's own record, appended by the supervisor itself (#224). It
+    # used to be whatever stdout the launching shell redirected, so any relaunch
+    # that didn't redirect lost it: run_20260813_214725 kept beating for 6 days
+    # and 16,600 steps into nowhere. A file opened here survives every relaunch.
+    heartbeat_log: pathlib.Path | None = None
+    # Polls between routine lines in that file. It is a file, not an issue feed:
+    # nobody scrolls it, so it can afford the cadence the throughput plot needs
+    # (hourly at the default poll) while the issue stays at heartbeat_every.
+    log_every: int = 12
     env: dict = field(default_factory=dict)
 
     def launch(self) -> subprocess.Popen:
@@ -431,7 +440,7 @@ class Supervisor:
         state = State()
         proc = self.launch()
         started = time.time()
-        self.report(f"▶ supervising pid {proc.pid}: {' '.join(self.command)}")
+        self.announce(f"{_stamp()} ▶ supervising pid {proc.pid}: {' '.join(self.command)}")
         polls = 0
 
         while True:
@@ -440,9 +449,12 @@ class Supervisor:
             obs = self.observe(proc, started)
             decision = decide(obs, self.limits, state)
 
+            line = (f"{_stamp()} {decision.outcome}: {decision.reason}"
+                    + (f" (ce={obs.ce})" if obs.ce is not None else ""))
             if polls % self.heartbeat_every == 0 or decision.action != CONTINUE:
-                self.report(f"{_stamp()} {decision.outcome}: {decision.reason}"
-                            + (f" (ce={obs.ce})" if obs.ce is not None else ""))
+                self.announce(line)
+            elif polls % self.log_every == 0:
+                self.record(line)
 
             if decision.action == CONTINUE:
                 continue
@@ -456,7 +468,21 @@ class Supervisor:
                     self.stop(proc)  # wedged, so it is still up and has to go
                 proc = self.launch()
                 started = time.time()
-                self.report(f"{_stamp()} relaunched as pid {proc.pid}")
+                self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
+
+    def record(self, message: str) -> None:
+        """Append one line to the heartbeat file, opened and closed per line so no
+        handle outlives a relaunch or holds a partial write."""
+        if self.heartbeat_log is None:
+            return
+        self.heartbeat_log.parent.mkdir(parents=True, exist_ok=True)
+        with self.heartbeat_log.open("a") as fh:
+            fh.write(message + "\n")
+
+    def announce(self, message: str) -> None:
+        """Record it, and report it to the human-facing destination."""
+        self.record(message)
+        self.report(message)
 
 
 def _stamp() -> str:
@@ -487,6 +513,9 @@ def main(argv=None) -> int:
                     help="the run folder holding metrics.csv")
     ap.add_argument("--log", type=pathlib.Path, required=True, help="where trainer stdout goes")
     ap.add_argument("--issue", type=int, default=None, help="pinned issue to heartbeat into")
+    ap.add_argument("--supervisor-log", type=pathlib.Path, default=None,
+                    help="the supervisor's own heartbeat file, appended across relaunches "
+                         "(default: <run-dir>/../<run-id>.supervisor.log, where plots look)")
     ap.add_argument("--max-ce", type=float, default=Limits.max_ce)
     ap.add_argument("--max-retries", type=int, default=Limits.max_retries)
     ap.add_argument("--stall-polls", type=int, default=Limits.stall_polls,
@@ -495,7 +524,8 @@ def main(argv=None) -> int:
     ap.add_argument("--min-free-gb", type=float, default=Limits.min_free_gb)
     ap.add_argument("--poll-seconds", type=float, default=300.0)
     ap.add_argument("--heartbeat-hours", type=float, default=None,
-                    help="hours between routine 'still running' reports (default 24). "
+                    help="hours between routine 'still running' reports to stdout/--issue (default 24; "
+                         "the heartbeat file gets one hourly regardless). "
                          "Every decision — kill, relaunch, completion — reports "
                          "regardless; this only paces the no-news case")
     ap.add_argument("--no-gpu-lock", action="store_true",
@@ -522,6 +552,7 @@ def main(argv=None) -> int:
         metrics_csv=args.run_dir / "metrics.csv",
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
+        heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
     )
