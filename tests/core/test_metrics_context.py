@@ -28,7 +28,9 @@ def _log_one(tmp_path, **overrides):
         return logger, list(csv.DictReader(f))
 
 
-def test_every_declared_column_is_written_when_its_input_exists(tmp_path):
+def test_every_declared_column_is_written_when_its_input_exists(tmp_path, monkeypatch):
+    from trm.runtime import metrics
+    monkeypatch.setattr(metrics, "_arena_peak_mib", lambda: "4112")  # a device that keeps statistics
     logger, rows = _log_one(tmp_path)
     empty = [name for name in logger.fields if rows[0][name] == ""]
     assert not empty, f"declared in the header but never written: {empty}"
@@ -66,3 +68,22 @@ def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):
         rows = list(reader)
     assert "wall_clock" in reader.fieldnames and "mix" in reader.fieldnames
     assert [r["step"] for r in rows] == ["5"]
+
+
+def test_arena_peak_is_empty_where_the_allocator_keeps_no_statistics(monkeypatch):
+    """CPU and the platform allocator have no peak to report; an empty cell says so,
+    where a 0 would read as a measurement (#105)."""
+    import jax
+    from trm.runtime import metrics
+
+    class Device:
+        def __init__(self, stats):
+            self.stats = stats
+
+        def memory_stats(self):
+            return self.stats
+
+    monkeypatch.setattr(jax, "local_devices", lambda: [Device(None)])
+    assert metrics._arena_peak_mib() == ""
+    monkeypatch.setattr(jax, "local_devices", lambda: [Device({"peak_bytes_in_use": 4112 * 2**20})])
+    assert metrics._arena_peak_mib() == "4112"

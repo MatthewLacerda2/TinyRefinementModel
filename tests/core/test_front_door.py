@@ -23,8 +23,10 @@ def test_the_stop_step_is_a_checkpoint_boundary_that_covers_the_budget():
 
 def test_the_checkpoint_cadence_matches_the_trainers():
     tree = ast.parse((REPO / "trm/train/trainer.py").read_text())
-    value = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                 and getattr(n.targets[0], "id", None) == "CHECKPOINT_EVERY_OPT_STEPS")
+    node = next(n for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "CHECKPOINT_EVERY_OPT_STEPS")
+    # int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64)): the default is what a launch runs.
+    value = [c.value for c in ast.walk(node.value) if isinstance(c, ast.Constant) and isinstance(c.value, int)][-1]
     assert value == launch.CHECKPOINT_EVERY_OPT_STEPS
 
 

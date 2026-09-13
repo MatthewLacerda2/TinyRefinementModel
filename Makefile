@@ -8,7 +8,8 @@
 #   make launch BUDGET=4e9       a supervised base run; refuses without BUDGET
 #   make report RUN=run_...      the terminal report and plots for a run
 #
-# `make launch` does not refuse a config that does not fit yet: that gate is #168.
+# `make launch` is gated: the supervisor first runs the real trainer for ~5 minutes and
+# refuses a config that does not survive an apply, a probe and a checkpoint (#168).
 
 PY ?= venv/bin/python
 

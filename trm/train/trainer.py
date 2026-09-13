@@ -62,8 +62,11 @@ MAX_NONFINITE_STREAK = 50
 # nested in the logging block (nesting would multiply the interval by
 # LOG_REAL_STEPS, the bug that hid the probe). The full-state checkpoint save
 # blocks the loop (wait_until_finished), so it must stay rare.
-VAL_EVERY_OPT_STEPS = 64
-CHECKPOINT_EVERY_OPT_STEPS = 64
+# Env-overridable for one caller: the supervisor's fit gate (#168) sets both to 1,
+# so a few-minute probe crosses a validation pass and a checkpoint write — where
+# every observed launch OOM landed — instead of waiting 8,192 micro-steps for them.
+VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
+CHECKPOINT_EVERY_OPT_STEPS = int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64))
 # Opt steps between "still plateaued" notices. `monitor.push` keeps returning True
 # for every step until CE improves, so an unthrottled notice would print on every
 # one of them and bury the rest of the log.
