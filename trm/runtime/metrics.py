@@ -42,7 +42,7 @@ class MetricsLogger:
         # Full set of fields for CSV
         self.fields = [
             "step", "ce", "loss", "seg1_ce",
-            "grad_norm_avg", "zero_frac_dense_max", "applied_zero_frac_dense_max", "avg_forget_cost",
+            "grad_norm_avg", "zero_frac_dense_max", "applied_zero_frac_dense_max", "applied_grad_norm", "avg_forget_cost",
             "diversity_loss", "temporal_drift", "forget_density", "tau",
             "out_entropy", "logz_mean", "max_abs_logit", "act_max",
             "depth_avg", "val_ce",
@@ -94,7 +94,7 @@ class MetricsLogger:
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
-            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, mix=None):
+            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None, mix=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -140,6 +140,8 @@ class MetricsLogger:
                 "zero_frac_dense_max": f"{zero_frac_dense_max:.6f}" if zero_frac_dense_max is not None else "",
                 "applied_zero_frac_dense_max": (f"{applied_zero_frac_dense_max:.6f}"
                                                 if applied_zero_frac_dense_max is not None else ""),
+                # Norm of the window mean the optimizer clips (#180), comparable to CLIP_NORM.
+                "applied_grad_norm": f"{applied_grad_norm:.4f}" if applied_grad_norm is not None else "",
                 "avg_forget_cost": _fmt(diag_dict, "forget_cost", 4),
                 "diversity_loss": _fmt(diag_dict, "diversity_loss", 6),
                 "temporal_drift": _fmt(diag_dict, "temporal_drift", 6),

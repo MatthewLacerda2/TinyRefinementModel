@@ -9,6 +9,7 @@ import threading
 import queue
 
 import jax
+import optax
 import jax.numpy as jnp
 from flax import nnx
 from dotenv import load_dotenv
@@ -339,7 +340,12 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             # window's mean), and this one micro-step's, which carries per-draw
             # artifacts that never reach the weights.
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
-                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(applied_gradient(optimizer, grads)).items()}
+                applied = applied_gradient(optimizer, grads)
+                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(applied).items()}
+                # The norm the clip actually sees (#180). grad_norm_avg is per-micro-step
+                # and cannot be read against CLIP_NORM; this can: above it, the clip, not
+                # the LR schedule, is setting the step size.
+                applied_grad_norm = float(optax.global_norm(applied))
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
@@ -404,6 +410,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     val_ce=latest_val_ce,
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
+                    applied_grad_norm=applied_grad_norm,
                     mix=(mixture_label(SFT_SOURCES, SFT_MIX_WEIGHTS) if sft_phase_event.is_set()
                          else mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step))),
                 )
