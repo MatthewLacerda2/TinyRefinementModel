@@ -229,3 +229,60 @@ def test_the_instrument_never_imports_a_model():
     assert out.stdout.strip().endswith("[]"), (
         f"model_stats pulled in model modules: {out.stdout.strip()}"
     )
+
+
+# --- the plain stack, the default since depth recurrence was retired (#268) -----
+
+PLAIN_GROUPS = {
+    "embeddings & tied head": {"embed"},
+    "blocks": {"blocks"},
+    "heads & norms": {"out_norm"},
+}
+
+
+def test_plain_formula_matches_the_real_model():
+    from trm.model.plain import PlainTransformer
+
+    model = PlainTransformer(LATENT_DIM, nnx.Rngs(0))
+    try:
+        _assert_matches("plain", model, PLAIN_GROUPS)
+    finally:
+        del model
+        gc.collect()
+
+
+@pytest.mark.parametrize("dim,num_heads,num_layers,post_norm",
+                         [(128, 4, 1, False), (192, 4, 3, True), (240, 6, 2, False)])
+def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_norm):
+    from trm.model.plain import PlainTransformer
+
+    model = PlainTransformer(dim, nnx.Rngs(0), vocab_size=97, num_heads=num_heads,
+                             num_layers=num_layers, post_norm=post_norm)
+    _assert_matches("plain", model, PLAIN_GROUPS, dim=dim, vocab_size=97, num_heads=num_heads,
+                    num_layers=num_layers, post_norm=post_norm)
+
+
+def test_the_plain_parameter_count_is_reproduced():
+    """136.9M at 8 layers — the count the plain arch's launch banner prints."""
+    assert model_stats.total_params("plain", num_layers=8, post_norm=False) == 136_862_144
+
+
+@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
+def test_the_report_runs_for_every_arch(arch):
+    """The report crashed on the default arch for a week, because its choices and
+    formulas were written when there were two. Every arch instruments.arch knows
+    must produce a report."""
+    import subprocess
+    import sys
+    from instruments.arch import ARCHES
+
+    assert arch in ARCHES
+    proc = subprocess.run([sys.executable, "-m", "instruments.report", "--model-only", "--arch", arch],
+                          capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "total" in proc.stdout
+
+
+def test_every_known_arch_is_covered_here():
+    from instruments.arch import ARCHES
+    assert set(ARCHES) == {"plain", "refiner", "reasoner"}, "add the new arch to the report test above"

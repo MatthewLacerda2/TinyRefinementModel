@@ -40,6 +40,8 @@ from trm.config import (
     NUM_BLOCKS,
     NUM_GROUPS,
     NUM_HEADS,
+    PLAIN_LAYERS,
+    POST_NORM,
     REFINER_ENCODER_LAYERS,
     SHARED_SLOTS,
     TIME_SIGNAL,
@@ -115,7 +117,23 @@ def _reasoner_block(dim, num_heads, num_groups):
     return attention + 2 * _rmsnorm(dim) + mlp
 
 
+def _plain_block(dim, num_heads, post_norm):
+    """plain.py reuses refiner.Block; post-norm adds an RMSNorm on each residual branch."""
+    return _refiner_block(dim, num_heads) + (2 * _rmsnorm(dim) if post_norm else 0)
+
+
 # ── Config resolution ────────────────────────────────────────────────────────
+
+def _plain_defaults():
+    return {
+        "dim": LATENT_DIM,
+        "vocab_size": VOCAB_SIZE,
+        "num_heads": NUM_HEADS,
+        "num_layers": PLAIN_LAYERS,
+        "max_seq_len": MAX_SEQ_LEN,
+        "post_norm": POST_NORM,
+    }
+
 
 def _refiner_defaults():
     return {
@@ -148,12 +166,10 @@ def _resolve(arch, overrides):
     """Config for this arch, with overrides applied. An unknown key is an error:
     silently ignoring `n_heads=8` would report the default's numbers under the
     caller's name, which is the whole class of bug this module exists to end."""
-    if arch == "refiner":
-        config = _refiner_defaults()
-    elif arch == "reasoner":
-        config = _reasoner_defaults()
-    else:
-        raise ValueError(f"unknown arch {arch!r}; expected 'refiner' or 'reasoner'")
+    defaults = {"plain": _plain_defaults, "refiner": _refiner_defaults, "reasoner": _reasoner_defaults}
+    if arch not in defaults:
+        raise ValueError(f"unknown arch {arch!r}; expected one of {sorted(defaults)}")
+    config = defaults[arch]()
     unknown = set(overrides) - set(config)
     if unknown:
         raise TypeError(
@@ -175,6 +191,12 @@ def param_breakdown(arch=MODEL_ARCH, **overrides):
     """
     config = _resolve(arch, overrides)
     dim = config["dim"]
+    if arch == "plain":
+        return {
+            "embeddings & tied head": _embed(config["vocab_size"], dim),
+            "blocks": config["num_layers"] * _plain_block(dim, config["num_heads"], config["post_norm"]),
+            "heads & norms": _rmsnorm(dim),   # out_norm
+        }
     if arch == "refiner":
         block = _refiner_block(dim, config["num_heads"])
         embeddings = _embed(config["vocab_size"], dim)
@@ -220,8 +242,9 @@ def total_params(arch=MODEL_ARCH, **overrides):
 
 
 def shared_block_group(arch=MODEL_ARCH):
-    """Which group holds the one physically-stored, repeatedly-applied block."""
-    return "shared refine block" if arch == "refiner" else "shared reasoning block"
+    """Which group holds the one physically-stored, repeatedly-applied block, or
+    None for the plain stack, which applies each of its blocks once."""
+    return {"plain": None, "refiner": "shared refine block"}.get(arch, "shared reasoning block")
 
 
 # ── VRAM ─────────────────────────────────────────────────────────────────────
@@ -245,6 +268,10 @@ def _remat_boundary_bytes(arch, config, batch, depth):
     """
     dim, seq = config["dim"], config["max_seq_len"]
     per_window_state = batch * seq * dim * F16
+    if arch == "plain":
+        # No remat in plain.py: every block's input is kept for the backward, and
+        # that residual stream is only the smallest of what each block keeps.
+        return 2 * config["num_layers"] * per_window_state
     if arch == "refiner":
         boundaries = config["encoder_layers"] + depth
         return 2 * boundaries * per_window_state
@@ -269,7 +296,7 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
         raise ValueError(f"mode must be 'train' or 'infer', not {mode!r}")
     config = _resolve(arch, overrides)
     if depth is None:
-        depth = config["max_depth"] if mode == "train" else INFERENCE_DEPTH
+        depth = config.get("max_depth", MAX_STEPS_LIMIT) if mode == "train" else INFERENCE_DEPTH
     params = total_params(arch, **overrides)
 
     lines = {"parameters (f32)": params * F32}
@@ -279,7 +306,8 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
             "AdamW mu (bf16)": params * BF16,
             "AdamW nu (f32)": params * F32,
             "MultiSteps accumulated grads (f32)": params * F32,
-            "remat boundary states (f16, lower bound)":
+            ("block input states (f16, lower bound)" if arch == "plain"
+             else "remat boundary states (f16, lower bound)"):
                 _remat_boundary_bytes(arch, config, batch, depth),
         })
     else:

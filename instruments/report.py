@@ -46,6 +46,7 @@ from trm.config import (           # noqa: E402
     MAX_STEPS_LIMIT,
     MODEL_ARCH,
     NUM_HEADS,
+    PLAIN_LAYERS,
     REFINER_ENCODER_LAYERS,
     TIME_SIGNAL,
     TOKENS_PER_OPT_STEP,
@@ -53,6 +54,7 @@ from trm.config import (           # noqa: E402
     VOCAB_SIZE,
 )
 from instruments import model_stats, runlog   # noqa: E402
+from instruments.arch import ARCHES   # noqa: E402
 from instruments.invariants import clean_column, describe, suspect_rows   # noqa: E402
 
 RULE = "=" * 78
@@ -88,6 +90,9 @@ def _mean(values):
 # ── Model ────────────────────────────────────────────────────────────────────
 
 def _arch_line(arch):
+    if arch == "plain":
+        return (f"dim {LATENT_DIM}, {NUM_HEADS} heads (head_dim {LATENT_DIM // NUM_HEADS}), "
+                f"{PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {MAX_SEQ_LEN}")
     if arch == "refiner":
         return (f"dim {LATENT_DIM}, {NUM_HEADS} heads (head_dim {LATENT_DIM // NUM_HEADS}), "
                 f"{REFINER_ENCODER_LAYERS} encoder layers + 1 shared refine block looped "
@@ -115,8 +120,8 @@ def print_parameters(arch):
 def print_vram(arch, batch, train_depth, infer_depth):
     print("\nVRAM  [estimated — exact byte terms only; see the floor note]")
     for mode, depth, header in (
-        ("train", train_depth, f"training  (batch {batch}, depth {train_depth})"),
-        ("infer", infer_depth, f"inference (batch {batch}, depth {infer_depth})"),
+        ("train", train_depth, f"training  (batch {batch}" + ("" if arch == "plain" else f", depth {train_depth}") + ")"),
+        ("infer", infer_depth, f"inference (batch {batch}" + ("" if arch == "plain" else f", depth {infer_depth}") + ")"),
     ):
         lines = model_stats.vram_estimate(mode, batch=batch, depth=depth, arch=arch)
         print(f"  {header}")
@@ -297,7 +302,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--log", default=None,
                         help="metrics.csv or a run dir (default: the latest run under runs/)")
-    parser.add_argument("--arch", default=MODEL_ARCH, choices=("refiner", "reasoner"),
+    parser.add_argument("--arch", default=MODEL_ARCH, choices=ARCHES,
                         help=f"architecture to size (default: MODEL_ARCH={MODEL_ARCH})")
     parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="batch size for the VRAM lines")
     parser.add_argument("--train-depth", type=int, default=MAX_STEPS_LIMIT)
