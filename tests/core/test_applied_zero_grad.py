@@ -65,3 +65,29 @@ def test_the_trainer_logs_both_and_names_them_apart():
     assert "applied_zero_frac_dense_max=" in source and "zero_frac_dense_max=" in source
     fields = MetricsLogger("/dev/null").fields
     assert "applied_zero_frac_dense_max" in fields and "zero_frac_dense_max" in fields
+
+
+# --- the norm the clip sees (#180) -----------------------------------------------
+
+def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
+    """grad_norm_avg (~11 on the 4B run, per micro-step) was never comparable to the
+    1.0 clip, which acts on the 128-step mean. The trainer now logs that mean's norm."""
+    import inspect
+    from trm.train import optimizers, trainer
+
+    source = inspect.getsource(trainer.train_loop)
+    assert "applied = applied_gradient(optimizer, grads)" in source
+    assert "optax.global_norm(applied)" in source and "applied_grad_norm=applied_grad_norm" in source
+    assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
+
+
+def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():
+    """Why the micro-step norm misleads: opposing micro-step gradients cancel in the mean."""
+    model = Toy()
+    optimizer = nnx.Optimizer(model, optax.MultiSteps(optax.sgd(1.0), every_k_schedule=4, use_grad_mean=True),
+                              wrt=nnx.Param)
+    for values in ([10.0, 0, 0, 0], [-10.0, 0, 0, 0], [10.0, 0, 0, 0]):
+        optimizer.update(model, _grads(model, values))
+    last = _grads(model, [-10.0, 0, 0, 0])
+    assert float(optax.global_norm(last)) == 10.0
+    assert float(optax.global_norm(applied_gradient(optimizer, last))) == 0.0

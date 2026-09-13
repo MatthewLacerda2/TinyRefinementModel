@@ -219,3 +219,20 @@ def test_the_plotter_never_imports_a_model(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert "MODELS: []" in proc.stdout, "the plotter pulled in a model module"
     assert (tmp_path / "training_curve.png").exists()
+
+
+def test_the_grad_norm_panel_reads_against_the_clip_when_the_run_logged_it(tmp_path, capsys):
+    """#180: with applied_grad_norm the panel draws the clip line and says how often it bit."""
+    from instruments import plots, runlog
+    header = HEADER + ",applied_grad_norm"
+    rows = [row(step) + f",{0.5 if step % 10 else 1.5}" for step in range(5, 401, 5)]
+    run_dir = tmp_path / "run_20990101_000000"
+    run_dir.mkdir()
+    (run_dir / "metrics.csv").write_text("\n".join([header, *rows]) + "\n")
+    import matplotlib
+    matplotlib.use("Agg")
+    fig, ax = matplotlib.pyplot.subplots()
+    plots._panel_grad_norm(ax, runlog.load(str(run_dir / "metrics.csv")))
+    title = ax.get_title(loc="left")
+    assert "clip sees" in title and "50%" in title
+    matplotlib.pyplot.close(fig)

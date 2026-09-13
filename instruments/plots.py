@@ -553,6 +553,22 @@ def throughput_progress(runlog, outdir):
 # ── figure 3: optimization health ────────────────────────────────────────────
 
 def _panel_grad_norm(ax, runlog):
+    if runlog.has("applied_grad_norm"):
+        # The norm the clip actually sees (#180): read directly against the line.
+        from trm.train.optimizers import CLIP_NORM
+        tokens, values = series(runlog, "applied_grad_norm")
+        window = smoothing_window(len(values))
+        ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
+        ax.plot(tokens, smooth(values, window), color=BLUE, linewidth=1.8, label="applied (window mean)")
+        ax.axhline(CLIP_NORM, color=ORANGE, linewidth=1.2, linestyle="--", label=f"clip at {CLIP_NORM:g}")
+        clipped = float(np.mean(values > CLIP_NORM)) if len(values) else 0.0
+        _log_y(ax)
+        ax.set_ylabel("‖g‖₂")
+        ax.set_title(f"Gradient norm the clip sees — clipped on {clipped:.0%} of logged steps", loc="left")
+        _legend(ax, loc="best", fontsize=8)
+        _note(ax, "the norm of the accumulated gradient the optimizer applies. Above the dashed line "
+                  "clip_by_global_norm, not the LR schedule, is setting the step size.")
+        return
     tokens, values = series(runlog, "grad_norm_avg")
     window = smoothing_window(len(values))
     ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
@@ -623,7 +639,7 @@ def _panel_logits(ax, runlog):
 
 
 HEALTH_PANELS = (
-    ("grad_norm", ("grad_norm_avg",), _panel_grad_norm),
+    ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm),
     ("depth", ("depth_avg",), _panel_depth),
     ("zero_grad", ("zero_frac_dense_max",), _panel_zero_grad),
     ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits),

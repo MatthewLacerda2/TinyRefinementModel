@@ -269,8 +269,10 @@ def _print_losses(log, suspect=None):
 # Columns worth a line when present, with what they actually are. A column that
 # is empty is omitted entirely — it is arch-optional (#105), not zero.
 _DIAGNOSTICS = (
-    ("grad_norm_avg", "grad norm", "sampled",
-     "raw per-micro-step, BEFORE clip_by_global_norm(1.0) — not the clipped step size"),
+    ("applied_grad_norm", "grad norm (applied)", "measured",
+     "norm of the window mean the clip sees; above 1.0 the clip, not the LR, sets the step (#180)"),
+    ("grad_norm_avg", "  ...per micro-step", "sampled",
+     "raw per-micro-step, BEFORE clip_by_global_norm(1.0) — not comparable to the clip"),
     ("depth_avg", "sampled depth", "sampled", "uniform in [1, MAX_STEPS_LIMIT] per micro-step"),
     ("applied_zero_frac_dense_max", "max dense zero-grad frac", "measured",
      "the gradient the optimizer applies: f16 underflow watch (#82, #191)"),

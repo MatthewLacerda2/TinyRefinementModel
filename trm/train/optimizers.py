@@ -15,6 +15,11 @@ from trm.config import ACCUMULATION_STEPS
 from trm.train.schedules import learning_schedule, weight_decay_schedule
 
 
+# The global-norm clip, applied by MultiSteps to the window's MEAN gradient. The
+# trainer logs that same mean's norm against it (#180).
+CLIP_NORM = 1.0
+
+
 def weight_decay_mask(params):
     return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
 
@@ -22,7 +27,7 @@ def weight_decay_mask(params):
 def _make_chain(learning_rate):
     return optax.MultiSteps(
         optax.chain(
-            optax.clip_by_global_norm(1.0),
+            optax.clip_by_global_norm(CLIP_NORM),
             optax.adamw(
                 learning_rate=learning_rate,
                 weight_decay=weight_decay_schedule,
