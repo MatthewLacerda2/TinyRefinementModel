@@ -97,8 +97,15 @@ def restore_tolerating_legacy(read, model, model_key="model"):
 def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
     """Persist the full training state (model + optimizer + monitor + step) under
     `mngr` at `step`, then block until the write lands. Shared by the
-    rolling-latest and best-only managers — they use one save schema."""
-    mngr.save(
+    rolling-latest and best-only managers — they use one save schema.
+
+    Raises if orbax declines the save. It returns False — no exception, no log —
+    for any step at or below the newest checkpoint it can see, so a run resumed
+    from an earlier checkpoint with later ones still on disk would otherwise train
+    on for days writing nothing (#188). `python -m trm.runtime.rewind` is the way
+    to resume from an earlier step.
+    """
+    saved = mngr.save(
         step,
         args=ocp.args.Composite(
             model=ocp.args.StandardSave(nnx.state(model)),
@@ -123,6 +130,11 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
             step=ocp.args.JsonSave(step),
         ),
     )
+    if not saved:
+        raise RuntimeError(
+            f"orbax declined to save step {step} in {mngr.directory}: its newest checkpoint is "
+            f"step {mngr.latest_step()}. Checkpoints newer than the resume point are still in "
+            f"view — set them aside with `python -m trm.runtime.rewind`.")
     mngr.wait_until_finished()
 
 
