@@ -325,12 +325,18 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     if val_ce is not None:
                         latest_val_ce = val_ce
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
+                        # Best checkpoint: selected on held-out CE (#222), in a
+                        # sibling dir so best-retention and rolling-latest
+                        # retention never evict each other.
+                        if monitor.push_val(val_ce):
+                            save_checkpoint(best_mngr, step, model, optimizer, monitor,
+                                            sft_phase_event.is_set(), run_tracker.run_id)
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
                 # (max_to_keep=3 by recency). Kept out of the logging block — the
                 # full-state save blocks, so it must stay rare. The best-CE state
-                # is saved separately below, where monitor.is_new_best is computed.
+                # is saved on the validation probe, above.
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
                                     sft_phase_event.is_set(), run_tracker.run_id)
@@ -432,15 +438,6 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     gc.collect()
 
                     monitor.reset_for_new_phase(opt_step)
-
-                # Best-CE checkpoint: saved here where monitor.is_new_best is
-                # computed (over the windowed accumulators), in a sibling dir so
-                # best-retention and the rolling-latest retention never evict each
-                # other. The rolling-latest save runs separately, above, on
-                # CHECKPOINT_EVERY_OPT_STEPS at the opt-step boundary.
-                if monitor.is_new_best:
-                    save_checkpoint(best_mngr, step, model, optimizer, monitor,
-                                    sft_phase_event.is_set(), run_tracker.run_id)
 
                 accum_loss = 0.0
                 accum_token_loss = 0.0

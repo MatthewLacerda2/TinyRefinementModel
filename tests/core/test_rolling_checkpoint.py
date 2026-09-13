@@ -5,7 +5,7 @@ directly instead):
 1. Rolling-latest checkpointing — at the save cadence the trainer now persists
    the true latest state every time (not only on a new best), so a resume picks
    up where training actually left off. Best-CE state is preserved in a sibling
-   'best/' dir whose retention can't evict the latest.
+   'best_val_ce/' dir whose retention can't evict the latest.
 
 2. Validation-probe cadence — the probe must fire every VAL_EVERY_OPT_STEPS
    optimizer steps, independent of the every-LOG_REAL_STEPS logging block.
@@ -83,7 +83,7 @@ def test_rolling_latest_advances_past_best(tmp_path):
 
 
 def test_best_subdir_does_not_break_discovery(tmp_path):
-    """The sibling 'best/' dir lives inside the rolling checkpoint dir; the
+    """The sibling best dir lives inside the rolling checkpoint dir; the
     rolling manager (and discovery) must ignore it as a non-step entry."""
     runs_root = tmp_path / "runs"
     chk = runs_root / "run_test" / "checkpoints"
@@ -117,6 +117,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     monitor = LossMonitor()
     monitor.best_ce = 1.23
+    monitor.best_val_ce = 3.6474
     monitor.sft_start_step = None
 
     chk = str(tmp_path / "checkpoints")
@@ -129,14 +130,73 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
 
     fresh = UniversalReasoner(LATENT_DIM, nnx.Rngs(99), batch_size=1)
     fresh_opt = nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param)
-    _, _, _, start_step = load_or_create_checkpoint(fresh, fresh_opt, chk)
+    _, _, resumed, start_step = load_or_create_checkpoint(fresh, fresh_opt, chk)
 
     assert start_step == 43, "resume must continue at saved step + 1"
+    assert resumed.best_val_ce == 3.6474, (
+        "a resume that forgot the held-out best would overwrite best_val_ce/ with "
+        "a worse model on its first probe")
 
     tokens = jnp.asarray(np.full((1, 16), 5, dtype=np.int32))
     ref = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
     got = np.asarray(fresh(tokens, depth=2, training=False, new_document=True).logits)
     np.testing.assert_array_equal(ref, got)
+
+
+# --- The best checkpoint is selected on held-out CE (#222) -------------------
+
+def test_best_follows_val_ce_when_train_ce_gets_lucky_early():
+    """The shape of both stale `best/` dirs: one lucky train window early, then
+    train CE never beats it while val CE keeps improving. Selection on val must
+    keep moving; selection on train would have frozen at the first window."""
+    monitor = LossMonitor()
+    train = [3.9, 1.4, 3.7, 3.6, 3.5, 3.4]        # 1.4 is the lucky window
+    val = [3.95, 3.90, 3.80, 3.70, 3.72, 3.60]    # steady, with one uptick
+    saved = []
+    for step, (t, v) in enumerate(zip(train, val)):
+        monitor.push(step, t, t)
+        if monitor.push_val(v):
+            saved.append(step)
+    assert saved == [0, 1, 2, 3, 5], "every val improvement saves; the uptick does not"
+    assert monitor.best_val_ce == 3.60
+
+
+def test_a_new_phase_starts_a_fresh_val_best():
+    monitor = LossMonitor()
+    monitor.push_val(2.0)
+    monitor.reset_for_new_phase(100)
+    assert monitor.push_val(2.5), "the phase's first probe is its best so far"
+
+
+def test_the_trainer_saves_best_only_on_a_val_improvement():
+    """The trigger lives inside train_loop, which needs data and a device to run
+    end to end. So guard the wiring directly: the one save into best_mngr sits
+    under `monitor.push_val(...)`, and nothing train-CE-shaped can trigger it."""
+    import ast
+    import inspect
+    from trm.train import trainer
+
+    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    saves = [call for call in ast.walk(tree)
+             if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "save_checkpoint"
+             and isinstance(call.args[0], ast.Name) and call.args[0].id == "best_mngr"]
+    assert len(saves) == 1, "exactly one best save"
+    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+              and "push_val" in ast.unparse(node.test)
+              and any(save in list(ast.walk(node)) for save in saves)]
+    assert guards, "the best save must be guarded by monitor.push_val"
+    cadenced = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+                and "VAL_EVERY_OPT_STEPS" in ast.unparse(node.test)
+                and any(save in list(ast.walk(node)) for save in saves)]
+    assert cadenced, ("the best save must sit inside the probe's cadence, so best writes "
+                      "are bounded to one per probe (#174), not one per improving log step")
+    assert not hasattr(LossMonitor(), "is_new_best"), "the train-CE trigger is gone"
+
+
+def test_the_best_dir_is_named_for_its_criterion():
+    """Old `best/` archives were selected on train CE; a distinct name keeps them
+    from being mistaken for these."""
+    assert BEST_SUBDIR == "best_val_ce"
 
 
 # --- Validation-probe cadence -------------------------------------------------
