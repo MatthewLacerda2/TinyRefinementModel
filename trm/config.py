@@ -17,6 +17,25 @@ import jax.numpy as jnp
 COMPUTE_DTYPE = jnp.float32 if os.environ.get("FORCE_F32_COMPUTE") else jnp.float16
 PARAM_DTYPE = jnp.float32
 
+# Persistent compilation cache (#204). Every process used to compile from scratch:
+# each supervisor relaunch, test run, smoke and instrument. It makes nothing
+# faster once compiled — a cold-start saving only, and we pay cold starts
+# constantly. Measured on the RTX 2060: the plain stack's first grad step compiles
+# in 15.5s cold and loads in 3.5s warm, with a bit-identical loss. Set here rather
+# than in each entry point because every entry point imports this module, and the
+# flag works after jax is imported as long as nothing has compiled yet.
+#   * On the SSD beside the runs (hot tier), never the HDD.
+#   * Bounded: the key includes the JAX/XLA version, so an upgrade orphans the
+#     whole previous set, and / runs close to full.
+#   * JAX_COMPILATION_CACHE_DIR in the environment wins, as for any JAX flag.
+COMPILATION_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "runs", ".jax_cache")
+COMPILATION_CACHE_MAX_BYTES = 2 * 1024**3
+if "JAX_COMPILATION_CACHE_DIR" not in os.environ:
+    import jax
+    jax.config.update("jax_compilation_cache_dir", COMPILATION_CACHE_DIR)
+    jax.config.update("jax_compilation_cache_max_size", COMPILATION_CACHE_MAX_BYTES)
+
 def resolve_root(path):
     """abspath for local paths; remote URLs (gs://, s3://, ...) pass through
     untouched — abspath would prepend the cwd and mangle them."""
