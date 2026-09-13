@@ -243,6 +243,12 @@ another item* leads — whether it changes the implementation or changes how we 
 (a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
 full training run is last because nothing depends on its output.
 
+**`python -m instruments.queue` computes it.** It ranks only what these rules decide —
+tier order, then issues other open issues are blocked by — and says so where they stop
+deciding (within a tier is judgment). It also surfaces labels it can check and that fail:
+a `blocked` whose blockers are all closed, an issue with no type label. When the rules
+here change, the tool changes in the same PR; prose and command must not drift.
+
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
 claim releases when the PR merges; a PR closed unmerged still owes its record first
@@ -312,7 +318,7 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), the `eval_*` depth probes, `playground.py`; `experiments/scratchpad/harness.py` |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
+| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus `ruff check .` as its own status (errors and bugs only, config in `pyproject.toml` — run it locally before pushing). |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
