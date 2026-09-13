@@ -37,14 +37,16 @@ def discover_latest_checkpoint_run(runs_root="runs"):
                 print(f"⚠️ Skipping unreadable checkpoint dir {chk_dir}: {e}")
     return None, None
 
-# Sibling subdir of the rolling-latest checkpoints holding the best-CE
-# checkpoints. Kept separate so best-retention never evicts the latest.
-BEST_SUBDIR = "best"
+# Sibling subdir of the rolling-latest checkpoints holding the best held-out-CE
+# checkpoints. Kept separate so best-retention never evicts the latest. Named for
+# its criterion (#222): the old `best/` was selected on noisy train CE and went
+# stale on two runs, and a new name keeps those archives from passing for these.
+BEST_SUBDIR = "best_val_ce"
 CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
 
 
 def _make_best_manager(checkpoint_path):
-    """Best-only manager: a sibling 'best/' dir holding the best-CE checkpoints,
+    """Best-only manager: a sibling 'best_val_ce/' dir holding the best-val-CE checkpoints,
     distinct from the rolling-latest manager so its retention can't drop the
     state a resume must load."""
     return ocp.CheckpointManager(
@@ -106,6 +108,7 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id):
                 "best_ce": monitor.best_ce,
                 "best_loss": monitor.best_loss,
                 "best_avg_ce": monitor.best_avg_ce,
+                "best_val_ce": monitor.best_val_ce,
                 "last_improvement_step": monitor.last_improvement_step,
                 "sft_active": sft_active,
                 "sft_start_step": monitor.sft_start_step,
@@ -157,6 +160,8 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         monitor.best_ce = m_state.get("best_ce", float("inf"))
         monitor.best_loss = m_state.get("best_loss", float("inf"))
         monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
+        # Absent before #222: the first val probe after resume sets a new best.
+        monitor.best_val_ce = m_state.get("best_val_ce", float("inf"))
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
         monitor.sft_start_step = m_state.get("sft_start_step", None)
         # Checkpoints written before #24 have no samples_seen; every one of them
