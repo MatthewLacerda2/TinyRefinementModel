@@ -32,7 +32,8 @@ from trm.config import (
 from trm.model.reasoner import UniversalReasoner
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
-from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
+from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient, grad_zero_fractions,
+                                 dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.optimizers import optimizer_chain, create_sft_optimizer
@@ -328,13 +329,16 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 print(f"🔍 [LossScale] raised to {loss_scaler.value:g} after "
                       f"{loss_scaler.growth_interval} clean micro-steps (#199)")
 
-            # Underflow instrument (#82) sampling happens BEFORE the update:
-            # apply_grads donates the grad buffers (#128), so this micro-step's
-            # raw grads are unreadable afterwards. Same tensors either way —
-            # pre-accumulation grads are what the instrument wants.
+            # Underflow instrument (#82), sampled BEFORE the update: apply_grads
+            # donates the grad buffers and the accumulator (#128). This logging
+            # micro-step is always an apply boundary, so two readings exist and are
+            # kept apart (#191): the gradient that actually updates the weights (the
+            # window's mean), and this one micro-step's, which carries per-draw
+            # artifacts that never reach the weights.
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
-                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(grads).items()}
+                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(applied_gradient(optimizer, grads)).items()}
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
+                zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
             apply_grads(optimizer, grads, model)
 
@@ -395,7 +399,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=float(accum_depth),
                     val_ce=latest_val_ce,
-                    zero_frac_dense_max=zero_frac_dense,
+                    zero_frac_dense_max=zero_frac_dense_microstep,
+                    applied_zero_frac_dense_max=zero_frac_dense,
                     mix=(mixture_label(SFT_SOURCES, SFT_MIX_WEIGHTS) if sft_phase_event.is_set()
                          else mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step))),
                 )
