@@ -102,6 +102,35 @@ def samples_from_micro_steps(micro_steps, weights, batch_size=BATCH_SIZE):
     return split_samples(micro_steps * batch_size, weights)
 
 
+class LogWindow:
+    """Means over one logging window, divided by the micro-steps it actually holds.
+
+    Dividing by the nominal window (ACCUMULATION_STEPS * LOG_REAL_STEPS) is right
+    only for a window that starts on a boundary. A resume does not: its first
+    window holds fewer micro-steps, so every metric came out scaled by the fraction
+    held — CE 1.87 beside a real 3.2, depth_avg 2.76 on a uniform 1–8 draw (#194) —
+    and the bogus CE also entered the plateau detector's running minimum. A fresh
+    run's first window is one micro-step short too, since steps count from 1.
+    """
+
+    FIELDS = ("loss", "token_loss", "grad_norm", "depth")
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.sums = dict.fromkeys(self.FIELDS, 0.0)
+        self.count = 0
+
+    def add(self, **values):
+        for name in self.FIELDS:
+            self.sums[name] += values[name]
+        self.count += 1
+
+    def means(self):
+        return tuple(self.sums[name] / self.count for name in self.FIELDS)
+
+
 def init_model_and_optimizer():
     if MODEL_ARCH == "plain":
         # Imported lazily, like the others: a run of one arch never pays to import
@@ -222,10 +251,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     grad_guard = GradientNormGuard()
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
-    accum_loss = 0.0
-    accum_token_loss = 0.0
-    accum_grad_norm = 0.0
-    accum_depth = 0.0
+    window = LogWindow()
     t_compute = 0.0
     nonfinite_streak = 0
     # Latest held-out CE from the validation probe, carried so the (less frequent)
@@ -308,11 +334,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             current_token_loss = float(out.diag.get('token_loss', loss))
 
-            divisor = ACCUMULATION_STEPS * LOG_REAL_STEPS
-            accum_loss += current_loss / divisor
-            accum_token_loss += current_token_loss / divisor
-            accum_grad_norm += current_grad_norm / divisor
-            accum_depth += depth / divisor
+            window.add(loss=current_loss, token_loss=current_token_loss,
+                       grad_norm=current_grad_norm, depth=depth)
 
             # Validation probe fires on its own cadence at the optimizer-step
             # boundary (every ACCUMULATION_STEPS micro-steps), independent of the
@@ -343,6 +366,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
+                accum_loss, accum_token_loss, accum_grad_norm, accum_depth = window.means()
 
                 # Underflow instrument (#82): zero_fracs / zero_frac_dense were
                 # sampled just before apply_grads above (donation makes the raw
@@ -439,10 +463,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
                     monitor.reset_for_new_phase(opt_step)
 
-                accum_loss = 0.0
-                accum_token_loss = 0.0
-                accum_grad_norm = 0.0
-                accum_depth = 0.0
+                window.reset()
                 t_compute = 0.0
 
             step += 1
