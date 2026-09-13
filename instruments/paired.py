@@ -39,6 +39,11 @@ import numpy as np
 from instruments import results as result_lines
 from trm.config import MAX_SEQ_LEN
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "mean, se, t (RESULT)": ("sampled", "paired per-token CE difference over --rows rows; se is across those rows, not across seeds"),
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class Paired:

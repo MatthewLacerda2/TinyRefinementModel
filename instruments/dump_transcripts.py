@@ -42,6 +42,9 @@ import datetime
 import os
 import subprocess
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {}  # writes generated text for reading; no quantities
+
 # Everything that reaches JAX is imported inside main(), *after* the device choice
 # has been written into the environment. Hoisting them would pin the backend before
 # --device is read, which is the whole hazard this module used to carry.

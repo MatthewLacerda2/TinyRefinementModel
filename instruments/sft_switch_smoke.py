@@ -38,6 +38,11 @@ from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, ACCUMULATION_STEPS
 from trm.config import BATCH_SIZE, LATENT_DIM, MAX_STEPS_LIMIT
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "peak before / after switch": ("measured", "memory_stats() process high-water mark, so 'after' includes everything before it"),
+}
+
 
 def build_optimizer(model, lr_scale=1.0):
     """Mirror the trainer's chain (clip + adamw under MultiSteps). lr_scale=0.1 is the

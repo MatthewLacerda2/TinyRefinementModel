@@ -36,6 +36,12 @@ from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import BATCH_SIZE, MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "mean |loss gap|": ("measured", "f32-mu vs bf16-mu loss over the back half of ONE seed's steps; "
+                                    "no noise floor, so a small gap is not proof of equivalence"),
+}
+
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {
     "XLA_PYTHON_CLIENT_ALLOCATOR": "two models live in one process for the A/B; platform frees the first before the second. A correctness smoke, not a memory measurement.",

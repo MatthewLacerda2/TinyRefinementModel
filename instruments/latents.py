@@ -38,6 +38,11 @@ from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "trajectory metrics (RESULT)": ("sampled", "geometry of the latent trajectory over the captured rows only"),
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class Trajectory:

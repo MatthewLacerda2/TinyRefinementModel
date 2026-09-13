@@ -40,6 +40,11 @@ from instruments.yardstick.yardstick import (
     summarize,
 )
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "LAMBADA acc, ppl (GPT-2)": ("measured", "the full LAMBADA test set; with --limit it is a subsample"),
+}
+
 GPT2_CONTEXT = 1024
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per GPT-2 eval forward, not our training micro-batch"}

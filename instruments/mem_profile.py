@@ -42,6 +42,13 @@ from flax import nnx
 
 from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "temp / scratch": ("estimated", "XLA's compile-time buffer assignment for one grad step; the peak transient, not a runtime reading"),
+    "largest tensor shapes": ("cumulative", "size x occurrence count across the HLO; allocation traffic, NOT resident at any instant"),
+    "--run peak": ("measured", "memory_stats() after executing one step"),
+}
+
 _DT_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "s32": 4, "s8": 1, "u32": 4, "pred": 1, "f64": 8}
 
 

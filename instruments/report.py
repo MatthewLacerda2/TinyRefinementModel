@@ -55,6 +55,13 @@ from trm.config import (           # noqa: E402
 from instruments import model_stats, runlog   # noqa: E402
 from instruments.invariants import clean_column, describe, suspect_rows   # noqa: E402
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "parameters": ("estimated", "arithmetic over config, pinned to the instantiated model by tests/apparatus/test_model_stats.py"),
+    "VRAM floor": ("estimated", "exact byte terms only; a FLOOR, never a peak"),
+    "run metrics": ("measured", "each line carries its own [measured]/[sampled]/[estimated] tag"),
+}
+
 RULE = "=" * 78
 THIN = "-" * 78
 

@@ -27,6 +27,13 @@ from trm.config import BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {
+    "ms/micro-step, tok/s": ("measured", "wall-clock mean over --steps micro-steps after warmup; one run, no spread"),
+    "peak / in use MB": ("measured", "memory_stats() high-water mark for the whole process so far, compile included; "
+                                     "absent under the platform allocator"),
+}
+
 
 def report_memory(label):
     stats = jax.local_devices()[0].memory_stats()
