@@ -8,8 +8,9 @@ Three images, split by audience (#179):
                           perplexity on the right, and the LR anneal drawn
                           across the whole token budget so "how far in are we"
                           is one glance.
-  throughput_progress.png tokens/sec sampled from the supervisor's hourly
-                          heartbeats, progress against the budget, ETA.
+  throughput_progress.png tokens/sec from metrics.csv's wall_clock (#186) — or,
+                          for runs older than that column, sampled from the
+                          supervisor's heartbeats — progress against the budget, ETA.
   optimization_health.png gradient norm, sampled depth, zero-grad fraction,
                           logit health.
 
@@ -66,7 +67,8 @@ from trm.train.schedules import build_learning_schedule, resolve_decay_steps  # 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "training curves": ("measured", "metrics.csv as recorded, rows failing an invariant dropped"),
-    "throughput": ("sampled", "tokens between supervisor heartbeats: a rate between polls, never per step"),
+    "throughput (wall_clock)": ("measured", "Δtokens ÷ Δwall-clock between metrics.csv rows at least 30 min apart"),
+    "throughput (older runs)": ("sampled", "tokens between supervisor heartbeats, for runs without wall_clock"),
 }
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -429,14 +431,40 @@ def usable_intervals(hours, tokens):
             hours[1:][clean], dropped, cadence)
 
 
+THROUGHPUT_SPACING_S = 1800  # thin logged rows to intervals at least this long
+
+
+def clock_samples(runlog, min_spacing_s=THROUGHPUT_SPACING_S):
+    """([(timestamp, opt step)], source): the run's own clock when it has one.
+
+    metrics.csv carries wall_clock since #186, on every logged row, so throughput
+    is measured against the file that is the authority on progress. Rows are
+    thinned to intervals of at least `min_spacing_s` so each point is an end-to-end
+    rate (checkpoints and probes included), not five opt steps of noise. Runs
+    older than the column fall back to supervisor heartbeats, which are sampled.
+    """
+    stamped = [(row["wall_clock"], row["step"]) for row in runlog.metrics if row.get("wall_clock")]
+    if len(stamped) >= 2:
+        thinned = [stamped[0]]
+        for stamp, step in stamped[1:]:
+            if (stamp - thinned[-1][0]).total_seconds() >= min_spacing_s:
+                thinned.append((stamp, step))
+        if thinned[-1] != stamped[-1]:
+            thinned.append(stamped[-1])
+        if len(thinned) >= 2:
+            return thinned, "metrics"
+    return read_heartbeats(runlog), "heartbeats"
+
+
 def throughput_progress(runlog, outdir):
-    beats = read_heartbeats(runlog)
+    beats, source = clock_samples(runlog)
+    measured = source == "metrics"
     budget, _ = budget_and_horizon(runlog)
     done_tokens = runlog.tokens
 
     if len(beats) < 2:
-        print("throughput_progress: fewer than two supervisor heartbeats — skipped "
-              "(throughput needs wall-clock, and metrics.csv has none).")
+        print("throughput_progress: no wall_clock in metrics.csv and fewer than two supervisor "
+              "heartbeats — skipped (throughput needs a clock).")
         return None
 
     times = [t for t, _ in beats]
@@ -471,14 +499,16 @@ def throughput_progress(runlog, outdir):
                     label=f"recent mean {recent:,.0f} tok/s")
     ax_rate.set_ylim(0, max(rate.max(), recent) * 1.25)
     ax_rate.set_ylabel("tokens / second")
-    ax_rate.set_xlabel("hours since the run's first heartbeat")
-    title = "Throughput — sampled, not measured"
+    ax_rate.set_xlabel("hours since the run's first " + ("logged row" if measured else "heartbeat"))
+    title = ("Throughput — measured from metrics.csv wall_clock" if measured
+             else "Throughput — sampled from heartbeats, not measured")
     if stale:
         title += (f"  ⚠ heartbeats cover only {100 * coverage:.0f}% of the run "
                   f"(to step {last_beat_step:,} of {runlog.last_step:,})")
     ax_rate.set_title(title, loc="left", **({"color": ORANGE} if stale else {}))
     _legend(ax_rate, loc="lower right")
-    note = (f"each point is one supervisor heartbeat interval (~{cadence:.1f}h apart): "
+    note = (f"each point is one {'interval between logged rows' if measured else 'supervisor heartbeat interval'} "
+            f"(~{cadence:.1f}h apart): "
             f"Δsteps × {TOKENS_PER_OPT_STEP:,} tokens ÷ Δwall-clock. "
             "It includes checkpointing and validation, so it is the honest end-to-end rate.")
     if dropped:
@@ -516,7 +546,7 @@ def throughput_progress(runlog, outdir):
     ax_prog.set_ylabel("tokens")
     ax_prog.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(6))
     ax_prog.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: fmt_tokens(v)))
-    ax_prog.set_xlabel("hours since the run's first heartbeat")
+    ax_prog.set_xlabel("hours since the run's first " + ("logged row" if measured else "heartbeat"))
     ax_prog.set_title("Progress against the token budget"
                       + (f" — {eta_text}" if eta_text else ""), loc="left")
     _legend(ax_prog, loc="lower right")
