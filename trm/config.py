@@ -183,7 +183,9 @@ MAX_STEPS_LIMIT = 8
 # depth 8 (4.2k -> 5.9k), and flipped this pair to 2/64.
 #
 # BATCH_SIZE STAYS 1 — batch 2 does not fit the real trainer. It OOMs on its
-# first optimizer step at dim960/depth8, 2026-08-13:
+# first optimizer step at dim960/depth8, 2026-08-13. Re-measured for the plain
+# stack on 2026-09-13 with the exact allocator numbers: batch 2 leaves 45 MiB of
+# headroom at 8 layers and -371 MiB at 9, so the +43% lever stays dead at dim 960.
 #   XLA_PYTHON_CLIENT_MEM_FRACTION=0.85 -> RESOURCE_EXHAUSTED, 626MiB short inside
 #     the BFC arena (5222MB), with a fragmented free list
 #   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
