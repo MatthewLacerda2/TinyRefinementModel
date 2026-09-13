@@ -142,6 +142,21 @@ def _is_diverged(ce: float | None, max_ce: float, entered_band: bool) -> bool:
     return entered_band and ce > max_ce
 
 
+def _new_launch(state: State) -> None:
+    """Judge the next launch's progress from its own first reading (#176).
+
+    A relaunch resumes from the last checkpoint, up to CHECKPOINT_EVERY_OPT_STEPS
+    behind where the dead launch got, and the trainer trims metrics.csv back to
+    it. Measured against the dead launch's high-water mark, that whole replay —
+    plus compile and data seek — reads as no progress, so a healthy relaunch
+    burned stall polls and a second restart could end the run as GAVE_UP.
+    What carries over is what a relaunch does not reset: the retry budget, and
+    whether CE has ever been in band.
+    """
+    state.last_step = -1
+    state.stalled_polls = 0
+
+
 def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     """What to do about the run right now. Pure: no I/O, no signals, no clock.
 
@@ -194,7 +209,7 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
             return Decision(GIVE_UP, GAVE_UP,
                             f"wedged at step {obs.step} and {limits.max_retries} relaunches were used")
         state.retries_used += 1
-        state.stalled_polls = 0
+        _new_launch(state)
         return Decision(RESTART, STALLED,
                         f"no progress past step {obs.step} for {limits.stall_polls} polls "
                         f"(restart {state.retries_used}/{limits.max_retries})")
@@ -216,6 +231,7 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
             return Decision(GIVE_UP, GAVE_UP,
                             f"died before budget and {limits.max_retries} relaunches were used")
         state.retries_used += 1
+        _new_launch(state)
         return Decision(RELAUNCH, CRASHED,
                         f"died at step {obs.step} before budget "
                         f"(relaunch {state.retries_used}/{limits.max_retries})")
