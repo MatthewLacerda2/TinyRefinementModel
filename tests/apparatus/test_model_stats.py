@@ -265,6 +265,10 @@ def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_n
 def test_the_plain_parameter_count_is_reproduced():
     """136.9M at 8 layers — the count the plain arch's launch banner prints."""
     assert model_stats.total_params("plain", num_layers=8, post_norm=False) == 136_862_144
+    # 9 layers, the default since 2026-09-13 (446 MiB headroom on the RTX 2060).
+    assert model_stats.total_params("plain", num_layers=9, post_norm=False) == 147933312
+    from trm.config import PLAIN_LAYERS
+    assert PLAIN_LAYERS == 9
 
 
 @pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])

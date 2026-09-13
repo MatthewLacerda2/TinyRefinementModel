@@ -153,12 +153,16 @@ POST_NORM = os.environ.get("POST_NORM", "0") == "1"
 # near the reasoner baseline; init prints the actual count for both arches.
 REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 
-# PlainTransformer depth. 8 matches what the refiner actually ran at depth 1 --
-# 7 encoder blocks plus one application of the refine block -- so the retirement
-# changes what the model IS without silently changing how big it is. Sizing it
-# upward is a separate decision with its own VRAM measurement
-# (instruments/vram_headroom_smoke); do not raise this by eye.
-PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "8"))
+# PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
+# blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator
+# numbers (instruments/vram_headroom_smoke, cuda_async, dim 960, batch 1):
+#   8 layers  4112 MiB arena peak, 771 MiB headroom   (147.9M params at 9)
+#   9 layers  4437 MiB,             446 MiB headroom   <- this
+#   10 layers 4762 MiB,             121 MiB headroom   (too thin)
+# The only config proven over a 10-day run had 834 MiB spare, so 9 is untested
+# at length: the supervisor's fit gate (#168) runs the real trainer first, and if
+# a long run OOMs the fallback is 8. Do not raise this by eye.
+PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
 
 # Refiner serving depth. The dense 1→8 sweep
 # (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
