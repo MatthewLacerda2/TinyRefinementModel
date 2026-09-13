@@ -607,3 +607,94 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
         sup_mod.Supervisor = original
 
     assert captured["heartbeat_log"] == tmp_path / "run_20990101_000000.supervisor.log"
+
+
+# --- every guard, in every regime (#176) ----------------------------------------
+#
+# The divergence guard killed every fresh run because it was written for a warm
+# restart and only ever tested mid-flight. Each guard carries an assumption about
+# which regime the run is in; these tables state it for all of them.
+#
+#   cold      a fresh model: CE opens at ~10.8, metrics absent through a long compile
+#   mid       in band, steps advancing
+#   resumed   a new supervisor on a checkpointed run: first reading already low and late
+#   relaunch  the same supervisor after a crash: the step reads *behind* the dead
+#             launch while the trainer replays from its checkpoint
+
+def _play(polls, limits=None, state=None):
+    """Feed (step, ce, alive) polls to decide(); return the decisions."""
+    limits = limits or Limits(stop_step=30_000)
+    state = state or State()
+    return [decide(Observation(step=s, ce=ce, plateau_detected=False, alive=alive), limits, state)
+            for s, ce, alive in polls], state
+
+
+COMPILE = [(0, None, True)] * 11                      # 11 silent polls: under stall_polls
+COLD = COMPILE + [(5, 10.8), (10, 10.5), (340, 6.4)]
+MID = [(5000, 3.5), (5005, 3.4), (5010, 3.5)]
+RESUMED = [(4992, 3.4), (4992, 3.4), (4997, 3.4)]
+
+
+def _alive(seq):
+    return [p if len(p) == 3 else (*p, True) for p in seq]
+
+
+@pytest.mark.parametrize("regime", [COLD, MID, RESUMED], ids=["cold", "mid", "resumed"])
+def test_a_healthy_run_is_left_alone_in_every_regime(regime):
+    decisions, _ = _play(_alive(regime))
+    assert all(d.action == CONTINUE for d in decisions), [d.reason for d in decisions]
+
+
+@pytest.mark.parametrize("regime", [COLD, MID, RESUMED], ids=["cold", "mid", "resumed"])
+def test_non_finite_ce_kills_in_every_regime(regime):
+    decisions, _ = _play(_alive(regime + [(99_990, float("nan")), (99_991, float("nan"))]),
+                         Limits(stop_step=10**6))
+    assert decisions[-1].outcome == KILLED_DIVERGENCE
+
+
+def test_high_ce_is_divergence_only_once_the_run_has_been_in_band():
+    cold, _ = _play(_alive(COMPILE + [(5, 10.8), (6, 10.7), (7, 10.6)]))
+    assert all(d.action == CONTINUE for d in cold), "cold: opening CE is not divergence"
+    for regime in (MID, RESUMED):
+        warm, _ = _play(_alive(regime + [(6000, 9.0), (6001, 9.0)]))
+        assert warm[-1].outcome == KILLED_DIVERGENCE
+
+
+@pytest.mark.parametrize("regime", [COLD, MID, RESUMED], ids=["cold", "mid", "resumed"])
+def test_a_wedge_is_caught_in_every_regime(regime):
+    last = _alive(regime)[-1]
+    decisions, _ = _play(_alive(regime) + [last] * Limits.stall_polls)
+    assert decisions[-1].outcome == STALLED
+
+
+def test_a_relaunch_replaying_from_its_checkpoint_is_not_a_stall():
+    """The bug this table found. The dead launch reached 5055; the relaunch resumes
+    at checkpoint 4992, metrics.csv is trimmed back to it, and the replay takes the
+    stall budget and then some. It was judged against 5055 and read as wedged."""
+    limits = Limits(stop_step=30_000, max_retries=2)
+    before, state = _play(_alive([(5050, 3.4), (5055, 3.4), (5055, 3.4, False)]), limits)
+    assert before[-1].action == RELAUNCH
+    replay = [(4991, 3.4)] * 3 + [(4991 + i, 3.4) for i in range(5, 64, 5)]
+    after, _ = _play(_alive(replay), limits, state)
+    assert all(d.action == CONTINUE for d in after), [d.reason for d in after if d.action != CONTINUE]
+
+
+def test_a_stall_restart_judges_the_new_launch_from_its_own_start():
+    limits = Limits(stop_step=30_000, max_retries=2)
+    wedged, state = _play(_alive([(5055, 3.4)] * (Limits.stall_polls + 1)), limits)
+    assert wedged[-1].outcome == STALLED
+    after, _ = _play(_alive([(4991, 3.4)] * 4 + [(4991 + i, 3.4) for i in range(5, 64, 5)]), limits, state)
+    assert all(d.action == CONTINUE for d in after)
+
+
+def test_what_a_relaunch_does_not_reset():
+    """The retry budget spans launches, or a crash loop never ends; and a run that
+    has been in band stays armed, since its resumed CE is already low."""
+    _, state = _play(_alive([(5000, 3.4), (5000, 3.4, False)]), Limits(stop_step=30_000, max_retries=2))
+    assert state.retries_used == 1 and state.entered_band
+
+
+@pytest.mark.parametrize("regime", [COLD, MID, RESUMED], ids=["cold", "mid", "resumed"])
+def test_the_budget_stop_holds_in_every_regime(regime):
+    decisions, _ = _play(_alive(regime), Limits(stop_step=_alive(regime)[-1][0]))
+    assert decisions[-1].outcome == BUDGET_COMPLETE
