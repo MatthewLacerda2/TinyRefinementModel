@@ -127,9 +127,12 @@ Both now exist as `trm/runtime/supervisor.py` (#40 build 4), promoted from the
 bash scripts the #16 base-run campaign wrote under fire:
 
 ```bash
-python -m trm.runtime.supervisor --stop-step 2289 --run-dir runs/run_X \
-    --log runs/base.log --issue 16 -- --new-run
+make launch BUDGET=4e9 ISSUE=157    # python -m trm.runtime.launch --budget 4e9 --issue 157
 ```
+
+Not the supervisor by hand: the launcher derives `--stop-step` from the budget (on a
+checkpoint boundary), pins `--checkpoint-path`, and never passes `--new-run`, which
+every crash relaunch would replay (#169).
 
 It enforces the token budget (the trainer has no hard stop), kills a CE-plateau
 SFT auto-flip that would contaminate a pretrain run, kills a diverging warm
