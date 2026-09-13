@@ -185,6 +185,11 @@ def test_the_trainer_saves_best_only_on_a_val_improvement():
               and "push_val" in ast.unparse(node.test)
               and any(save in list(ast.walk(node)) for save in saves)]
     assert guards, "the best save must be guarded by monitor.push_val"
+    cadenced = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+                and "VAL_EVERY_OPT_STEPS" in ast.unparse(node.test)
+                and any(save in list(ast.walk(node)) for save in saves)]
+    assert cadenced, ("the best save must sit inside the probe's cadence, so best writes "
+                      "are bounded to one per probe (#174), not one per improving log step")
     assert not hasattr(LossMonitor(), "is_new_best"), "the train-CE trigger is gone"
 
 
