@@ -205,9 +205,16 @@ def exit_cleanly_on_sigterm():
     the run's final checkpoint is still being written. Unwinding lets the trainer
     wait for that write (~16s at the shipping config) inside the grace.
     """
+    import os
     import signal
 
     def _raise(signum, frame):
+        # Say so in the log. SystemExit prints no traceback, so a TERM'd trainer
+        # used to end mid-stream with nothing to distinguish it from a hard kill —
+        # three Muon arms of #26 died that way on 2026-09-14 and the cause was
+        # unrecorded.
+        print(f"🛑 received SIGTERM (pid {os.getpid()}) — exiting cleanly, waiting for pending "
+              f"checkpoint writes", flush=True)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _raise)

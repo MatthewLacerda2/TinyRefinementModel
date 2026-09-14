@@ -107,6 +107,7 @@ def test_sigterm_unwinds_so_a_pending_write_can_finish(tmp_path):
     """))
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     proc = subprocess.run([sys.executable, str(script)], cwd=root, timeout=120,
-                          env={**os.environ, "PYTHONPATH": root})
+                          env={**os.environ, "PYTHONPATH": root}, capture_output=True, text=True)
     assert marker.exists(), "finally must run on SIGTERM"
     assert proc.returncode == 128 + signal.SIGTERM
+    assert "received SIGTERM" in proc.stdout, "a TERM must leave a trace in the log, not end it mid-stream"
