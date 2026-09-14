@@ -1,6 +1,7 @@
 import jax
 from flax import nnx
 import jax.numpy as jnp
+import optax
 
 from trm.config import (
     MAX_SEQ_LEN,
@@ -194,6 +195,29 @@ def applied_gradient(opt, grads):
     seen = jax.tree_util.tree_leaves(state.mini_step)[0]
     return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
                                   nnx.to_pure_dict(state.acc_grads), nnx.to_pure_dict(grads))
+
+
+@jax.jit
+def _applied_stats(acc, seen, grads):
+    applied = jax.tree_util.tree_map(lambda a, g: a + (g - a) / (seen + 1), acc, grads)
+    return grad_zero_fractions(applied), optax.global_norm(applied)
+
+
+def applied_gradient_stats(opt, grads):
+    """(zero fraction per group, global norm) of the gradient the optimizer applies —
+    the two numbers the telemetry logs (#191, #180) — WITHOUT materializing it.
+
+    applied_gradient() builds the full tree; read eagerly at every logging step it
+    is a 564 MiB f32 temporary at dim 960 that neither the fit gate nor the
+    headroom smoke ever sees (they never reach a logging step). It put the 9-layer
+    AdamW run 565 MiB above the smoke's peak and OOM'd every Muon arm (#26).
+    Under jit, XLA fuses the fold into the per-leaf reductions and nothing
+    tree-sized is allocated.
+    """
+    state = opt.opt_state
+    seen = jax.tree_util.tree_leaves(state.mini_step)[0]
+    fracs, norm = _applied_stats(nnx.to_pure_dict(state.acc_grads), seen, nnx.to_pure_dict(grads))
+    return fracs, norm
 
 
 def dense_zero_frac_max(zero_fracs):

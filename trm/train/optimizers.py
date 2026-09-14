@@ -12,6 +12,7 @@ import optax
 from flax import nnx
 
 from trm.config import ACCUMULATION_STEPS, MUON_LR_MULT, TRM_OPTIMIZER
+from trm.train.accumulate import multi_steps
 from trm.train.schedules import learning_schedule, weight_decay_schedule
 
 
@@ -87,7 +88,11 @@ def inner_optimizer(learning_rate, kind=TRM_OPTIMIZER):
 
 
 def _make_chain(learning_rate):
-    return optax.MultiSteps(
+    # LazyMultiSteps, not optax.MultiSteps: the same state and numbers, but the
+    # inner optimizer runs once per window instead of on every micro-step
+    # (trm/train/accumulate.py) — the ~69 ms/micro-step #24 measured, and the
+    # Newton-Schulz-every-micro-step that OOM'd Muon (#26).
+    return multi_steps(
         optax.chain(
             optax.clip_by_global_norm(CLIP_NORM),
             inner_optimizer(learning_rate),
