@@ -61,7 +61,8 @@ def test_the_trainer_logs_both_and_names_them_apart():
     from trm.train import trainer
 
     source = inspect.getsource(trainer.train_loop)
-    assert "applied_gradient(optimizer, grads)" in source
+    assert "applied_gradient_stats(optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
+    assert "applied_gradient(optimizer, grads)" not in source
     assert "applied_zero_frac_dense_max=" in source and "zero_frac_dense_max=" in source
     fields = MetricsLogger("/dev/null").fields
     assert "applied_zero_frac_dense_max" in fields and "zero_frac_dense_max" in fields
@@ -76,8 +77,8 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
     from trm.train import optimizers, trainer
 
     source = inspect.getsource(trainer.train_loop)
-    assert "applied = applied_gradient(optimizer, grads)" in source
-    assert "optax.global_norm(applied)" in source and "applied_grad_norm=applied_grad_norm" in source
+    assert "applied_fracs, applied_norm = applied_gradient_stats(optimizer, grads)" in source
+    assert "applied_grad_norm=applied_grad_norm" in source
     assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
 
 
@@ -91,3 +92,22 @@ def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():
     last = _grads(model, [-10.0, 0, 0, 0])
     assert float(optax.global_norm(last)) == 10.0
     assert float(optax.global_norm(applied_gradient(optimizer, last))) == 0.0
+
+
+def test_the_jitted_stats_equal_the_materialized_tree():
+    """Same numbers as applied_gradient() + grad_zero_fractions + global_norm, without
+    building the 564 MiB tree eagerly (which OOM'd every Muon arm, #26)."""
+    from trm.train.grad_step import applied_gradient_stats
+    model = Toy()
+    optimizer = nnx.Optimizer(model, optax.MultiSteps(optax.sgd(1.0), every_k_schedule=4, use_grad_mean=True),
+                              wrt=nnx.Param)
+    for _ in range(3):
+        optimizer.update(model, _grads(model, [1.0, 1.0, 1.0, 1.0]))
+    last = _grads(model, [1.0, 1.0, 0.0, 0.0])
+    fracs, norm = applied_gradient_stats(optimizer, last)
+    applied = applied_gradient(optimizer, last)
+    assert {k: float(v) for k, v in fracs.items()} == {k: float(v) for k, v in grad_zero_fractions(applied).items()}
+    assert float(norm) == float(optax.global_norm(applied))
+    import inspect
+    from trm.train import grad_step
+    assert "@jax.jit" in inspect.getsource(grad_step).split("def _applied_stats")[0][-40:]

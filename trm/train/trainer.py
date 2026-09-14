@@ -9,7 +9,6 @@ import threading
 import queue
 
 import jax
-import optax
 import jax.numpy as jnp
 from flax import nnx
 from dotenv import load_dotenv
@@ -33,7 +32,7 @@ from trm.config import (
 from trm.model.reasoner import UniversalReasoner
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
-from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient, grad_zero_fractions,
+from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
@@ -340,12 +339,12 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             # window's mean), and this one micro-step's, which carries per-draw
             # artifacts that never reach the weights.
             if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
-                applied = applied_gradient(optimizer, grads)
-                zero_fracs = {k: float(v) for k, v in grad_zero_fractions(applied).items()}
+                applied_fracs, applied_norm = applied_gradient_stats(optimizer, grads)
+                zero_fracs = {k: float(v) for k, v in applied_fracs.items()}
                 # The norm the clip actually sees (#180). grad_norm_avg is per-micro-step
                 # and cannot be read against CLIP_NORM; this can: above it, the clip, not
                 # the LR schedule, is setting the step size.
-                applied_grad_norm = float(optax.global_norm(applied))
+                applied_grad_norm = float(applied_norm)
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
