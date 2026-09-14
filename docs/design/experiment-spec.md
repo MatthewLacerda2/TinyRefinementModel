@@ -39,6 +39,9 @@ Three comparison rules, which is all the recorded experiments have ever needed:
 
 `points` names which sweep points a criterion covers; `require = "all" | "any"`
 says whether every point must satisfy it or merely one.
+`min_delta` (optional, `beats`/`loses` only) adds an absolute margin in the metric's
+own units on top of the sigma bar — for a claim like "15% fewer tokens", where tight
+seeds would let a 3% difference clear 2σ (#26).
 
 ## The conventions it pins
 

@@ -1,11 +1,15 @@
+import os
+
 import numpy as np
 import optax
 
 from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET
 
 # Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
-# phase that does not grow with the run.
-WARMUP_STEPS = 1000
+# phase that does not grow with the run. Env-overridable for one purpose: a
+# short matched pair (#26 stage 2, ~500 opt steps) cannot spend 1000 of them
+# warming up. A base run leaves it alone.
+WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "1000"))
 
 # The LR anneal's horizon must match the run length (#83). DECAY_STEPS derives
 # from the planned token budget (config.TRAIN_TOKEN_BUDGET); with no budget set

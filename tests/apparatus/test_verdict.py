@@ -195,3 +195,31 @@ def test_unknown_rule_is_refused_at_construction():
 
     with pytest.raises(ValueError, match="unknown rule"):
         Criterion("c", "exceeds", "a", "b", 2.0)
+
+
+def test_min_delta_stops_a_significant_but_small_win_from_counting(tmp_path):
+    """#26: with tight seeds a 3% gain clears 2 sigma; the pre-registered bar is 15%."""
+    import textwrap
+    from instruments.verdict import evaluate, load_spec, KEEP, INCONCLUSIVE
+    spec_text = textwrap.dedent("""
+        [experiment]
+        id = "t"
+        title = "t"
+        hypothesis = "t"
+        [criteria.wins]
+        rule = "beats"
+        treatment = "b"
+        control = "a"
+        sigmas = 2.0
+        min_delta = 15.0
+        [verdict]
+        keep_if = ["wins"]
+    """)
+    path = tmp_path / "t.toml"
+    path.write_text(spec_text)
+    spec = load_spec(path)
+    small = {"run": {"a": [100.0, 101.0, 99.0], "b": [103.0, 104.0, 103.5]}}   # +3.5, ~4 sigma
+    big = {"run": {"a": [100.0, 101.0, 99.0], "b": [118.0, 119.0, 117.0]}}      # +18
+    assert evaluate(spec, small).outcome == INCONCLUSIVE
+    assert evaluate(spec, big).outcome == KEEP
+    assert "Δ +18" in evaluate(spec, big).describe()
