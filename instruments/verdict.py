@@ -120,10 +120,17 @@ class Criterion:
     sigmas: float
     points: tuple[str, ...] = ()
     require: str = "all"  # all | any
+    # An absolute margin in the metric's own units, on top of the sigma bar (#26):
+    # "beats" then needs delta >= min_delta as well, "loses" delta <= -min_delta.
+    # A 1.3x claim is a ~30% difference on a tokens axis; with tight seeds a 3%
+    # difference clears 2 sigma and would otherwise count as the win.
+    min_delta: float | None = None
 
     def __post_init__(self):
         if self.rule not in RULES:
             raise ValueError(f"{self.name}: unknown rule {self.rule!r}; expected one of {sorted(RULES)}")
+        if self.min_delta is not None and self.rule == "within":
+            raise ValueError(f"{self.name}: min_delta makes no sense for a parity rule")
         if self.require not in ("all", "any"):
             raise ValueError(f"{self.name}: require must be 'all' or 'any', got {self.require!r}")
 
@@ -156,6 +163,7 @@ class PointResult:
     point: str
     sigmas: float
     holds: bool
+    delta: float = 0.0  # treatment mean minus control mean, in the metric's units
 
 
 @dataclass(frozen=True)
@@ -166,7 +174,9 @@ class CriterionResult:
 
     def describe(self) -> str:
         bar = f"{self.criterion.rule} {self.criterion.sigmas}σ"
-        detail = ", ".join(f"{p.point}: {p.sigmas:+.2f}σ" for p in self.points)
+        if self.criterion.min_delta is not None:
+            bar += f" and |Δ| ≥ {self.criterion.min_delta:g}"
+        detail = ", ".join(f"{p.point}: {p.sigmas:+.2f}σ (Δ {p.delta:+.4g})" for p in self.points)
         return f"{self.criterion.name} [{bar}, {self.criterion.require}] → {'met' if self.holds else 'NOT met'} ({detail})"
 
 
@@ -193,7 +203,12 @@ def _criterion_result(criterion: Criterion, results: dict[str, dict[str, Arm]]) 
             if arm not in arms:
                 raise KeyError(f"{criterion.name}: point {point!r} has no arm {arm!r}")
         sig = separation(arms[criterion.treatment], arms[criterion.control])
-        evaluated.append(PointResult(point, sig, RULES[criterion.rule](sig, criterion.sigmas)))
+        delta = mean_sigma(arms[criterion.treatment])[0] - mean_sigma(arms[criterion.control])[0]
+        holds = RULES[criterion.rule](sig, criterion.sigmas)
+        if criterion.min_delta is not None:
+            holds = holds and {"beats": delta >= criterion.min_delta,
+                               "loses": delta <= -criterion.min_delta}[criterion.rule]
+        evaluated.append(PointResult(point, sig, holds, delta))
     holds = (all if criterion.require == "all" else any)(p.holds for p in evaluated)
     return CriterionResult(criterion, tuple(evaluated), holds)
 
@@ -244,6 +259,7 @@ def load_spec(path) -> Spec:
             sigmas=float(body["sigmas"]),
             points=tuple(body.get("points", ())),
             require=body.get("require", "all"),
+            min_delta=float(body["min_delta"]) if "min_delta" in body else None,
         )
 
     return Spec(

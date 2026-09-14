@@ -36,6 +36,7 @@ import optax
 
 from instruments.results import emit as emit_result
 from trm.model.refiner import Block, CausalRefiner
+from trm.train.optimizers import _muon
 
 
 class VanillaTransformer(nnx.Module):
@@ -241,7 +242,7 @@ VOCAB = {"parity": 2, "cumsum5": 5, "statetrack": 5,
 def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, steps=2500,
               batch=256, lr=2e-3, wd=0.01, seed=0, gate_bias=0.0, grad_last=None,
               per_pass_loss=False, islands=False, readouts=False, time_signal="table",
-              post_norm=False,
+              post_norm=False, optimizer="adamw",
               eval_depths=None, n_pool=32768, n_test=4096, eval_batch=256,
               train_seq=SEQ, test_seq=None):
     # When test_seq > train_seq this is a length-generalization probe: the model
@@ -270,7 +271,11 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
                               time_signal=time_signal, post_norm=post_norm,
                               rngs=nnx.Rngs(seed))
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
-    opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
+    # #26: the same partitioned Muon chain production runs, at the harness's LR
+    # (the matrix partition gets it x MUON_LR_MULT, as in production).
+    tx = (_muon(lambda _: lr) if optimizer == "muon"
+          else optax.adamw(lr, weight_decay=wd))
+    opt = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
     # Truncated backprop (#64) / gradient islands + per-pass supervision (#75):
     # refiner-arm knobs only — vanilla has no recurrence to cut or grade.
@@ -421,6 +426,8 @@ def main():
                     help="#86: also eval each trained model at these depths (comma list, e.g. 12,16); "
                          "past max_depth the table arm clamps — that IS the measurement. refiner-only.")
     ap.add_argument("--lr", type=float, default=2e-3)
+    ap.add_argument("--optimizer", default="adamw", choices=["adamw", "muon"],
+                    help="#26: Muon on the 2-D matrices (embedding stays on Adam), same partition as production")
     ap.add_argument("--train-seq", type=int, default=SEQ)
     ap.add_argument("--test-seq", type=int, default=None,
                     help="eval length; > train-seq makes it a length-generalization probe (default: = train-seq)")
@@ -443,7 +450,7 @@ def main():
     eval_depths = [int(d) for d in args.eval_depths.split(",")] if args.eval_depths else None
     test_seq = args.train_seq if args.test_seq is None else args.test_seq
 
-    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} post_norm={args.post_norm} lr={args.lr} ==")
+    print(f"== depth ablation: arch={args.arch} dim={args.dim} task={task_desc} (train_seq={args.train_seq}, test_seq={test_seq}, vocab={vocab}) steps={args.steps} seed={args.seed} gate_bias={args.gate_bias} grad_last={args.grad_last} per_pass={args.per_pass_loss} islands={args.islands} time_signal={args.time_signal} post_norm={args.post_norm} lr={args.lr} optimizer={args.optimizer} ==")
     print(f"{'depth':>6} {'params':>9} {'val_acc':>9} {'val_ce':>9} {'sec':>7}")
     results = {}
     for d in depths:
@@ -453,7 +460,7 @@ def main():
                         grad_last=args.grad_last, per_pass_loss=args.per_pass_loss,
                         islands=args.islands, readouts=args.readouts,
                         time_signal=args.time_signal, post_norm=args.post_norm,
-                        eval_depths=eval_depths, lr=args.lr,
+                        eval_depths=eval_depths, lr=args.lr, optimizer=args.optimizer,
                         train_seq=args.train_seq, test_seq=test_seq)
         acc, ce, n_params = out[:3]
         results[d] = (acc, ce)

@@ -137,6 +137,27 @@ if TIME_SIGNAL not in ("table", "sinusoidal"):
 # Re-test if #23 widens the context: seq² grows 4x at 1024 and the trade may invert.
 CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 
+# Optimizer selector (#26). Same fail-closed contract as MODEL_ARCH: a typo must
+# not silently train a whole run on the wrong optimizer.
+#   adamw — the recipe every run so far used (trm/train/optimizers.py).
+#   muon  — orthogonalized momentum for the 2-D weight matrices, AdamW for the
+#           token embedding, norms and biases. The embedding is 2-D but is a lookup
+#           table, not a linear map, so it must NOT be orthogonalized; the partition
+#           lives in optimizers.muon_partition and tests/core/test_muon_partition.py
+#           holds it, because a wrong partition trains happily and silently.
+TRM_OPTIMIZER = os.environ.get("TRM_OPTIMIZER", "adamw")
+if TRM_OPTIMIZER not in ("adamw", "muon"):
+    raise SystemExit(
+        f"TRM_OPTIMIZER={TRM_OPTIMIZER!r} is not one of adamw, muon — refusing to start "
+        f"rather than fall through to a default (#26)."
+    )
+# Muon's update has RMS ~1 per element after Newton-Schulz and the sqrt(rows/cols)
+# factor, so it wants a much larger LR than Adam's — the reference recipes sit
+# ~50x above AdamW's. The matrix partition runs the shared schedule times this
+# multiplier; the embedding/norm partition keeps the schedule as is. A sweep
+# knob for the #26 matched pair, not a tuned value.
+MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "50"))
+
 # Normalize each residual BRANCH's output before it is added back ("sandwich" /
 # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
 # MLP; nothing bounds what comes out, and on the 4B champion that is measurably a
