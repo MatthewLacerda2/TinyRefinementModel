@@ -180,10 +180,13 @@ REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 #   8 layers  4112 MiB arena peak, 771 MiB headroom   (147.9M params at 9)
 #   9 layers  4437 MiB,             446 MiB headroom   <- this
 #   10 layers 4762 MiB,             121 MiB headroom   (too thin)
-# The only config proven over a 10-day run had 834 MiB spare, so 9 is untested
-# at length: the supervisor's fit gate (#168) runs the real trainer first, and if
-# a long run OOMs the fallback is 8. Do not raise this by eye.
-PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
+# Back to 8 on 2026-09-14, on real-trainer evidence rather than the smoke: a
+# 512-step AdamW run at 9 layers recorded an arena peak of 5,002 MiB — 565 MiB
+# above what the smoke sees (the data pipeline and checkpoint managers are what it
+# still doesn't hold) and past the pool's nominal 4,883 limit — and every Muon arm
+# at 9 layers OOM'd at its first validation probe (#26). That is "the run OOMs",
+# the agreed fallback. Do not raise this by eye.
+PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "8"))
 
 # Refiner serving depth. The dense 1→8 sweep
 # (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
