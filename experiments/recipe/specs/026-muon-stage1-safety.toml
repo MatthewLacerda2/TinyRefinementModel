@@ -14,7 +14,7 @@
 
 [experiment]
 id = "026-stage1"
-status = "open"
+status = "recorded"
 title = "Muon on the toy task: does the partitioned chain train, stay finite, and hold parity with AdamW?"
 hypothesis = """
 The partitioned Muon chain (scale_by_muon on 2-D kernels at lr x MUON_LR_MULT, AdamW
@@ -81,6 +81,40 @@ require = "any"
 [verdict]
 keep_if = ["parity_at_every_depth"]
 kill_if = ["loses_at_a_depth"]
+recorded = "INCONCLUSIVE"
+recorded_note = """
+2026-09-14. No kill criterion fired: every run trained, every loss stayed finite, no
+depth lost 2 sigma. The keep bar was NOT met, and on the side the drafter did not
+anticipate: at d1 Muon is +2.85 sigma AHEAD (0.831/0.831/0.857 vs 0.815/0.804/0.801),
+which breaks a parity criterion just as a loss would. d2 -0.70 sigma, d4 -1.60 sigma.
+The registered prediction (parity everywhere) was wrong at d1.
+
+Read for what the leg is for: the chain is safe to spend the card on. The d4 lean
+(-1.6 sigma, untuned multiplier) is exactly the thing stage 2's sweep sets, and a
+parity keep-bar that a WIN can break was a drafting mistake, recorded here rather
+than re-drafted after the fact.
+"""
 
 [readouts]
 notes = "wall-clock per run (Newton-Schulz adds 5 small matmuls per kernel); carries no weight."
+
+# --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
+[results.d1]
+adamw = [0.8147, 0.8042, 0.8006]
+muon = [0.8310, 0.8311, 0.8565]
+
+[results.d2]
+adamw = [0.9055, 0.8612, 0.8554]
+muon = [0.8659, 0.8732, 0.8299]
+
+[results.d4]
+adamw = [0.9307, 0.9522, 0.9645]
+muon = [0.8831, 0.9210, 0.9350]
+
+[results.deepest_minus_d1]
+adamw = [0.1160, 0.1480, 0.1639]
+muon = [0.0521, 0.0899, 0.0785]
+
+[results.min_deep]
+adamw = [0.9055, 0.8612, 0.8554]
+muon = [0.8659, 0.8732, 0.8299]
