@@ -249,6 +249,14 @@ deciding (within a tier is judgment). It also surfaces labels it can check and t
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 
+**What Claude may run without asking (owner's standing permission, 2026-09-14).**
+Anything that takes **under 48 hours of card time** end to end: smoke tests, ablations,
+matched pairs, small models, and Claude's own hypotheses about what works or doesn't —
+pre-registered through the referee like everything else, claimed on the issue, and
+recorded per rule 5. The owner still decides anything longer than 48 hours (a base run),
+anything that changes what the shipped model *is* without a verdict behind it, and the
+budget/size of the next base run. Judgment calls of that kind get surfaced, not made.
+
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
 claim releases when the PR merges; a PR closed unmerged still owes its record first
