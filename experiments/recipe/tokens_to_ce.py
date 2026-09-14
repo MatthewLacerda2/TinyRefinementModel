@@ -110,6 +110,8 @@ def main(argv=None) -> int:
                 time.sleep(30)
         finally:
             if proc.poll() is None:
+                print(f"{name}: stopping trainer pid {proc.pid} at opt step {last_step(metrics)} "
+                      f"(cap {args.opt_steps}; harness exiting)", flush=True)
                 proc.send_signal(signal.SIGTERM)
                 try:
                     proc.wait(timeout=120)
