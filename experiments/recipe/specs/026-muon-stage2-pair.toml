@@ -1,0 +1,96 @@
+# PRE-REGISTERED. Criteria committed before any pair run; git records the order.
+# The two seed-0 arms already exist from the stage-2a sweep (exploration, no
+# ceremony) and are reused as this spec's seed 0 — their criteria were NOT
+# chosen after seeing seeds 1 and 2, which are what this spec adds.
+
+[experiment]
+id = "026-stage2"
+status = "open"
+title = "Muon vs AdamW at the shipped config: tokens to a fixed held-out CE"
+hypothesis = """
+Muon (orthogonalized momentum on the 2-D weight matrices, AdamW on the embedding,
+norms and biases; matrix LR = the shared schedule x 100) reaches held-out CE 5.85
+in at least 15% fewer tokens than the AdamW recipe every run so far has used,
+on the live plain model at dim 960, 9 layers, f16 compute, tied embeddings.
+
+Why the multiplier is 100: the stage-2a sweep at seed 0 (tokens to 5.85) read
+x25 36.0M, x50 27.5M, x100 21.0M, and x200 diverged (val CE at ln(vocab) by
+opt step 125). Tuning the treatment is rule 4's mirror; the control's own LR
+(1e-4, never swept) is #287's question and is deliberately NOT changed here.
+
+Prediction registered: KEEP, by a wide margin — seed 0 read 21.0M vs 44.6M
+(2.1x), far outside any plausible seed spread. The honest risk is the opposite
+of last time's pattern (crediting a mechanism too much): the short horizon may
+flatter the faster optimizer, and a long run could narrow the gap. That is a
+limitation to state, not a reason to widen the bar.
+"""
+issue = 26
+
+[protocol]
+floor_note = """
+The metric is tokens to reach a target, capped at the run length (67.1M):
+an arm that never reaches 5.85 reports the cap. Two arms both at the cap are a
+TIE the referee reads as INCONCLUSIVE, never as a win — the floor is the cap
+itself, and it is built into the harness (experiments/recipe/tokens_to_ce.py).
+The control reached the target on seed 0 at 44.6M, so the cap is not binding
+for it; a seed where the control fails to reach it voids that seed and is
+re-registered rather than averaged in.
+"""
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed); only TRM_OPTIMIZER (+ MUON_LR_MULT) differs"
+notes = """
+512 opt steps per run (67.1M tokens), warmup 100, the cosine completing inside
+the run (TRAIN_TOKEN_BUDGET = 67,108,864), validation every 16 opt steps for
+resolution (2.1M tokens per probe). Val CE is on the 4-row probe: these runs
+predate the #184 changeover to 64 rows, and every arm here is scored on the
+same rows, so the comparison is matched; the ABSOLUTE numbers are not comparable
+to post-changeover runs. Note the referee's rules are 'lower is worse' by
+default (beats = treatment ahead = larger), so the criteria below compare
+control against treatment: 'adamw beats muon' in tokens means Muon needed fewer.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--tag", "026"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+
+[arms.adamw]
+role = "control"
+flags = ["--optimizer", "adamw"]
+
+[arms.muon]
+role = "treatment"
+flags = ["--optimizer", "muon", "--lr-mult", "100"]
+
+# Tokens: LOWER is better, so a Muon win is the CONTROL's number being larger.
+[criteria.muon_needs_fewer_tokens]
+rule = "beats"
+treatment = "adamw"
+control = "muon"
+sigmas = 2.0
+min_delta = 6.7
+points = ["run"]
+require = "all"
+
+[criteria.muon_needs_more_tokens]
+rule = "loses"
+treatment = "adamw"
+control = "muon"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["muon_needs_fewer_tokens"]
+kill_if = ["muon_needs_more_tokens"]
+
+[readouts]
+notes = """
+final_val_ce at the cap (the point estimate CLAUDE.md warns about; recorded, no
+weight); wall-clock per run (Newton-Schulz costs ~9% per token at 9 layers —
+the tokens metric does not include it, so a KEEP must also survive the wall-
+clock reading before the base run adopts Muon); arena peak per run.
+min_delta = 6.7M tokens is 15% of the control's seed-0 44.6M.
+"""
