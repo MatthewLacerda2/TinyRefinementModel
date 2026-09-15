@@ -129,7 +129,7 @@ def test_an_idle_card_leads_with_gpu_items_and_a_busy_one_does_not():
     assert ranked(idle) == {"tools": [2, 3, 1]}
     assert "card idle" in idle.next_step() and idle.next_step().startswith("#2")
     busy = build_queue(issues, [], BUSY)
-    assert ranked(busy) == {"tools": [3, 1]}, "gpu-only waits; the cpu half of a partial-cpu item is ready"
+    assert ranked(busy) == {"tools": [1, 3]}, "gpu-only waits; the rest keep the plain order"
     assert "card idle" not in busy.next_step()
 
 
