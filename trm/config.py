@@ -274,9 +274,16 @@ EVAL_ROWS = int(os.environ.get("EVAL_ROWS", "64"))
 # curriculum underneath it (the #157 run's train CE rose 3.20 -> 3.36 while the
 # model improved). A plateau is "the windowed val CE has not improved by
 # PLATEAU_MIN_DELTA for PLATEAU_PATIENCE opt steps". The bar must sit above the
-# probe's own noise or the detector is a coin flip; see instruments/probe_sigma.py
-# for the measured sigma the default is set from.
-PLATEAU_MIN_DELTA = float(os.environ.get("PLATEAU_MIN_DELTA", "0.005"))
+# probe's own noise or the detector is a coin flip. Measured 2026-09-15
+# (instruments/probe_sigma.py, one plain checkpoint, 6 disjoint slices):
+#   4 rows  mean 4.74  sigma 0.195   (readings 4.49 .. 5.06 — which rows you got)
+#   64 rows mean 4.78  sigma 0.097
+# That is the level error between slices; documents are heavy-tailed, so 16x
+# the rows only halves it. The detector watches ONE fixed slice, whose
+# probe-to-probe jitter during training measured 0.011 nats at 4 rows (#184);
+# 0.01 is set at that jitter, above what 64 rows should show, and 2x the old
+# 0.005 that sat below it.
+PLATEAU_MIN_DELTA = float(os.environ.get("PLATEAU_MIN_DELTA", "0.01"))
 PLATEAU_PATIENCE = int(os.environ.get("PLATEAU_PATIENCE", "400"))
 
 # Planned token budget for the run (#83) — env-overridable per run like the seeds,
