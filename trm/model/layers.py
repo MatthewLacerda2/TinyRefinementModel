@@ -3,8 +3,16 @@ import jax.numpy as jnp
 import optax
 from flax import nnx, struct
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_GROUPS, COMPUTE_DTYPE
+from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_HEADS, COMPUTE_DTYPE
 from trm.model.rope import rope_tables, apply_rope
+
+# GQA is a property of the retired reasoner only (#291): ~4 query heads per K/V
+# group. It lived in config as if it described the live model; the plain model's
+# attention projects full-width K and V. Kept here so the stored control
+# checkpoint (GQA-shaped K/V) stays loadable until the reasoner is tombstoned.
+REASONER_KV_GROUPS = NUM_HEADS // 4
+assert NUM_HEADS % REASONER_KV_GROUPS == 0, (
+    f"NUM_HEADS ({NUM_HEADS}) must be divisible by its GQA group count ({REASONER_KV_GROUPS})")
 
 @struct.dataclass
 class ScanStepOutput:
@@ -104,7 +112,7 @@ class RotaryAttention(nnx.Module):
 
 class StandardReasoningBlock(nnx.Module):
     def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=NUM_GROUPS, rngs=rngs)
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=REASONER_KV_GROUPS, rngs=rngs)
         self.norm1 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 

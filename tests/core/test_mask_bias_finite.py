@@ -4,8 +4,7 @@ The additive mask constant is -1e9; cast to f16 (max ~65504) it overflows to
 -inf, and any fully-masked row — e.g. a pad query position whose only visible
 keys are pad — turns its softmax row into NaN. The fix keeps the bias in f32
 into dot_product_attention (which adds it to f32 logits, so the f16
-tensor-core QK path is untouched), matching the contract the chunked path
-already made.
+tensor-core QK path is untouched).
 
 These tests build genuinely fully-masked rows in explicit f16 and require
 finite output from BOTH attention paths. The tiny shapes lower on the CPU
@@ -15,7 +14,6 @@ production f16 compile on the real device.
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 from flax import nnx
 
 from trm.model import layers
@@ -24,27 +22,25 @@ from trm.model.layers import RotaryAttention
 from trm.model.refiner import CausalAttention, CausalRefiner
 
 
-@pytest.mark.parametrize("chunked", [False, True], ids=["stock", "chunked"])
-def test_fully_masked_rows_stay_finite_in_f16(chunked):
+def test_fully_masked_rows_stay_finite_in_f16():
     """Batch element 1 has every key masked, so all its query rows are fully
     masked — the exact configuration that softmaxes to NaN with an -inf bias."""
     attn = CausalAttention(dim=32, num_heads=4, max_pos=16, rngs=nnx.Rngs(0),
-                           dtype=jnp.float16, chunked=chunked)
+                           dtype=jnp.float16)
     x = jnp.asarray(np.random.default_rng(0).normal(size=(2, 16, 32)), jnp.float16)
     pad_bias = jnp.zeros((2, 1, 1, 16), jnp.float32).at[1].set(-1e9)
 
     out = np.asarray(attn(x, pad_bias))
     assert np.isfinite(out).all(), (
-        f"non-finite attention output on fully-masked rows ({'chunked' if chunked else 'stock'} path)"
+        "non-finite attention output on fully-masked rows "
     )
 
 
-@pytest.mark.parametrize("chunked", [False, True], ids=["stock", "chunked"])
-def test_refiner_leading_pad_stays_finite_in_f16(chunked):
+def test_refiner_leading_pad_stays_finite_in_f16():
     """End-to-end: leading pad makes position 0's row see only pad keys (causal
     mask + key padding), a fully-masked row arising from a plain pad_mask."""
     model = CausalRefiner(dim=32, vocab_size=17, num_heads=4, num_encoder_layers=1,
-                          max_depth=2, max_seq_len=16, chunked_attention=chunked,
+                          max_depth=2, max_seq_len=16,
                           rngs=nnx.Rngs(1), dtype=jnp.float16)
     tokens = jnp.asarray(np.random.default_rng(1).integers(0, 17, size=(1, 16)), jnp.int32)
     pad_mask = jnp.asarray(np.arange(16) >= 2)[None, :]  # first two positions are pad

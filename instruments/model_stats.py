@@ -38,7 +38,6 @@ from trm.config import (
     MAX_STEPS_LIMIT,
     MODEL_ARCH,
     NUM_BLOCKS,
-    NUM_GROUPS,
     NUM_HEADS,
     PLAIN_LAYERS,
     POST_NORM,
@@ -153,7 +152,7 @@ def _reasoner_defaults():
         "dim": LATENT_DIM,
         "vocab_size": VOCAB_SIZE,
         "num_heads": NUM_HEADS,
-        "num_groups": NUM_GROUPS,
+        "num_groups": NUM_HEADS // 4,   # the reasoner's own constant (trm/model/layers.py); pinned by the test
         "num_blocks": NUM_BLOCKS,
         "shared_slots": SHARED_SLOTS,
         "max_depth": MAX_STEPS_LIMIT,

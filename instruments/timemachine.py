@@ -203,7 +203,7 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
         print(f"  # fork a NEW lineage (original {run_id} preserved):")
         print(f"  python -m instruments.timemachine fork {run_id} <new-name>")
         print("  # ...on the 6GB card, also export the run's memory knobs "
-              "(XLA_PYTHON_CLIENT_MEM_FRACTION, CHUNKED_ATTENTION, etc.) from its "
+              "(XLA_PYTHON_CLIENT_MEM_FRACTION etc.) from its "
               "launch env / system_snapshot.txt, or it will OOM.")
 
 

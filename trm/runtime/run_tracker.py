@@ -16,7 +16,6 @@ from trm.config import (
     ACCUMULATION_STEPS,
     PAD_TOKEN_ID,
     NUM_HEADS,
-    NUM_GROUPS,
     DATA_SEED,
     MODEL_SEED,
     TRAIN_TOKEN_BUDGET,
@@ -150,7 +149,6 @@ class RunTracker:
             "ACCUMULATION_STEPS": ACCUMULATION_STEPS,
             "PAD_TOKEN_ID": PAD_TOKEN_ID,
             "NUM_HEADS": NUM_HEADS,
-            "NUM_GROUPS": NUM_GROUPS,
             "DATA_SEED": DATA_SEED,
             "MODEL_SEED": MODEL_SEED,
             # The run's recipe horizon (#83): budget in, resolved anneal out.
@@ -171,7 +169,7 @@ class RunTracker:
             
             critical_keys = [
                 "LATENT_DIM", "NUM_BLOCKS", "SHARED_SLOTS", "MAX_SEQ_LEN", 
-                "VOCAB_SIZE", "NUM_HEADS", "NUM_GROUPS"
+                "VOCAB_SIZE", "NUM_HEADS"
             ]
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
