@@ -82,6 +82,8 @@ class Queue:
             lead = entries[0]
             if len(entries) == 1 or lead.unblocks:
                 return f"#{lead.number} — first ready {tier} issue ({lead.reason()})"
+            if self.card.free and "gpu" in lead.labels:
+                return f"#{lead.number} — card idle → gpu items first; first ready {tier} issue ({lead.reason()})"
             return (f"a {tier} issue — {len(entries)} are ready and the rules do not "
                     f"order them; that pick is a judgment call")
         return "nothing is ready"
@@ -154,7 +156,9 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
             tiers[tier].append(Entry(n, issue["title"], tier, labels, sorted(dependents.get(n, []))))
 
     for entries in tiers.values():
-        entries.sort(key=lambda e: (-len(e.unblocks), e.number))
+        # Unblockers lead. On an idle card, gpu-lane items lead too (#295): the
+        # card is the scarce resource, and an idle one is the waste to end first.
+        entries.sort(key=lambda e: (-len(e.unblocks), not (card.free and "gpu" in e.labels), e.number))
     return Queue(card, tiers, not_ready, needs_human)
 
 
@@ -221,6 +225,8 @@ def render(q: Queue) -> str:
         if not entries:
             continue
         note = UNORDERED.get(tier, "rules set no order within a tier; unblockers lead")
+        if q.card.free and any("gpu" in e.labels for e in entries):
+            note += "; card idle → gpu items first"
         lines.append(f"{tier}  ({note})")
         lines += [f"  #{e.number:<4} {e.title[:72]}\n        {e.reason()}" for e in entries]
         lines.append("")

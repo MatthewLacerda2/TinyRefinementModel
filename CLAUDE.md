@@ -35,6 +35,21 @@ Favor smoke tests and ablations, preferably tiny so we test fast and know exactl
 works and what doesn't. Knowing — pinning down what holds and what breaks — beats a
 speculative model improvement every time.
 
+**Just because something can run on the CPU does not mean it should.** A CPU toy run
+establishes that a mechanism works at all; a verdict about the language model comes
+only from the real model on the real data (depth recurrence passed its toy gate in
+June and was found suppressed on language in September, after a 10-day run). When the
+card is free, measure there — `experiments/recipe/tokens_to_ce.py` is the real
+trainer for a few hours per arm-seed. **Run-length tiers for real-model pairs** (the
+LR schedule completes in-run, ≥3 seeds, the readout is tokens-to-target, never CE at
+a fixed step): recipe knobs (LR, optimizer, weight decay, mix) ~512 opt steps ≈ 67M
+tokens ≈ 4h per arm-seed; architecture changes ~2,000 opt steps ≈ 260M tokens ≈ 15h
+per arm-seed (owner's call — past 48h with 3 seeds); anything a plain champion can
+warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
+means buildable without the card, not preferably measured without it**: the lane
+stays because cloud sessions build tooling while the card trains, but the
+measurement of an idea goes to the card.
+
 ## How we know something worked
 
 The user's instinct is to experiment a lot: try every idea several ways, pull pieces
@@ -244,8 +259,10 @@ another item* leads — whether it changes the implementation or changes how we 
 full training run is last because nothing depends on its output.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
-tier order, then issues other open issues are blocked by — and says so where they stop
-deciding (within a tier is judgment). It also surfaces labels it can check and that fail:
+tier order, then issues other open issues are blocked by, and **when the card is idle,
+`gpu`-lane items first within their tier** (an idle card is the scarce resource going
+to waste; see "measure there" above) — and says so where they stop deciding (within a
+tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 

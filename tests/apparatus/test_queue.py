@@ -119,3 +119,21 @@ def test_a_branch_with_old_commits_and_no_pr_is_stray_and_a_fresh_or_pr_backed_o
     ]
     assert stray_branches(branches, {"has-a-pr"}, now) == [("claude/nice-hypatia", 70)]
     assert stray_branches(branches, {"has-a-pr", "claude/nice-hypatia"}, now) == []
+
+
+# --- an idle card puts gpu-lane items first (#295) --------------------------------
+
+def test_an_idle_card_leads_with_gpu_items_and_a_busy_one_does_not():
+    issues = [issue(1, "tools", "cpu"), issue(2, "tools", "gpu"), issue(3, "tools", "gpu", "cpu")]
+    idle = build_queue(issues, [], FREE)
+    assert ranked(idle) == {"tools": [2, 3, 1]}
+    assert "card idle" in idle.next_step() and idle.next_step().startswith("#2")
+    busy = build_queue(issues, [], BUSY)
+    assert ranked(busy) == {"tools": [1, 3]}, "gpu-only waits; the rest keep the plain order"
+    assert "card idle" not in busy.next_step()
+
+
+def test_unblockers_still_outrank_the_idle_card_rule():
+    issues = [issue(1, "tools", "cpu"), issue(2, "tools", "gpu"),
+              issue(3, "tools", "cpu", "blocked", body="Blocked by #1")]
+    assert ranked(build_queue(issues, [], FREE))["tools"][0] == 1
