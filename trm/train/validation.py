@@ -48,19 +48,20 @@ class ValidationProbe:
     Runs inside the model's `isolated_state`, so whatever the training stream
     carries is restored afterwards and validating never perturbs training."""
 
-    def __init__(self, data_root):
+    def __init__(self, data_root, rows=VAL_ROWS, skip=VAL_SKIP_SAMPLES):
         self.data_root = data_root
+        self.rows, self.skip = rows, skip
         self._batches = None
 
     def _load(self):
         gen = TextDataGenerator(f"{self.data_root}/pretrain/fineweb-edu")
-        gen.skip_count = VAL_SKIP_SAMPLES
+        gen.skip_count = self.skip
         # One row per batch, independent of BATCH_SIZE (#24): this reproduces the
         # pre-#24 read pattern exactly — including where a file boundary lands
         # mid-slice — so the measured val CE stays comparable to every number
         # already recorded. Batching a 4-row probe would buy nothing anyway.
         batches = []
-        while len(batches) < VAL_ROWS:
+        while len(batches) < self.rows:
             row, _ = gen.get_batch(1)
             if row is None:
                 break

@@ -371,7 +371,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         # Best checkpoint: selected on held-out CE (#222), in a
                         # sibling dir so best-retention and rolling-latest
                         # retention never evict each other.
-                        if monitor.push_val(val_ce):
+                        if monitor.push_val(val_ce, opt_step):
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
                                             sft_phase_event.is_set(), run_tracker.run_id, wait=False)
 
@@ -445,7 +445,10 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()
 
-                plateaued = monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
+                monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
+                # Plateau is a property of HELD-OUT CE now (#184), advanced by the
+                # validation probe above on its own cadence; read here where it is acted on.
+                plateaued = monitor.plateaued
                 if plateaued and not sft_phase_event.is_set() and not SFT_ON_PLATEAU:
                     # Report it and keep pretraining. A plateau is a fact about the
                     # loss curve; it is not a verdict that the run is done, and at a
@@ -459,8 +462,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     # supervisor's guard working as a backstop.
                     if opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
                         last_plateau_notice = opt_step
-                        print(f"📉 [Plateau] CE flat for >{monitor.patience} opt steps "
-                              f"(best windowed CE {monitor.best_avg_ce:.4f}). Pretraining "
+                        print(f"📉 [Plateau] held-out CE flat for >{monitor.patience} opt steps "
+                              f"(best windowed val CE {monitor.best_avg_ce:.4f}). Pretraining "
                               f"continues — the SFT auto-flip is off (SFT_ON_PLATEAU).")
                     plateaued = False
 
