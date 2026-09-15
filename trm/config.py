@@ -196,35 +196,16 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 
 # Training
 MAX_STEPS_LIMIT = 8
-# BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
-# fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
-# ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
-# fatter micro-steps amortize it. #24 measured that on an idle card with
-# instruments.bench_train_step: +43% at depth 4 (5.0k -> 7.2k tok/s) and +40% at
-# depth 8 (4.2k -> 5.9k), and flipped this pair to 2/64.
+# BATCH_SIZE and ACCUMULATION_STEPS move together; their product is fixed, so the
+# token budget, the LR schedule and the learning dynamics are the same either way.
 #
-# BATCH_SIZE STAYS 1 — batch 2 does not fit the real trainer. It OOMs on its
-# first optimizer step at dim960/depth8, 2026-08-13. Re-measured for the plain
-# stack on 2026-09-13 with the exact allocator numbers: batch 2 leaves 45 MiB of
-# headroom at 8 layers and -371 MiB at 9, so the +43% lever stays dead at dim 960.
-#   XLA_PYTHON_CLIENT_MEM_FRACTION=0.85 -> RESOURCE_EXHAUSTED, 626MiB short inside
-#     the BFC arena (5222MB), with a fragmented free list
-#   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
-#     cannot instantiate a CUDA command buffer, 28 alive graphs (random-depth
-#     training compiles one program per sampled depth, x the accumulate/apply
-#     branches). Squeezed from both sides on a 6GB card.
-# bench_train_step times a grad step; it never ran the trainer, which also holds
-# the validation probe and the checkpoint managers. So the +40% was real for what
-# it measured and irrelevant to what we ship — every run that ever finished, both
-# July dim-960 base runs included, used 1/128 (see runs/*/run_metadata.json).
-# Don't re-flip this pair from a bench number alone: land it only after a real
-# trainer launch survives an optimizer apply. Note instruments.vram_headroom_smoke
-# will NOT catch it — it defaults to --batch 1, samples nvidia-smi under the
-# `platform` allocator rather than the trainer's preallocated BFC arena, and
-# reported batch 2 as *cheaper* than batch 1 here, which cannot be true.
-#
-# Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
-# and the learning dynamics are all identical either way: same model, same run.
+# BATCH_SIZE STAYS 1 at dim 960. Batch 2 does not fit the real trainer: it OOMs on
+# the first optimizer apply (2026-08-13), and the 2026-09-13 allocator numbers put
+# it at +45 MiB headroom at 8 layers and -371 MiB at 9. The bench's +40% tok/s for
+# batch 2 (#24) is real for a grad step and irrelevant to a trainer that also holds
+# the probe and the checkpoint managers. Re-flip only after a real trainer launch
+# survives an apply; neither bench_train_step nor vram_headroom_smoke can catch
+# the failure. History and numbers: docs/ROADMAP.md graveyard, "batch 2 at dim 960".
 BATCH_SIZE = 1
 ACCUMULATION_STEPS = 128
 # Target tokens consumed per optimizer step: each micro-step scores two
@@ -232,24 +213,13 @@ ACCUMULATION_STEPS = 128
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
 
 # Whether a CE plateau may flip a pretraining run into the SFT chat phase.
-# OFF, and it should stay off for any run whose product is a base model.
-#
-# This killed the #157 base run at opt step 5,055 of 30,518 (2026-08-15). The
-# detector fired, the trainer switched to the chat mixture and dropped the LR to
-# 10%, CE went 3.31 -> 8.57, and recreating the optimizer OOM'd the card. The
-# plateau itself was REAL — held-out val CE was flat at ~4.06 too — but a run at
-# 16% of its budget with the LR still at 9.9e-5 (the cosine has barely started)
-# has not converged; it is sitting in a basin it cannot leave until the anneal
-# brings the LR down. "Stopped improving" and "finished learning" are different
-# claims, and the detector cannot tell them apart.
-#
-# The supervisor already believed this: it greps the log for the flip and kills
-# the run "to protect the pretrain". One component deliberately triggered a
-# transition the other treated as an emergency — a leftover from when pretrain
-# and SFT were one script. The plateau is still detected and still reported; it
-# just no longer gets to end or contaminate a run. Set SFT_ON_PLATEAU=1 for a
-# run that genuinely wants the chat phase, and the supervisor's kill still
-# applies as a backstop.
+# OFF, and it stays off for any run whose product is a base model: "stopped
+# improving" and "finished learning" are different claims and the detector cannot
+# tell them apart. It killed the #157 base run at 16% of its budget (#182). The
+# plateau is still detected and reported; it just cannot end or contaminate a run.
+# Set SFT_ON_PLATEAU=1 only for a run that wants the chat phase; the supervisor's
+# kill still applies as a backstop. History: docs/ROADMAP.md graveyard,
+# "plateau-triggered SFT flip".
 SFT_ON_PLATEAU = os.environ.get("SFT_ON_PLATEAU", "0") == "1"
 
 # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
