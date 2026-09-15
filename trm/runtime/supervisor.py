@@ -793,18 +793,24 @@ def main(argv=None) -> int:
 
     print(f"outcome: {outcome}")
     if args.spec is not None and outcome == BUDGET_COMPLETE:
-        from instruments import base_run
-        steps = sorted(int(p.name) for p in (args.run_dir / "checkpoints").iterdir() if p.name.isdigit())
-        print(f"yardstick: scoring the final checkpoint (step {steps[-1]}) on the full LAMBADA set", flush=True)
-        entry = base_run.score_checkpoint(args.run_dir, args.run_dir / "checkpoints", step=steps[-1])
-        if entry is None:
-            print("yardstick FAILED — see yardstick.jsonl; no verdict", file=sys.stderr)
+        # The referee and the card live in instruments/, which trm/ never imports
+        # (tests/core/test_package_layout.py); they are run as commands.
+        def instrument(*what):
+            proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
+                                   "--spec", str(args.spec), "--run", str(args.run_dir)],
+                                  cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                                  capture_output=True, text=True)
+            return proc.returncode, (proc.stdout + proc.stderr).strip()
+        print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
+        code, out = instrument("score")
+        if code != 0:
+            print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
             return 1
-        v = base_run.verdict_for(args.spec, args.run_dir)
-        supervisor.announce(f"{_stamp()} {outcome} — LAMBADA acc {entry['lambada_acc']:.4f} / ppl "
-                            f"{entry['lambada_ppl']:.1f} — {v.describe()}")
-        card = base_run.write_model_card(args.run_dir, args.spec)
-        print(f"model card drafted: {card} (fill in the one-line summary)")
+        code, verdict_text = instrument("verdict")
+        supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
+        print(verdict_text)
+        code, card = instrument("card")
+        print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
     return 0 if outcome in DELIBERATE else 1
 
 

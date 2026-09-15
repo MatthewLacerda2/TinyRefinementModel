@@ -71,20 +71,29 @@ def test_the_card_reproduces_the_champions_fields_from_its_archived_metadata(tmp
 
 
 def test_a_launch_refuses_an_uncommitted_or_dirty_spec(tmp_path):
+    from trm.runtime import launch
     loose = tmp_path / "loose.toml"
     loose.write_text(SPEC.read_text())
-    assert "not committed" in base_run.spec_is_committed_and_clean(loose)
-    assert base_run.spec_is_committed_and_clean(REPO / "experiments/depth/specs/235-post-norm.toml") is None
+    assert "not committed" in launch.spec_refusal(loose)
+    assert launch.spec_refusal(REPO / "experiments/depth/specs/235-post-norm.toml") is None
+    assert launch.spec_budget_tokens(SPEC) == 4000000000
 
 
 def test_the_launcher_needs_a_spec_and_a_matching_budget(tmp_path, monkeypatch):
     from trm.runtime import launch
     with pytest.raises(SystemExit, match="no SPEC"):
         launch.main(["--budget", "4e9", "--dry-run"])
-    monkeypatch.setattr(base_run, "spec_is_committed_and_clean", lambda p: None)
+    monkeypatch.setattr(launch, "spec_refusal", lambda p: None)
     with pytest.raises(SystemExit, match="disagrees with the spec"):
         launch.main(["--budget", "1e9", "--spec", str(SPEC), "--dry-run"])
     launch.main(["--budget", "4e9", "--spec", str(SPEC), "--dry-run"])
+
+
+def test_trm_never_imports_the_instruments_it_drives():
+    import re
+    for f in ("trm/runtime/launch.py", "trm/runtime/supervisor.py"):
+        src = (REPO / f).read_text()
+        assert not re.search(r"^\s*(from|import) instruments", src, re.M), f
 
 
 def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypatch):

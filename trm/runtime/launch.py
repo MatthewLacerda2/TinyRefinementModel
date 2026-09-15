@@ -75,6 +75,27 @@ def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: in
                 runs_dir / f"{run_id}.supervisor.out")
 
 
+def spec_refusal(path, repo: pathlib.Path = RUNS_DIR.parent) -> str | None:
+    """Why a launch must refuse this spec, or None: it must be committed and clean.
+    A pre-registration that is not in git registers nothing."""
+    rel = os.path.relpath(pathlib.Path(path).resolve(), repo)
+    if subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=repo, capture_output=True).returncode != 0:
+        return f"{rel} is not committed — a pre-registration that is not in git registers nothing"
+    if subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=repo).returncode != 0:
+        return f"{rel} has uncommitted changes — commit the spec before launching against it"
+    return None
+
+
+def spec_budget_tokens(path) -> int:
+    import tomllib
+    with open(path, "rb") as f:
+        spec = tomllib.load(f)
+    try:
+        return int(spec["protocol"]["budget_tokens"])
+    except KeyError:
+        raise SystemExit(f"{path}: a base-run spec declares [protocol] budget_tokens (#294)") from None
+
+
 def refusal(p: Plan) -> str | None:
     """Why this launch must not happen, or None."""
     if p.run_dir.exists():
@@ -99,11 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.spec is None:
         raise SystemExit("no SPEC, no launch: a base run is pre-registered like everything else (#294) — "
                          "make launch SPEC=experiments/base/specs/<id>.toml BUDGET=…")
-    from instruments import base_run
-    why = base_run.spec_is_committed_and_clean(args.spec)
+    why = spec_refusal(args.spec)
     if why:
         raise SystemExit(f"refusing to launch: {why}")
-    spec_budget = int(base_run.load_base_spec(args.spec).meta["protocol"]["budget_tokens"])
+    spec_budget = spec_budget_tokens(args.spec)
     if spec_budget != int(args.budget):
         raise SystemExit(f"refusing to launch: --budget {int(args.budget):,} disagrees with the spec's "
                          f"budget_tokens {spec_budget:,}; change one, commit, relaunch")

@@ -51,18 +51,6 @@ def load_base_spec(path) -> referee.Spec:
     return spec
 
 
-def spec_is_committed_and_clean(path, repo=REPO) -> str | None:
-    """Why a launch must refuse this spec, or None."""
-    rel = os.path.relpath(pathlib.Path(path).resolve(), repo)
-    tracked = subprocess.run(["git", "ls-files", "--error-unmatch", rel], cwd=repo, capture_output=True)
-    if tracked.returncode != 0:
-        return f"{rel} is not committed — a pre-registration that is not in git registers nothing"
-    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=repo)
-    if dirty.returncode != 0:
-        return f"{rel} has uncommitted changes — commit the spec before launching against it"
-    return None
-
-
 def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False, arch=None,
                      python=sys.executable) -> dict | None:
     """Run the yardstick on a checkpoint and append one line to the run's journal."""
@@ -267,7 +255,10 @@ def main(argv=None) -> int:
         print(json.dumps(entry, indent=1) if entry else "yardstick failed — see the journal")
         return 0 if entry else 1
     if args.what == "verdict":
-        print(verdict_for(args.spec, run_dir).describe())
+        entry = completion_entry(run_dir)
+        v = verdict_for(args.spec, run_dir)
+        print(f"LAMBADA acc {entry['lambada_acc']:.4f} / ppl {entry['lambada_ppl']:.1f} — verdict: {v.outcome}")
+        print(v.describe())
         return 0
     print(write_model_card(run_dir, args.spec, args.out))
     return 0
