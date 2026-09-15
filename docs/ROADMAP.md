@@ -190,6 +190,15 @@ its PR.
   **Not killed:** the mechanism on tasks that need cumulative computation, and
   `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
 
+- **Chunked (blockwise) attention on the live block** — KILLED 2026-08-03, apparatus
+  removed 2026-09-15 (#291). Measured on the card against stock
+  `dot_product_attention` at seq 512: +1.1% peak memory, +13.3% wall-clock, both
+  gates failed — one score matrix is ~15 MB against a ~4.6 GB peak and remat already
+  recomputes it. Its last reason to exist ("re-test if #23 widens the context") died
+  when #23 closed wont-fix on 2026-07-24. Not novel (flash-style blocking is settled);
+  the #66 PR is the record. `trm/model/attention.py`, the `chunked` branch, the
+  `CHUNKED_ATTENTION` flag and `tests/core/test_chunked_attention.py` went with it.
+
 ### Post-mortems (non-novel; full record in PR history, guards in the tests)
 - **double-applied attention scaling** (pre-June 2026): q was pre-scaled by
   1/√head_dim on top of `dot_product_attention`'s own scaling, and it survived weeks

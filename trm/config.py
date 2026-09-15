@@ -62,16 +62,6 @@ VOCAB_SIZE = 50304
 # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
 # asserts pass (dim%heads==0, head_dim even for RoPE).
 NUM_HEADS = 15
-# Floor division *picks* the group count (~4 query heads per KV group); it does not
-# guarantee the divisibility the GQA K/V expansion needs, so assert it here. That
-# expansion is an integer jnp.repeat (layers.py), so a non-dividing pair fails far
-# from its cause: NUM_HEADS=14 quietly picks 3 groups, repeats K/V to 12 heads, and
-# crashes on a shape mismatch against Q's 14 inside attention.
-NUM_GROUPS = NUM_HEADS // 4
-assert NUM_HEADS % NUM_GROUPS == 0, (
-    f"NUM_HEADS ({NUM_HEADS}) must be divisible by NUM_GROUPS ({NUM_GROUPS}); "
-    "pick a head count whose //4 divides it (15→3 ✓, 16→4 ✓, 14→3 ✗)."
-)
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
@@ -121,21 +111,6 @@ if TIME_SIGNAL not in ("table", "sinusoidal"):
     raise SystemExit(
         f"TIME_SIGNAL={TIME_SIGNAL!r} is not a known time signal; "
         f"use one of table, sinusoidal (unset defaults to 'sinusoidal')")
-# Blockwise memory-lean attention for the refiner (#66): walks queries in blocks so
-# the full seq² score matrix never exists, recomputing block scores in the backward.
-# Same math as stock attention up to float summation order (f16 parity pinned in
-# tests/core/test_chunked_attention.py).
-#
-# STAYS OFF at seq 512 — gates run 2026-08-03 on the RTX 2060, both memory gates FAILED:
-#   peak (dim960/depth8, real f16):  4.58 -> 4.63 GB      (+1.1%, i.e. slightly worse)
-#   wall-clock, 3 matched trials:     449.6 -> 509.5 ms    (+13.3%, bar was <=+10%)
-# The premise didn't hold: one score matrix is 15x512x512x4B ~= 15 MB against a ~4.6 GB
-# peak, and remat already recomputes those activations rather than storing them — so
-# chunking re-solved a solved problem and added per-block buffers on top. What made it
-# look worthwhile was mem_profile's HLO table, which aggregates CUMULATIVE bytes, not
-# peak; the two sit 64x apart in that report (now labelled, see instruments/mem_profile).
-# Re-test if #23 widens the context: seq² grows 4x at 1024 and the trade may invert.
-CHUNKED_ATTENTION = os.environ.get("CHUNKED_ATTENTION", "0") == "1"
 
 # Optimizer selector (#26). Same fail-closed contract as MODEL_ARCH: a typo must
 # not silently train a whole run on the wrong optimizer.
