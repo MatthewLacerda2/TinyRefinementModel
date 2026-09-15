@@ -18,6 +18,7 @@ from trm.train.optimizers import _adamw, _muon
 
 
 def _run(tx_cls, inner, k, steps, seed=0):
+    from trm.train.grad_step import apply_grads
     model = build("plain", dim=60, num_layers=1, seed=seed)
     opt = nnx.Optimizer(model, tx_cls(inner, every_k_schedule=k, use_grad_mean=True), wrt=nnx.Param)
     key = jax.random.PRNGKey(1)
@@ -25,7 +26,7 @@ def _run(tx_cls, inner, k, steps, seed=0):
         key, sub = jax.random.split(key)
         grads = jax.tree_util.tree_map(lambda x: 0.01 * jax.random.normal(sub, x.shape, x.dtype),
                                        nnx.state(model, nnx.Param))
-        opt.update(model, grads)
+        apply_grads(opt, grads, model)  # optax.MultiSteps has no emits_next: updates every call, as optax does
     return ([np.asarray(x) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))],
             [np.asarray(x) for x in jax.tree_util.tree_leaves(opt.opt_state) if hasattr(x, "shape")])
 
@@ -48,7 +49,7 @@ def test_muon_params_are_bit_identical_too():
     assert _identical(ref_p, got_p)
 
 
-def test_the_inner_optimizer_runs_once_per_window():
+def test_the_inner_optimizer_runs_once_per_window_and_never_inside_a_branch():
     calls = []
 
     def counting(updates, state, params=None):
@@ -56,16 +57,18 @@ def test_the_inner_optimizer_runs_once_per_window():
         return updates, state
     inner = optax.GradientTransformation(lambda p: optax.EmptyState(), counting)
     model = build("plain", dim=60, num_layers=1)
-    opt = nnx.Optimizer(model, LazyMultiSteps(inner, every_k_schedule=4, use_grad_mean=True), wrt=nnx.Param)
+    tx = LazyMultiSteps(inner, every_k_schedule=4, use_grad_mean=True)
+    state = tx.init(nnx.state(model, nnx.Param))
     grads = jax.tree_util.tree_map(jnp.ones_like, nnx.state(model, nnx.Param))
-    for _ in range(8):
-        opt.update(model, grads)
-    # Traced once per compile, never per micro-step: the count is the number of traces,
-    # which is what a cond guarantees; a where-based MultiSteps would also trace once,
-    # so the real evidence is the GPU timing in the PR. This pins that it is a cond.
+    for i in range(8):
+        if tx.emits_next(state):
+            _, state = tx.update(grads, state)
+        else:
+            state = tx.accumulate(grads, state)
+    assert len(calls) == 2, "two windows of four: the inner optimizer ran exactly twice"
     import inspect
     from trm.train import accumulate
-    assert "jax.lax.cond(is_last, emit, accumulate" in inspect.getsource(accumulate)
+    assert "lax.cond" not in inspect.getsource(accumulate).split('"""', 2)[2], "no traced branch: it copied the whole state"
 
 
 def test_production_chain_is_the_lazy_one():

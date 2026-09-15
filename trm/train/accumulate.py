@@ -3,17 +3,24 @@
 optax.MultiSteps is jit-friendly in a way that costs the whole optimizer step
 every micro-step: its `_do_update` calls the inner transformation on every call
 and selects the result with `jnp.where(emit, ...)` (optax/transforms/
-_accumulation.py). For AdamW that is a wasted elementwise pass over 137M
-parameters 127 times per optimizer step — the flat ~69 ms per micro-step #24
-measured, a quarter of a batch-1 step. For Muon it is Newton–Schulz on every
-weight matrix 128 times per update, plus its temporaries, which is what pushed
-every Muon arm of #26 out of memory while the smoke's single apply fit fine.
+_accumulation.py). For AdamW that is a wasted pass over every parameter 127
+times per optimizer step; for Muon it is Newton–Schulz on every weight matrix
+128 times per update, with its temporaries — the transient that OOM'd every
+Muon arm of #26 while the smoke's single apply fit fine.
 
-This subclass keeps MultiSteps' state and its numbers exactly — the same Welford
-mean, the same inner update on the same accumulated gradient at the same step —
-and swaps the `where` for a `lax.cond`, so the inner transformation is traced
-into the program but executed only on the emitting micro-step. The non-emitting
-branch touches nothing but `acc_grads` and the counter.
+The first fix here wrapped the two branches in `lax.cond`. That removed the
+compute and added a worse transient: a cond cannot alias its operands to its
+outputs, so every micro-step copied the whole optimizer state plus the updates
+— 1.85 GiB at dim 960 — and the arms died again, ten to thirty opt steps in.
+
+So there is no branch inside the program at all. The trainer (through
+`grad_step.apply_grads`) knows from the optimizer's own counter whether this
+micro-step ends the window, and calls one of two jitted functions: `accumulate`,
+which folds the gradient into the running mean in place, or `update`, which folds
+it, runs the inner optimizer once, and resets. Both donate their buffers. The
+state is optax's MultiStepsState unchanged — same Welford mean, same inner update
+on the same accumulated gradient at the same step, so checkpoints restore either
+way and the numbers are bit-identical to optax.MultiSteps.
 """
 
 from __future__ import annotations
@@ -26,50 +33,44 @@ from optax.transforms._accumulation import MultiStepsState
 
 
 class LazyMultiSteps(optax.MultiSteps):
-    def update(self, updates, state, params=None, **extra_args):
+    def _fold(self, updates, state):
+        return jax.tree_util.tree_map(
+            lambda upd, acc: self._acc_update(upd, acc, n_acc=state.mini_step),
+            updates, state.acc_grads)
+
+    def emits_next(self, state) -> bool:
+        """Whether the next call ends the window. A host-side read of the counter,
+        so the caller can pick `accumulate` or `update` without a traced branch."""
         k_steps = self._every_k_schedule(state.gradient_step)
-        should_skip_update, skip_state = self._should_skip_update_fn(
-            updates, state.gradient_step, params)
+        return int(state.mini_step) == int(k_steps) - 1
 
-        def accumulate(updates, state, params):
-            """Fold this micro-step's gradient into the running mean; no optimizer."""
-            acc_grads = jax.tree_util.tree_map(
-                lambda upd, acc: self._acc_update(upd, acc, n_acc=state.mini_step),
-                updates, state.acc_grads)
-            new_state = MultiStepsState(
-                mini_step=numerics.safe_increment(state.mini_step) % k_steps,
-                gradient_step=state.gradient_step,
-                inner_opt_state=state.inner_opt_state,
-                acc_grads=acc_grads,
-                skip_state=skip_state)
-            return otree.zeros_like(updates), new_state
+    def accumulate(self, updates, state):
+        """A non-emitting micro-step: fold the gradient into the running mean."""
+        k_steps = self._every_k_schedule(state.gradient_step)
+        return MultiStepsState(
+            mini_step=numerics.safe_increment(state.mini_step) % k_steps,
+            gradient_step=state.gradient_step,
+            inner_opt_state=state.inner_opt_state,
+            acc_grads=self._fold(updates, state),
+            skip_state=state.skip_state)
 
-        def emit(updates, state, params):
-            """The window's last micro-step: the optimizer runs on the mean, once."""
-            acc_grads = jax.tree_util.tree_map(
-                lambda upd, acc: self._acc_update(upd, acc, n_acc=state.mini_step),
-                updates, state.acc_grads)
-            final_updates, new_inner_state = self._opt.update(
-                acc_grads, state.inner_opt_state, params=params, **extra_args)
-            new_state = MultiStepsState(
-                mini_step=numerics.safe_increment(state.mini_step) % k_steps,
-                gradient_step=numerics.safe_increment(state.gradient_step),
-                inner_opt_state=new_inner_state,
-                acc_grads=otree.zeros_like(acc_grads),
-                skip_state=skip_state)
-            return final_updates, new_state
+    def update(self, updates, state, params=None, **extra_args):
+        """The window's last micro-step: the optimizer runs on the mean, once.
 
-        def do_update(updates, state, params):
-            is_last = state.mini_step == (k_steps - 1)
-            return jax.lax.cond(is_last, emit, accumulate, updates, state, params)
-
-        def skip_update(updates, state, params):
-            return otree.zeros_like(updates), MultiStepsState(
-                mini_step=state.mini_step, gradient_step=state.gradient_step,
-                inner_opt_state=state.inner_opt_state, acc_grads=state.acc_grads,
-                skip_state=skip_state)
-
-        return jax.lax.cond(should_skip_update, skip_update, do_update, updates, state, params)
+        Only correct on an emitting step — `apply_grads` guarantees that by
+        checking `emits_next` first. Called on any other step it would apply the
+        inner optimizer to a partial mean."""
+        k_steps = self._every_k_schedule(state.gradient_step)
+        acc_grads = self._fold(updates, state)
+        final_updates, new_inner_state = self._opt.update(
+            acc_grads, state.inner_opt_state, params=params, **extra_args)
+        new_state = MultiStepsState(
+            mini_step=numerics.safe_increment(state.mini_step) % k_steps,
+            gradient_step=numerics.safe_increment(state.gradient_step),
+            inner_opt_state=new_inner_state,
+            acc_grads=otree.zeros_like(acc_grads),
+            skip_state=state.skip_state)
+        return final_updates, new_state
 
 
 def multi_steps(inner, every_k_schedule, use_grad_mean=True):

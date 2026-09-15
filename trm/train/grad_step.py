@@ -237,5 +237,29 @@ def dense_zero_frac_max(zero_fracs):
 # saved). The caller must not touch `grads` after this call — the trainer
 # samples its zero-frac telemetry BEFORE applying, for exactly this reason.
 @nnx.jit(donate_argnums=(0, 1, 2))
-def apply_grads(opt, grads, model):
+def _apply(opt, grads, model):
     opt.update(model, grads)
+
+
+@nnx.jit(donate_argnums=(0, 1))
+def _accumulate(opt, grads):
+    """Fold this micro-step's gradient into the optimizer's running mean, in place."""
+    state = nnx.pure(opt.opt_state)
+    new_state = opt.tx.accumulate(nnx.pure(nnx.state(grads, opt.wrt)), state)
+    nnx.update(opt.opt_state, nnx.state(new_state))
+
+
+def apply_grads(opt, grads, model):
+    """One micro-step's worth of optimizer work.
+
+    With an accumulating optimizer (trm/train/accumulate.py) that is either a
+    fold into the running mean or, on the window's last micro-step, the real
+    update — decided here from the optimizer's own counter, on the host, so no
+    branch is traced into the program and both paths donate their buffers. A
+    plain optimizer (the smokes' own optax chains) updates every call, as before.
+    """
+    tx = opt.tx
+    if hasattr(tx, "emits_next") and not tx.emits_next(nnx.pure(opt.opt_state)):
+        _accumulate(opt, grads)
+    else:
+        _apply(opt, grads, model)
