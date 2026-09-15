@@ -1,0 +1,102 @@
+# PRE-REGISTERED. The base run is the one experiment that costs a month of card
+# time and, until now, the only one launched without a spec (#294). One arm —
+# there is no control at this cost — judged against a CONSTANT reference arm: the
+# calibrated GPT-2-small yardstick (instruments/yardstick/yardstick.py).
+#
+# `make launch SPEC=experiments/base/specs/001-plain-base.toml BUDGET=<tokens>`
+# refuses if this file is not committed and clean, or if BUDGET disagrees with
+# `budget_tokens` below. The supervisor scores milestones on a LAMBADA subsample
+# (CPU, beside training) and the full set at completion (the card, once the
+# trainer has exited), then prints the referee's verdict beside BUDGET_COMPLETE
+# and drafts the model card.
+
+[experiment]
+id = "001-plain-base"
+status = "open"
+title = "Does the plain recipe, trained to its budget, reach GPT-2-small on LAMBADA?"
+hypothesis = """
+The live recipe — PlainTransformer at dim 960, 9 layers, f16 compute, tied
+embeddings, r50k, the fineweb-edu/code/math curriculum, AdamW with the schedule in
+trm/train/schedules.py — trained to `budget_tokens` reaches GPT-2-small's LAMBADA
+last-word accuracy (0.3256, calibrated in-repo, exact match to lm-eval-harness).
+
+This is CLAUDE.md's base-model bar: the validity check on the whole pipeline. A
+miss says the bug is in the data / LR / tokenizer / eval, not in any architecture
+idea, and gets fixed before clever work resumes.
+
+Prediction registered: MISS, by a wide margin, if launched at the current recipe.
+The 4B refiner champion scored 0.098 (#280 confirmed the eval); its own held-out
+ppl was healthy (38.4). The plain stack is the same block without the loop, and
+nothing in this recipe has changed since except the layer count. The one recipe
+lever with a plausible 3x in it is the peak LR (#287, never swept); the Muon pair
+(#26) is the other. Whichever of those the owner adopts, this spec's recipe fields
+are updated in the same commit — before launch, never after.
+"""
+issue = 294
+
+[protocol]
+floor_note = """
+The reference arm IS the floor: a constant, calibrated GPT-2-small (124M) measured
+by this repo's own yardstick code (calibrate_gpt2, 2026-07-04, matching
+lm-eval-harness lambada_openai exactly). Chance on LAMBADA last-word is ~0 (a
+50k-way pick), so a run at chance is far below the reference and reads as a KILL,
+never as parity. The reference has sigma 0 by construction; the run is one seed,
+so sigma is undefined and the criteria are absolute margins (min_delta), not sigma
+bars — stated here so nobody reads a 'beats at 0 sigma' as a statistical claim.
+"""
+metric_key = "lambada_acc"
+metric = "LAMBADA last-word accuracy on the full 5,153-example set (instruments.yardstick.eval_yardstick), at completion"
+matched = "n/a — a single arm against a published reference; observational, not causal"
+notes = """
+Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens):
+"""
+budget_tokens = 4000000000
+arch = "plain"
+layers = 9
+peak_lr = 1e-4
+warmup_steps = 1000
+curriculum_end_mix = "web 0.35 / code 0.40 / math 0.25"
+seeds = "MODEL_SEED=42, DATA_SEED=42"
+milestone_yardstick_limit = 1000
+
+[arms.plain]
+role = "treatment"
+flags = []
+
+[arms.gpt2_small]
+role = "floor"
+constant = true
+
+# The reference: acc 0.3256 / ppl 40.06. Declared as a summary with sigma 0, n 1.
+[results.run]
+gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }
+
+# KEEP: at or above the reference (a 0-sigma 'beats' is 'delta >= 0').
+[criteria.meets_the_bar]
+rule = "beats"
+treatment = "plain"
+control = "gpt2_small"
+sigmas = 0.0
+points = ["run"]
+require = "all"
+
+# KILL: more than 0.05 accuracy below it — the "fix the pipeline first" branch.
+[criteria.misses_by_a_margin]
+rule = "loses"
+treatment = "plain"
+control = "gpt2_small"
+sigmas = 0.0
+min_delta = 0.05
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["meets_the_bar"]
+kill_if = ["misses_by_a_margin"]
+
+[readouts]
+notes = """
+LAMBADA ppl beside the reference's 40.06; held-out ppl on our own corpus (the
+distribution-gap reading); the milestone subsample trajectory in
+runs/<run>/yardstick.jsonl; peak VRAM and wall-clock for the card. No weight.
+"""

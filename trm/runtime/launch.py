@@ -59,6 +59,7 @@ class Plan:
 
 
 def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: int | None = None,
+         spec: pathlib.Path | None = None,
          runs_dir: pathlib.Path = RUNS_DIR, python: str = sys.executable) -> Plan:
     run_dir = runs_dir / run_id
     stop = stop_step_for(budget_tokens, tokens_per_opt_step)
@@ -67,6 +68,7 @@ def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: in
             "--run-dir", str(run_dir),
             "--log", str(runs_dir / f"{run_id}.log"),
             *(["--issue", str(issue)] if issue is not None else []),
+            *(["--spec", str(spec)] if spec is not None else []),
             "--", "--checkpoint-path", str(run_dir / "checkpoints")]
     assert "--new-run" not in argv, "a relaunch would replay it and restart the run from scratch"
     return Plan(run_id, run_dir, stop, argv, {BUDGET_ENV: str(budget_tokens)},
@@ -87,14 +89,28 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--budget", type=float, default=None, help="token budget, e.g. 4e9 (required)")
     ap.add_argument("--issue", type=int, default=None, help="pinned issue the supervisor heartbeats into")
+    ap.add_argument("--spec", type=pathlib.Path, default=None,
+                    help="the pre-registered base-run spec (required): must be committed and clean, "
+                         "and its budget_tokens must equal --budget")
     ap.add_argument("--dry-run", action="store_true", help="print the launch, do nothing")
     args = ap.parse_args(argv)
     if args.budget is None:
         raise SystemExit("no BUDGET, no launch: pass --budget (make launch BUDGET=4e9)")
+    if args.spec is None:
+        raise SystemExit("no SPEC, no launch: a base run is pre-registered like everything else (#294) — "
+                         "make launch SPEC=experiments/base/specs/<id>.toml BUDGET=…")
+    from instruments import base_run
+    why = base_run.spec_is_committed_and_clean(args.spec)
+    if why:
+        raise SystemExit(f"refusing to launch: {why}")
+    spec_budget = int(base_run.load_base_spec(args.spec).meta["protocol"]["budget_tokens"])
+    if spec_budget != int(args.budget):
+        raise SystemExit(f"refusing to launch: --budget {int(args.budget):,} disagrees with the spec's "
+                         f"budget_tokens {spec_budget:,}; change one, commit, relaunch")
 
     from trm.config import TOKENS_PER_OPT_STEP
     run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue)
+    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue, spec=args.spec.resolve())
     print(f"run:        {p.run_dir}")
     print(f"budget:     {int(args.budget):,} tokens -> stop at opt step {p.stop_step:,} "
           f"({p.stop_step * TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
