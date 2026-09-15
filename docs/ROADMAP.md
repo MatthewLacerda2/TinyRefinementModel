@@ -191,6 +191,35 @@ its PR.
   `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
 
 ### Post-mortems (non-novel; full record in PR history, guards in the tests)
+- **batch 2 at dim 960** (#24, measured 2026-08-13 and re-measured 2026-09-13; the
+  numbers were carried as a 30-line comment on `BATCH_SIZE` until 2026-09-15): the
+  optimizer + global-norm clip over 138.7M params costs a flat ~69 ms per micro-step,
+  so fewer, fatter micro-steps amortize it — `bench_train_step` measured +43% tok/s
+  at depth 4 (5.0k → 7.2k) and +40% at depth 8 (4.2k → 5.9k), and the pair was
+  flipped to 2/64. It does not fit the real trainer: OOM on the first optimizer apply
+  at dim 960 / depth 8. `XLA_PYTHON_CLIENT_MEM_FRACTION=0.85` → RESOURCE_EXHAUSTED,
+  626 MiB short inside a fragmented 5,222 MB arena; at 0.95 the OOM moves *out* of
+  the arena — the driver cannot instantiate a CUDA command buffer with 28 alive
+  graphs (one compiled program per sampled depth × the accumulate/apply branches).
+  Re-measured for the plain stack with the cuda_async numbers: +45 MiB headroom at
+  8 layers, −371 MiB at 9. The bench never ran the trainer, which also holds the
+  validation probe and the checkpoint managers, so its +40% was real for what it
+  measured and irrelevant to what ships; every run that finished used 1/128.
+  `vram_headroom_smoke` cannot catch this either — it samples nvidia-smi under the
+  `platform` allocator and reported batch 2 as *cheaper* than batch 1. Reopens only
+  if a real trainer launch survives an apply at batch 2 (a ≥400 MiB headroom win
+  from #293 would be the trigger).
+- **plateau-triggered SFT flip** (#157 / #182, 2026-08-15): the CE-plateau detector
+  fired at opt step 5,055 of 30,518, the trainer switched to the chat mixture and
+  dropped the LR to 10%, CE went 3.31 → 8.57, and recreating the optimizer OOM'd the
+  card. The plateau was real — held-out val CE was flat at ~4.06 too — but a run at
+  16% of its budget with the LR still at 9.9e-5 (the cosine barely started) has not
+  converged; it sits in a basin it cannot leave until the anneal brings the LR down.
+  The supervisor already treated the flip as an emergency and killed the run "to
+  protect the pretrain": one component deliberately triggered a transition the other
+  treated as a crash, a leftover from when pretrain and SFT were one script. Fixed by
+  making the flip opt-in (`SFT_ON_PLATEAU`, default off); the signal itself is
+  #184's problem.
 - **double-applied attention scaling** (pre-June 2026): q was pre-scaled by
   1/√head_dim on top of `dot_product_attention`'s own scaling, and it survived weeks
   of training and log analysis — a scaled-twice softmax still trains, just worse.
