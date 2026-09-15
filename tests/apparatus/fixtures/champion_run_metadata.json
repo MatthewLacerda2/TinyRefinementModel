@@ -1,0 +1,81 @@
+{
+  "run_id": "run_20260813_214725",
+  "git_commit": "5455e4d2eb77ba015b5358ad6dc0ac7ab739eea8",
+  "git_branch": "main",
+  "git_dirty": true,
+  "parameters": {
+    "MODEL_ARCH": "refiner",
+    "LATENT_DIM": 960,
+    "NUM_BLOCKS": 8,
+    "SHARED_SLOTS": 32,
+    "MAX_SEQ_LEN": 512,
+    "VOCAB_SIZE": 50304,
+    "MAX_STEPS_LIMIT": 8,
+    "BATCH_SIZE": 1,
+    "ACCUMULATION_STEPS": 128,
+    "PAD_TOKEN_ID": 50256,
+    "NUM_HEADS": 15,
+    "NUM_GROUPS": 3,
+    "DATA_SEED": 42,
+    "MODEL_SEED": 42,
+    "TRAIN_TOKEN_BUDGET": 4000000000,
+    "DECAY_STEPS": 30518
+  },
+  "sections": [
+    {
+      "start_time": "2026-08-13T21:47:28.580642-03:00",
+      "end_time": "2026-08-15T15:16:54.192831-03:00",
+      "duration_seconds": 149365.61
+    },
+    {
+      "start_time": "2026-08-15T17:37:29.608049-03:00",
+      "end_time": "2026-08-16T01:45:27.345367-03:00",
+      "duration_seconds": 29277.74
+    },
+    {
+      "start_time": "2026-08-16T01:47:22.503746-03:00",
+      "end_time": "2026-08-17T17:54:52.075737-03:00",
+      "duration_seconds": 144449.57
+    },
+    {
+      "start_time": "2026-08-17T19:45:28.692023-03:00",
+      "end_time": null,
+      "duration_seconds": null
+    },
+    {
+      "start_time": "2026-08-17T19:46:31.445060-03:00",
+      "end_time": "2026-08-17T20:32:28.673917-03:00",
+      "duration_seconds": 2757.23
+    },
+    {
+      "start_time": "2026-08-17T21:04:39.807267-03:00",
+      "end_time": "2026-08-18T00:22:29.604906-03:00",
+      "duration_seconds": 11869.8
+    },
+    {
+      "start_time": "2026-08-18T03:33:52.836315-03:00",
+      "end_time": "2026-08-18T08:48:50.563481-03:00",
+      "duration_seconds": 18897.73
+    },
+    {
+      "start_time": "2026-08-18T17:19:31.971813-03:00",
+      "end_time": "2026-08-19T21:40:56.603017-03:00",
+      "duration_seconds": 102084.63
+    },
+    {
+      "start_time": "2026-08-19T21:46:07.512659-03:00",
+      "end_time": "2026-08-23T07:23:11.719159-03:00",
+      "duration_seconds": 293824.21
+    },
+    {
+      "start_time": "2026-08-23T07:27:36.726917-03:00",
+      "end_time": "2026-08-24T08:36:55.816744-03:00",
+      "duration_seconds": 90559.09
+    },
+    {
+      "start_time": "2026-08-24T08:39:42.749131-03:00",
+      "end_time": "2026-08-25T09:53:32.316754-03:00",
+      "duration_seconds": 90829.57
+    }
+  ]
+}
