@@ -51,6 +51,7 @@ class PlainTransformer(LanguageModel):
         self.pad_token_id = pad_token_id
         self.latent_dim = latent_dim
         self.dtype = dtype
+        self.max_seq_len, self.num_heads, self.head_dim = max_seq_len, num_heads, latent_dim // num_heads
         self.embed = nnx.Embed(vocab_size, latent_dim, rngs=rngs, dtype=dtype)
         self.blocks = nnx.List([
             Block(latent_dim, num_heads, max_seq_len, rngs, dtype,
@@ -139,10 +140,11 @@ class PlainTransformer(LanguageModel):
             # keeps ~a fifth of per-token compute from being spent on rows nobody
             # reads, which XLA cannot remove because the index is traced.
             z = jax.lax.dynamic_slice_in_dim(z, logits_at, 1, axis=1)
+        return LMOutput(logits=self._head(z), diag=diag)
+
+    def _head(self, z):
         embed_t = self.embed.embedding[...].astype(self.dtype).T
-        logits = jnp.matmul(z.astype(self.dtype), embed_t,
-                            preferred_element_type=jnp.float32)
-        return LMOutput(logits=logits, diag=diag)
+        return jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
 
     def capture_trajectory(self, tokens, depth=None):
         """The residual stream after every block, for instruments (#391).
@@ -156,3 +158,51 @@ class PlainTransformer(LanguageModel):
         del depth
         *_, states = self._stream(tokens, keep_states=True)
         return jnp.stack([state.astype(jnp.float32) for state in states]), None
+
+    # --- decoding with a KV cache (#153) -------------------------------------
+    # Generation used to re-run the whole padded window through every block for
+    # every emitted token: O(N * S^2) where O(N * S) is the honest cost. The cache
+    # holds every block's rotated K and V for the positions seen so far, and a
+    # step attends its one new query against them. Same math as the full window:
+    # a position's keys are exactly those at or before it either way; only the
+    # float reduction order over the (masked, zero-weight) tail differs.
+
+    def prefill(self, tokens):
+        """Run an unpadded prompt [b, n], fill the caches, return the logits for
+        the next token ([b, vocab]) and the caches."""
+        b, n = tokens.shape
+        tokens = jnp.clip(tokens, 0, self.embed.embedding.shape[0] - 1)
+        positions = jnp.arange(n)
+        z = self.embed(tokens)
+        caches = []
+        for blk in self.blocks:
+            k, v = blk.attn.kv(blk.norm1(z), positions)
+            cache_k = jnp.zeros((b, self.max_seq_len, self.num_heads, self.head_dim), k.dtype).at[:, :n].set(k)
+            cache_v = jnp.zeros((b, self.max_seq_len, self.num_heads, self.head_dim), v.dtype).at[:, :n].set(v)
+            caches.append((cache_k, cache_v))
+            z = blk(z)
+        z = self.out_norm(z[:, -1:, :])
+        return self._head(z)[:, 0, :], caches
+
+    def decode_step(self, token, caches, pos):
+        """One new token [b, 1] at absolute position `pos` (traced): logits for
+        the token after it, and the caches with this position written."""
+        token = jnp.clip(token, 0, self.embed.embedding.shape[0] - 1)
+        positions = jnp.full((1,), pos, dtype=jnp.int32)
+        keep = jnp.arange(self.max_seq_len) <= pos                       # keys at or before pos
+        bias = jnp.where(keep, 0.0, -1e9)[None, None, None, :]           # [1, 1, 1, L]
+        z = self.embed(token)
+        new_caches = []
+        for blk, (cache_k, cache_v) in zip(self.blocks, caches):
+            h = blk.norm1(z)
+            k, v = blk.attn.kv(h, positions)
+            cache_k = jax.lax.dynamic_update_slice_in_dim(cache_k, k, pos, axis=1)
+            cache_v = jax.lax.dynamic_update_slice_in_dim(cache_v, v, pos, axis=1)
+            new_caches.append((cache_k, cache_v))
+            attn_out = blk.attn.attend(h, cache_k, cache_v, bias, positions)
+            z = z + (blk.attn_out_norm(attn_out) if blk.post_norm else attn_out)
+            h2 = blk.norm2(z)
+            mlp_out = blk.down_proj(jax.nn.silu(blk.gate_proj(h2)) * blk.up_proj(h2))
+            z = z + (blk.mlp_out_norm(mlp_out) if blk.post_norm else mlp_out)
+        z = self.out_norm(z)
+        return self._head(z)[:, 0, :], new_caches
