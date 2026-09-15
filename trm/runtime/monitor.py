@@ -1,7 +1,9 @@
 class LossMonitor:
     """Tracks the held-out best for checkpointing and detects plateaus for phase changes."""
 
-    def __init__(self, patience=400, window=20, min_delta=0.005):
+    def __init__(self, patience=400, window=4, min_delta=0.005):
+        # `window` counts VALIDATION readings (one per VAL_EVERY_OPT_STEPS), not
+        # logging rows: 4 readings at the 64-step cadence is a 256-step smoothing.
         self.patience = patience
         self.window = window
         self.min_delta = min_delta
@@ -12,6 +14,7 @@ class LossMonitor:
         # Best held-out CE, the one thing `best_val_ce/` is selected on (#222).
         self.best_val_ce = float("inf")
         self.last_improvement_step = 0
+        self._plateaued = False
         # Step at which the SFT phase began; None while still pretraining.
         self.sft_start_step = None
         # Samples the data pipeline has served (#24). Restored from the
@@ -29,34 +32,27 @@ class LossMonitor:
         self.best_avg_ce = float("inf")
         self.best_val_ce = float("inf")
         self.last_improvement_step = step
+        self._plateaued = False
 
     def push(self, step, ce_loss, total_loss):
-        """Record one logging-window observation.
+        """Record one logging-window observation of TRAIN CE: the raw bests only.
 
-        Returns True when the windowed CE average has not improved for
-        `patience` steps — the plateau signal the trainer acts on (switch to
-        SFT, or halt if already there).
+        The plateau signal used to be computed here, on train CE, which the
+        curriculum moves underneath it (#184); it now lives in push_val.
         """
-        self.ce_history.append(ce_loss)
-        if len(self.ce_history) > self.window:
-            self.ce_history.pop(0)
-
         self.best_ce = min(self.best_ce, ce_loss)
         self.best_loss = min(self.best_loss, total_loss)
 
-        # Early stopping logic (windowed average)
-        avg_ce = sum(self.ce_history) / len(self.ce_history)
-        # A small epsilon for early-stopping stability.
-        if avg_ce < (self.best_avg_ce - self.min_delta):
-            self.best_avg_ce = avg_ce
-            self.last_improvement_step = step
-            return False
+    @property
+    def plateaued(self):
+        """Whether the windowed held-out CE has failed to improve by `min_delta`
+        for more than `patience` opt steps, as of the last push_val."""
+        return self._plateaued
 
-        return (step - self.last_improvement_step) > self.patience
-
-    def push_val(self, val_ce):
+    def push_val(self, val_ce, step=None):
         """Record one held-out CE. True when it is a new best — the trigger for
-        saving `best_val_ce/`.
+        saving `best_val_ce/`. With `step`, also advances the plateau detector:
+        `ce_history` (checkpointed) is the window of recent val readings.
 
         Train CE used to be the trigger (#222). It is per-batch noisy, so the
         tracker latched onto a lucky window early and never beat it again while
@@ -64,7 +60,15 @@ class LossMonitor:
         each lucky window also cost a 1.7GB write (#174). Val CE is scored on the
         same held-out text every time, so an improvement is an improvement.
         """
-        if val_ce < self.best_val_ce:
-            self.best_val_ce = val_ce
-            return True
-        return False
+        is_best = val_ce < self.best_val_ce
+        self.best_val_ce = min(self.best_val_ce, val_ce)
+        if step is not None:
+            self.ce_history.append(val_ce)
+            if len(self.ce_history) > self.window:
+                self.ce_history.pop(0)
+            avg_ce = sum(self.ce_history) / len(self.ce_history)
+            if avg_ce < (self.best_avg_ce - self.min_delta):
+                self.best_avg_ce = avg_ce
+                self.last_improvement_step = step
+            self._plateaued = (step - self.last_improvement_step) > self.patience
+        return is_best

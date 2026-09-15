@@ -221,7 +221,8 @@ def exit_cleanly_on_sigterm():
 
 
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
-    monitor = LossMonitor()
+    from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
+    monitor = LossMonitor(patience=PLATEAU_PATIENCE, min_delta=PLATEAU_MIN_DELTA)
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
