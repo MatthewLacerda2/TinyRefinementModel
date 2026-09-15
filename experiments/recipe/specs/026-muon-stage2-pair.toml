@@ -55,6 +55,9 @@ command = ["python", "-m", "experiments.recipe.tokens_to_ce",
            "--target-ce", "5.85", "--opt-steps", "512", "--tag", "026"]
 seeds = [0, 1, 2]
 seed_flag = "--seed"
+# Pinned to the probe the seed-0 arms were scored on: #184 widens EVAL_ROWS to 64
+# on main, and a pair must score every seed on the same rows.
+env = { EVAL_ROWS = "4", PLAIN_LAYERS = "9" }
 
 [arms.adamw]
 role = "control"
