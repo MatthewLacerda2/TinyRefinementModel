@@ -574,6 +574,13 @@ class Supervisor:
     # (hourly at the default poll) while the issue stays at heartbeat_every.
     log_every: int = 12
     env: dict = field(default_factory=dict)
+    # The pre-registered base-run spec (#294). With one, every new milestone
+    # checkpoint is scored on a LAMBADA subsample on the CPU, beside training,
+    # and the journal line lands in <run-dir>/yardstick.jsonl.
+    spec: pathlib.Path | None = None
+    milestone_limit: int = 1000
+    _scored: set = field(default_factory=set)
+    _scorers: list = field(default_factory=list)
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -633,6 +640,9 @@ class Supervisor:
             elif polls % self.log_every == 0:
                 self.record(line)
 
+            if self.spec is not None:
+                self.score_new_milestones()
+
             if decision.action == CONTINUE:
                 continue
             if decision.action in (STOP, KILL):
@@ -646,6 +656,26 @@ class Supervisor:
                 proc = self.launch()
                 started = time.time()
                 self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
+
+    def score_new_milestones(self) -> None:
+        """Every finalized milestone gets one CPU yardstick pass, detached, never
+        two: the card stays the trainer's, and a scorer that outlives this poll
+        is fine — the journal is append-only."""
+        run_dir = self.metrics_csv.parent
+        milestones = run_dir / "checkpoints" / "milestones"
+        if not milestones.is_dir():
+            return
+        for marker in sorted(milestones.glob("*/_CHECKPOINT_METADATA")):
+            step = marker.parent.name
+            if step in self._scored:
+                continue
+            self._scored.add(step)
+            self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU")
+            self._scorers.append(subprocess.Popen(
+                [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                 "--limit", str(self.milestone_limit), "--cpu"],
+                cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
 
     def record(self, message: str) -> None:
         """Append one line to the heartbeat file, opened and closed per line so no
@@ -705,6 +735,9 @@ def main(argv=None) -> int:
                          "the heartbeat file gets one hourly regardless). "
                          "Every decision — kill, relaunch, completion — reports "
                          "regardless; this only paces the no-news case")
+    ap.add_argument("--spec", type=pathlib.Path, default=None,
+                    help="the pre-registered base-run spec (#294): milestones get a CPU yardstick, "
+                         "completion gets the full yardstick, the referee's verdict and a model card")
     ap.add_argument("--skip-fit-gate", action="store_true",
                     help="launch without first proving the config survives an apply, a probe and a "
                          "checkpoint (#168) — only when you know it fits")
@@ -732,6 +765,7 @@ def main(argv=None) -> int:
         metrics_csv=args.run_dir / "metrics.csv",
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
+        spec=args.spec,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
@@ -758,6 +792,25 @@ def main(argv=None) -> int:
         lock.release()
 
     print(f"outcome: {outcome}")
+    if args.spec is not None and outcome == BUDGET_COMPLETE:
+        # The referee and the card live in instruments/, which trm/ never imports
+        # (tests/core/test_package_layout.py); they are run as commands.
+        def instrument(*what):
+            proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
+                                   "--spec", str(args.spec), "--run", str(args.run_dir)],
+                                  cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                                  capture_output=True, text=True)
+            return proc.returncode, (proc.stdout + proc.stderr).strip()
+        print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
+        code, out = instrument("score")
+        if code != 0:
+            print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
+            return 1
+        code, verdict_text = instrument("verdict")
+        supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
+        print(verdict_text)
+        code, card = instrument("card")
+        print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
     return 0 if outcome in DELIBERATE else 1
 
 

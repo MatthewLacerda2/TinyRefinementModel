@@ -5,7 +5,7 @@
 #                                since one process for both has been OOM-killed on this box)
 #   make test-affected           only the tests a change can reach; fails open to `make test`
 #   make gate                    VRAM headroom of the config a launch would train (#161)
-#   make launch BUDGET=4e9       a supervised base run; refuses without BUDGET
+#   make launch SPEC=… BUDGET=…  a supervised base run; refuses without a committed spec or BUDGET
 #   make report RUN=run_...      the terminal report and plots for a run
 #
 # `make launch` is gated: the supervisor first runs the real trainer for ~5 minutes and
@@ -32,8 +32,9 @@ gate:
 	$(PY) -m instruments.vram_headroom_smoke
 
 launch:
-	@test -n "$(BUDGET)" || { echo "no BUDGET, no launch: make launch BUDGET=4e9 [ISSUE=157]"; exit 2; }
-	$(PY) -m trm.runtime.launch --budget $(BUDGET) $(if $(ISSUE),--issue $(ISSUE),)
+	@test -n "$(BUDGET)" || { echo "no BUDGET, no launch: make launch SPEC=experiments/base/specs/<id>.toml BUDGET=4e9 [ISSUE=157]"; exit 2; }
+	@test -n "$(SPEC)" || { echo "no SPEC, no launch: the base run is pre-registered (#294)"; exit 2; }
+	$(PY) -m trm.runtime.launch --budget $(BUDGET) --spec $(SPEC) $(if $(ISSUE),--issue $(ISSUE),)
 
 report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }
