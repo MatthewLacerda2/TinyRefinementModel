@@ -27,6 +27,8 @@ was never in question, and two copies would drift.
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import os as _os
+_MUT = _os.environ.get("TRM_MUTATION", "none")  # PROBE ONLY (#330), never merged
 
 from trm.config import (
     COMPUTE_DTYPE,
@@ -84,6 +86,8 @@ class PlainTransformer(LanguageModel):
 
         pad_mask = tokens != self.pad_token_id
         pad_bias = ((pad_mask.astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
+        if _MUT == 'pad_mask_dropped':
+            pad_bias = None
 
         z = self.embed(tokens)
         # Peak |activation| through the stack, carried out on `diag` so it lands in
@@ -100,6 +104,8 @@ class PlainTransformer(LanguageModel):
         act_max = jnp.max(jnp.abs(z.astype(jnp.float32)))
         for blk in self.blocks:
             z = blk(z, pad_bias)
+            if _MUT == 'one_ulp_block_out':
+                z = z * jnp.float32(1.0000001)
             act_max = jnp.maximum(act_max, jnp.max(jnp.abs(z.astype(jnp.float32))))
         z = self.out_norm(z)
         diag = {"act_max": jax.lax.stop_gradient(act_max)}

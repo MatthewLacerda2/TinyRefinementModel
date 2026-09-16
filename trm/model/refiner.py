@@ -14,6 +14,8 @@ harness tests the thing we'd ship, not a stand-in. See docs/design/plan-a.md.
 import jax
 import jax.numpy as jnp
 from flax import nnx
+import os as _os
+_MUT = _os.environ.get("TRM_MUTATION", "none")  # PROBE ONLY (#330), never merged
 
 from trm.model.rope import rope_tables, apply_rope
 
@@ -50,11 +52,13 @@ class CausalAttention(nnx.Module):
         # the compute dtype. Cast q/k back so all three match (dot_product_attention
         # requires it) and attention takes the tensor-core path. No-op in f32 (CPU /
         # toy harness); the real-scale f16 run needs it.
-        q = q.astype(x.dtype)
+        q = ((q / jnp.sqrt(self.head_dim)) if _MUT == 'attn_double_scaled' else q).astype(x.dtype)
         k = k.astype(x.dtype)
 
         pos = jnp.arange(s)
         causal = pos[:, None] >= pos[None, :]                   # [s, s], True = allowed
+        if _MUT == 'causal_mask_dropped':
+            causal = jnp.ones((s, s), dtype=bool)
         bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
         if pad_bias is not None:
             bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
@@ -92,6 +96,8 @@ class Block(nnx.Module):
 
     def __call__(self, x, pad_bias=None):
         attn_out = self.attn(self.norm1(x), pad_bias)
+        if _MUT.startswith('attn_resid_'):
+            attn_out = attn_out * (1 + float(_MUT[len('attn_resid_'):]))
         x = x + (self.attn_out_norm(attn_out) if self.post_norm else attn_out)
         h = self.norm2(x)
         mlp_out = self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))

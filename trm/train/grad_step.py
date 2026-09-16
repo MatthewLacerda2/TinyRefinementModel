@@ -1,5 +1,7 @@
 import jax
 from flax import nnx
+import os as _os
+_MUT = _os.environ.get("TRM_MUTATION", "none")  # PROBE ONLY (#330), never merged
 import jax.numpy as jnp
 import optax
 
@@ -45,6 +47,8 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
         embedding = model.embed.embedding[...]
 
         seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
+        if _MUT == 'target_off_by_one':
+            seq1_out = batch_tokens[:, 0:MAX_SEQ_LEN]
         seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
 
         out1 = model(seq1_in, depth=depth, training=True, new_document=new_document)

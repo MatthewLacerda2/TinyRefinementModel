@@ -1,160 +1,27 @@
 name: CI
 
-# Trigger policy (#110): skip draft PRs (parked partial-cpu work re-triggers via
-# ready_for_review the moment it's undrafted, so nothing merges unchecked) and
-# markdown-only changes (paths-ignore skips only when EVERY changed file is .md —
-# a mixed .md+code diff still runs everything).
+# MUTATION PROBE for #330 / #322 — never merged. Each matrix entry sets
+# TRM_MUTATION, which the probe-only hooks in trm/ read, and runs the golden test
+# plus the model invariants. "none" is the control: it must pass.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**.md"]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore: ["**.md"]
 
-# Three named jobs so each load-bearing check is a separately visible (and
-# separately requireable) status (#45):
-#   pytest (CPU)        — the tiered unit/invariant suite: tests/core (properties
-#                         the model must always have) then tests/apparatus (the
-#                         research harnesses and instruments). Two steps, one
-#                         job: they share the pip install, and a failure names
-#                         its tier. Both gate the merge — an apparatus that rots
-#                         quietly is worse than one that fails loudly; the cure
-#                         for accumulation is deletion at tombstone time, not
-#                         skipping (tests/README.md).
-#   golden-run (CPU)    — the opt-in loss-trajectory regression on the shipped
-#                         arch, forced on here. Compared within 10x the measured
-#                         cross-machine noise, so it catches numeric changes of
-#                         a real bug's size, not one-ULP drift (#322)
-#   overfit smoke (CPU) — end-to-end training-path smoke at tiny scale: the
-#                         real grad step must collapse CE on one batch
-#   lint                — errors and bugs only, never formatting (see the ruff
-#                         config in pyproject.toml). Its job is to catch the
-#                         class of defect that costs a run: an unused import
-#                         masking a rename, a shadowed name, an f-string that
-#                         silently prints nothing. Then vulture, for dead code
-#                         ruff cannot see from inside one file: a function, class
-#                         or constant nothing references. Needs no jax, so it
-#                         finishes in seconds and fails fast ahead of the slow jobs.
-#   audit (specs)       — the validity audit over the experiment specs a change
-#                         can reach (#304): floor, seeds, sigma, pre-registration
-#                         order in git, verdict reproducibility, finding cites
-#                         spec. Judges whether a verdict can be TRUSTED, never
-#                         what it is. Scoped by the diff; needs no jax either.
-# CPU-only throughout (FORCE_F32_COMPUTE via tests/conftest.py or explicit env)
-# so CI runs while the GPU trains; the real f16 path stays RUN_TESTS_ON_GPU=1.
-
-# Each job carries the draft guard (an `if` on the job, since a workflow can't
-# be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
-  lint:
-    name: lint (ruff + vulture)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+  probe:
+    name: probe (${{ matrix.mutation }})
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Install ruff and vulture
-        # The pins come from requirements.txt so there is one version to bump, but
-        # only those lines are installed — the rest of the file pulls jax, which this
-        # job has no use for. Pinned at all because an unpinned linter turns
-        # "upstream shipped a new rule" into a red build on an unrelated PR.
-        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)"
-
-      - name: Ruff
-        # Rule selection lives in pyproject.toml, so local `ruff check .` and CI
-        # are the same check — no flags to keep in sync in two places.
-        run: ruff check .
-
-      - name: Dead code (vulture)
-        # Paths, confidence and the few names read by reflection live in
-        # [tool.vulture] in pyproject.toml, so `make lint` is the same check. A
-        # finding means delete it. A name that is used without being referenced —
-        # read by reflection, or a module attribute a checkpoint's param tree still
-        # needs to load — goes in ignore_names with its reason, never a lower bar.
-        run: vulture
-
-      - name: No stray branches
-        # A pushed branch with no PR and no commit in a week is work nobody can
-        # find: #74 sat finished on one for ten weeks. Fails the build on main so
-        # it surfaces within days. Needs only the token the runner already has.
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python -m instruments.queue --strays
-
-  audit:
-    name: audit (specs)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # The audit reads each spec's commit history (criteria-predate-results)
-          # and diffs against main for scope; a depth-1 checkout has neither.
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Audit the specs this change can reach
-        # No jax: the audit reads TOML, findings and git. Scope is the diff, never a
-        # person's choice (#304) — a push's commit range on main, the merge-base
-        # with main on a PR. Nothing reachable changed -> "nothing an audit can
-        # reach changed", green. `--all` is the on-demand full sweep.
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            python -m instruments.audit --since "${{ github.event.before }}"
-          else
-            python -m instruments.audit --base origin/main
-          fi
-
-  test:
-    name: pytest (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
-    env:
-      # CPU-only CI for the unit tests; no GPU/CUDA, no training runs.
-      JAX_PLATFORMS: cpu
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          # Matches the local environment (requirements.txt header: Python 3.14).
-          python-version: "3.14"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # requirements.txt pins jax[cuda12] for the RTX 2060 box; CUDA wheels
-          # can't install on a CPU runner. Install the same jax VERSION as a CPU
-          # build, then the rest of the file with the cuda jax line stripped.
-          pip install "jax==0.9.1"
-          grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
-
-      - name: Core suite
-        run: pytest tests/core -q
-
-      - name: Apparatus suite
-        run: pytest tests/apparatus -q
-
-  golden:
-    name: golden-run (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mutation: [none, attn_double_scaled, causal_mask_dropped, target_off_by_one,
+                   attn_resid_1e-2, attn_resid_1e-3, attn_resid_1e-4, attn_resid_1e-5,
+                   one_ulp_block_out, pad_mask_dropped]
     env:
       JAX_PLATFORMS: cpu
       RUN_GOLDEN: "1"
+      TRM_MUTATION: ${{ matrix.mutation }}
     steps:
       - uses: actions/checkout@v4
 
@@ -169,42 +36,8 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
-      - name: Runner CPU (the golden noise floor is measured per CPU model, #322)
+      - name: Runner CPU
         run: grep -m1 "model name" /proc/cpuinfo
 
-      - name: Golden trajectory + reference numerics + determinism
-        # The loss-trajectory regression (opt-in locally, mandatory here), plus
-        # the reference-numerics suite (caught the double-applied attention
-        # scaling) and step determinism (same-process repeatability; it says
-        # nothing about identity across machines, which the golden tolerates).
-        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q
-
-  smoke:
-    name: overfit smoke (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
-    runs-on: ubuntu-latest
-    env:
-      JAX_PLATFORMS: cpu
-      FORCE_F32_COMPUTE: "1"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install "jax==0.9.1"
-          grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
-
-      - name: Overfit one synthetic batch (tiny config)
-        # The real grad step must drive CE down on a single fixed batch — wrong
-        # labels, target off-by-ones, broken gradient flow, and dead loss terms
-        # fail here in minutes. Tiny dim/blocks so it's CPU-fast; the full-scale
-        # variant stays a pre-launch GPU check (instruments.overfit_smoke defaults).
-        # --dim must divide config NUM_HEADS (15 since the dim960 config, #109) with an
-        # even head_dim for RoPE: 60/15 = 4. The old --dim 64 broke on 15 heads.
-        run: PYTHONPATH=. python -m instruments.overfit_smoke --synthetic --dim 60 --blocks 2 --steps 80
+      - name: Golden + invariants under the mutation
+        run: pytest tests/expensive/test_golden_run.py tests/core/test_model_invariants.py -rA
