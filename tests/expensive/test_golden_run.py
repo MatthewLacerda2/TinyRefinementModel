@@ -67,6 +67,7 @@ def _trajectory():
 @pytest.mark.skipif(bool(os.environ.get("RUN_TESTS_ON_GPU")), reason="golden values are recorded under the CPU/f32 test mode")
 def test_grad_steps_match_golden_trajectory():
     got = _trajectory()
+    print("GOLDEN_TRAJECTORY " + json.dumps(got))  # TEMPORARY: noise measurement for #322
 
     if not os.path.exists(GOLDEN_PATH):
         os.makedirs(os.path.dirname(GOLDEN_PATH), exist_ok=True)

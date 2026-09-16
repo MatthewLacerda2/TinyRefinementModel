@@ -168,12 +168,15 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
+      - name: Runner CPU (TEMPORARY, #322 noise measurement)
+        run: grep -m1 "model name" /proc/cpuinfo
+
       - name: Golden trajectory + reference numerics + determinism
         # The exact-loss-trajectory regression (opt-in locally, mandatory here),
         # plus the two test classes that catch silent numeric drift: the
         # reference-numerics suite (caught the double-applied attention scaling)
         # and step determinism (what makes golden comparisons meaningful at all).
-        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q
+        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q -s
 
   smoke:
     name: overfit smoke (CPU)
