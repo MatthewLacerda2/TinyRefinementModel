@@ -21,11 +21,11 @@ Static analysis (1) and the HLO scan (2) work even when actually running would O
 this is usable precisely when you need it most. ``--run`` additionally executes one step
 and reads the driver's peak / largest-allocation stats (skip it if the config OOMs).
 
-Set the architecture you want in config.py (LATENT_DIM, NUM_HEADS) first — both arches
-read it — then:
+Set the size you want in config.py (LATENT_DIM, NUM_HEADS) first — every arch reads
+it. `--arch` defaults to MODEL_ARCH, so with no flag this profiles what a launch trains:
 
-    PYTHONPATH=. python -m instruments.mem_profile --arch refiner --depth 8
-    PYTHONPATH=. python -m instruments.mem_profile --arch reasoner --depth 8 --top 15
+    python -m instruments.mem_profile
+    python -m instruments.mem_profile --arch refiner --depth 8 --top 15
 """
 
 import os
@@ -40,6 +40,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from instruments.arch import add_arch_argument, build
 from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -54,13 +55,6 @@ _DT_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "s32": 4, "s8": 1, "u32": 4, "pred":
 
 def _gib(n):
     return f"{n / 1024**3:7.3f} GiB"
-
-
-def _build(arch):
-    # Shared selector (instruments/arch.py), not a private branch: a private one is
-    # how this file kept building the refiner after the default stopped being it.
-    from instruments.arch import build
-    return build(arch, dim=LATENT_DIM)
 
 
 def _top_hlo_shapes(hlo_text, top):
@@ -81,15 +75,19 @@ def _top_hlo_shapes(hlo_text, top):
 
 def main():
     ap = argparse.ArgumentParser(description="grad-step VRAM profiler")
-    ap.add_argument("--arch", choices=["reasoner", "refiner"], default="reasoner")
-    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="reasoning depth (8 = deepest, peak)")
+    add_arch_argument(ap)
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
+                    help="refinement/reasoning depth (the deepest is the peak); inert for plain, "
+                         "which has no depth dial")
     ap.add_argument("--top", type=int, default=12, help="how many largest HLO shapes to list")
     ap.add_argument("--run", action="store_true", help="also execute one step (skip if it OOMs)")
     args = ap.parse_args()
 
     from trm.train.grad_step import compute_grad_step
 
-    model = _build(args.arch)
+    # Shared selector (instruments/arch.py), not a private branch: a private one is
+    # how this file kept building the refiner after the default stopped being it.
+    model = build(args.arch, dim=LATENT_DIM)
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     print(f"arch={args.arch}  dim={LATENT_DIM}  heads={NUM_HEADS}  "
           f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
