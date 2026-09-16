@@ -20,8 +20,17 @@ from trm.config import (
     MODEL_SEED,
     TRAIN_TOKEN_BUDGET,
     MODEL_ARCH,
+    PLAIN_LAYERS,
+    TRM_OPTIMIZER,
+    MUON_LR_MULT,
 )
-from trm.train.schedules import DECAY_STEPS
+from trm.train.schedules import DECAY_STEPS, WARMUP_STEPS
+
+# The validation-probe cadence the run used. It is declared in trm/train/trainer.py,
+# which imports this module, so it cannot be imported back — the same duplicate-with-a-
+# pointer that trm/runtime/launch.py keeps for CHECKPOINT_EVERY_OPT_STEPS, and
+# tests/core/test_rolling_checkpoint.py holds the two together.
+VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
 
 class RunTracker:
     def __init__(self, runs_root="runs"):
@@ -154,6 +163,16 @@ class RunTracker:
             # The run's recipe horizon (#83): budget in, resolved anneal out.
             "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
             "DECAY_STEPS": DECAY_STEPS,
+            # Env knobs a reader cannot recover from anything else (#305). Every
+            # one of these is read from *this process's* environment at import, so
+            # a tool that reads them from its own config describes itself, not the
+            # run: the plotter crashed rebuilding a 512-step arm's LR schedule with
+            # a 1000-step warmup, and labelled a plain run with the refiner's depth.
+            "WARMUP_STEPS": WARMUP_STEPS,
+            "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
+            "PLAIN_LAYERS": PLAIN_LAYERS,
+            "TRM_OPTIMIZER": TRM_OPTIMIZER,
+            "MUON_LR_MULT": MUON_LR_MULT,
         }
 
     def _check_compatibility(self, metadata_path):

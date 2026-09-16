@@ -11,10 +11,11 @@ Three images, split by audience (#179):
   throughput_progress.png tokens/sec from metrics.csv's wall_clock (#186) — or,
                           for runs older than that column, sampled from the
                           supervisor's heartbeats — progress against the budget, ETA.
-  optimization_health.png gradient norm, sampled depth, zero-grad fraction,
-                          logit health.
+  optimization_health.png gradient norm, arena-peak VRAM, zero-grad fraction,
+                          logit health — plus sampled depth on the architectures
+                          that have one.
 
-Two rules this instrument exists to enforce:
+Three rules this instrument exists to enforce:
 
 1. **A panel whose data is absent is omitted, not drawn flat.** The previous
    version drew three panels of reasoner-only quantities (temporal drift,
@@ -27,6 +28,15 @@ Two rules this instrument exists to enforce:
    whole network — on the wrong architecture, while the card is busy — is the
    defect this rewrite removes. Parameter counts come analytically from
    `instruments.model_stats`.
+3. **Everything the figure says about the run comes from the run** (#305).
+   `trm.config` describes the interpreter drawing the picture — its
+   environment, its defaults — not the run on disk, and reading the two as one
+   is a whole class of bug: a 512-step arm crashed because this process's
+   1000-step warmup left the cosine a negative horizon; a `plain` run was
+   labelled `depth ≤8` and given the refiner's depth panel; every val CE line
+   was annotated "every 64 optimizer steps" whatever the run used. `RunConfig`
+   is the one place that resolves this, from the run's own metadata, and it
+   says which values it had to fall back on.
 
 Everything here is CPU-only and read-only: it reads a CSV and two log files
 and writes PNGs. It is safe to run against a live run.
@@ -54,24 +64,33 @@ import numpy as np  # noqa: E402
 
 from instruments.runlog import load  # noqa: E402
 from instruments.invariants import clean_column, suspect_rows  # noqa: E402
-from trm.config import (  # noqa: E402
-    LATENT_DIM,
-    MAX_STEPS_LIMIT,
-    MODEL_ARCH,
-    TOKENS_PER_OPT_STEP,
-    TRAIN_TOKEN_BUDGET,
-    VOCAB_SIZE,
+# Imported as a module, and used ONLY as RunConfig's fallback for runs that did
+# not record a value: every constant in here describes this process (#305).
+from trm import config as this_process  # noqa: E402
+from trm.train.schedules import (  # noqa: E402
+    WARMUP_STEPS,
+    build_learning_schedule,
+    resolve_decay_steps,
 )
-from trm.train.schedules import build_learning_schedule, resolve_decay_steps  # noqa: E402
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "training curves": ("measured", "metrics.csv as recorded, rows failing an invariant dropped"),
     "throughput (wall_clock)": ("measured", "Δtokens ÷ Δwall-clock between metrics.csv rows at least 30 min apart"),
     "throughput (older runs)": ("sampled", "tokens between supervisor heartbeats, for runs without wall_clock"),
+    "arena peak VRAM": ("measured", "peak_bytes_in_use read from the allocator itself, logged on every metrics row"),
 }
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# The allocator's ceiling on this card, measured rather than guessed. Production
+# runs under cuda_async at XLA_PYTHON_CLIENT_MEM_FRACTION 0.85 (trm/train/start.py),
+# where memory_stats() reports bytes_limit = 4,883 MiB on the 6GB RTX 2060 —
+# instruments/vram_headroom_smoke reads it there, and trm/config.py's layer table
+# is the same number from the other side (4,437 MiB peak + 446 MiB headroom at 9
+# layers; 4,112 + 771 at 8). nvidia-smi cannot see this: cuda_async holds the whole
+# pool, so it reads ~5,003 MiB whatever the trainer is actually using.
+ARENA_LIMIT_MIB = 4883.0
 
 # ── palette ──────────────────────────────────────────────────────────────────
 # Dark surface (it screenshots well), but the steps are the validated dark
@@ -131,19 +150,25 @@ def available(runlog, name):
     return runlog.has(name) and not runlog.is_constant(name, 0.0)
 
 
-def why_omitted(runlog, columns):
+ARCH_ABSENT = "not measured by this architecture"
+
+
+def why_omitted(runlog, columns, absent=ARCH_ABSENT):
     """None when at least one of these columns is worth drawing, else the reason
-    the panel is being dropped — in the reader's words, not the code's."""
+    the panel is being dropped — in the reader's words, not the code's. A column
+    that is missing for some other reason than the architecture (a telemetry
+    field added after the run) passes its own `absent`."""
     if any(available(runlog, column) for column in columns):
         return None
     if any(runlog.has(column) for column in columns):
         return "constant 0 throughout — logged, but not a measurement"
-    return "not measured by this architecture"
+    return absent
 
 
-def series(runlog, name, suspect=None):
+def series(runlog, name, cfg=None, suspect=None):
     """(tokens, values) for a column, cleaned. Empty arrays if it has no data.
 
+    Steps become tokens at the *run's* tokens-per-opt-step, not this process's.
     Rows failing an invariant (#195) are dropped here rather than in each caller,
     so no figure can accidentally plot one. The resume artifact (#194) puts a
     ~40% downward spike in the curve otherwise — a dip the model never had.
@@ -152,7 +177,7 @@ def series(runlog, name, suspect=None):
         return np.array([]), np.array([])
     bad = suspect_rows(runlog) if suspect is None else suspect
     steps, values = _clean(*clean_column(runlog, name, bad))
-    return steps * TOKENS_PER_OPT_STEP, values
+    return steps * (cfg or RunConfig.of(runlog)).tokens_per_opt_step, values
 
 
 def smooth(y, window):
@@ -219,20 +244,174 @@ def _note(ax, text, size=8):
 
 # ── run context (metadata, supervisor heartbeats) ────────────────────────────
 
-def budget_and_horizon(runlog):
-    """(token budget, LR decay steps) for the *plotted* run.
+class RunConfig:
+    """What the *plotted run* was configured as, read from its own metadata.
 
-    Both come from the run's own metadata when it recorded them: the budget is
-    an environment variable read at launch, so `config.TRAIN_TOKEN_BUDGET` in
-    this process describes this process, not the run on disk. Falling back to
-    the config is only for runs written before the tracker. Budget may be None
-    (no budget was set), in which case the LR horizon is all we can draw."""
-    params = runlog.metadata.get("parameters", {})
-    budget = params.get("TRAIN_TOKEN_BUDGET", TRAIN_TOKEN_BUDGET)
-    decay = params.get("DECAY_STEPS")
-    if decay is None:
-        decay = resolve_decay_steps(budget)
-    return budget, int(decay)
+    `run_metadata.json`'s `parameters` block is the run's recipe as it was at
+    launch. Anything it did not record falls back to this process's `trm.config`
+    — the only option for runs written before the tracker recorded that key, and
+    a guess, which is why `recorded()` exists: a panel that cannot trust a value
+    can say so instead of drawing a confident wrong picture.
+    """
+
+    def __init__(self, metadata):
+        params = (metadata or {}).get("parameters")
+        self.params = params if isinstance(params, dict) else {}
+
+    @classmethod
+    def of(cls, runlog):
+        return cls(getattr(runlog, "metadata", {}))
+
+    def recorded(self, key):
+        """Did the run itself record this, or are we about to guess?"""
+        return self.params.get(key) is not None
+
+    def value(self, key, fallback, cast=None):
+        value = self.params.get(key)
+        if value is None:
+            return fallback
+        try:
+            return cast(value) if cast else value
+        except (TypeError, ValueError):  # a hand-edited metadata file
+            return fallback
+
+    # ── what model this was ──
+    @property
+    def arch(self):
+        return self.value("MODEL_ARCH", this_process.MODEL_ARCH, str)
+
+    @property
+    def latent_dim(self):
+        return self.value("LATENT_DIM", this_process.LATENT_DIM, int)
+
+    @property
+    def layers(self):
+        return self.value("PLAIN_LAYERS", this_process.PLAIN_LAYERS, int)
+
+    @property
+    def max_depth(self):
+        return self.value("MAX_STEPS_LIMIT", this_process.MAX_STEPS_LIMIT, int)
+
+    @property
+    def vocab_size(self):
+        return self.value("VOCAB_SIZE", this_process.VOCAB_SIZE, int)
+
+    @property
+    def max_seq_len(self):
+        return self.value("MAX_SEQ_LEN", this_process.MAX_SEQ_LEN, int)
+
+    # ── how it was trained ──
+    @property
+    def optimizer(self):
+        return self.value("TRM_OPTIMIZER", this_process.TRM_OPTIMIZER, str)
+
+    @property
+    def muon_lr_mult(self):
+        return self.value("MUON_LR_MULT", this_process.MUON_LR_MULT, float)
+
+    @property
+    def warmup_steps(self):
+        return self.value("WARMUP_STEPS", WARMUP_STEPS, int)
+
+    @property
+    def budget(self):
+        """Planned token budget, or None when the run was launched without one."""
+        return self.value("TRAIN_TOKEN_BUDGET", this_process.TRAIN_TOKEN_BUDGET)
+
+    @property
+    def tokens_per_opt_step(self):
+        """Each micro-step scores two windows; accumulation × batch of them make
+        one optimizer step. Derived from the run's own recipe when it recorded
+        all three, because a run at a different batch recipe is mis-scaled by
+        this process's constant."""
+        keys = ("ACCUMULATION_STEPS", "BATCH_SIZE", "MAX_SEQ_LEN")
+        if all(self.recorded(key) for key in keys):
+            accumulation, batch, seq_len = (int(self.params[key]) for key in keys)
+            return accumulation * batch * 2 * seq_len
+        return this_process.TOKENS_PER_OPT_STEP
+
+    @property
+    def micro_steps(self):
+        """Micro-steps folded into one optimizer step (accumulation × batch)."""
+        return max(1, self.tokens_per_opt_step // (2 * self.max_seq_len))
+
+    @property
+    def decay_steps(self):
+        """The LR anneal's horizon in optimizer steps, as the run resolved it."""
+        if self.recorded("DECAY_STEPS"):
+            return self.value("DECAY_STEPS", None, int)
+        if self.budget:
+            return max(1, round(self.budget / self.tokens_per_opt_step))
+        return resolve_decay_steps(None)
+
+
+def describe(cfg):
+    """The one line that says which model this run trained — the identifying
+    facts, per architecture. `depth ≤N` is one of them for the two looping
+    arches and meaningless for the plain stack, which has N distinct blocks and
+    no loop; the optimizer is one of them for every run (#26 trains matched arms
+    that differ in nothing else).
+
+    A fact the run did not record is named as missing rather than filled in from
+    this process: PLAIN_LAYERS was 8 before 2026-09-13 and is 9 now, and printing
+    an adamw run's label on a muon run is precisely the failure this whole issue
+    is about."""
+    parts = [cfg.arch, f"dim {cfg.latent_dim}"]
+    if cfg.arch != "plain":
+        parts.append(f"depth ≤{cfg.max_depth}")
+    elif cfg.recorded("PLAIN_LAYERS"):
+        parts.append(f"{cfg.layers} layers")
+    else:
+        parts.append("layer count not recorded")
+
+    if not cfg.recorded("TRM_OPTIMIZER"):
+        parts.append("optimizer not recorded")
+    elif cfg.optimizer == "muon" and cfg.recorded("MUON_LR_MULT"):
+        parts.append(f"muon (LR ×{cfg.muon_lr_mult:g} on matrices)")
+    else:
+        parts.append(cfg.optimizer)
+    return " · ".join(parts)
+
+
+def lr_schedule(cfg):
+    """(schedule, None), or (None, why the LR panel cannot be drawn).
+
+    Rebuilding the anneal needs the run's warmup, and runs written before #305
+    did not record it. Substituting this process's `WARMUP_STEPS` is what made
+    the plotter *crash* on every short arm: a 512-step horizon minus a 1000-step
+    warmup is a negative cosine, and optax refuses it. So when the warmup we hold
+    does not fit the run's horizon, the panel is omitted with the reason said out
+    loud — the same rule the diagnostic sheets follow for a column nobody
+    measured."""
+    if cfg.warmup_steps < cfg.decay_steps:
+        return build_learning_schedule(cfg.decay_steps, warmup_steps=cfg.warmup_steps), None
+    if cfg.recorded("WARMUP_STEPS"):
+        return None, (f"the run's warmup ({cfg.warmup_steps:,} steps) covers its whole "
+                      f"{cfg.decay_steps:,}-step horizon — there is no anneal to draw")
+    return None, (f"this run did not record its warmup, and this process's "
+                  f"WARMUP_STEPS={WARMUP_STEPS:,} does not fit its {cfg.decay_steps:,}-step "
+                  f"horizon — the schedule cannot be rebuilt, only guessed at "
+                  f"(re-run with WARMUP_STEPS set to the run's own to draw it)")
+
+
+def val_cadence(runlog, cfg):
+    """(optimizer steps between held-out probes, how we know), or (None, None).
+
+    The run's own knob when it recorded one, else read off the val_ce rows —
+    which is still a measurement of this run. Never this process's default:
+    `VAL_EVERY_OPT_STEPS` is an env knob, and the note that used to read "every
+    64 optimizer steps" was wrong for every ablation arm (they run 16).
+
+    The observed figure is the mean gap, not the median. The probe fires on its
+    own cadence but its value is only written on the next *logged* row, so a
+    probe every 16 steps logged every 5 lands at 20, 35, 50, 65, 80, 100 — gaps
+    of 15, 15, 15, 15, 20, whose median is 15 and whose mean is exactly 16."""
+    if cfg.recorded("VAL_EVERY_OPT_STEPS"):
+        return cfg.value("VAL_EVERY_OPT_STEPS", None, int), "recorded"
+    steps, _ = runlog.column("val_ce")
+    if len(steps) < 2:
+        return None, None
+    return int(round((steps[-1] - steps[0]) / (len(steps) - 1))), "observed"
 
 
 _HEARTBEAT = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+\w+:\s*step\s+(\d+)/")
@@ -293,34 +472,48 @@ def _perplexity_axis(ax):
     return twin
 
 
-def _param_count():
-    """Headline parameter count, analytic. Guarded: the figures are worth
-    drawing even if the stats module is unavailable — but the model is never
-    built to get this number."""
+def _param_count(cfg):
+    """Headline parameter count, analytic, for the shape the *run* trained.
+    Guarded: the figures are worth drawing even if the stats module is
+    unavailable — but the model is never built to get this number."""
     try:
         from instruments.model_stats import total_params
 
-        return int(total_params())
+        shape = {"dim": cfg.latent_dim, "vocab_size": cfg.vocab_size,
+                 "max_seq_len": cfg.max_seq_len}
+        if cfg.arch == "plain":
+            shape["num_layers"] = cfg.layers
+        else:
+            shape["max_depth"] = cfg.max_depth
+        return int(total_params(cfg.arch, **shape))
     except Exception:
         return None
 
 
 def training_curve(runlog, outdir):
-    tokens, ce = series(runlog, "ce")
+    cfg = RunConfig.of(runlog)
+    tokens, ce = series(runlog, "ce", cfg)
     if len(ce) == 0:
         print(f"training_curve: skipped — CE is {why_omitted(runlog, ['ce'])}.")
         return None
 
-    val_tokens, val_ce = series(runlog, "val_ce")
+    val_tokens, val_ce = series(runlog, "val_ce", cfg)
     if not len(val_ce):
         print(f"training_curve: no val CE line — {why_omitted(runlog, ['val_ce'])}.")
-    budget, decay_steps = budget_and_horizon(runlog)
-    horizon = budget if budget else decay_steps * TOKENS_PER_OPT_STEP
+    budget, decay_steps = cfg.budget, cfg.decay_steps
+    tokens_per_step = cfg.tokens_per_opt_step
+    horizon = budget if budget else decay_steps * tokens_per_step
     done = tokens[-1]
 
-    fig = plt.figure(figsize=(13.5, 8.6))
+    # The LR panel is conditional like every other: a schedule we cannot rebuild
+    # is omitted with its reason, never approximated.
+    schedule, no_schedule = lr_schedule(cfg)
+    if no_schedule:
+        print(f"training_curve: no LR panel — {no_schedule}.")
+
+    fig = plt.figure(figsize=(13.5, 8.6 if schedule else 6.6))
     grid = fig.add_gridspec(2, 1, height_ratios=[3.0, 1.0], hspace=0.55)
-    ax = fig.add_subplot(grid[0])
+    ax = fig.add_subplot(grid[0] if schedule else grid[:])
     window = smoothing_window(len(ce))
 
     ax.plot(tokens, ce, color=BLUE, alpha=0.22, linewidth=1.0)
@@ -330,10 +523,10 @@ def training_curve(runlog, outdir):
         ax.plot(val_tokens, val_ce, color=ORANGE, linewidth=1.8, marker="o",
                 markersize=3, label="held-out val CE")
 
-    uniform = math.log(VOCAB_SIZE)
+    uniform = math.log(cfg.vocab_size)
     if ce.max() > uniform * 0.9:
         ax.axhline(uniform, color=INK_DIM, linewidth=0.9, alpha=0.5)
-        ax.text(tokens[0], uniform, f" uniform over {VOCAB_SIZE:,} vocab ({uniform:.2f} nats)",
+        ax.text(tokens[0], uniform, f" uniform over {cfg.vocab_size:,} vocab ({uniform:.2f} nats)",
                 fontsize=8, color=INK_DIM, va="bottom")
 
     _log_y(ax)
@@ -341,8 +534,8 @@ def training_curve(runlog, outdir):
     _token_axis(ax)
     ax.set_xlim(0, done * 1.06)
 
-    steps_axis = ax.secondary_xaxis("top", functions=(lambda t: t / TOKENS_PER_OPT_STEP,
-                                                      lambda s: s * TOKENS_PER_OPT_STEP))
+    steps_axis = ax.secondary_xaxis("top", functions=(lambda t: t / tokens_per_step,
+                                                      lambda s: s * tokens_per_step))
     steps_axis.set_xlabel("optimizer steps", fontsize=9)
 
     # Direct labels on the two endpoints; the axis carries everything else.
@@ -355,45 +548,61 @@ def training_curve(runlog, outdir):
     _perplexity_axis(ax)
     _legend(ax, loc="upper right", bbox_to_anchor=(1.0, 0.93))
 
-    params = _param_count()
-    subtitle = f"{MODEL_ARCH} · dim {LATENT_DIM} · depth ≤{MAX_STEPS_LIMIT}"
+    params = _param_count(cfg)
+    subtitle = describe(cfg)
     if params:
-        subtitle += f" · {params / 1e6:.1f}M params"
+        # A count built partly from this process's config is marked as such: a
+        # plain block is ~10.6M params, so an unrecorded layer count moves this
+        # number by more than its own precision.
+        shape_recorded = cfg.recorded("PLAIN_LAYERS" if cfg.arch == "plain" else "MAX_STEPS_LIMIT")
+        subtitle += f" · {'' if shape_recorded else '~'}{params / 1e6:.1f}M params"
     subtitle += f"  |  {fmt_tokens(done)} tokens"
     if budget:
         subtitle += f" of {fmt_tokens(budget)} ({100 * done / budget:.1f}% of budget)"
     ax.set_title(f"{runlog.run_id} — training curve\n{subtitle}", loc="left", linespacing=1.6)
+    cadence, known = val_cadence(runlog, cfg)
+    if known == "recorded":
+        measured = f"measured every {cadence:,} optimizer steps."
+    elif known == "observed":
+        measured = (f"measured about every {cadence:,} optimizer steps — read off its own rows, "
+                    "since the run did not record the cadence.")
+    else:
+        measured = "measured on the run's own cadence."
     _note(ax, "train CE is the second window of each document (more context than the first); "
-              "val CE is a held-out probe, measured every 64 optimizer steps.")
+              f"val CE is a held-out probe, {measured}")
 
     # ── LR panel: the whole horizon, so the anneal is visible against progress
-    ax_lr = fig.add_subplot(grid[1])
-    schedule = build_learning_schedule(decay_steps)
-    sched_steps = np.linspace(0, decay_steps, 400)
-    ax_lr.plot(sched_steps * TOKENS_PER_OPT_STEP, [float(schedule(s)) for s in sched_steps],
-               color=AQUA, linewidth=1.8)
-    # A finished run can overshoot its horizon by a few steps; keep the marker
-    # inside the panel so its label does not float off the edge.
-    now = min(done, horizon)
-    ax_lr.axvspan(0, now, color=INK, alpha=0.06)
-    ax_lr.axvline(now, color=INK_DIM, linewidth=1.0)
-    ax_lr.annotate(f"now · {fmt_tokens(done)}", (now, 1.0), xycoords=("data", "axes fraction"),
-                   xytext=(-5 if now > 0.85 * horizon else 5, -10), textcoords="offset points",
-                   fontsize=8.5, color=INK, ha="right" if now > 0.85 * horizon else "left")
-    ax_lr.set_yscale("log")
-    ax_lr.set_ylabel("learning rate")
-    ax_lr.set_xlim(0, horizon)
-    _token_axis(ax_lr, "tokens — the full planned budget" if budget
-                else f"tokens — LR horizon ({decay_steps:,} steps; no budget recorded)")
-    ax_lr.set_title("LR schedule over the run's horizon (shaded = done)", loc="left")
+    if schedule:
+        ax_lr = fig.add_subplot(grid[1])
+        sched_steps = np.linspace(0, decay_steps, 400)
+        ax_lr.plot(sched_steps * tokens_per_step, [float(schedule(s)) for s in sched_steps],
+                   color=AQUA, linewidth=1.8)
+        # A finished run can overshoot its horizon by a few steps; keep the marker
+        # inside the panel so its label does not float off the edge.
+        now = min(done, horizon)
+        ax_lr.axvspan(0, now, color=INK, alpha=0.06)
+        ax_lr.axvline(now, color=INK_DIM, linewidth=1.0)
+        ax_lr.annotate(f"now · {fmt_tokens(done)}", (now, 1.0), xycoords=("data", "axes fraction"),
+                       xytext=(-5 if now > 0.85 * horizon else 5, -10), textcoords="offset points",
+                       fontsize=8.5, color=INK, ha="right" if now > 0.85 * horizon else "left")
+        ax_lr.set_yscale("log")
+        ax_lr.set_ylabel("learning rate")
+        ax_lr.set_xlim(0, horizon)
+        _token_axis(ax_lr, "tokens — the full planned budget" if budget
+                    else f"tokens — LR horizon ({decay_steps:,} steps; no budget recorded)")
+        ax_lr.set_title(f"LR schedule over the run's horizon — {cfg.warmup_steps:,}-step warmup, "
+                        f"cosine to {decay_steps:,} (shaded = done)", loc="left")
 
     path = pathlib.Path(outdir) / "training_curve.png"
     fig.savefig(path)
     plt.close(fig)
+    omitted = [] if len(val_ce) else [("val_ce", why_omitted(runlog, ["val_ce"]))]
+    if no_schedule:
+        omitted.append(("lr", no_schedule))
     return {
         "path": str(path),
-        "panels": ["ce", "lr"] + (["val_ce"] if len(val_ce) else []),
-        "omitted": [] if len(val_ce) else [("val_ce", why_omitted(runlog, ["val_ce"]))],
+        "panels": ["ce"] + (["lr"] if schedule else []) + (["val_ce"] if len(val_ce) else []),
+        "omitted": omitted,
     }
 
 
@@ -457,10 +666,12 @@ def clock_samples(runlog, min_spacing_s=THROUGHPUT_SPACING_S):
 
 
 def throughput_progress(runlog, outdir):
+    cfg = RunConfig.of(runlog)
     beats, source = clock_samples(runlog)
     measured = source == "metrics"
-    budget, _ = budget_and_horizon(runlog)
-    done_tokens = runlog.tokens
+    budget = cfg.budget
+    tokens_per_step = cfg.tokens_per_opt_step
+    done_tokens = runlog.last_step * tokens_per_step
 
     if len(beats) < 2:
         print("throughput_progress: no wall_clock in metrics.csv and fewer than two supervisor "
@@ -470,7 +681,7 @@ def throughput_progress(runlog, outdir):
     times = [t for t, _ in beats]
     steps = np.array([s for _, s in beats], dtype=float)
     hours = np.array([(t - times[0]).total_seconds() / 3600.0 for t in times])
-    tokens = steps * TOKENS_PER_OPT_STEP
+    tokens = steps * tokens_per_step
 
     # How much of the run the heartbeats actually witnessed. They are a separate
     # stream from metrics.csv — the supervisor's stdout — so they stop the moment
@@ -509,7 +720,7 @@ def throughput_progress(runlog, outdir):
     _legend(ax_rate, loc="lower right")
     note = (f"each point is one {'interval between logged rows' if measured else 'supervisor heartbeat interval'} "
             f"(~{cadence:.1f}h apart): "
-            f"Δsteps × {TOKENS_PER_OPT_STEP:,} tokens ÷ Δwall-clock. "
+            f"Δsteps × {tokens_per_step:,} tokens ÷ Δwall-clock. "
             "It includes checkpointing and validation, so it is the honest end-to-end rate.")
     if dropped:
         note += (f"\n{dropped} interval(s) spanning a logging gap were dropped — across a gap this "
@@ -582,11 +793,11 @@ def throughput_progress(runlog, outdir):
 
 # ── figure 3: optimization health ────────────────────────────────────────────
 
-def _panel_grad_norm(ax, runlog):
+def _panel_grad_norm(ax, runlog, cfg):
     if runlog.has("applied_grad_norm"):
         # The norm the clip actually sees (#180): read directly against the line.
         from trm.train.optimizers import CLIP_NORM
-        tokens, values = series(runlog, "applied_grad_norm")
+        tokens, values = series(runlog, "applied_grad_norm", cfg)
         window = smoothing_window(len(values))
         ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
         ax.plot(tokens, smooth(values, window), color=BLUE, linewidth=1.8, label="applied (window mean)")
@@ -599,7 +810,7 @@ def _panel_grad_norm(ax, runlog):
         _note(ax, "the norm of the accumulated gradient the optimizer applies. Above the dashed line "
                   "clip_by_global_norm, not the LR schedule, is setting the step size.")
         return
-    tokens, values = series(runlog, "grad_norm_avg")
+    tokens, values = series(runlog, "grad_norm_avg", cfg)
     window = smoothing_window(len(values))
     ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
     ax.plot(tokens, smooth(values, window), color=BLUE, linewidth=1.8)
@@ -607,29 +818,52 @@ def _panel_grad_norm(ax, runlog):
     ax.set_ylabel("‖g‖₂")
     ax.set_title("Gradient norm (raw, pre-clip)", loc="left")
     _note(ax, "the RAW per-micro-step norm. clip_by_global_norm(1.0) applies to the mean over "
-              f"the {TOKENS_PER_OPT_STEP // (2 * 512):,}-micro-step accumulation, which is not logged — "
+              f"the {cfg.micro_steps:,}-micro-step accumulation, which is not logged — "
               "these two numbers are not comparable, so do not read this against the 1.0 clip (#180).")
 
 
-def _panel_depth(ax, runlog):
-    tokens, values = series(runlog, "depth_avg")
-    expected = (1 + MAX_STEPS_LIMIT) / 2
+def _panel_depth(ax, runlog, cfg):
+    """Only for an architecture that HAS a depth (see `not_applicable`): the
+    refiner loops its shared block, the reasoner scans, and the realised mean of
+    the draw is worth a check. The plain stack takes the same argument and drops
+    it, so there the panel is the sampler's dice roll and nothing else."""
+    tokens, values = series(runlog, "depth_avg", cfg)
+    expected = (1 + cfg.max_depth) / 2
     ax.plot(tokens, values, color=AQUA, alpha=0.25, linewidth=1.0)
     ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=AQUA, linewidth=1.8)
     ax.axhline(expected, color=INK_DIM, linewidth=0.9, alpha=0.6)
     ax.text(tokens[-1] if len(tokens) else 0, expected, f"uniform mean {expected:.1f} ",
             fontsize=8, color=INK_DIM, va="bottom", ha="right")
     ax.set_ylabel("mean sampled depth")
-    ax.set_title(f"Sampled reasoning depth (of ≤{MAX_STEPS_LIMIT})", loc="left")
+    ax.set_title(f"Sampled reasoning depth (of ≤{cfg.max_depth})", loc="left")
     _note(ax, "depth is drawn uniformly per micro-step; this is the sampler's realised mean, "
               "a check that the draw is unbiased — not something the model learns.")
 
 
-def _panel_zero_grad(ax, runlog):
+def _panel_vram(ax, runlog, cfg):
+    """How close the run came to the allocator's ceiling (#168, #305). Logged on
+    every row and, until now, never drawn — the one number that says whether the
+    next layer or the next batch fits."""
+    tokens, values = series(runlog, "arena_peak_mib", cfg)
+    peak = float(values.max()) if len(values) else 0.0
+    ax.plot(tokens, values, color=BLUE, linewidth=1.8, label="arena peak (high-water mark)")
+    ax.axhline(ARENA_LIMIT_MIB, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"arena limit {ARENA_LIMIT_MIB:,.0f} MiB")
+    ax.set_ylim(0, max(ARENA_LIMIT_MIB, peak) * 1.08)
+    ax.set_ylabel("MiB")
+    ax.set_title(f"VRAM — peak {peak:,.0f} MiB, {ARENA_LIMIT_MIB - peak:,.0f} MiB spare "
+                 f"({peak / ARENA_LIMIT_MIB:.0%} of the arena)", loc="left")
+    _legend(ax, loc="lower right", fontsize=8)
+    _note(ax, "peak_bytes_in_use, read from the allocator itself — not nvidia-smi, which reports "
+              "the whole preallocated cuda_async pool (~5,003 MiB) whatever is in use. It is a "
+              "high-water mark within a session, so it only ever climbs.")
+
+
+def _panel_zero_grad(ax, runlog, cfg):
     # The applied (window-mean) gradient when the run recorded it (#191); older runs
     # only have one micro-step's, which is labelled as such below.
     applied = runlog.has("applied_zero_frac_dense_max")
-    tokens, values = series(runlog, "applied_zero_frac_dense_max" if applied else "zero_frac_dense_max")
+    tokens, values = series(runlog, "applied_zero_frac_dense_max" if applied else "zero_frac_dense_max", cfg)
     # Dots, not a line: this series is spiky by nature (an occasional micro-step
     # underflows, most do not), and joining the spikes draws a solid wall that
     # hides both the floor and how often the spikes happen.
@@ -651,11 +885,11 @@ def _panel_zero_grad(ax, runlog):
               "Spikes are a live signal of an f16 gradient that underflowed to zero.")
 
 
-def _panel_logits(ax, runlog):
+def _panel_logits(ax, runlog, cfg):
     for name, colour, label in (("out_entropy", BLUE, "output entropy H"),
                                 ("logz_mean", ORANGE, "mean log Z"),
                                 ("max_abs_logit", AQUA, "max |logit|")):
-        tokens, values = series(runlog, name)
+        tokens, values = series(runlog, name, cfg)
         if not len(values):
             continue
         ax.plot(tokens, values, color=colour, alpha=0.22, linewidth=1.0)
@@ -671,9 +905,33 @@ def _panel_logits(ax, runlog):
 HEALTH_PANELS = (
     ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm),
     ("depth", ("depth_avg",), _panel_depth),
+    ("vram", ("arena_peak_mib",), _panel_vram),
     ("zero_grad", ("zero_frac_dense_max",), _panel_zero_grad),
     ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits),
 )
+
+
+# Why a panel's column can be missing for a reason that is not the architecture.
+ABSENT_REASON = {
+    "vram": "not logged by this run — the column arrived with #168, and a CPU run "
+            "has no allocator statistics to report",
+}
+
+
+def not_applicable(key, cfg):
+    """Why this run's ARCHITECTURE makes a panel meaningless, whatever the CSV
+    holds — the second way a panel can be wrong to draw, beside missing data.
+
+    `depth_avg` is logged by every run because the sampler draws a depth per
+    micro-step, but `PlainTransformer` takes that argument and ignores it
+    (trm/model/plain.py): on a plain run the panel plots the dice, not the model
+    (#305). Only a run that *recorded* its arch is judged here — for one that did
+    not, drawing is the lesser error.
+    """
+    if key == "depth" and cfg.recorded("MODEL_ARCH") and cfg.arch == "plain":
+        return ("PlainTransformer ignores the depth argument — this column is the "
+                "sampler's own draw, not a property of the model")
+    return None
 
 
 def optimization_health(runlog, outdir):
@@ -681,9 +939,11 @@ def optimization_health(runlog, outdir):
     that does not produce one of these quantities simply gets a smaller sheet —
     never an axis of zeros standing in for a measurement that never happened.
     What was left out, and why, is said out loud rather than silently dropped."""
+    cfg = RunConfig.of(runlog)
     drawn, omitted = [], []
     for key, columns, draw in HEALTH_PANELS:
-        reason = why_omitted(runlog, columns)
+        reason = not_applicable(key, cfg) or why_omitted(
+            runlog, columns, ABSENT_REASON.get(key, ARCH_ABSENT))
         (omitted.append((key, reason)) if reason else drawn.append((key, draw)))
 
     for key, reason in omitted:
@@ -699,7 +959,7 @@ def optimization_health(runlog, outdir):
     flat = list(axes.flat)
 
     for ax, (_, draw) in zip(flat, drawn):
-        draw(ax, runlog)
+        draw(ax, runlog, cfg)
         _token_axis(ax)
     for ax in flat[len(drawn):]:
         ax.axis("off")

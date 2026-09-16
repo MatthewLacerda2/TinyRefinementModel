@@ -18,28 +18,34 @@ WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "1000"))
 _DEFAULT_DECAY_STEPS = 15000
 
 
-def resolve_decay_steps(token_budget, tokens_per_opt_step=TOKENS_PER_OPT_STEP):
+def resolve_decay_steps(token_budget, tokens_per_opt_step=TOKENS_PER_OPT_STEP,
+                        warmup_steps=WARMUP_STEPS):
     """Opt-step horizon for the run: token budget / tokens per opt step
     (None → the historical default). A budget that doesn't clear warmup is a
     config error, not a run worth starting — fail loud."""
     if token_budget is None:
         return _DEFAULT_DECAY_STEPS
     steps = round(token_budget / tokens_per_opt_step)
-    if steps <= WARMUP_STEPS:
+    if steps <= warmup_steps:
         raise ValueError(
             f"TRAIN_TOKEN_BUDGET={token_budget} resolves to {steps} opt steps, "
-            f"inside the {WARMUP_STEPS}-step warmup — the cosine would never decay."
+            f"inside the {warmup_steps}-step warmup — the cosine would never decay."
         )
     return steps
 
 
-def build_learning_schedule(decay_steps):
+def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS):
     """The run's LR schedule at an explicit horizon; module-level
-    learning_schedule is this at the resolved DECAY_STEPS."""
+    learning_schedule is this at the resolved DECAY_STEPS.
+
+    `warmup_steps` is explicit so a *reader* can rebuild the schedule some other
+    run actually trained under (instruments/plots.py): WARMUP_STEPS is an env
+    knob read at import, so the module-level default describes this process, and
+    a 512-step arm plotted from a 1000-step-warmup shell has no cosine at all."""
     return optax.warmup_cosine_decay_schedule(
         init_value=1e-5,
         peak_value=1e-4,
-        warmup_steps=WARMUP_STEPS,
+        warmup_steps=warmup_steps,
         decay_steps=decay_steps,
         end_value=1e-6
     )
