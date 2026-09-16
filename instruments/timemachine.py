@@ -222,20 +222,39 @@ def recorded_val_ces(run_id):
     return {s: v for s, v in zip(*log.column("val_ce")) if math.isfinite(v)}
 
 
-def recorded_val_ce(val_ces, step=None):
-    """The run's own held-out val CE — the number a faithful revival must reproduce.
-    Held-out CE is what the #17 noise floor is stated in (2σ = 0.06 nats), so it is the
-    natural apples-to-apples target. `val_ces` is `recorded_val_ces(run_id)`.
+def checkpoint_opt_step(checkpoint_step, accumulation_steps):
+    """The opt step of an orbax checkpoint. Orbax names a checkpoint by MICRO-step and the
+    trainer resumes at n+1, so opt step = (n + 1) // ACCUMULATION_STEPS, exactly as
+    trm/runtime/rewind.py computes it: run_287's opt step 184 is checkpoint 23551."""
+    return (int(checkpoint_step) + 1) // int(accumulation_steps)
 
-    The yardstick scores whatever checkpoint is on disk, whose step need not be the
-    last *logged* row (val cadence and checkpoint cadence can differ). Pass `step`
-    (from the yardstick's reported checkpoint step) to compare like-for-like; we fall
-    back to the last logged CE only when no row matches."""
+
+def val_ce_for_checkpoint(val_ces, checkpoint_step, accumulation_steps):
+    """(val CE, how it was chosen) for the checkpoint the yardstick scored.
+
+    The run's own held-out val CE is the number a faithful revival must reproduce; it
+    is what the #17 noise floor is stated in (2σ = 0.06 nats). metrics.csv is keyed by
+    OPT step and orbax by micro-step (#348), so the checkpoint is converted with the
+    run's RECORDED accumulation, never today's config. Val CE is logged only every
+    VAL_EVERY_OPT_STEPS, so a checkpoint between probes is compared with the nearest
+    val row at or before it — and the returned text says which row that is. With no
+    recorded accumulation, or no val row at or before the checkpoint, there is nothing
+    honest to compare with: the value is None and the text says why. Never silent."""
     if not val_ces:
-        return None
-    if step is not None and int(step) in val_ces:
-        return val_ces[int(step)]
-    return val_ces[max(val_ces)]
+        return None, "no val CE in metrics.csv"
+    if not accumulation_steps:
+        return None, (f"run_metadata.json records no ACCUMULATION_STEPS, so checkpoint "
+                      f"{checkpoint_step} cannot be placed on the opt-step axis metrics.csv uses")
+    opt_step = checkpoint_opt_step(checkpoint_step, accumulation_steps)
+    if opt_step in val_ces:
+        return val_ces[opt_step], f"val row at opt step {opt_step} (checkpoint {checkpoint_step})"
+    earlier = [s for s in val_ces if s <= opt_step]
+    if not earlier:
+        return None, (f"checkpoint {checkpoint_step} is opt step {opt_step}, before the first val "
+                      f"row (opt step {min(val_ces)})")
+    row = max(earlier)
+    return val_ces[row], (f"checkpoint {checkpoint_step} is opt step {opt_step}, which has no val row; "
+                          f"using the nearest one at or before it, opt step {row}")
 
 
 def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
@@ -267,8 +286,8 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
             f"path and the historical tools/ path) — that run predates the yardstick "
             f"(#48); the metric loop can't be closed for it.")
 
-    val_ces = recorded_val_ces(run_id)  # read once; compared again below at the scored step
-    expect = recorded_val_ce(val_ces)
+    val_ces = recorded_val_ces(run_id)  # read once; matched below to the step actually scored
+    accumulation = runlog.recorded_params(runlog.read_metadata(run_dir(run_id))).get("ACCUMULATION_STEPS")
     out_json = os.path.join(TM_ROOT, "eval", f"{run_id}.json")
     os.makedirs(os.path.dirname(out_json), exist_ok=True)
 
@@ -282,7 +301,9 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
     env = module_env(wt, MODEL_ARCH=arch, **({"FORCE_F32_COMPUTE": "1"} if cpu else {}))
 
     print(f"\nClosing the metric loop for {run_id}:")
-    print(f"  recorded held-out val CE : {expect if expect is not None else '(none in metrics.csv)'}")
+    print(f"  recorded val CE rows     : {len(val_ces)}"
+          + (f" (opt steps {min(val_ces)}..{max(val_ces)}); matched to the scored checkpoint below"
+             if val_ces else " — none in metrics.csv"))
     print(f"  tolerance (2σ, #17)      : ±{tolerance}")
     print(f"  eval command             : (cwd {os.path.relpath(wt, REPO_ROOT)}) "
           + " ".join(os.path.relpath(c, REPO_ROOT) if c.startswith(REPO_ROOT) else c for c in cmd))
@@ -301,11 +322,15 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
         raise SystemExit("Yardstick produced no held-out val CE (DATA_ROOT unset?) "
                          "— cannot compare. See the JSON at " + out_json)
 
-    # Compare against the CE logged for the exact checkpoint step the yardstick scored.
+    # Compare against the CE logged for the checkpoint the yardstick scored.
     step = (row.get("checkpoint") or {}).get("step")
-    expect = recorded_val_ce(val_ces, step=step) if step is not None else expect
+    if step is None:
+        expect, chosen = None, "the yardstick reported no checkpoint step"
+    else:
+        expect, chosen = val_ce_for_checkpoint(val_ces, step, accumulation)
 
     print(f"\n  measured held-out val CE : {measured:.4f}")
+    print(f"  recorded held-out val CE : {'—' if expect is None else f'{expect:.4f}'}  ({chosen})")
     if expect is None:
         # A DoD gate that can't find the recorded metric must not exit success —
         # otherwise an un-checkable run reads as "reproduced". Distinct code 2.

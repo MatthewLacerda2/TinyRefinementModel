@@ -54,25 +54,45 @@ def test_resolve_arch_refuses_to_guess(runs):
     assert tm.resolve_arch("r", tm.load_meta("r")) is None
 
 
-def test_recorded_val_ce_takes_last_non_empty(runs):
-    metrics = "step,val_ce\n10,5.10\n20,\n30,4.8947\n"
+def test_recorded_val_ces_are_the_finite_rows_by_opt_step(runs):
+    metrics = "step,val_ce\n10,5.10\n20,\n30,nan\n40,4.8947\n"
     _make_run(runs, "r", meta={"parameters": {}}, metrics=metrics)
-    assert tm.recorded_val_ce(tm.recorded_val_ces("r")) == pytest.approx(4.8947)
+    assert tm.recorded_val_ces("r") == {10: pytest.approx(5.10), 40: pytest.approx(4.8947)}
 
 
-def test_recorded_val_ce_prefers_the_scored_step_and_skips_non_finite(runs):
-    """The yardstick scores a checkpoint whose step need not be the last logged row;
-    a NaN reading is not a value to reproduce."""
-    metrics = "step,val_ce\n10,5.10\n20,4.95\n30,nan\n"
-    _make_run(runs, "r", meta={"parameters": {}}, metrics=metrics)
+def test_a_real_micro_step_checkpoint_matches_its_own_val_row(runs):
+    """#348: orbax names checkpoints by micro-step. run_287's opt step 184 is checkpoint
+    23551 at 128 accumulation steps; matching 23551 against the opt-step keys never
+    fired, so every revival silently compared against the last logged val CE."""
+    metrics = "step,val_ce\n120,5.30\n184,4.9021\n248,4.71\n"
+    _make_run(runs, "r", meta={"parameters": {"ACCUMULATION_STEPS": 128}}, metrics=metrics)
     val_ces = tm.recorded_val_ces("r")
-    assert tm.recorded_val_ce(val_ces, step=10) == pytest.approx(5.10)
-    assert tm.recorded_val_ce(val_ces, step=999) == pytest.approx(4.95), "no row at that step: the last finite"
+    accumulation = tm.runlog.recorded_params(tm.load_meta("r"))["ACCUMULATION_STEPS"]
+    assert tm.checkpoint_opt_step(23551, accumulation) == 184
+    value, chosen = tm.val_ce_for_checkpoint(val_ces, 23551, accumulation)
+    assert value == pytest.approx(4.9021), "the checkpoint's own row, not the last one (4.71)"
+    assert "opt step 184" in chosen
 
 
-def test_recorded_val_ce_missing_file_is_none(runs):
+def test_a_checkpoint_between_probes_says_which_row_it_is_compared_with():
+    val_ces = {120: 5.30, 184: 4.9021, 248: 4.71}
+    value, chosen = tm.val_ce_for_checkpoint(val_ces, 25599, 128)  # opt step 200
+    assert value == pytest.approx(4.9021)
+    assert "opt step 200" in chosen and "no val row" in chosen and "opt step 184" in chosen
+
+
+def test_nothing_honest_to_compare_with_is_none_and_says_why():
+    val_ces = {120: 5.30}
+    value, why = tm.val_ce_for_checkpoint(val_ces, 12799, None)
+    assert value is None and "ACCUMULATION_STEPS" in why, "today's config is never used to guess"
+    value, why = tm.val_ce_for_checkpoint(val_ces, 1279, 128)  # opt step 10, before the first row
+    assert value is None and "before the first val row" in why
+    assert tm.val_ce_for_checkpoint({}, 23551, 128)[0] is None
+
+
+def test_recorded_val_ces_missing_file_is_empty(runs):
     _make_run(runs, "r", meta={"parameters": {}})
-    assert tm.recorded_val_ce(tm.recorded_val_ces("r")) is None
+    assert tm.recorded_val_ces("r") == {}
 
 
 def test_venv_key_is_deterministic_and_content_addressed(runs):
