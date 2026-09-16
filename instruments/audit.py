@@ -329,7 +329,13 @@ def sigma_plausible(a: Audited) -> Status:
 
     Zero is red: one seed, or seeds that repeat to the last digit, and a separation
     in sigmas is undefined (verdict.py maps it to +/-inf, which decides a `beats` on
-    any gap at all). A sigma an order of magnitude ABOVE the gap is noted, not red:
+    any gap at all). The exception is a criterion that pre-registered an absolute
+    margin the gap clears: there the verdict never rested on sigma — `require = all`
+    made the gap clear `min_delta` too — so it is a note saying so, not a red. That
+    is CLAUDE.md rule 1's own remedy (an absolute floor beside the sigma bar), and
+    it is what a quantized metric looks like: tokens-to-target resolves no finer
+    than the probe interval, so seeds inside one interval repeat exactly.
+    A sigma an order of magnitude ABOVE the gap is noted, not red:
     it is what a true null looks like about one time in ten (three seeds put
     |delta| under sigma/10 by chance), so a red there would fail a third of honest
     parity results. The note says what such a KEEP means — no difference the
@@ -347,10 +353,22 @@ def sigma_plausible(a: Audited) -> Status:
         for point in a.points_of(c):
             arms = a.results[point]
             sigma = pooled_sigma(arms[c.treatment], arms[c.control])
-            if sigma == 0.0:
-                return Status(rule, RED, f"sigma_pooled is 0 at {point} ({c.name}): one seed, or identical "
-                                         f"seeds — a separation in sigmas is undefined here")
             gap = abs(mean_sigma(arms[c.treatment])[0] - mean_sigma(arms[c.control])[0])
+            if sigma == 0.0:
+                margin = c.min_delta
+                if margin is not None and gap >= margin:
+                    notes.append(f"{c.name} at {point}: sigma_pooled is 0 (identical seeds — a quantized "
+                                 f"metric, or too few), so the decision rests on the registered margin: "
+                                 f"the gap {gap:.3g} clears min_delta {margin:g}, and the sigma bar "
+                                 f"decided nothing")
+                elif c.name in carrying:
+                    return Status(rule, RED, f"sigma_pooled is 0 at {point} ({c.name}): one seed, or identical "
+                                             f"seeds — a separation in sigmas is undefined here")
+                else:
+                    notes.append(f"{c.name} at {point}: sigma_pooled is 0 and the criterion registers no "
+                                 f"min_delta — it did not decide this verdict, but as written it would have "
+                                 f"fired on any gap at all")
+                continue
             if c.name in carrying and sigma > SIGMA_DWARFS_GAP * gap:
                 notes.append(f"{c.name} at {point}: sigma_pooled {sigma:.3g} is over {SIGMA_DWARFS_GAP:g}x the "
                              f"gap {gap:.3g} — parity here is 'no difference the measurement could see'")

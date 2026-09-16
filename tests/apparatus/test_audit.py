@@ -189,6 +189,85 @@ def test_noise_ten_times_the_gap_on_a_carrying_criterion_is_noted_not_red(repo):
     assert audit.sigma_plausible(load(repo, spec_text())).reason == ""  # a resolved gap gets no note
 
 
+MARGIN_SPEC = """\
+[experiment]
+id = "002-margin"
+status = "recorded"
+title = "a toy with an absolute margin"
+hypothesis = "Prediction registered: the treatment wins."
+issue = 999
+
+[protocol]
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+
+[execution]
+command = ["python", "-m", "x"]
+seeds = [0, 1, 2]
+
+[arms.control]
+role = "control"
+flags = []
+
+[arms.treated]
+role = "treatment"
+flags = ["--x"]
+
+[criteria.wins]
+rule = "beats"
+treatment = "control"
+control = "treated"
+sigmas = 2.0
+{margin}
+points = ["p"]
+
+[criteria.mirror]
+rule = "loses"
+treatment = "control"
+control = "treated"
+sigmas = 2.0
+points = ["p"]
+
+[verdict]
+keep_if = ["wins"]
+kill_if = ["mirror"]
+recorded = "KEEP"
+
+[results.p]
+control = [44.5645, 44.5645, 44.5645]
+treated = [20.9715, 20.9715, 20.9715]
+"""
+
+
+def test_zero_sigma_is_noted_not_red_when_a_registered_margin_carried_the_verdict(repo):
+    """A quantized metric (tokens to target resolves no finer than the probe interval)
+    repeats to the last digit, so sigma is 0 — but `require = all` made the gap clear
+    min_delta too, so the verdict never rested on the undefined sigma."""
+    a = load(repo, MARGIN_SPEC.format(margin="min_delta = 6.7"))
+    assert a.verdict.outcome == "KEEP"
+    s = audit.sigma_plausible(a)
+    assert s.state == GREEN and "rests on the registered margin" in s.reason
+
+
+def test_zero_sigma_with_no_margin_on_the_carrying_criterion_is_still_red(repo):
+    a = load(repo, MARGIN_SPEC.format(margin=""))
+    s = audit.sigma_plausible(a)
+    assert s.state == RED and "sigma_pooled is 0" in s.reason
+
+
+def test_zero_sigma_with_a_margin_the_gap_does_not_clear_is_still_red(repo):
+    a = load(repo, MARGIN_SPEC.format(margin="min_delta = 90.0"))
+    s = audit.sigma_plausible(a)
+    assert s.state == RED and "sigma_pooled is 0" in s.reason
+
+
+def test_zero_sigma_on_a_criterion_that_decided_nothing_is_noted(repo):
+    """The unfired kill bar of a KEEP: an undefined sigma there did not corrupt this
+    verdict, but it would have fired on any gap at all, and the audit says so."""
+    s = audit.sigma_plausible(load(repo, MARGIN_SPEC.format(margin="min_delta = 6.7")))
+    assert s.state == GREEN and "would have fired on any gap at all" in s.reason
+
+
 # --- control-reached-target ------------------------------------------------------------------
 
 def test_a_control_seed_at_the_cap_is_red_until_voided(repo):
