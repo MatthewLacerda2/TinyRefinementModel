@@ -20,6 +20,10 @@ import pathlib
 
 import pytest
 
+# Needs neither jax, numpy nor tests/conftest.py: CI runs it in the seconds-long
+# lint job instead of the jax-heavy pytest job (#325).
+pytestmark = pytest.mark.jaxfree
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TREES = ("trm", "experiments", "instruments")
 

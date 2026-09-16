@@ -65,7 +65,7 @@ jobs:
         # only those lines are installed — the rest of the file pulls jax, which this
         # job has no use for. Pinned at all because an unpinned linter turns
         # "upstream shipped a new rule" into a red build on an unrelated PR.
-        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)"
+        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)" "$(grep '^pytest==' requirements.txt)"
 
       - name: Ruff
         # Rule selection lives in pyproject.toml, so local `ruff check .` and CI
@@ -79,6 +79,18 @@ jobs:
         # read by reflection, or a module attribute a checkpoint's param tree still
         # needs to load — goes in ignore_names with its reason, never a lower bar.
         run: vulture
+
+      - name: Jax-free lint tests
+        # AST and source lints marked `jaxfree` (#325): they need no jax, numpy or
+        # tests/conftest.py, so they fail here in seconds instead of in the pytest job.
+        # The file list comes from the marker itself, so there is nothing to keep in
+        # sync; an empty list is an error rather than "pytest with no args", which
+        # would collect the whole suite. A marked file that grows a jax import fails
+        # here loudly, since this job has no jax.
+        run: |
+          files=$(grep -rl --include='test_*.py' 'pytestmark = pytest.mark.jaxfree' tests)
+          test -n "$files"
+          pytest --noconftest -p no:cacheprovider -m jaxfree $files
 
       - name: No stray branches
         # A pushed branch with no PR and no commit in a week is work nobody can
@@ -143,10 +155,11 @@ jobs:
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
       - name: Core suite
-        run: pytest tests/core -q
+        # jaxfree tests run in the lint job instead (#325).
+        run: pytest tests/core -q -m "not jaxfree"
 
       - name: Apparatus suite
-        run: pytest tests/apparatus -q
+        run: pytest tests/apparatus -q -m "not jaxfree"
 
   golden:
     name: golden-run (CPU)

@@ -45,6 +45,8 @@ def test_init_loss_near_ln_vocab():
     tok = jax.random.randint(jax.random.PRNGKey(1), (8, 32), 0, vocab)
     logits = m(tok, depth=4)
     ce = float(jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tok)))
+    # 0.7: hand-set in #15, no margin recorded then. Measured in CI 2026-09-16 (#325): gap
+    # 0.025 (3.887 vs 3.912), so the bar is ~28x the gap: it catches a broken init, not drift.
     assert abs(ce - math.log(vocab)) < 0.7, f"init CE {ce:.3f} far from ln(vocab)={math.log(vocab):.3f}"
 
 
@@ -68,6 +70,8 @@ def test_overfit_single_batch():
     first = float(step(m, opt, inp, tgt))
     for _ in range(250):
         last = float(step(m, opt, inp, tgt))
+    # 0.15: hand-set in #15, no margin recorded then. Measured in CI 2026-09-16 (#325):
+    # 3.329 -> 0.022, ratio 0.0067, ~22x under the bar: it catches a model that cannot learn.
     assert last < 0.15 * first, f"failed to overfit: {first:.3f} -> {last:.3f}"
 
 
