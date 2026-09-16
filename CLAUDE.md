@@ -289,6 +289,9 @@ merge closes it. Closing *without* a PR uses a controlled vocabulary in the clos
 comment so history stays greppable: "superseded-by #N", "negative-result", or
 "wont-fix: <reason>".
 
+**Merge, never squash.** PRs land with a merge commit (`gh pr merge <N> --merge`), not
+squash or rebase, so every commit on the branch stays in main's history.
+
 ## Repo map — what's where
 
 **Four trees, and the folder is the declaration of kind** (#143). A new file has exactly
