@@ -4,13 +4,13 @@ The wrapper must tolerate a failing diagnostic (report it, keep going) and
 degrade gracefully when there is nothing to report on.
 """
 
+import json
 import os
-import pathlib
 import subprocess
 import sys
 
-# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
-REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists()))
+import pytest
+
 # Invoked as a module (#143), the way milestone_report runs its own sub-tools.
 MODULE = "instruments.milestone_report"
 
@@ -27,25 +27,60 @@ def test_section_failure_is_tolerated_and_labeled():
     assert ok["body"] == "all good"
 
 
-def _run(args, cwd):
-    env = dict(os.environ, PYTHONPATH=REPO_ROOT, JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
-    return subprocess.run([sys.executable, "-m", MODULE, *args], cwd=cwd,
-                          env=env, capture_output=True, text=True, timeout=300)
+# Every CLI case in one child interpreter (#325), each run as `python -m` would run it:
+# SystemExit(message) is printed to stderr with exit code 1, and an uncaught exception
+# leaves its traceback on stderr, exactly as a real process would.
+_CLI_CHILD = r"""
+import contextlib, io, json, runpy, sys, traceback
+out = []
+module, cases = sys.argv[1], json.loads(sys.argv[2])
+for args in cases:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    sys.argv = ["milestone_report", *args]
+    code = 0
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            runpy.run_module(module, run_name="__main__", alter_sys=True)
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            code = exc.code
+        elif exc.code is not None:
+            code = 1
+            stderr.write(str(exc.code) + "\n")
+    except BaseException:
+        code = 1
+        stderr.write(traceback.format_exc())
+    out.append({"code": code, "stdout": stdout.getvalue(), "stderr": stderr.getvalue()})
+print("CLI " + json.dumps(out))
+"""
+CLI_CASES = {"help": ["--help"], "no checkpoint": []}
 
 
-def test_help_is_fast_and_clean(tmp_path):
-    proc = _run(["--help"], cwd=tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    assert "--ckpt" in proc.stdout
+@pytest.fixture(scope="module")
+def cli(tmp_path_factory, repo_root):
+    """Both CLI runs, in an empty cwd (no runs/ at all), from one child interpreter."""
+    cwd = tmp_path_factory.mktemp("empty_cwd")
+    env = dict(os.environ, PYTHONPATH=str(repo_root), JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
+    proc = subprocess.run([sys.executable, "-c", _CLI_CHILD, MODULE, json.dumps(list(CLI_CASES.values()))],
+                          cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, f"the CLI child itself failed:\n{proc.stderr[-2000:]}"
+    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("CLI ")][-1]
+    return dict(zip(CLI_CASES, json.loads(line[len("CLI "):])))
 
 
-def test_no_checkpoint_degrades_gracefully(tmp_path):
+def test_help_is_fast_and_clean(cli):
+    run = cli["help"]
+    assert run["code"] == 0, run["stderr"]
+    assert "--ckpt" in run["stdout"]
+
+
+def test_no_checkpoint_degrades_gracefully(cli):
     # Empty cwd: no runs/ at all. Must exit nonzero with a clear message,
     # not a traceback.
-    proc = _run([], cwd=tmp_path)
-    assert proc.returncode != 0
-    assert "No checkpoint found" in proc.stderr + proc.stdout
-    assert "Traceback" not in proc.stderr
+    run = cli["no checkpoint"]
+    assert run["code"] != 0
+    assert "No checkpoint found" in run["stderr"] + run["stdout"]
+    assert "Traceback" not in run["stderr"]
 
 
 def test_the_depth_section_says_plain_has_no_dial_not_that_it_is_the_reasoner():
