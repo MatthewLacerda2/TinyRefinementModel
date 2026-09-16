@@ -1,15 +1,11 @@
-"""The training optimizers: the base pretrain chain and the reduced-LR SFT
-variant it hands over to at the phase switch. Both share the same structure
-(clip -> AdamW with masked weight decay, bf16 first moment, MultiSteps
-accumulation) so the SFT swap changes exactly one thing: the LR schedule.
+"""The training optimizer: clip -> AdamW (or Muon on the matrices) with masked
+weight decay and a bf16 first moment, accumulated over ACCUMULATION_STEPS
+micro-steps.
 """
-
-import gc
 
 import jax
 import jax.numpy as jnp
 import optax
-from flax import nnx
 
 from trm.config import ACCUMULATION_STEPS, MUON_LR_MULT, TRM_OPTIMIZER
 from trm.train.accumulate import multi_steps
@@ -106,22 +102,3 @@ def _make_chain(learning_rate):
 
 optimizer_chain = _make_chain(learning_schedule)
 
-
-def create_sft_optimizer(model, old_state=None):
-    """The SFT-phase optimizer: same chain at 10% LR. Pass `old_state` to
-    preserve momentum across the swap. VRAM note (#30): the mid-training call
-    site (trainer.train_loop) must stage the moments to HOST before calling —
-    building this optimizer allocates fresh full-size mu/nu on the GPU. The
-    startup resume path (start_training) may pass device state: nothing else
-    holds VRAM yet, so the transient double-state is harmless there."""
-    print("📉 Recreating optimizer with LR reduced to 10% for SFT phase...")
-
-    def sft_lr_schedule(step):
-        return learning_schedule(step) * 0.1
-
-    new_opt = nnx.Optimizer(model, _make_chain(sft_lr_schedule), wrt=nnx.Param)
-    if old_state is not None:
-        nnx.update(new_opt, old_state)
-
-    gc.collect()
-    return new_opt

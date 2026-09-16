@@ -173,7 +173,7 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     mngr = ocp.CheckpointManager(str(tmp_path / "checkpoints"), item_names=ck.CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(create=True))
     ck.save_checkpoint(mngr, 7, saved, nnx.Optimizer(saved, optax.adam(1e-3), wrt=nnx.Param),
-                       LossMonitor(), False, "run_tiny")
+                       LossMonitor(), "run_tiny")
 
     restored = {}
 
@@ -220,7 +220,7 @@ def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
     older, newer = build("plain", seed=1, **TINY_PLAIN), build("plain", seed=2, **TINY_PLAIN)
     for step, model in ((3, older), (9, newer)):
         ck.save_checkpoint(mngr, step, model, nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param),
-                           LossMonitor(), False, "run_tiny")
+                           LossMonitor(), "run_tiny")
 
     def leaves(model):
         return jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
