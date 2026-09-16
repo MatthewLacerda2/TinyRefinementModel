@@ -1,6 +1,6 @@
 # The front door (#169): the incantations live here, not in a session's memory.
 #
-#   make lint                    what CI's ruff job runs
+#   make lint                    what CI's lint job runs: ruff, then vulture (dead code)
 #   make test                    what CI's pytest job runs (core, then apparatus — separately,
 #                                since one process for both has been OOM-killed on this box)
 #   make test-affected           only the tests a change can reach; fails open to `make test`
@@ -19,6 +19,7 @@ PY ?= venv/bin/python
 
 lint:
 	$(PY) -m ruff check .
+	$(PY) -m vulture
 
 test:
 	$(PY) -m pytest tests/core -q

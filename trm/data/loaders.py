@@ -9,7 +9,7 @@ class TextDataGenerator:
         self.directory = directory
         self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
         
-        self.fs, self.path_prefix = fsspec.core.url_to_fs(directory)
+        self.fs, _ = fsspec.core.url_to_fs(directory)
         
         all_files = self.fs.ls(directory)
         self.files = sorted([f for f in all_files if f.endswith('.npy')])

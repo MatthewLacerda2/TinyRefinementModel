@@ -15,4 +15,19 @@ extend-exclude = ["venv"]
 
 [tool.ruff.lint]
 # Errors and bugs only (pyflakes + pycodestyle errors); formatting is not enforced.
-select = ["E4", "E7", "E9", "F", "W6"]
+# RUF100: a `# noqa` that suppresses nothing is dead weight too.
+select = ["E4", "E7", "E9", "F", "W6", "RUF100"]
+
+[tool.vulture]
+# Dead code: functions, classes, variables and attributes nothing references. Ruff
+# sees one file at a time, so a `def` no other module calls passes it; this reads the
+# whole tree at once. tests/ is scanned too, so a test-only helper is used, and an
+# unused test helper is dead. It matches by name, so it errs toward keeping things.
+paths = ["trm", "instruments", "experiments", "tests"]
+min_confidence = 60
+ignore_names = [
+    # Declarations read through the AST by the tests/apparatus lints, never imported.
+    "REPORTS", "ENV_DIVERGENCES", "CONFIG_DIVERGENCES",
+    # Hooks pytest calls by name.
+    "pytest_*",
+]

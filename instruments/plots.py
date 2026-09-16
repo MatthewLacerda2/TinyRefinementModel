@@ -48,26 +48,26 @@ import os
 # would otherwise grab a GPU slice just to evaluate the LR schedule.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import argparse  # noqa: E402
-import datetime  # noqa: E402
-import math  # noqa: E402
-import pathlib  # noqa: E402
-import re  # noqa: E402
-import textwrap  # noqa: E402
+import argparse
+import datetime
+import math
+import pathlib
+import re
+import textwrap
 
-import matplotlib  # noqa: E402
+import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import matplotlib.ticker  # noqa: E402
-import numpy as np  # noqa: E402
+import matplotlib.pyplot as plt
+import matplotlib.ticker
+import numpy as np
 
-from instruments.runlog import load  # noqa: E402
-from instruments.invariants import clean_column, suspect_rows  # noqa: E402
+from instruments.runlog import load
+from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
-from trm import config as this_process  # noqa: E402
-from trm.train.schedules import (  # noqa: E402
+from trm import config as this_process
+from trm.train.schedules import (
     PEAK_LR,
     WARMUP_STEPS,
     build_learning_schedule,
