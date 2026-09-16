@@ -11,7 +11,11 @@ The loader is also the one place that knows the shape of the artifact:
   * **replayed rows** — CSVs written before resume-trimming existed contain
     non-monotonic step ranges (a resume restores to the last *best* step and
     re-logs forward from there). Only the first occurrence of each advancing
-    step is kept.
+    step is kept: for a step logged twice, the FIRST copy (pre-resume) wins and the
+    replayed copy is dropped, along with every row until the step passes the
+    highest one already kept. Readers that parsed the CSV themselves before #319
+    took the last copy instead; no run on disk has such a CSV, but a number read
+    from one would differ.
   * **torn rows** — the last row of a live run can be half-written. A row whose
     `step` does not parse is dropped, not guessed at.
   * **missing metadata** — `run_metadata.json` may not exist (an old run, or a

@@ -18,6 +18,11 @@ import os
 # every observed launch OOM landed — instead of waiting 8,192 micro-steps for them.
 VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
 CHECKPOINT_EVERY_OPT_STEPS = int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64))
+# A metrics.csv row is written every LOG_REAL_STEPS opt steps. A validation probe's CE
+# is held and written on the first such row at or after the probe, not on the probe's
+# own opt step, so a reader aligning val CE with a checkpoint looks in the window
+# [probe, probe + LOG_REAL_STEPS). Not recorded in run metadata (#351).
+LOG_REAL_STEPS = 5
 
 # The items every checkpoint step directory holds, in orbax's item order.
 CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")

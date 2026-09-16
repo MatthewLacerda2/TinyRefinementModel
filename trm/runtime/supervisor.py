@@ -44,6 +44,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from trm.runtime.layout import LOG_REAL_STEPS  # standard library only: the supervisor stays jax-free
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
 GPU_LOCK = RUNS_DIR / ".gpu.lock"
@@ -302,7 +304,7 @@ FIT_GATE_ENV = {
     "VAL_EVERY_OPT_STEPS": "1",
     "CHECKPOINT_EVERY_OPT_STEPS": "1",
 }
-FIT_GATE_LOG_ROWS_OPT_STEPS = 5  # trainer LOG_REAL_STEPS: the first metrics row lands here
+FIT_GATE_LOG_ROWS_OPT_STEPS = LOG_REAL_STEPS  # the first metrics row lands here
 _COMPUTE = re.compile(r"Compute: ([0-9.]+)s")
 
 
