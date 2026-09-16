@@ -250,3 +250,48 @@ class TestProvenanceTiming:
         body = self._main_source()
 
         assert body.index("restore_model(") < body.index("for depth in depths:")
+
+
+class TestPromptSubset:
+    """`milestone_report --quick` asked for `--prompts 2`, a flag this tool did not
+    define, so argparse exited and every quick report's transcripts section FAILED (#335)."""
+
+    def test_milestone_reports_quick_argv_parses_with_the_real_parser(self, monkeypatch):
+        """The argv milestone_report actually builds, fed through this tool's own parser:
+        a flag drifting on either side fails here instead of in a report."""
+        from instruments import milestone_report
+        from instruments.dump_transcripts import build_arg_parser
+
+        sent = []
+        monkeypatch.setattr(milestone_report, "run_tool",
+                            lambda module, argv, timeout: sent.append((module, argv)) or "")
+        fwd_args = ["--checkpoint-path", "runs/run_x/checkpoints"]
+        milestone_report.section_transcripts(fwd_args, list(milestone_report.QUICK_TRANSCRIPT_ARGS), None)
+
+        ((module, argv),) = sent
+        assert module == "instruments.dump_transcripts"
+        args = build_arg_parser().parse_args(argv)
+        assert (args.checkpoint_path, args.prompts, args.max_new_tokens) == ("runs/run_x/checkpoints", 2, 32)
+
+    def test_the_default_is_the_whole_standard_set(self):
+        from instruments.dump_transcripts import build_arg_parser
+        assert build_arg_parser().parse_args([]).prompts == len(PROMPTS)
+
+    @pytest.mark.parametrize("bad", ["0", str(len(PROMPTS) + 1), "two"])
+    def test_a_count_outside_the_set_is_refused(self, bad):
+        from instruments.dump_transcripts import build_arg_parser
+        with pytest.raises(SystemExit):
+            build_arg_parser().parse_args(["--prompts", bad])
+
+    def test_the_subset_is_a_prefix_and_is_recorded(self):
+        """A prefix keeps each prompt comparable with the same prompt in a full entry,
+        and the frontmatter says how many ran, so a short entry cannot pass for a full one."""
+        body = self._main_source()
+        assert "PROMPTS[:args.prompts]" in body
+        assert '"standard_prompts": standard' in body
+
+    @staticmethod
+    def _main_source():
+        import inspect
+        from instruments import dump_transcripts
+        return inspect.getsource(dump_transcripts.main)
