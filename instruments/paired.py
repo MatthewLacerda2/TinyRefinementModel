@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from instruments import results as result_lines
+from instruments._common import add_checkpoint_argument, load_env
 from trm.config import MAX_SEQ_LEN
 
 # ARCH-SPECIFIC: refiner/reasoner — it compares one model at two depths, and plain has no depth dial (#317).
@@ -169,8 +170,7 @@ def compare(model, corpora, *, treatment_depth, control_depth, pad_token_id):
 
 def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", required=True,
-                    help="checkpoint MANAGER ROOT, not a step dir")
+    add_checkpoint_argument(ap, required=True, aliases=("--checkpoint",))
     ap.add_argument("--treatment-depth", type=int, default=8)
     ap.add_argument("--control-depth", type=int, default=1)
     ap.add_argument("--rows", type=int, default=16)
@@ -194,12 +194,11 @@ def _main(argv=None):
                          "ignores depth, so both arms would score the same forward pass. "
                          "Load a looped checkpoint with MODEL_ARCH=refiner or reasoner.")
 
-    from dotenv import load_dotenv
-    load_dotenv()
+    load_env()
     from trm.runtime.restore import load_eval_batches, restore_model
     from trm.train.validation import VAL_SKIP_SAMPLES
 
-    model, _ = restore_model(args.checkpoint)
+    model, _ = restore_model(args.checkpoint_path)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
     # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
     # cannot overlap even at the largest --rows this is run with.

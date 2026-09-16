@@ -28,17 +28,20 @@ Usage:
 
 import os
 import sys
-import csv
 import json
+import math
 import shutil
 import hashlib
 import argparse
 import subprocess
 
+from instruments import runlog
+from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # reconstructs a run's world; prints paths and provenance, no quantities
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = str(_REPO_ROOT)
 TM_ROOT = os.path.join(REPO_ROOT, ".timemachine")
 RUNS_ROOT = os.path.join(REPO_ROOT, "runs")
 
@@ -50,11 +53,12 @@ def run_dir(run_id):
 
 
 def load_meta(run_id):
-    path = os.path.join(run_dir(run_id), "run_metadata.json")
-    if not os.path.exists(path):
-        raise SystemExit(f"No run_metadata.json for {run_id} (looked in {path}).")
-    with open(path) as f:
-        return json.load(f)
+    """The run's metadata; a revival cannot proceed without it, so none is a SystemExit."""
+    meta = runlog.read_metadata(run_dir(run_id))
+    if not meta:
+        path = os.path.join(run_dir(run_id), runlog.METADATA_FILENAME)
+        raise SystemExit(f"No readable run_metadata.json for {run_id} (looked in {path}).")
+    return meta
 
 
 def resolve_arch(run_id, meta):
@@ -208,35 +212,30 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
 
 # --- closing the loop: reproduce the metric (#44 DoD) ------------------------
 
-def recorded_val_ce(run_id, step=None):
-    """The run's own held-out val CE (metrics.csv) — the number a faithful revival
-    must reproduce. Held-out CE is what the #17 noise floor is stated in (2σ = 0.06
-    nats), so it is the natural apples-to-apples target.
+def recorded_val_ces(run_id):
+    """{opt step: val CE} the run logged, finite readings only, parsed once through
+    runlog (replayed and torn rows dropped). {} when the run has no metrics.csv."""
+    try:
+        log = runlog.load(run_dir(run_id))
+    except FileNotFoundError:
+        return {}
+    return {s: v for s, v in zip(*log.column("val_ce")) if math.isfinite(v)}
+
+
+def recorded_val_ce(val_ces, step=None):
+    """The run's own held-out val CE — the number a faithful revival must reproduce.
+    Held-out CE is what the #17 noise floor is stated in (2σ = 0.06 nats), so it is the
+    natural apples-to-apples target. `val_ces` is `recorded_val_ces(run_id)`.
 
     The yardstick scores whatever checkpoint is on disk, whose step need not be the
     last *logged* row (val cadence and checkpoint cadence can differ). Pass `step`
     (from the yardstick's reported checkpoint step) to compare like-for-like; we fall
     back to the last logged CE only when no row matches."""
-    path = os.path.join(run_dir(run_id), "metrics.csv")
-    if not os.path.exists(path):
+    if not val_ces:
         return None
-    last = matched = None
-    with open(path) as f:
-        for row in csv.DictReader(f):
-            v = row.get("val_ce", "")
-            if v in ("", "nan", None):
-                continue
-            try:
-                last = float(v)
-            except ValueError:
-                continue
-            if step is not None:
-                try:
-                    if int(float(row.get("step", "nan"))) == int(step):
-                        matched = last
-                except ValueError:
-                    pass
-    return matched if matched is not None else last
+    if step is not None and int(step) in val_ces:
+        return val_ces[int(step)]
+    return val_ces[max(val_ces)]
 
 
 def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
@@ -268,7 +267,8 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
             f"path and the historical tools/ path) — that run predates the yardstick "
             f"(#48); the metric loop can't be closed for it.")
 
-    expect = recorded_val_ce(run_id)
+    val_ces = recorded_val_ces(run_id)  # read once; compared again below at the scored step
+    expect = recorded_val_ce(val_ces)
     out_json = os.path.join(TM_ROOT, "eval", f"{run_id}.json")
     os.makedirs(os.path.dirname(out_json), exist_ok=True)
 
@@ -277,11 +277,9 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
     if limit:
         cmd += ["--limit", str(limit)]
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = wt
-    env["MODEL_ARCH"] = arch
-    if cpu:  # CPU XLA can't lower the f16 matmuls; note the fidelity caveat below.
-        env["FORCE_F32_COMPUTE"] = "1"
+    # The revived worktree's code, not this checkout's. CPU XLA can't lower the f16
+    # matmuls, hence FORCE_F32_COMPUTE; note the fidelity caveat below.
+    env = module_env(wt, MODEL_ARCH=arch, **({"FORCE_F32_COMPUTE": "1"} if cpu else {}))
 
     print(f"\nClosing the metric loop for {run_id}:")
     print(f"  recorded held-out val CE : {expect if expect is not None else '(none in metrics.csv)'}")
@@ -305,7 +303,7 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
 
     # Compare against the CE logged for the exact checkpoint step the yardstick scored.
     step = (row.get("checkpoint") or {}).get("step")
-    expect = recorded_val_ce(run_id, step=step) if step is not None else expect
+    expect = recorded_val_ce(val_ces, step=step) if step is not None else expect
 
     print(f"\n  measured held-out val CE : {measured:.4f}")
     if expect is None:

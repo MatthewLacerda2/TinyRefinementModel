@@ -35,7 +35,6 @@ import argparse
 import datetime
 import hashlib
 import json
-import os
 import pathlib
 import re
 import subprocess
@@ -44,6 +43,7 @@ import time
 from dataclasses import dataclass
 
 from instruments import results as result_lines
+from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
@@ -51,7 +51,6 @@ from instruments.verdict import (
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 RUNS_DIR = REPO_ROOT / "runs" / "experiments"
 GATE_COMMAND = (sys.executable, "-m", "pytest", "tests/core", "-q", "-x")
 
@@ -235,7 +234,7 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
     blank screen for an hour wondering whether it hung.
     """
     argv = execution.argv(leg, arm, seed)
-    env = {**os.environ, **execution.env, "PYTHONPATH": str(cwd)}
+    env = module_env(cwd, **execution.env)
     print(f"\n$ {' '.join(argv)}", flush=True)
 
     started = time.time()

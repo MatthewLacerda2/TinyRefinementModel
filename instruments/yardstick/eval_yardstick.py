@@ -27,13 +27,13 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 
 import argparse
 import json
-import subprocess
 
 import jax.numpy as jnp
 import numpy as np
 import tiktoken
 from flax import nnx
-from dotenv import load_dotenv
+
+from instruments._common import add_checkpoint_argument, git_head, load_env
 
 from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME
 from trm.runtime.restore import EVAL_BATCH_SIZE, restore_arch
@@ -62,7 +62,7 @@ ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the
 
 # .env supplies DATA_ROOT (read at runtime by the held-out probe); config's own
 # env knobs are process-level and must be set in the shell, as everywhere else.
-load_dotenv()
+load_env()
 
 # Matches the validation probe's fixed depth (validation.py), so the yardstick
 # and the training-time val curve read the model at the same setting. Sweep
@@ -106,7 +106,7 @@ def heldout_perplexity(model):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="GPT-2-small yardstick: LAMBADA acc/ppl + held-out ppl")
-    ap.add_argument("--checkpoint-path", default=None, help="Orbax dir (default: latest run)")
+    add_checkpoint_argument(ap)
     ap.add_argument("--step", type=int, default=None,
                     help="which step of that dir to score (default: its newest). A milestones dir "
                          "holds many, and the one to score is the milestone that was asked for")
@@ -169,9 +169,8 @@ def main(argv=None):
     if args.limit:
         print(f"⚠️ --limit {args.limit}: a smoke reading, not the bar.")
 
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     row = {
-        "commit": commit,
+        "commit": git_head(short=False),
         "arch": args.arch,
         "checkpoint": {"path": args.checkpoint_path or "latest", "step": int(step)},
         "eval_depth": args.depth,

@@ -38,8 +38,8 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
 
+from instruments._common import param_count
 from instruments.arch import add_arch_argument, build
 from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
 
@@ -88,7 +88,7 @@ def main():
     # Shared selector (instruments/arch.py), not a private branch: a private one is
     # how this file kept building the refiner after the default stopped being it.
     model = build(args.arch, dim=LATENT_DIM)
-    n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
+    n_params = param_count(model)
     print(f"arch={args.arch}  dim={LATENT_DIM}  heads={NUM_HEADS}  "
           f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
 

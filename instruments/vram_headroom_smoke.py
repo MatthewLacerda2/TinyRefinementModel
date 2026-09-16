@@ -46,7 +46,6 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import argparse
-import subprocess
 import threading
 import time
 
@@ -55,6 +54,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from instruments import results
+from instruments._common import gpu_memory_used_mib, param_count
 from instruments.arch import add_arch_argument, build
 from trm.config import (ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT,
                         NUM_HEADS, PLAIN_LAYERS, REFINER_ENCODER_LAYERS, VOCAB_SIZE)
@@ -71,10 +71,6 @@ REPORTS = {
 CARD_MIB = 6144
 
 
-def param_count(model):
-    return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
-
-
 class CardSampler:
     """nvidia-smi's memory.used, polled: the reserved pool plus everything outside
     it. A poll, so reported as a sample and never as a peak."""
@@ -87,12 +83,9 @@ class CardSampler:
 
     def _run(self):
         while not self._stop.is_set():
-            try:
-                out = subprocess.check_output(
-                    ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], text=True)
-                self.peak_mib = max(self.peak_mib, max(int(x) for x in out.split()))
-            except (OSError, subprocess.SubprocessError, ValueError):
-                pass
+            used = gpu_memory_used_mib()  # None when the card cannot be read: the sample is skipped
+            if used is not None:
+                self.peak_mib = max(self.peak_mib, used)
             time.sleep(self.interval)
 
     def __enter__(self):
@@ -124,7 +117,11 @@ def main(argv=None):
     ap.add_argument("--layers", type=int, default=PLAIN_LAYERS, help="block count for --arch plain")
     ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS, help="for --arch refiner")
     ap.add_argument("--batch", type=int, default=BATCH_SIZE, help="micro-batch (per accumulation step)")
-    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="deepest sampled depth (refiner/reasoner)")
+    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
+                    help="deepest sampled depth; the run compiles one program per depth 1..DEPTH, "
+                         "following depth_schedule. Until #316 the trainer compiled one program per "
+                         "sampled depth for plain too, so there --depth 1 measures one program where "
+                         "such a launch holds MAX_STEPS_LIMIT of them")
     ap.add_argument("--micro-steps", type=int, default=ACCUMULATION_STEPS + 1,
                     help="default crosses one optimizer apply (ACCUMULATION_STEPS + 1)")
     args = ap.parse_args(argv)
@@ -164,6 +161,11 @@ def main(argv=None):
     print(f"outside arena (sampled): {outside_mib:6.0f} MiB (context + driver graph buffers; "
           f"{CARD_MIB - card.peak_mib:.0f} MiB of the card never touched)")
     print(f"crossed {args.micro_steps // ACCUMULATION_STEPS} optimizer apply(s) and one validation probe")
+    if args.arch == "plain":
+        print(f"note: plain compiled {min(args.depth, args.micro_steps)} depth program(s) here; until #316 "
+              f"the trainer compiled one program per sampled depth for plain too. The plain peaks "
+              f"recorded in trm/config.py and model_stats.MEASURED_PEAKS were taken with ONE program, "
+              f"so compare this reading with them only at the program count the trainer uses.")
     results.emit(f"{args.arch}-{shape.split()[0]}", arena_peak_mib=arena_mib, arena_limit_mib=limit_mib,
                  headroom_mib=limit_mib - arena_mib, outside_arena_sampled_mib=outside_mib)
 

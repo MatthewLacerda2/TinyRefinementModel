@@ -32,11 +32,8 @@ ignore it.
 
 import math
 
+from instruments._common import F16_MAX  # the ceiling act_max is measured against
 from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT, VOCAB_SIZE
-
-# f16's largest finite value — the representational ceiling act_max is measured
-# against. Not from config: a property of the dtype, not a knob.
-F16_MAX = 65504.0
 
 # How many standard deviations of the sampling distribution `depth_avg` may sit
 # from its mean before the row is called suspect. The observed artifact was 8.6

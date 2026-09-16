@@ -62,7 +62,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 
-from instruments.runlog import load
+from instruments._common import REPO_ROOT
+from instruments.runlog import absence_reason, load, recorded_tokens_per_opt_step
 from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
@@ -82,9 +83,8 @@ REPORTS = {
     "arena peak VRAM": ("measured", "peak_bytes_in_use read from the allocator itself, logged on every metrics row"),
 }
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-
-# The allocator's ceiling on this card, measured rather than guessed. Production
+# The allocator's ceiling on this card, measured rather than guessed — and only the
+# fallback: a run that logged its own `arena_limit_mib` is drawn against that. Production
 # runs under cuda_async at XLA_PYTHON_CLIENT_MEM_FRACTION 0.85 (trm/train/start.py),
 # where memory_stats() reports bytes_limit = 4,883 MiB on the 6GB RTX 2060 —
 # instruments/vram_headroom_smoke reads it there, and trm/config.py's layer table
@@ -151,19 +151,20 @@ def available(runlog, name):
     return runlog.has(name) and not runlog.is_constant(name, 0.0)
 
 
-ARCH_ABSENT = "not measured by this architecture"
-
-
-def why_omitted(runlog, columns, absent=ARCH_ABSENT):
+def why_omitted(runlog, columns, absent=None):
     """None when at least one of these columns is worth drawing, else the reason
-    the panel is being dropped — in the reader's words, not the code's. A column
-    that is missing for some other reason than the architecture (a telemetry
-    field added after the run) passes its own `absent`."""
+    the panel is being dropped — in the reader's words, not the code's. By default the
+    reason comes from the run's recorded arch (`runlog.absence_reason`, shared with
+    report.py): a plain run missing a column plain logs was not "not measured by this
+    architecture". A column missing for a known other reason passes its own `absent`."""
     if any(available(runlog, column) for column in columns):
         return None
     if any(runlog.has(column) for column in columns):
         return "constant 0 throughout — logged, but not a measurement"
-    return absent
+    if absent is not None:
+        return absent
+    cfg = RunConfig(getattr(runlog, "metadata", {}))
+    return absence_reason(cfg.arch if cfg.recorded("MODEL_ARCH") else None, columns)
 
 
 def series(runlog, name, cfg=None, suspect=None):
@@ -176,7 +177,10 @@ def series(runlog, name, cfg=None, suspect=None):
     """
     if not available(runlog, name):
         return np.array([]), np.array([])
-    bad = suspect_rows(runlog) if suspect is None else suspect
+    if suspect is None:
+        # Computed once per figure (RunConfig.of), not once per panel.
+        suspect = cfg.suspect if cfg is not None and cfg.suspect is not None else suspect_rows(runlog)
+    bad = suspect
     steps, values = _clean(*clean_column(runlog, name, bad))
     return steps * (cfg or RunConfig.of(runlog)).tokens_per_opt_step, values
 
@@ -258,10 +262,13 @@ class RunConfig:
     def __init__(self, metadata):
         params = (metadata or {}).get("parameters")
         self.params = params if isinstance(params, dict) else {}
+        self.suspect = None  # rows failing an invariant; set by `of`, which has the rows
 
     @classmethod
     def of(cls, runlog):
-        return cls(getattr(runlog, "metadata", {}))
+        cfg = cls(getattr(runlog, "metadata", {}))
+        cfg.suspect = suspect_rows(runlog)
+        return cfg
 
     def recorded(self, key):
         """Did the run itself record this, or are we about to guess?"""
@@ -329,11 +336,8 @@ class RunConfig:
         one optimizer step. Derived from the run's own recipe when it recorded
         all three, because a run at a different batch recipe is mis-scaled by
         this process's constant."""
-        keys = ("ACCUMULATION_STEPS", "BATCH_SIZE", "MAX_SEQ_LEN")
-        if all(self.recorded(key) for key in keys):
-            accumulation, batch, seq_len = (int(self.params[key]) for key in keys)
-            return accumulation * batch * 2 * seq_len
-        return this_process.TOKENS_PER_OPT_STEP
+        recorded = recorded_tokens_per_opt_step(self.params)
+        return this_process.TOKENS_PER_OPT_STEP if recorded is None else recorded
 
     @property
     def micro_steps(self):
@@ -858,17 +862,30 @@ def _panel_vram(ax, runlog, cfg):
     next layer or the next batch fits."""
     tokens, values = series(runlog, "arena_peak_mib", cfg)
     peak = float(values.max()) if len(values) else 0.0
+    limit, recorded = arena_limit_mib(runlog)
     ax.plot(tokens, values, color=BLUE, linewidth=1.8, label="arena peak (high-water mark)")
-    ax.axhline(ARENA_LIMIT_MIB, color=ORANGE, linewidth=1.2, linestyle="--",
-               label=f"arena limit {ARENA_LIMIT_MIB:,.0f} MiB")
-    ax.set_ylim(0, max(ARENA_LIMIT_MIB, peak) * 1.08)
+    ax.axhline(limit, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"arena limit {limit:,.0f} MiB" + ("" if recorded else " (assumed)"))
+    ax.set_ylim(0, max(limit, peak) * 1.08)
     ax.set_ylabel("MiB")
-    ax.set_title(f"VRAM — peak {peak:,.0f} MiB, {ARENA_LIMIT_MIB - peak:,.0f} MiB spare "
-                 f"({peak / ARENA_LIMIT_MIB:.0%} of the arena)", loc="left")
+    ax.set_title(f"VRAM — peak {peak:,.0f} MiB, {limit - peak:,.0f} MiB spare "
+                 f"({peak / limit:.0%} of the arena)", loc="left")
     _legend(ax, loc="lower right", fontsize=8)
     _note(ax, "peak_bytes_in_use, read from the allocator itself — not nvidia-smi, which reports "
               "the whole preallocated cuda_async pool (~5,003 MiB) whatever is in use. It is a "
-              "high-water mark within a session, so it only ever climbs.")
+              "high-water mark within a session, so it only ever climbs."
+              + ("" if recorded else f" The limit is ASSUMED: this run did not log its own, so the "
+                                     f"line is the {ARENA_LIMIT_MIB:,.0f} MiB measured on the 6GB RTX 2060 "
+                                     f"at MEM_FRACTION 0.85, and is wrong for any other card or fraction."))
+
+
+def arena_limit_mib(runlog):
+    """(limit, recorded): the run's own logged `arena_limit_mib` when it has one, else
+    the RTX 2060 measurement, flagged as assumed so the panel can say so."""
+    _, limits = runlog.column("arena_limit_mib")
+    if limits:
+        return float(limits[-1]), True
+    return ARENA_LIMIT_MIB, False
 
 
 def _panel_zero_grad(ax, runlog, cfg):
@@ -934,11 +951,12 @@ def not_applicable(key, cfg):
     """Why this run's ARCHITECTURE makes a panel meaningless, whatever the CSV
     holds — the second way a panel can be wrong to draw, beside missing data.
 
-    `depth_avg` is logged by every run because the sampler draws a depth per
-    micro-step, but `PlainTransformer` takes that argument and ignores it
-    (trm/model/plain.py): on a plain run the panel plots the dice, not the model
-    (#305). Only a run that *recorded* its arch is judged here — for one that did
-    not, drawing is the lesser error.
+    `depth_avg` measures something only for the depth-dialled arches (refiner,
+    reasoner). Plain runs before #316 logged a sampled depth_avg that `PlainTransformer`
+    took and ignored (trm/model/plain.py), so on such a run the panel plots the dice,
+    not the model (#305); from #316 on, plain leaves it blank. Either way the panel is
+    refused for plain. Only a run that *recorded* its arch is judged here — for one that
+    did not, drawing is the lesser error.
     """
     if key == "depth" and cfg.recorded("MODEL_ARCH") and cfg.arch == "plain":
         return ("PlainTransformer ignores the depth argument — this column is the "
@@ -954,8 +972,7 @@ def optimization_health(runlog, outdir):
     cfg = RunConfig.of(runlog)
     drawn, omitted = [], []
     for key, columns, draw in HEALTH_PANELS:
-        reason = not_applicable(key, cfg) or why_omitted(
-            runlog, columns, ABSENT_REASON.get(key, ARCH_ABSENT))
+        reason = not_applicable(key, cfg) or why_omitted(runlog, columns, ABSENT_REASON.get(key))
         (omitted.append((key, reason)) if reason else drawn.append((key, draw)))
 
     for key, reason in omitted:

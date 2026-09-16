@@ -49,7 +49,9 @@ def _adamw(learning_rate):
         # param (~0.23GB at dim960), which is exactly what lets the dim960 / 138.7M
         # model fit the 6GB card — it OOMs with f32 moments. The variance estimate
         # (nu) stays f32: bf16 is too coarse near zero there. Verified sound by
-        # instruments.bf16_mu_smoke (tracks an f32-mu run to 0.06% of loss).
+        # instruments.bf16_mu_smoke at commit 3859e57 (#37): a RefinerForTraining at
+        # dim 512, 16 heads, 7 encoder layers, f32 compute, tracked an f32-mu run to
+        # 0.06% of loss. Not re-measured at the dim-960 shipping config.
         mu_dtype=jnp.bfloat16,
     )
 

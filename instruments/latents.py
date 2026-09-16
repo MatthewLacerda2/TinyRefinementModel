@@ -37,6 +37,7 @@ import numpy as np
 from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
+from instruments._common import add_checkpoint_argument, load_env
 
 # ARCH-SPECIFIC: refiner — a trajectory is the refine loop's states, and only the refiner loops (#317).
 
@@ -152,9 +153,7 @@ def capture(model, tokens, depth) -> Trajectory:
 
 def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", required=True,
-                    help="checkpoint MANAGER ROOT (the dir holding numeric step dirs), "
-                         "not a step dir")
+    add_checkpoint_argument(ap, required=True, aliases=("--checkpoint",))
     ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT)
     ap.add_argument("--source", default="pretrain/fineweb-edu")
     ap.add_argument("--rows", type=int, default=1)
@@ -168,12 +167,11 @@ def _main(argv=None):
     # DATA_ROOT lives in .env and the held-out loader reads it from the
     # environment. Loading it here rather than making every caller export it
     # by hand, the way trm/infer.py already does.
-    from dotenv import load_dotenv
-    load_dotenv()
+    load_env()
 
     from trm.runtime.restore import load_eval_batches, restore_model
 
-    model, _ = restore_model(args.checkpoint)
+    model, _ = restore_model(args.checkpoint_path)
     # load_eval_batches yields input rows, not (input, target) pairs.
     for i, row in enumerate(load_eval_batches(args.source, num_rows=args.rows)):
         traj = capture(model, jnp.asarray(row[:, :MAX_SEQ_LEN]), args.depth)

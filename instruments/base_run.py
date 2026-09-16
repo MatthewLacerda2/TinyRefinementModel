@@ -15,19 +15,18 @@ the one-line "why it is notable" and nothing else.
 from __future__ import annotations
 
 import argparse
-import csv
 import datetime
 import hashlib
 import json
-import os
 import pathlib
 import subprocess
 import sys
 
+from instruments import runlog
 from instruments import verdict as referee
+from instruments._common import REPO_ROOT, module_env
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
 JOURNAL = "yardstick.jsonl"
 # What a journal line says it scored, named by the checkpoint dir it came from.
 SOURCES = {MILESTONE_SUBDIR: "milestone", BEST_SUBDIR: "best"}
@@ -65,23 +64,25 @@ def recorded_arch(run_dir) -> str | None:
     config, and a mismatch there fails loudly at restore.
 
     RunTracker rewrites the file in place at session start and end, so a milestone
-    scorer can read it half-written. That reads as no record (the MODEL_ARCH fallback)
-    rather than an exception, which would leave the milestone unscored with no journal
-    line, since the supervisor sends the scorer's output to /dev/null."""
-    try:
-        meta = json.loads((pathlib.Path(run_dir) / "run_metadata.json").read_text())
-    except (OSError, ValueError):
-        return None
-    return meta.get("parameters", {}).get("MODEL_ARCH")
+    scorer can read it half-written. `runlog.read_metadata` reads that as no record
+    (the MODEL_ARCH fallback) rather than raising, which would leave the milestone
+    unscored with no journal line, since the supervisor sends the scorer's output to
+    /dev/null."""
+    return runlog.recorded_params(runlog.read_metadata(run_dir)).get("MODEL_ARCH")
 
 
-def checkpoint_source(checkpoint_dir) -> str:
-    """'milestone', 'best' or 'rolling', from the orbax manager dir a checkpoint sits in."""
-    return SOURCES.get(pathlib.Path(checkpoint_dir).name, "rolling")
+def checkpoint_source(checkpoint_dir, run_dir) -> str:
+    """What a journal line says it scored: 'rolling' for the run's own checkpoints/
+    dir, 'milestone' or 'best' for those subdirs, and the dir's own name for anything
+    else (a rewind's set_aside_* dir is not the rolling series, and must not read as it)."""
+    path = pathlib.Path(checkpoint_dir).resolve()
+    if path == (pathlib.Path(run_dir) / "checkpoints").resolve():
+        return "rolling"
+    return SOURCES.get(path.name, path.name)
 
 
 def newest_step(checkpoint_dir) -> int:
-    steps = sorted(int(p.name) for p in pathlib.Path(checkpoint_dir).iterdir() if p.name.isdigit())
+    steps = runlog.checkpoint_steps(checkpoint_dir)
     if not steps:
         raise SystemExit(f"no checkpoint steps under {checkpoint_dir}")
     return steps[-1]
@@ -100,7 +101,7 @@ def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False
     falls back to MODEL_ARCH from config."""
     arch = arch or recorded_arch(run_dir)
     run_dir = pathlib.Path(run_dir)
-    source = checkpoint_source(checkpoint_path)
+    source = checkpoint_source(checkpoint_path, run_dir)
     out = run_dir / f"yardstick_{source}_step{step}{'_limit' + str(limit) if limit else ''}.json"
     argv = [python, "-m", "instruments.yardstick.eval_yardstick", "--checkpoint-path", str(checkpoint_path),
             "--step", str(step), "--json-out", str(out), "--no-heldout"]
@@ -108,10 +109,8 @@ def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False
         argv += ["--arch", arch]
     if limit:
         argv += ["--limit", str(limit)]
-    env = {**os.environ, "PYTHONPATH": str(REPO)}
-    if on_cpu:
-        env.update({"JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1"})
-    proc = subprocess.run(argv, cwd=REPO, env=env, capture_output=True, text=True)
+    env = module_env(**({"JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1"} if on_cpu else {}))
+    proc = subprocess.run(argv, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
     if proc.returncode != 0 or not out.exists():
         (run_dir / JOURNAL).open("a").write(json.dumps({
             "step": step, "source": source, "limit": limit, "error": (proc.stderr or proc.stdout)[-2000:],
@@ -155,45 +154,58 @@ def verdict_for(spec_path, run_dir) -> referee.Verdict:
 # --- the model card ------------------------------------------------------------
 
 def _metrics_summary(run_dir):
-    path = pathlib.Path(run_dir) / "metrics.csv"
-    last_step, last_val, peak = 0, None, 0.0
-    if path.exists():
-        for row in csv.DictReader(path.open()):
-            try:
-                last_step = max(last_step, int(row["step"]))
-            except (KeyError, ValueError):
-                continue
-            if row.get("val_ce"):
-                last_val = float(row["val_ce"])
-            if row.get("arena_peak_mib"):
-                peak = max(peak, float(row["arena_peak_mib"]))
-    return last_step, last_val, peak
+    """(last step, last val CE, peak arena MiB), read through runlog: replayed and torn
+    rows are dropped the way every other reader drops them. (0, None, 0.0) with no CSV."""
+    try:
+        log = runlog.load(run_dir)
+    except FileNotFoundError:
+        return 0, None, 0.0
+    _, val = log.column("val_ce")
+    _, peaks = log.column("arena_peak_mib")
+    return log.last_step, (val[-1] if val else None), max(peaks, default=0.0)
 
 
 def _weights_sha(checkpoints_dir) -> tuple[str, str]:
     """(step dir name, sha256 of its files in path order), or ('n/a', 'n/a')."""
-    ck = pathlib.Path(checkpoints_dir)
-    steps = sorted((p for p in ck.iterdir() if p.name.isdigit()), key=lambda p: int(p.name)) if ck.is_dir() else []
+    steps = runlog.checkpoint_steps(checkpoints_dir)
     if not steps:
         return "n/a", "n/a"
+    newest = pathlib.Path(checkpoints_dir) / str(steps[-1])
     h = hashlib.sha256()
-    for f in sorted(steps[-1].rglob("*")):
+    for f in sorted(newest.rglob("*")):
         if f.is_file():
-            h.update(f.relative_to(steps[-1]).as_posix().encode())
+            h.update(f.relative_to(newest).as_posix().encode())
             h.update(f.read_bytes())
-    return steps[-1].name, h.hexdigest()
+    return newest.name, h.hexdigest()
+
+
+# The card's config snapshot, by recorded arch: a knob the arch never reads is noise on
+# its card. An arch the run did not record gets every key, since any of them may apply.
+_COMMON_CARD_KEYS = ["LATENT_DIM", "NUM_HEADS", "MAX_SEQ_LEN", "BATCH_SIZE", "ACCUMULATION_STEPS", "DECAY_STEPS"]
+_ARCH_CARD_KEYS = {
+    "plain": ["PLAIN_LAYERS"],
+    "refiner": ["REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL"],
+    "reasoner": ["NUM_BLOCKS", "MAX_STEPS_LIMIT"],
+}
+
+
+def card_config_keys(arch):
+    extra = _ARCH_CARD_KEYS.get(arch) or list(dict.fromkeys(k for keys in _ARCH_CARD_KEYS.values() for k in keys))
+    return _COMMON_CARD_KEYS + extra
 
 
 def card_fields(run_dir, spec_path=None) -> dict:
     """Everything the template asks for that the run recorded. Pure over files."""
     run_dir = pathlib.Path(run_dir)
-    meta = json.loads((run_dir / "run_metadata.json").read_text())
-    params = meta.get("parameters", {})
+    meta = runlog.read_metadata(run_dir)
+    if not meta:
+        raise FileNotFoundError(f"{run_dir}: no readable {runlog.METADATA_FILENAME}; a card is written "
+                                f"from what the run recorded, and this run recorded nothing readable")
+    params = runlog.recorded_params(meta)
     sections = meta.get("sections", [])
     hours = sum((s.get("duration_seconds") or 0) for s in sections) / 3600.0
     last_step, last_val, peak = _metrics_summary(run_dir)
-    tokens_per_opt = (int(params.get("ACCUMULATION_STEPS", 0)) * int(params.get("BATCH_SIZE", 1))
-                      * 2 * int(params.get("MAX_SEQ_LEN", 0)))
+    tokens_per_opt = runlog.recorded_tokens_per_opt_step(params)  # None: the recipe was not recorded
     ref = None
     if spec_path:
         spec = load_base_spec(spec_path)
@@ -201,8 +213,7 @@ def card_fields(run_dir, spec_path=None) -> dict:
     yard = completion_entry(run_dir)
     step_name, sha = _weights_sha(run_dir / "checkpoints")
     arch = params.get("MODEL_ARCH", "?")
-    config_keys = ["LATENT_DIM", "NUM_HEADS", "PLAIN_LAYERS", "REFINER_ENCODER_LAYERS", "MAX_SEQ_LEN",
-                   "MAX_STEPS_LIMIT", "BATCH_SIZE", "ACCUMULATION_STEPS", "DECAY_STEPS"]
+    config_keys = card_config_keys(params.get("MODEL_ARCH"))
     return {
         "run_id": meta.get("run_id", run_dir.name),
         "commit": meta.get("git_commit", "?"), "branch": meta.get("git_branch", "?"),
@@ -213,7 +224,7 @@ def card_fields(run_dir, spec_path=None) -> dict:
         "seeds": f"DATA_SEED={params.get('DATA_SEED', '?')}, MODEL_SEED={params.get('MODEL_SEED', '?')}",
         "budget": params.get("TRAIN_TOKEN_BUDGET"),
         "sections": len(sections), "hours": hours,
-        "last_step": last_step, "tokens_seen": last_step * tokens_per_opt,
+        "last_step": last_step, "tokens_seen": None if tokens_per_opt is None else last_step * tokens_per_opt,
         "val_ce": last_val, "peak_vram_mib": peak,
         "lambada_acc": yard["lambada_acc"] if yard else None,
         "lambada_ppl": yard["lambada_ppl"] if yard else None,
@@ -261,7 +272,7 @@ def render_card(f: dict) -> str:
 |---|---|
 | Peak VRAM (arena) | {f['peak_vram_mib']:.0f} MiB of 6144 |
 | Wall-clock | {f['hours']:.1f} h across {f['sections']} session(s) |
-| Tokens seen | {f['tokens_seen']:,} (opt step {f['last_step']:,}) |
+| Tokens seen | {'unknown (recipe not recorded)' if f['tokens_seen'] is None else f"{f['tokens_seen']:,}"} (opt step {f['last_step']:,}) |
 
 ## Weights (the regenerable cache)
 
@@ -280,7 +291,7 @@ Generated by `python -m instruments.base_run card` from `run_metadata.json`, `me
 
 def write_model_card(run_dir, spec_path=None, out=None) -> pathlib.Path:
     fields = card_fields(run_dir, spec_path)
-    out = pathlib.Path(out) if out else REPO / "docs" / "registry" / f"{fields['run_id']}.md"
+    out = pathlib.Path(out) if out else REPO_ROOT / "docs" / "registry" / f"{fields['run_id']}.md"
     out.write_text(render_card(fields))
     return out
 

@@ -184,3 +184,34 @@ def test_scoring_restores_the_arch_the_run_recorded_not_the_shells(tmp_path, mon
     with_meta, without, half_written = calls
     assert with_meta[with_meta.index("--arch") + 1] == "refiner"
     assert "--arch" not in without and "--arch" not in half_written
+
+
+def test_only_the_runs_own_checkpoint_dir_is_journaled_as_rolling(tmp_path):
+    """#334 review: any dir other than milestones/best was labelled 'rolling', so a
+    --checkpoint-dir at a rewind's set_aside_* dir would pass for the rolling series."""
+    run = tmp_path / "run_s"
+    checkpoints = run / "checkpoints"
+    assert base_run.checkpoint_source(checkpoints, run) == "rolling"
+    assert base_run.checkpoint_source(checkpoints / "milestones", run) == "milestone"
+    assert base_run.checkpoint_source(checkpoints / "best_val_ce", run) == "best"
+    assert base_run.checkpoint_source(checkpoints / "set_aside_2026", run) == "set_aside_2026"
+
+
+def test_the_card_shows_only_the_knobs_its_arch_reads():
+    """#332 review: every card listed REFINER_ENCODER_LAYERS, a knob plain never reads."""
+    plain, refiner = base_run.card_config_keys("plain"), base_run.card_config_keys("refiner")
+    assert "PLAIN_LAYERS" in plain and "REFINER_ENCODER_LAYERS" not in plain and "TIME_SIGNAL" not in plain
+    assert {"REFINER_ENCODER_LAYERS", "TIME_SIGNAL"} <= set(refiner) and "PLAIN_LAYERS" not in refiner
+    assert {"PLAIN_LAYERS", "REFINER_ENCODER_LAYERS"} <= set(base_run.card_config_keys(None)), \
+        "a run that recorded no arch shows every knob that might apply"
+
+
+def test_a_card_without_a_recorded_recipe_does_not_claim_zero_tokens(tmp_path):
+    """#343 review: an unrecorded ACCUMULATION/BATCH/SEQ recipe rendered 'Tokens seen 0'."""
+    run = tmp_path / "run_norecipe"
+    run.mkdir()
+    (run / "run_metadata.json").write_text(json.dumps({"run_id": "run_norecipe", "parameters": {"MODEL_ARCH": "plain"}}))
+    (run / "metrics.csv").write_text("step,ce\n40,3.1\n")
+    fields = base_run.card_fields(run)
+    assert fields["tokens_seen"] is None
+    assert "| Tokens seen | unknown (recipe not recorded) (opt step 40) |" in base_run.render_card(fields)

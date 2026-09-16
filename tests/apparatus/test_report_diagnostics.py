@@ -7,7 +7,7 @@ whose absence is.
 """
 
 from instruments import report
-from instruments.runlog import RunLog
+from instruments.runlog import REASONER_ONLY_COLUMNS, RunLog
 
 
 def _log(arch):
@@ -17,12 +17,13 @@ def _log(arch):
 
 def _absent_line(capsys, arch):
     report._print_diagnostics(_log(arch))
-    return next(line for line in capsys.readouterr().out.splitlines() if "not measured" in line)
+    return next(line for line in capsys.readouterr().out.splitlines()
+                if "not measured" in line or "not logged" in line)
 
 
 def test_a_plain_run_does_not_list_the_reasoner_only_columns(capsys):
     line = _absent_line(capsys, "plain")
-    assert not any(col in line for col in report._REASONER_ONLY)
+    assert not any(col in line for col in REASONER_ONLY_COLUMNS)
     assert "out_entropy" in line, "a column plain does report is still named when missing"
 
 

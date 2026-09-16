@@ -27,8 +27,8 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax import nnx
-from dotenv import load_dotenv
 
+from instruments._common import load_env
 from instruments.arch import add_arch_argument, build
 from trm.config import LATENT_DIM, MAX_SEQ_LEN, NUM_BLOCKS
 from trm.train.grad_step import compute_grad_step, apply_grads
@@ -41,7 +41,7 @@ REPORTS = {
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "a tiny correctness smoke; inert anyway under cuda_async, and it asserts learning, not memory"}
 
-load_dotenv()
+load_env()
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--depth": "memorizing one batch needs one fixed, cheap depth: a single compile"}

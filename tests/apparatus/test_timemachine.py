@@ -57,12 +57,22 @@ def test_resolve_arch_refuses_to_guess(runs):
 def test_recorded_val_ce_takes_last_non_empty(runs):
     metrics = "step,val_ce\n10,5.10\n20,\n30,4.8947\n"
     _make_run(runs, "r", meta={"parameters": {}}, metrics=metrics)
-    assert tm.recorded_val_ce("r") == pytest.approx(4.8947)
+    assert tm.recorded_val_ce(tm.recorded_val_ces("r")) == pytest.approx(4.8947)
+
+
+def test_recorded_val_ce_prefers_the_scored_step_and_skips_non_finite(runs):
+    """The yardstick scores a checkpoint whose step need not be the last logged row;
+    a NaN reading is not a value to reproduce."""
+    metrics = "step,val_ce\n10,5.10\n20,4.95\n30,nan\n"
+    _make_run(runs, "r", meta={"parameters": {}}, metrics=metrics)
+    val_ces = tm.recorded_val_ces("r")
+    assert tm.recorded_val_ce(val_ces, step=10) == pytest.approx(5.10)
+    assert tm.recorded_val_ce(val_ces, step=999) == pytest.approx(4.95), "no row at that step: the last finite"
 
 
 def test_recorded_val_ce_missing_file_is_none(runs):
     _make_run(runs, "r", meta={"parameters": {}})
-    assert tm.recorded_val_ce("r") is None
+    assert tm.recorded_val_ce(tm.recorded_val_ces("r")) is None
 
 
 def test_venv_key_is_deterministic_and_content_addressed(runs):
