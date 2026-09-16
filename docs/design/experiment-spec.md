@@ -82,6 +82,56 @@ can't express what those experiments actually did, the format is wrong*), and
 they earned two changes already — the summary form above, and `require`/`readouts`,
 which #77 needed for its three-way branch and its no-weight observations.
 
+**A squash merge erases the order.** Every runner-era spec on `main` (235, 238,
+242, 246, 026-stage1) was pre-registered in a PR branch, run, and squash-merged —
+so on `main` its criteria and its results share one commit, and git holds no
+evidence of which came first. The audit reports those as grandfathered (with the
+commit date) rather than red, because nothing can recover the order now. From
+2026-09-15 on, pre-register the spec in **its own PR** and let the results land in
+a later one, as 026-stage2 did: that survives any merge strategy.
+
+## The audit — can the verdict be trusted?
+
+`python -m instruments.audit` (`make audit`) runs a fixed checklist over the specs
+a change can reach — the same diff `tests/affected.py` uses, so scope is never a
+person's choice — and in CI on every push and PR. It never decides KEEP/KILL; it
+judges whether the recorded verdict is *evidence*. One line per rule, a reason on
+every red, and a spec that predates a rule is grandfathered with the date, never
+rewritten:
+
+| rule | red when |
+|---|---|
+| `floor-both-arms` | a criterion the verdict rests on passed with both arms at a declared floor arm or `[protocol] cap` |
+| `control-reached-target` | a tokens-to-target metric (`metric_key` contains `tokens_to`) has no `[protocol] cap`, or a control seed sits at the cap and is not voided |
+| `seeds-complete` | an arm a criterion compares has fewer seeds than `[execution]` (or `[protocol] seeds`) registered, and the rest are not voided |
+| `sigma-plausible` | σ_pooled is 0 at a criterion point (one seed, or identical seeds); a σ over 10× the gap is *noted* on green, since an honest null lands there one time in ten |
+| `prediction-registered` | the hypothesis registers no prediction (rule 3) |
+| `criteria-predate-results` | the commit that introduced `[criteria]` does not precede the one that introduced measured `[results]` |
+| `verdict-current` | the referee, re-run on the recorded numbers, does not reproduce `verdict.recorded` |
+| `finding-cites-spec` | a KEEP/KILL spec is cited by no finding's `Spec:` line, no graveyard tombstone (path or `#issue`), and links no `finding =` of its own; in the other direction, a finding dated 2026-09-12 or later names no spec and is not `Evidence: observational — <why>` |
+| `run-ended-by-budget` | a log named in `[runs.<arm>] logs = [...]` / `dirs = [...]` ends in a divergence kill or non-finite skips instead of a budget stop; n/a when the spec names no log |
+
+Two small keys exist for the audit's sake. A seed that is missing for a stated
+reason is declared rather than silently absent:
+
+```toml
+[void.run.adamw]
+seeds = [1]
+reason = "never reached CE 5.85 inside the cap; re-registered as 027"
+```
+
+and a tokens-to-target metric declares its cap once, in the metric's own units,
+so a control that never reached the target is visible to a machine:
+
+```toml
+[protocol]
+metric_key = "tokens_to_target_M"
+cap = 67.1
+```
+
+A spec with no measured results (only constant arms, or none) is reported as
+*pending* and audited on nothing — a spec mid-run is not a spec that failed.
+
 ## Running one — `[execution]` and the runner
 
 A spec with an `[execution]` section can be run, not just judged:

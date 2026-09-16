@@ -34,6 +34,11 @@ on:
 #                         masking a rename, a shadowed name, an f-string that
 #                         silently prints nothing. Needs no jax, so it finishes
 #                         in seconds and fails fast ahead of the slow jobs.
+#   audit (specs)       — the validity audit over the experiment specs a change
+#                         can reach (#304): floor, seeds, sigma, pre-registration
+#                         order in git, verdict reproducibility, finding cites
+#                         spec. Judges whether a verdict can be TRUSTED, never
+#                         what it is. Scoped by the diff; needs no jax either.
 # CPU-only throughout (FORCE_F32_COMPUTE via tests/conftest.py or explicit env)
 # so CI runs while the GPU trains; the real f16 path stays RUN_TESTS_ON_GPU=1.
 
@@ -72,6 +77,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m instruments.queue --strays
+
+  audit:
+    name: audit (specs)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The audit reads each spec's commit history (criteria-predate-results)
+          # and diffs against main for scope; a depth-1 checkout has neither.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Audit the specs this change can reach
+        # No jax: the audit reads TOML, findings and git. Scope is the diff, never a
+        # person's choice (#304) — a push's commit range on main, the merge-base
+        # with main on a PR. Nothing reachable changed -> "nothing an audit can
+        # reach changed", green. `--all` is the on-demand full sweep.
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            python -m instruments.audit --since "${{ github.event.before }}"
+          else
+            python -m instruments.audit --base origin/main
+          fi
 
   test:
     name: pytest (CPU)
