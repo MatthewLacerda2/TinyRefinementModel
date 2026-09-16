@@ -2,9 +2,11 @@
 
     python -m instruments.base_run verdict --spec experiments/base/specs/001-plain-base.toml --run runs/run_x
     python -m instruments.base_run card    --spec ... --run runs/run_x [--out docs/registry/run_x.md]
+    python -m instruments.base_run score   --run runs/run_x [--checkpoint-dir DIR --step N] [--limit N] [--cpu]
 
-The supervisor calls `score_checkpoint` at every milestone (a LAMBADA subsample
-on the CPU, beside training) and at completion (the full set on the card), and
+The supervisor calls `score` at every milestone, naming that milestone's dir and step
+(a LAMBADA subsample on the CPU, beside training), and at completion with neither
+(the newest rolling checkpoint, full set, on the card), and
 `verdict_for` beside its BUDGET_COMPLETE line. `write_model_card` fills
 docs/registry/MODEL_CARD_TEMPLATE.md from what the run recorded; a human edits
 the one-line "why it is notable" and nothing else.
@@ -23,9 +25,12 @@ import subprocess
 import sys
 
 from instruments import verdict as referee
+from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 JOURNAL = "yardstick.jsonl"
+# What a journal line says it scored, named by the checkpoint dir it came from.
+SOURCES = {MILESTONE_SUBDIR: "milestone", BEST_SUBDIR: "best"}
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -70,17 +75,35 @@ def recorded_arch(run_dir) -> str | None:
     return meta.get("parameters", {}).get("MODEL_ARCH")
 
 
+def checkpoint_source(checkpoint_dir) -> str:
+    """'milestone', 'best' or 'rolling', from the orbax manager dir a checkpoint sits in."""
+    return SOURCES.get(pathlib.Path(checkpoint_dir).name, "rolling")
+
+
+def newest_step(checkpoint_dir) -> int:
+    steps = sorted(int(p.name) for p in pathlib.Path(checkpoint_dir).iterdir() if p.name.isdigit())
+    if not steps:
+        raise SystemExit(f"no checkpoint steps under {checkpoint_dir}")
+    return steps[-1]
+
+
 def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False, arch=None,
                      python=sys.executable) -> dict | None:
-    """Run the yardstick on a checkpoint and append one line to the run's journal.
+    """Run the yardstick on exactly `step` of the manager dir `checkpoint_path`, and
+    append one line to the run's journal naming that step and its source.
+
+    The step is always passed through: a dir holds several steps, and the yardstick
+    restores the newest unless told, which is how every milestone used to be scored
+    as whatever rolling checkpoint was newest when the scorer started (#328).
 
     `arch` defaults to the run's recorded MODEL_ARCH; with none recorded the yardstick
     falls back to MODEL_ARCH from config."""
     arch = arch or recorded_arch(run_dir)
     run_dir = pathlib.Path(run_dir)
-    out = run_dir / f"yardstick_step{step}{'_limit' + str(limit) if limit else ''}.json"
+    source = checkpoint_source(checkpoint_path)
+    out = run_dir / f"yardstick_{source}_step{step}{'_limit' + str(limit) if limit else ''}.json"
     argv = [python, "-m", "instruments.yardstick.eval_yardstick", "--checkpoint-path", str(checkpoint_path),
-            "--json-out", str(out), "--no-heldout"]
+            "--step", str(step), "--json-out", str(out), "--no-heldout"]
     if arch:
         argv += ["--arch", arch]
     if limit:
@@ -91,11 +114,11 @@ def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False
     proc = subprocess.run(argv, cwd=REPO, env=env, capture_output=True, text=True)
     if proc.returncode != 0 or not out.exists():
         (run_dir / JOURNAL).open("a").write(json.dumps({
-            "step": step, "limit": limit, "error": (proc.stderr or proc.stdout)[-2000:],
+            "step": step, "source": source, "limit": limit, "error": (proc.stderr or proc.stdout)[-2000:],
             "when": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}) + "\n")
         return None
     row = json.loads(out.read_text())
-    entry = {"step": step, "limit": limit, "on_cpu": on_cpu, **row["lambada"],
+    entry = {"step": step, "source": source, "limit": limit, "on_cpu": on_cpu, **row["lambada"],
              "when": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     with (run_dir / JOURNAL).open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
@@ -270,11 +293,16 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--cpu", action="store_true")
+    ap.add_argument("--checkpoint-dir", default=None,
+                    help="score: the orbax manager dir to score from, e.g. <run>/checkpoints/milestones "
+                         "(default: the run's rolling checkpoints)")
+    ap.add_argument("--step", type=int, default=None, help="score: the step in that dir (default: its newest)")
     args = ap.parse_args(argv)
     run_dir = pathlib.Path(args.run)
     if args.what == "score":
-        steps = sorted(int(p.name) for p in (run_dir / "checkpoints").iterdir() if p.name.isdigit())
-        entry = score_checkpoint(run_dir, run_dir / "checkpoints", step=steps[-1], limit=args.limit, on_cpu=args.cpu)
+        checkpoint_dir = pathlib.Path(args.checkpoint_dir) if args.checkpoint_dir else run_dir / "checkpoints"
+        step = newest_step(checkpoint_dir) if args.step is None else args.step
+        entry = score_checkpoint(run_dir, checkpoint_dir, step=step, limit=args.limit, on_cpu=args.cpu)
         print(json.dumps(entry, indent=1) if entry else "yardstick failed — see the journal")
         return 0 if entry else 1
     if args.what == "verdict":

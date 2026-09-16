@@ -107,6 +107,9 @@ def heldout_perplexity(model):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="GPT-2-small yardstick: LAMBADA acc/ppl + held-out ppl")
     ap.add_argument("--checkpoint-path", default=None, help="Orbax dir (default: latest run)")
+    ap.add_argument("--step", type=int, default=None,
+                    help="which step of that dir to score (default: its newest). A milestones dir "
+                         "holds many, and the one to score is the milestone that was asked for")
     # The param tree the checkpoint holds. A run records its own in run_metadata.json
     # and instruments.base_run passes that; MODEL_ARCH is only the fallback.
     add_arch_argument(ap)
@@ -128,7 +131,7 @@ def main(argv=None):
         # keep restoring checkpoints written before batching changed.
         print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
         args.batch = EVAL_BATCH_SIZE
-    model, step = restore_arch(args.arch, args.checkpoint_path)
+    model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
 
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)

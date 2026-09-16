@@ -112,6 +112,57 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
     assert len(launched) == 2 and all("--cpu" in a and "--limit" in a for a in launched)
 
 
+def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tmp_path, monkeypatch):
+    """#328: the scorer named no checkpoint, so base_run scored the newest rolling one.
+    That is not the milestone, and rolling retention (3) can evict it mid-restore. Here
+    milestone 100 sits beside rolling checkpoints 150 and 200: the supervisor's command,
+    run through base_run, must hand the yardstick milestone 100 and journal it as such."""
+    from trm.runtime import supervisor as sup_mod
+    from trm.runtime.layout import MILESTONE_SUBDIR
+    from trm.runtime.supervisor import Limits, Supervisor
+
+    run = tmp_path / "run_m"
+    milestones = run / "checkpoints" / MILESTONE_SUBDIR
+    (milestones / "100").mkdir(parents=True)
+    (milestones / "100" / "_CHECKPOINT_METADATA").write_text("{}")
+    (milestones / "100.orbax-checkpoint-tmp-1").mkdir()
+    (milestones / "100.orbax-checkpoint-tmp-1" / "_CHECKPOINT_METADATA").write_text("{}")
+    for rolling in ("150", "200"):
+        (run / "checkpoints" / rolling).mkdir(parents=True)
+
+    launched = []
+    monkeypatch.setattr(sup_mod.subprocess, "Popen",
+                        lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0})())
+    Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
+               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None).score_new_milestones()
+    assert len(launched) == 1, "one milestone; the orbax tmp dir beside it is not one"
+    (argv,) = launched
+    assert argv[argv.index("--checkpoint-dir") + 1] == str(milestones)
+    assert argv[argv.index("--step") + 1] == "100"
+
+    yardstick_calls = []
+
+    def fake_yardstick(cmd, **kw):
+        yardstick_calls.append(cmd)
+        out = pathlib.Path(cmd[cmd.index("--json-out") + 1])
+        out.write_text(json.dumps({"lambada": {"lambada_acc": 0.25, "lambada_ppl": 80.0, "num_examples": 2}}))
+        return type("Proc", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr(base_run.subprocess, "run", fake_yardstick)
+    assert base_run.main(argv[argv.index("score"):]) == 0
+    (cmd,) = yardstick_calls
+    assert cmd[cmd.index("--checkpoint-path") + 1] == str(milestones)
+    assert cmd[cmd.index("--step") + 1] == "100"
+    line = base_run.journal(run)[-1]
+    assert (line["step"], line["source"], line["lambada_acc"]) == (100, "milestone", 0.25)
+
+    # With no checkpoint named (the completion call), the newest rolling step is scored.
+    yardstick_calls.clear()
+    assert base_run.main(["score", "--run", str(run)]) == 0
+    assert yardstick_calls[0][yardstick_calls[0].index("--step") + 1] == "200"
+    assert (base_run.journal(run)[-1]["step"], base_run.journal(run)[-1]["source"]) == (200, "rolling")
+
+
 def test_scoring_restores_the_arch_the_run_recorded_not_the_shells(tmp_path, monkeypatch):
     """#313: the yardstick must rebuild the param tree the run trained, and that is in
     the run's metadata. The champion recorded `refiner`; the default here is `plain`.

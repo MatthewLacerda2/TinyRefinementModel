@@ -78,22 +78,37 @@ def test_it_reads_MODEL_ARCH_or_declares_why_not(path):
 # `model.refiner.encoder` or `model.encoder_stack` — attributes only a retired arch
 # has — and crash with AttributeError on `plain`, the default. `smoke_refiner_gpu`
 # and `bench_train_step` both did exactly this.
+#
+# Known limitation, accepted: it reads attribute syntax, so `getattr(model, "refiner")`
+# walks past it. The scan exists to catch the accident, not to outwit a determined author.
 
 RETIRED_ARCH_ATTRIBUTES = {"refiner", "encoder_stack", "decoder_stack", "reasoning_stack", "hunch_cache"}
-# A whole file declares itself with the marker at the start of a line; a multi-arch
-# file declares each branch into a retired arch with the marker on that line.
-FILE_EXEMPTION = re.compile(r"^#\s*ARCH-SPECIFIC:\s*\S+", re.M)
+
+
+def _arch_specific_comments(source):
+    """{line: column} of every real `# ARCH-SPECIFIC: <why>` comment.
+
+    Read from the tokenizer, not the text: the same words inside a docstring are a
+    string, and a regex over the file let one exempt the whole file (#331 review)."""
+    import io
+    import tokenize
+    return {tok.start[0]: tok.start[1]
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+            if tok.type == tokenize.COMMENT and EXEMPTION.match(tok.string)}
 
 
 def retired_attribute_accesses(source):
-    """Sorted (line, attribute) for every undeclared access to a retired arch's internals."""
-    if FILE_EXEMPTION.search(source):
-        return []
+    """Sorted (line, attribute) for every undeclared access to a retired arch's internals.
+
+    A whole file declares itself with the comment on a line of its own at column 0; a
+    multi-arch file declares each branch into a retired arch with the comment on that line."""
     import ast
-    lines = source.splitlines()
+    marked = _arch_specific_comments(source)
+    if 0 in marked.values():
+        return []
     return sorted({(node.lineno, node.attr) for node in ast.walk(ast.parse(source))
                    if isinstance(node, ast.Attribute) and node.attr in RETIRED_ARCH_ATTRIBUTES
-                   and not EXEMPTION.search(lines[node.lineno - 1])})
+                   and node.lineno not in marked})
 
 
 @pytest.mark.parametrize("path", sorted(INSTRUMENTS.rglob("*.py")), ids=lambda p: str(p.relative_to(INSTRUMENTS)))
@@ -115,3 +130,7 @@ def test_the_attribute_scan_catches_what_it_was_written_for():
     assert retired_attribute_accesses("r = model.refiner  # ARCH-SPECIFIC: refiner branch\n") == []
     assert retired_attribute_accesses("# ARCH-SPECIFIC: reasoner only\nmodel.hunch_cache\n") == []
     assert retired_attribute_accesses("from trm.model.refiner import CausalRefiner\n") == []
+    # The marker's words inside a string are not a declaration, at file or line level.
+    docstring = '"""Notes.\n# ARCH-SPECIFIC: only a quotation\n"""\nmodel.refiner\n'
+    assert retired_attribute_accesses(docstring) == [(4, "refiner")]
+    assert retired_attribute_accesses('x = (model.refiner, "# ARCH-SPECIFIC: in a string")\n') == [(1, "refiner")]
