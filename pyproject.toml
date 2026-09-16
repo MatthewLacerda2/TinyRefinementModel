@@ -16,7 +16,9 @@ extend-exclude = ["venv"]
 [tool.ruff.lint]
 # Errors and bugs only (pyflakes + pycodestyle errors); formatting is not enforced.
 # RUF100: a `# noqa` that suppresses nothing is dead weight too.
-select = ["E4", "E7", "E9", "F", "W6", "RUF100"]
+# W291/W293: trailing whitespace, the one formatting pair enforced — invisible, and
+# noise in every later diff that touches the line (#324).
+select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100"]
 
 [tool.vulture]
 # Dead code: functions, classes, variables and attributes nothing references. Ruff
