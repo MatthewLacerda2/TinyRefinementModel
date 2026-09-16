@@ -68,6 +68,7 @@ from instruments.invariants import clean_column, suspect_rows  # noqa: E402
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process  # noqa: E402
 from trm.train.schedules import (  # noqa: E402
+    PEAK_LR,
     WARMUP_STEPS,
     build_learning_schedule,
     resolve_decay_steps,
@@ -314,6 +315,10 @@ class RunConfig:
         return self.value("WARMUP_STEPS", WARMUP_STEPS, int)
 
     @property
+    def peak_lr(self):
+        return self.value("PEAK_LR", PEAK_LR, float)
+
+    @property
     def budget(self):
         """Planned token budget, or None when the run was launched without one."""
         return self.value("TRAIN_TOKEN_BUDGET", this_process.TRAIN_TOKEN_BUDGET)
@@ -370,6 +375,12 @@ def describe(cfg):
         parts.append(f"muon (LR ×{cfg.muon_lr_mult:g} on matrices)")
     else:
         parts.append(cfg.optimizer)
+
+    # The peak the schedule warms up to. Named only when the run recorded it and
+    # it is not the historical 1e-4, so every existing label is unchanged and the
+    # #287 arms — which differ in nothing else — cannot be confused for each other.
+    if cfg.recorded("PEAK_LR") and cfg.peak_lr != PEAK_LR:
+        parts.append(f"peak LR {cfg.peak_lr:g}")
     return " · ".join(parts)
 
 
@@ -384,7 +395,8 @@ def lr_schedule(cfg):
     loud — the same rule the diagnostic sheets follow for a column nobody
     measured."""
     if cfg.warmup_steps < cfg.decay_steps:
-        return build_learning_schedule(cfg.decay_steps, warmup_steps=cfg.warmup_steps), None
+        return build_learning_schedule(cfg.decay_steps, warmup_steps=cfg.warmup_steps,
+                                       peak_lr=cfg.peak_lr), None
     if cfg.recorded("WARMUP_STEPS"):
         return None, (f"the run's warmup ({cfg.warmup_steps:,} steps) covers its whole "
                       f"{cfg.decay_steps:,}-step horizon — there is no anneal to draw")

@@ -11,6 +11,13 @@ from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TO
 # warming up. A base run leaves it alone.
 WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "1000"))
 
+# The peak the cosine warms up to. 1e-4 was chosen once, at the start of this
+# project, and never compared against anything (#287) — GPT-2-small at a
+# comparable size trained at 6e-4, later reproductions at 2.5e-4. Env-overridable
+# so a matched pair can sweep it; the default is the historical value, so every
+# existing config and the golden run resolve unchanged.
+PEAK_LR = float(os.environ.get("PEAK_LR", "1e-4"))
+
 # The LR anneal's horizon must match the run length (#83). DECAY_STEPS derives
 # from the planned token budget (config.TRAIN_TOKEN_BUDGET); with no budget set
 # it stays at the historical 15000 opt steps, so existing configs and the golden
@@ -34,20 +41,21 @@ def resolve_decay_steps(token_budget, tokens_per_opt_step=TOKENS_PER_OPT_STEP,
     return steps
 
 
-def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS):
+def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK_LR):
     """The run's LR schedule at an explicit horizon; module-level
     learning_schedule is this at the resolved DECAY_STEPS.
 
-    `warmup_steps` is explicit so a *reader* can rebuild the schedule some other
-    run actually trained under (instruments/plots.py): WARMUP_STEPS is an env
-    knob read at import, so the module-level default describes this process, and
-    a 512-step arm plotted from a 1000-step-warmup shell has no cosine at all."""
+    `warmup_steps` and `peak_lr` are explicit so a *reader* can rebuild the
+    schedule some other run actually trained under (instruments/plots.py): both
+    are env knobs read at import, so the module-level defaults describe this
+    process, and a 512-step arm plotted from a 1000-step-warmup shell has no
+    cosine at all."""
     return optax.warmup_cosine_decay_schedule(
-        init_value=1e-5,
-        peak_value=1e-4,
+        init_value=peak_lr / 10.0,
+        peak_value=peak_lr,
         warmup_steps=warmup_steps,
         decay_steps=decay_steps,
-        end_value=1e-6
+        end_value=peak_lr / 100.0,
     )
 
 

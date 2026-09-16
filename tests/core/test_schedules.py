@@ -22,6 +22,7 @@ from trm.config import TOKENS_PER_OPT_STEP
 from trm.train.schedules import (
     DECAY_STEPS,
     LAMBDA_DECAY_STEPS,
+    PEAK_LR,
     WARMUP_STEPS,
     build_learning_schedule,
     diversity_lambda_schedule,
@@ -67,6 +68,26 @@ def test_anneal_ends_at_budget_and_half_budget_is_mid_cosine():
     frac = (half - WARMUP_STEPS) / (decay - WARMUP_STEPS)
     expected = LR_END + 0.5 * (LR_PEAK - LR_END) * (1 + np.cos(np.pi * frac))
     assert np.isclose(float(sched(half)), expected, rtol=1e-3)
+
+
+def test_peak_lr_defaults_to_the_historical_value(monkeypatch):
+    """1e-4 was the shipped peak before it became a knob (#287). The default must
+    still be it, and the whole schedule with it — a run that sets nothing trains
+    exactly as it did, which is what keeps the golden run bit-identical."""
+    assert PEAK_LR == LR_PEAK
+    sched = build_learning_schedule(15_000)
+    assert np.isclose(float(sched(WARMUP_STEPS)), LR_PEAK, rtol=1e-5)
+    assert np.isclose(float(sched(0)), 1e-5, rtol=1e-5)
+    assert np.isclose(float(sched(15_000)), LR_END, rtol=1e-5)
+
+
+def test_the_whole_schedule_scales_with_the_peak():
+    """A sweep of the peak moves one variable, the LR scale: init and end follow
+    it at peak/10 and peak/100, so the shape at every step is identical and only
+    the height differs. Three separate knobs would be three variables."""
+    base, tripled = build_learning_schedule(15_000), build_learning_schedule(15_000, peak_lr=3e-4)
+    for step in (0, WARMUP_STEPS, 5_000, 15_000):
+        assert np.isclose(float(tripled(step)), 3.0 * float(base(step)), rtol=1e-5), step
 
 
 def test_budget_inside_warmup_fails_loud():
