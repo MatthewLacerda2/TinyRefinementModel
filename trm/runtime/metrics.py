@@ -1,13 +1,79 @@
 import csv
 import datetime
 import math
+from typing import NamedTuple
 import fsspec
 import jax.numpy as jnp
 
 
-def _fmt(diags, key, places):
-    """A reported metric, or an empty cell if this architecture doesn't measure it."""
-    return f"{diags[key]:.{places}f}" if key in diags else ""
+class Column(NamedTuple):
+    name: str
+    places: int | None       # decimals written; None writes the value as it is
+    diag: str | None = None  # the model diagnostic it holds; None: the log() argument `name`
+
+
+# The CSV schema, declared once: every column in order, what it holds, and how it is
+# written. Old runs and every reader in instruments/ depend on the column set, the
+# order and the formatting. An absent value — an optional argument not passed, a
+# diagnostic this architecture does not measure (#105) — is an empty cell, never a
+# zero that looks like a measurement.
+COLUMNS = (
+    Column("step", None),
+    Column("ce", 4),
+    Column("loss", 4),
+    Column("seg1_ce", 4),
+    Column("grad_norm_avg", 4),
+    # One micro-step's grads (#82's original reading), and the window mean the
+    # optimizer actually applies (#191). Only the second can say f16 underflow
+    # reached the weights.
+    Column("zero_frac_dense_max", 6),
+    Column("applied_zero_frac_dense_max", 6),
+    # Norm of the window mean the optimizer clips (#180), comparable to CLIP_NORM.
+    Column("applied_grad_norm", 4),
+    Column("avg_forget_cost", 4, diag="forget_cost"),
+    Column("diversity_loss", 6, diag="diversity_loss"),
+    Column("temporal_drift", 6, diag="temporal_drift"),
+    Column("forget_density", 6, diag="forget_density"),
+    Column("tau", 6, diag="tau"),
+    Column("out_entropy", 4, diag="out_entropy"),
+    Column("logz_mean", 4, diag="logz_mean"),
+    Column("max_abs_logit", 2, diag="max_abs_logit"),
+    # Peak |activation| through the stack. The number that decides whether this
+    # model can be served in f16 at all, and the one nothing watched during the 4B
+    # run: it finished at 65,120 against a 65,504 ceiling and that was found two
+    # weeks later, by hand (#235). It then sat in the header from #252 on and was
+    # never written, because the header and the row were two separate lists.
+    Column("act_max", 1, diag="act_max"),
+    Column("depth_avg", 4),
+    Column("val_ce", 4),
+    # Context a row cannot be read without, and that cannot be backfilled (#186):
+    # when it was written — the only clock the run keeps against its progress —
+    # and the data mixture its CE was measured on, which the curriculum moves
+    # every step.
+    Column("wall_clock", None),
+    Column("mix", None),
+    # The allocator's own high-water mark so far (#168): exact, not a poll. Every
+    # run records how close it came to its limit, and the fit gate reads it from
+    # the probe run's first row.
+    Column("arena_peak_mib", None),
+)
+
+
+# The diagnostics the console line shows when the model reports them:
+# (diagnostic, label, decimals).
+CONSOLE_DIAGNOSTICS = (
+    ("tau", "Tau", 4),
+    ("temporal_drift", "Drift", 6),
+    ("out_entropy", "H", 3),
+    ("logz_mean", "logZ", 2),
+    ("max_abs_logit", "max|logit|", 1),
+)
+
+
+def _cell(value, places):
+    if value is None:
+        return ""
+    return value if places is None else f"{value:.{places}f}"
 
 
 def _arena_peak_mib():
@@ -29,33 +95,8 @@ class MetricsLogger:
         # actually measures (#105) — an architecture without a forget gate simply
         # omits those keys, and their columns stay empty instead of being filled
         # with zeros that look like measurements.
-        self.diag_keys = [
-            'temporal_drift', 'forget_density',
-            'forget_cost', 'diversity_loss', 'tau',
-            'out_entropy', 'logz_mean', 'max_abs_logit',
-            # Peak |activation| through the stack. The number that decides whether
-            # this model can be served in f16 at all, and the one nothing watched
-            # during the 4B run: it finished at 65,120 against a 65,504 ceiling and
-            # that was found two weeks later, by hand (#235).
-            'act_max',
-        ]
-        # Full set of fields for CSV
-        self.fields = [
-            "step", "ce", "loss", "seg1_ce",
-            "grad_norm_avg", "zero_frac_dense_max", "applied_zero_frac_dense_max", "applied_grad_norm", "avg_forget_cost",
-            "diversity_loss", "temporal_drift", "forget_density", "tau",
-            "out_entropy", "logz_mean", "max_abs_logit", "act_max",
-            "depth_avg", "val_ce",
-            # Context a row cannot be read without, and that cannot be backfilled
-            # (#186): when it was written — the only clock the run keeps against its
-            # progress — and the data mixture its CE was measured on, which the
-            # curriculum moves every step.
-            "wall_clock", "mix",
-            # The allocator's own high-water mark so far (#168): exact, not a poll.
-            # Every run records how close it came to its limit, and the fit gate
-            # reads it from the probe run's first row.
-            "arena_peak_mib",
-        ]
+        self.diag_keys = [c.diag for c in COLUMNS if c.diag]
+        self.fields = [c.name for c in COLUMNS]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
         self._warned_nonfinite = set()
@@ -103,15 +144,13 @@ class MetricsLogger:
                 self._warned_nonfinite.add(name)
                 print(f"⚠️ Non-finite metric '{name}' ({value}) at step {step} — check the diagnostics pipeline.")
 
-        # Log to BOTH and TERMINAL ONLY
+        # Console: only the diagnostics this model reported. A 0 for one it has none
+        # of (Tau, Drift on the plain stack) reads as a measurement (#317).
+        reported = "".join(f" | {label}: {diag_dict[key]:.{places}f}"
+                           for key, label, places in CONSOLE_DIAGNOSTICS if key in diag_dict)
         print(
-            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | "
-            f"Tau: {diag_dict.get('tau', 0):.4f} | Depth: {depth_avg:.2f}\n"
-            f"      Loss: {loss:.4f} | Drift: {diag_dict.get('temporal_drift', 0):.6f} | "
-            f"H: {diag_dict.get('out_entropy', 0):.3f} | "
-            f"logZ: {diag_dict.get('logz_mean', 0):.2f} | "
-            f"max|logit|: {diag_dict.get('max_abs_logit', 0):.1f} | "
-            f"Compute: {compute_time:.3f}s"
+            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | Depth: {depth_avg:.2f}\n"
+            f"      Loss: {loss:.4f}{reported} | Compute: {compute_time:.3f}s"
         )
 
         # Check if file exists and has content to avoid duplicate headers
@@ -128,36 +167,15 @@ class MetricsLogger:
             if file_is_empty: 
                 writer.writeheader()
             
-            row = {
-                "step": int(step),
-                "ce": f"{ce:.4f}",
-                "loss": f"{loss:.4f}",
-                "seg1_ce": f"{seg1_ce:.4f}" if seg1_ce is not None else "",
-                "grad_norm_avg": f"{grad_norm_avg:.4f}" if grad_norm_avg is not None else "",
-                # One micro-step's grads (#82's original reading), and the window mean
-                # the optimizer actually applies (#191). Only the second can say f16
-                # underflow reached the weights.
-                "zero_frac_dense_max": f"{zero_frac_dense_max:.6f}" if zero_frac_dense_max is not None else "",
-                "applied_zero_frac_dense_max": (f"{applied_zero_frac_dense_max:.6f}"
-                                                if applied_zero_frac_dense_max is not None else ""),
-                # Norm of the window mean the optimizer clips (#180), comparable to CLIP_NORM.
-                "applied_grad_norm": f"{applied_grad_norm:.4f}" if applied_grad_norm is not None else "",
-                "avg_forget_cost": _fmt(diag_dict, "forget_cost", 4),
-                "diversity_loss": _fmt(diag_dict, "diversity_loss", 6),
-                "temporal_drift": _fmt(diag_dict, "temporal_drift", 6),
-                "forget_density": _fmt(diag_dict, "forget_density", 6),
-                "tau": _fmt(diag_dict, "tau", 6),
-                "out_entropy": _fmt(diag_dict, "out_entropy", 4),
-                "logz_mean": _fmt(diag_dict, "logz_mean", 4),
-                "max_abs_logit": _fmt(diag_dict, "max_abs_logit", 2),
-                "depth_avg": f"{depth_avg:.4f}" if depth_avg is not None else "",
-                "val_ce": f"{val_ce:.4f}" if val_ce is not None else "",
-                # Listed in fields and diag_keys since #252 but never written: the
-                # column existed and was always empty, so the f16-margin invariant
-                # reading it could not fire.
-                "act_max": _fmt(diag_dict, "act_max", 1),
+            args = {
+                "step": int(step), "ce": ce, "loss": loss, "seg1_ce": seg1_ce,
+                "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,
+                "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
+                "applied_grad_norm": applied_grad_norm, "depth_avg": depth_avg, "val_ce": val_ce,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "arena_peak_mib": _arena_peak_mib(),
             }
+            row = {c.name: _cell(diag_dict.get(c.diag) if c.diag else args[c.name], c.places)
+                   for c in COLUMNS}
             writer.writerow(row)

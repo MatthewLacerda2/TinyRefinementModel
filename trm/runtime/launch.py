@@ -30,10 +30,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS
 from trm.runtime.run_budget import BUDGET_ENV
 from trm.runtime.supervisor import RUNS_DIR, GpuLock, _pid_alive
-
-CHECKPOINT_EVERY_OPT_STEPS = 64  # trm/train/trainer.py; a test holds the two together
 
 
 def stop_step_for(budget_tokens: int, tokens_per_opt_step: int,

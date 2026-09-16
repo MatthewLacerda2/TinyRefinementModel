@@ -21,16 +21,25 @@ from trm.config import (
     TRAIN_TOKEN_BUDGET,
     MODEL_ARCH,
     PLAIN_LAYERS,
+    POST_NORM,
+    REFINER_ENCODER_LAYERS,
+    TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
 )
+from trm.runtime.layout import VAL_EVERY_OPT_STEPS
 from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
 
-# The validation-probe cadence the run used. It is declared in trm/train/trainer.py,
-# which imports this module, so it cannot be imported back — the same duplicate-with-a-
-# pointer that trm/runtime/launch.py keeps for CHECKPOINT_EVERY_OPT_STEPS, and
-# tests/core/test_rolling_checkpoint.py holds the two together.
-VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
+# What each architecture's param tree is built from (#317). A resume that changes one
+# of these cannot load its checkpoint, or loads it into a different network whose tree
+# happens to match. Keyed per arch: a knob only another arch reads must not refuse the
+# resume — and PLAIN_LAYERS used to pass unchecked while retired-arch knobs were checked.
+_SHARED_TREE_KEYS = ("MODEL_ARCH", "LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN")
+TREE_KEYS = {
+    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM"),
+    "refiner": (*_SHARED_TREE_KEYS, "REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL", "POST_NORM"),
+    "reasoner": (*_SHARED_TREE_KEYS, "NUM_BLOCKS", "SHARED_SLOTS", "MAX_STEPS_LIMIT"),
+}
 
 class RunTracker:
     def __init__(self, runs_root="runs"):
@@ -172,6 +181,11 @@ class RunTracker:
             "PEAK_LR": PEAK_LR,
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # Tree-shaping knobs the resume check compares (#317); runs recorded
+            # before them skip the comparison.
+            "POST_NORM": POST_NORM,
+            "REFINER_ENCODER_LAYERS": REFINER_ENCODER_LAYERS,
+            "TIME_SIGNAL": TIME_SIGNAL,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,
             "MUON_LR_MULT": MUON_LR_MULT,
         }
@@ -187,13 +201,10 @@ class RunTracker:
             old_params = old_meta.get("parameters", {})
             current_params = self.get_hyperparameters()
             
-            critical_keys = [
-                "LATENT_DIM", "NUM_BLOCKS", "SHARED_SLOTS", "MAX_SEQ_LEN", 
-                "VOCAB_SIZE", "NUM_HEADS"
-            ]
+            # A key the run's metadata predates is skipped, not refused.
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                for k in critical_keys
+                for k in TREE_KEYS[current_params["MODEL_ARCH"]]
                 if k in old_params and old_params[k] != current_params[k]
             ]
             
@@ -214,6 +225,23 @@ class RunTracker:
             # compatibility check must be visible.
             print(f"⚠️ Could not verify run compatibility from {metadata_path}: {e}")
 
+    def _fresh_metadata(self):
+        """run_metadata.json for a run that has none yet: its code, its parameters,
+        and no sessions."""
+        git_meta = self.get_git_metadata()
+        return {
+            "run_id": self.run_id,
+            "git_commit": git_meta["commit"],
+            "git_branch": git_meta["branch"],
+            "git_dirty": git_meta["dirty"],
+            "parameters": self.get_hyperparameters(),
+            "sections": [],
+        }
+
+    @staticmethod
+    def _new_section(start_timestamp):
+        return {"start_time": start_timestamp, "end_time": None, "duration_seconds": None}
+
     def start_session(self, run_id=None):
         os.makedirs(self.runs_root, exist_ok=True)
         self.start_time = time.time()
@@ -226,23 +254,8 @@ class RunTracker:
             self.run_dir = os.path.join(self.runs_root, self.run_id)
             os.makedirs(self.run_dir, exist_ok=True)
 
-            git_meta = self.get_git_metadata()
-            params = self.get_hyperparameters()
-
-            metadata = {
-                "run_id": self.run_id,
-                "git_commit": git_meta["commit"],
-                "git_branch": git_meta["branch"],
-                "git_dirty": git_meta["dirty"],
-                "parameters": params,
-                "sections": [
-                    {
-                        "start_time": start_timestamp,
-                        "end_time": None,
-                        "duration_seconds": None
-                    }
-                ]
-            }
+            metadata = self._fresh_metadata()
+            metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = 0
             self.save_metadata(metadata)
             self.capture_environment_snapshot(self.run_dir)
@@ -267,22 +280,9 @@ class RunTracker:
                 metadata = None
 
             if metadata is None:
-                git_meta = self.get_git_metadata()
-                params = self.get_hyperparameters()
-                metadata = {
-                    "run_id": self.run_id,
-                    "git_commit": git_meta["commit"],
-                    "git_branch": git_meta["branch"],
-                    "git_dirty": git_meta["dirty"],
-                    "parameters": params,
-                    "sections": []
-                }
+                metadata = self._fresh_metadata()
 
-            metadata["sections"].append({
-                "start_time": start_timestamp,
-                "end_time": None,
-                "duration_seconds": None
-            })
+            metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = len(metadata["sections"]) - 1
             self.save_metadata(metadata)
             # Snapshot on resume too (#173). This branch used to skip it, which

@@ -18,12 +18,12 @@ from trm import infer
 from trm.config import MODEL_ARCH
 
 
-def test_build_model_follows_the_arch_selector():
+def test_serving_follows_the_arch_selector():
     """The selector is the single source of truth for which network exists; a
     serving path that ignores it cannot load what the trainer wrote."""
-    assert type(infer.build_model("plain")).__name__ == "PlainTransformer"
-    assert type(infer.build_model("refiner")).__name__ == "RefinerForTraining"
-    assert type(infer.build_model("reasoner")).__name__ == "UniversalReasoner"
+    assert type(infer.build_serving_model("plain")).__name__ == "PlainTransformer"
+    assert type(infer.build_serving_model("refiner")).__name__ == "RefinerForTraining"
+    assert type(infer.build_serving_model("reasoner")).__name__ == "UniversalReasoner"
 
 
 def test_the_default_is_the_configured_arch():
@@ -32,21 +32,29 @@ def test_the_default_is_the_configured_arch():
     expected = {"plain": "PlainTransformer",
                 "refiner": "RefinerForTraining",
                 "reasoner": "UniversalReasoner"}[MODEL_ARCH]
-    assert type(infer.build_model()).__name__ == expected
+    assert type(infer.build_serving_model()).__name__ == expected
 
 
-def test_infer_does_not_hardcode_a_model_class_at_module_level():
-    """Every arch must be imported lazily, inside the branch that needs it —
-    otherwise importing the serving path drags in Plan A code on a baseline run,
-    and (more to the point) a module-level import is how the old hardcoding
-    survived unnoticed."""
+def test_infer_names_no_model_class():
+    """Serving builds through trm.model.build_model, the factory the trainer uses
+    (#318), so it cannot name a class of its own — a class named here is how the
+    old hardcoding survived unnoticed."""
     from pathlib import Path
     source = Path(infer.__file__).read_text()
-    header = source.split("def build_model")[0]
     for cls in ("UniversalReasoner", "RefinerForTraining", "PlainTransformer"):
-        assert f"import {cls}" not in header, (
-            f"{cls} should be imported inside build_model, not at module level"
-        )
+        assert f"import {cls}" not in source, f"{cls} is the factory's to import, not infer's"
+
+
+def test_the_factory_imports_each_arch_only_in_its_own_branch():
+    """Importing the model package must not drag in every architecture's code."""
+    import ast
+    from pathlib import Path
+    import trm.model
+    tree = ast.parse(Path(trm.model.__file__).read_text())
+    top_level = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert not top_level, "arch modules are imported inside build_model, lazily"
+    lazy = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    assert {node.module for node in lazy} >= {"trm.model.plain", "trm.model.refiner_lm", "trm.model.reasoner"}
 
 
 @pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
@@ -55,7 +63,7 @@ def test_every_arch_satisfies_the_contract_the_serving_loop_uses(arch):
     new_document=...) and reads `.logits`. Both arches must honour that, or
     switching MODEL_ARCH would fail at generation time rather than at load."""
     from trm.model.contract import LanguageModel
-    assert isinstance(infer.build_model(arch), LanguageModel)
+    assert isinstance(infer.build_serving_model(arch), LanguageModel)
 
 
 # --- sampling is configurable, and the default is not greedy ------------------

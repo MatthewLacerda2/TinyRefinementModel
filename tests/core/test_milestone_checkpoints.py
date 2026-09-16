@@ -8,7 +8,8 @@ import json
 import orbax.checkpoint as ocp
 import jax.numpy as jnp
 
-from trm.runtime.checkpoints import MILESTONE_SUBDIR, make_milestone_manager, milestone_due
+from trm.runtime.checkpoints import make_milestone_manager, milestone_due
+from trm.runtime.layout import MILESTONE_SUBDIR
 
 
 def test_one_milestone_per_crossed_multiple_on_the_first_boundary_past_it():
@@ -68,7 +69,6 @@ def test_rewind_sets_milestones_aside_too(tmp_path):
     _, moved = rw.rewind(tmp_path, 4992, 128)
     assert [c.opt_step for c in rw.checkpoints_in(tmp_path / MILESTONE_SUBDIR, 128)] == [3840]
     assert sum(p.parent.name == MILESTONE_SUBDIR for p in moved) == 1 and all(p.exists() for p in moved)
-    assert rw.MILESTONE_SUBDIR == MILESTONE_SUBDIR
 
 
 def test_the_disk_guard_budgets_for_all_three_tiers_writing_at_once():

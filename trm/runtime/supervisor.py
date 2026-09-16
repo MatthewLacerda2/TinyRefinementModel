@@ -659,19 +659,27 @@ class Supervisor:
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, never
         two: the card stays the trainer's, and a scorer that outlives this poll
-        is fine — the journal is append-only."""
+        is fine — the journal is append-only.
+
+        The scorer is told the milestone's own dir and step (#328). Left to itself it
+        scored the newest rolling checkpoint, which is not the milestone, and which
+        rolling retention can evict while a slow CPU pass is still restoring it;
+        milestones are the one kind nothing evicts."""
+        from trm.runtime.layout import MILESTONE_SUBDIR  # standard library only
+
         run_dir = self.metrics_csv.parent
-        milestones = run_dir / "checkpoints" / "milestones"
+        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
         if not milestones.is_dir():
             return
         for marker in sorted(milestones.glob("*/_CHECKPOINT_METADATA")):
             step = marker.parent.name
-            if step in self._scored:
+            if not step.isdigit() or step in self._scored:  # an orbax tmp dir is not a milestone
                 continue
             self._scored.add(step)
             self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU")
             self._scorers.append(subprocess.Popen(
                 [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                 "--checkpoint-dir", str(milestones), "--step", step,
                  "--limit", str(self.milestone_limit), "--cpu"],
                 cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))

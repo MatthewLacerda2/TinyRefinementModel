@@ -9,8 +9,9 @@ Against the latest (or a given) checkpoint it runs, in order:
      (docs/findings/2026-06-13-cross-window-hunch-inert.md), and its probe was
      deleted with that line's apparatus.
   2. Fixed-prompt transcripts — instruments.dump_transcripts (the systematized vibes eval)
-  3. Held-out validation CE — trainer.ValidationProbe, the same fixed batches and
-     depth the training loop scores, so the number is comparable to the run's curve.
+  3. Held-out validation CE — trm.train.validation.ValidationProbe, the same fixed
+     rows and depth the training loop scores, so the number is comparable to the
+     run's curve.
 
 Sections 1–2 run as subprocesses (each tool is CLI-shaped, and isolation means one
 crash costs one section, not the report); section 3 runs in-process, last, so this
@@ -36,6 +37,8 @@ import sys
 import time
 import traceback
 
+from trm.runtime.layout import CHECKPOINT_ITEMS  # standard library only, so --help stays instant
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # assembles other tools' sections; each number is declared by the tool that produced it
 
@@ -43,7 +46,6 @@ REPORTS = {}  # assembles other tools' sections; each number is declared by the 
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CKPT_ITEMS = ("model", "optimizer", "monitor_state", "step")
 
 
 def run_tool(module, extra_args=(), timeout=None):
@@ -76,6 +78,8 @@ def run_section(title, fn):
 
 
 def section_depth_curve(arch, fwd_args, batches, timeout):
+    if arch == "plain":
+        return "no depth diagnostic for plain: it has no depth dial, so there is no curve to sweep."
     if arch != "refiner":
         # The reasoner's only depth pathway was the cross-window hunch, and the
         # probe that measured it died with the tombstone it produced (rule 6 —
@@ -103,19 +107,20 @@ def section_transcripts(fwd_args, quick_args, timeout):
 
 
 def section_val_ce(checkpoint_path):
+    from trm.config import resolve_root
     from trm.runtime.restore import restore_model
-    from trm.train import trainer
+    from trm.train.validation import VAL_FIXED_DEPTH, VAL_ROWS, VAL_SKIP_SAMPLES, ValidationProbe
 
-
-    if not trainer.DATA_ROOT:
+    data_root = os.environ.get("DATA_ROOT", "")
+    if not data_root:
         return "skipped: DATA_ROOT is not set — no held-out data to score"
     model, _ = restore_model(checkpoint_path)
-    val_ce = trainer.ValidationProbe().run(model)
+    val_ce = ValidationProbe(resolve_root(data_root)).run(model)
     if val_ce is None:
-        return "no held-out validation data available (is DATA_ROOT set?)"
+        return f"no held-out validation data under {data_root}"
     return (f"validation CE: {val_ce:.4f} nats "
-            f"(fixed depth {trainer.VAL_FIXED_DEPTH}, {trainer.VAL_BATCHES} batches, "
-            f"skip {trainer.VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
+            f"(fixed depth {VAL_FIXED_DEPTH}, {VAL_ROWS} rows, "
+            f"skip {VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
 
 
 def git_commit():
@@ -157,7 +162,7 @@ def main():
         source = f"latest run {run_id}"
         print(f"🔎 Using latest checkpointed run: {run_id}")
 
-    step = ocp.CheckpointManager(checkpoint_path, item_names=CKPT_ITEMS).latest_step()
+    step = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS).latest_step()
     if step is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}.")
     print(f"📋 Milestone report: {source}, step {step}, arch '{MODEL_ARCH}'")

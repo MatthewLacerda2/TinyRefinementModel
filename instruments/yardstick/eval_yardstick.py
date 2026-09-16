@@ -35,8 +35,9 @@ import tiktoken
 from flax import nnx
 from dotenv import load_dotenv
 
-from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME, MODEL_ARCH
-from trm.runtime.restore import EVAL_BATCH_SIZE, restore_reasoner, restore_refiner
+from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME
+from trm.runtime.restore import EVAL_BATCH_SIZE, restore_arch
+from instruments.arch import add_arch_argument
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
@@ -65,7 +66,8 @@ load_dotenv()
 
 # Matches the validation probe's fixed depth (validation.py), so the yardstick
 # and the training-time val curve read the model at the same setting. Sweep
-# --depth explicitly when the question is depth-dependent.
+# --depth explicitly when the question is depth-dependent. Only the retired
+# refiner/reasoner read it: `plain` has no depth dial and ignores the argument.
 DEFAULT_DEPTH = 4
 
 
@@ -102,11 +104,15 @@ def heldout_perplexity(model):
     return {"val_ce": ce, "ppl": float(np.exp(ce))}
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="GPT-2-small yardstick: LAMBADA acc/ppl + held-out ppl")
     ap.add_argument("--checkpoint-path", default=None, help="Orbax dir (default: latest run)")
-    ap.add_argument("--arch", default=MODEL_ARCH, choices=["reasoner", "refiner"],
-                    help="which param tree the checkpoint holds (default: MODEL_ARCH)")
+    ap.add_argument("--step", type=int, default=None,
+                    help="which step of that dir to score (default: its newest). A milestones dir "
+                         "holds many, and the one to score is the milestone that was asked for")
+    # The param tree the checkpoint holds. A run records its own in run_metadata.json
+    # and instruments.base_run passes that; MODEL_ARCH is only the fallback.
+    add_arch_argument(ap)
     ap.add_argument("--depth", type=int, default=DEFAULT_DEPTH,
                     help=f"refinement/reasoning depth at eval (default {DEFAULT_DEPTH}, as validation.py)")
     ap.add_argument("--batch", type=int, default=4, help="examples per forward")
@@ -116,7 +122,7 @@ def main():
     ap.add_argument("--json-out", default=None,
                     help="where to write the model-card row (default runs/yardstick/<step>.json)")
     ap.add_argument("--no-heldout", action="store_true", help="skip the own-corpus ppl probe")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.arch == "reasoner" and args.batch != EVAL_BATCH_SIZE:
         # The reasoner's slot/hunch caches are built (and checkpointed) at the
@@ -125,8 +131,7 @@ def main():
         # keep restoring checkpoints written before batching changed.
         print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
         args.batch = EVAL_BATCH_SIZE
-    restore = {"reasoner": restore_reasoner, "refiner": restore_refiner}[args.arch]
-    model, step = restore(args.checkpoint_path)
+    model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
 
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)

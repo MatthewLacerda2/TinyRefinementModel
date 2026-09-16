@@ -1,7 +1,7 @@
 """Held-out validation: the same fixed batches, scored the same deterministic
 way, on demand. Train CE cannot see overfitting or data drift; this curve is
 the one decisions should read. The trainer drives it on its own cadence
-(VAL_EVERY_OPT_STEPS there); everything about *what* a probe measures lives here.
+(VAL_EVERY_OPT_STEPS, trm/runtime/layout.py); everything about *what* a probe measures lives here.
 """
 
 import jax.numpy as jnp

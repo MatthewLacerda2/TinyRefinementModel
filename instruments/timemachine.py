@@ -170,8 +170,8 @@ def reconstruct(run_id, for_mode="infer", build_venv=True, arch_override=None):
     if arch is None:
         raise SystemExit(
             f"{run_id} does not record its MODEL_ARCH (a pre-capture run), and the "
-            f"two arches are not checkpoint-compatible. Re-run with --arch "
-            f"refiner|reasoner to say which skeleton to rebuild.")
+            f"arches are not checkpoint-compatible. Re-run with --arch "
+            f"plain|refiner|reasoner to say which skeleton to rebuild.")
 
     print(f"Reconstructing world for {run_id}  (commit {commit[:10]}, arch {arch})")
     wt = ensure_worktree(run_id, commit)
@@ -194,11 +194,10 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
     print("\nRun inside the reconstructed world:")
     if for_mode == "infer":
         print(f"  cd {wt}")
-        print(f"  PYTHONPATH=. MODEL_ARCH={arch} DATA_ROOT=$DATA_ROOT \\")
-        print(f"    {py} experiments.depth.playground --arch {arch} \\")
-        print(f"    --checkpoint-path {ckpt} --prompt 'The capital of France is'")
-        print("  (older worktrees may not have depth_playground's --arch flag; "
-              "fall back to that commit's trm.infer)")
+        print(f"  PYTHONPATH=. MODEL_ARCH={arch} CHECKPOINT_ROOT={ckpt} \\")
+        print(f"    {py} -m trm.infer")
+        print("  (a worktree older than the trm/ package has no trm.infer; "
+              "run that commit's own infer script instead)")
     else:
         print(f"  # fork a NEW lineage (original {run_id} preserved):")
         print(f"  python -m instruments.timemachine fork {run_id} <new-name>")
@@ -354,7 +353,7 @@ def fork(run_id, new_name, build_venv=True, arch_override=None):
     print("\nResume the fork inside its reconstructed world:")
     print(f"  cd {world['worktree']}")
     print(f"  PYTHONPATH=. MODEL_ARCH={world['arch']} DATA_ROOT=$DATA_ROOT \\")
-    print(f"    {world['python']} trm.train.start --checkpoint-path {dst_ckpt}")
+    print(f"    {world['python']} -m trm.train.start --checkpoint-path {dst_ckpt}")
     print("  (add the run's GPU memory knobs before launching on the 2060.)")
 
 
@@ -391,6 +390,10 @@ def list_runs():
 
 
 def main():
+    # The shared arch list, imported here: it pulls in jax, which the module-level
+    # helpers (and their tests) never need.
+    from instruments.arch import ARCHES
+
     p = argparse.ArgumentParser(description="revive a stored weight in its training world")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -400,19 +403,19 @@ def main():
     r.add_argument("run_id")
     r.add_argument("--for", dest="for_mode", choices=["infer", "train"], default="infer")
     r.add_argument("--no-venv", action="store_true", help="skip the ~5GB venv build (dry)")
-    r.add_argument("--arch", choices=["refiner", "reasoner"], default=None,
+    r.add_argument("--arch", choices=ARCHES, default=None,
                    help="override arch for pre-capture runs that don't record it")
 
     f = sub.add_parser("fork", help="branch a new training lineage off an old checkpoint")
     f.add_argument("run_id")
     f.add_argument("new_name")
     f.add_argument("--no-venv", action="store_true")
-    f.add_argument("--arch", choices=["refiner", "reasoner"], default=None,
+    f.add_argument("--arch", choices=ARCHES, default=None,
                    help="override arch for pre-capture runs that don't record it")
 
     e = sub.add_parser("eval", help="close the loop: reproduce a run's metric within the noise floor (#44 DoD)")
     e.add_argument("run_id")
-    e.add_argument("--arch", choices=["refiner", "reasoner"], default=None,
+    e.add_argument("--arch", choices=ARCHES, default=None,
                    help="override arch for pre-capture runs that don't record it")
     e.add_argument("--no-venv", action="store_true")
     e.add_argument("--limit", type=int, default=None, help="LAMBADA sample cap (speed)")

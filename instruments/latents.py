@@ -38,6 +38,8 @@ from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
 
+# ARCH-SPECIFIC: refiner — a trajectory is the refine loop's states, and only the refiner loops (#317).
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "trajectory metrics (RESULT)": ("sampled", "geometry of the latent trajectory over the captured rows only"),
@@ -157,6 +159,11 @@ def _main(argv=None):
     ap.add_argument("--source", default="pretrain/fineweb-edu")
     ap.add_argument("--rows", type=int, default=1)
     args = ap.parse_args(argv)
+    from trm.config import MODEL_ARCH
+    if MODEL_ARCH != "refiner":
+        raise SystemExit(f"instruments.latents reads the refiner's refinement trajectory; "
+                         f"MODEL_ARCH={MODEL_ARCH!r} has no refine loop to capture. "
+                         f"Load a refiner checkpoint with MODEL_ARCH=refiner.")
 
     # DATA_ROOT lives in .env and the held-out loader reads it from the
     # environment. Loading it here rather than making every caller export it

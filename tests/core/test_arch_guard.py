@@ -24,11 +24,12 @@ def test_unknown_model_arch_fails_closed_before_anything_builds():
     r = _import_config_with("refnier")
     assert r.returncode != 0, "a typo'd MODEL_ARCH must refuse to start"
     assert "refnier" in r.stderr, "the error must echo the bad value"
-    assert "refiner" in r.stderr and "reasoner" in r.stderr, \
-        "the error must list the valid names"
+    assert all(name in r.stderr.split("use one of", 1)[-1] for name in ("plain", "refiner", "reasoner")), \
+        "the error must list every valid name, the default included"
 
 def test_known_arches_and_unset_default_still_launch():
-    for arch in ("refiner", "reasoner", None):
+    # plain is the default, so it is the one arch a fail-closed guard must never refuse.
+    for arch in ("plain", "refiner", "reasoner", None):
         r = _import_config_with(arch)
         assert r.returncode == 0, f"MODEL_ARCH={arch!r} must be accepted: {r.stderr}"
 

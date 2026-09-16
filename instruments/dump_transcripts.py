@@ -71,6 +71,9 @@ PROMPTS = [
 # depth is a runtime dial on this architecture — the same weights serve at any of
 # these, and which one is *best* is an open question this logbook is built to watch.
 DEFAULT_DEPTHS = (1, 2, 4, 8)
+# Architectures that ignore depth. Every rung of a ladder would be the same forward
+# pass and, at one seed, the same completion: they run once (#317).
+DEPTHLESS_ARCHES = frozenset({"plain"})
 
 DEFAULT_SEED = 42
 REPETITION_NGRAM = 4
@@ -99,6 +102,13 @@ def repetition_score(token_ids, n=REPETITION_NGRAM):
         else:
             seen.add(gram)
     return repeats / len(grams)
+
+
+def depths_for(arch, requested=None):
+    """The ladder to run: `requested`, else DEFAULT_DEPTHS — reduced to its first
+    rung for an arch with no depth dial, where more rungs only repeat one completion."""
+    depths = DEFAULT_DEPTHS if requested is None else tuple(requested)
+    return depths[:1] if arch in DEPTHLESS_ARCHES else depths
 
 
 def parse_depths(text):
@@ -231,9 +241,10 @@ def build_arg_parser():
                              "canonical series but needs a free card")
     parser.add_argument("--force", action="store_true",
                         help="run on the GPU even if it looks busy")
-    parser.add_argument("--depths", default=",".join(str(d) for d in DEFAULT_DEPTHS),
+    parser.add_argument("--depths", default=None,
                         help=f"depth ladder (default {','.join(str(d) for d in DEFAULT_DEPTHS)}); "
-                             "every prompt runs at every depth")
+                             "every prompt runs at every depth. An arch without a depth dial "
+                             f"({', '.join(sorted(DEPTHLESS_ARCHES))}) runs only the first")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
                         help=f"RNG seed, held constant across depths (default {DEFAULT_SEED})")
     parser.add_argument("--temperature", type=float, default=None,
@@ -249,11 +260,15 @@ def build_arg_parser():
 
 def main():
     args = build_arg_parser().parse_args()
-    depths = parse_depths(args.depths)
+    requested = None if args.depths is None else parse_depths(args.depths)
     select_device(args.device, args.force)
 
     import tiktoken
     from trm.config import ACCUMULATION_STEPS, MODEL_ARCH, TOKENIZER_NAME, TOKENS_PER_OPT_STEP
+    depths = depths_for(MODEL_ARCH, requested)
+    if requested is not None and depths != requested:
+        print(f"ℹ️ MODEL_ARCH={MODEL_ARCH} ignores depth: running depth {depths[0]} only, "
+              f"not {','.join(map(str, requested))}")
     from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     from trm.runtime.restore import restore_model
