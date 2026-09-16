@@ -21,8 +21,10 @@ from trm.data.loaders import TextDataGenerator
 EVAL_BATCH_SIZE = 1
 
 
-def _restore_into(model, checkpoint_path):
-    """Model-only Orbax restore into an already-built model skeleton."""
+def _restore_into(model, checkpoint_path, step=None):
+    """Model-only Orbax restore into an already-built model skeleton, at `step` or,
+    by default, the newest step the manager dir holds. A dir of many steps (a run's
+    milestones) needs the step named, or it silently scores the newest one (#328)."""
     if checkpoint_path is None:
         checkpoint_path, run_id = discover_latest_checkpoint_run()
         if checkpoint_path is None:
@@ -34,9 +36,11 @@ def _restore_into(model, checkpoint_path):
         checkpoint_path,
         item_names=("model", "optimizer", "monitor_state", "step"),
     )
-    latest = mngr.latest_step()
+    latest = mngr.latest_step() if step is None else step
     if latest is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}")
+    if latest not in mngr.all_steps():
+        raise SystemExit(f"No checkpoint at step {latest} under {checkpoint_path}")
     print(f"📖 Restoring model weights from step {latest} ({checkpoint_path})")
     restored = restore_tolerating_legacy(
         lambda model_target: mngr.restore(
@@ -69,11 +73,11 @@ def build_model(arch, *, dim=None, **overrides):
     raise SystemExit(f"unknown arch {arch!r}; use plain, refiner or reasoner")
 
 
-def restore_arch(arch, checkpoint_path=None, **overrides):
+def restore_arch(arch, checkpoint_path=None, *, step=None, **overrides):
     """Model-only restore of `arch` from a checkpoint dir (default: the latest
-    run's). One path for every architecture — the per-arch helpers below are
-    thin names over it, kept so their callers need not change."""
-    return _restore_into(build_model(arch, **overrides), checkpoint_path)
+    run's), at `step` (default: its newest). One path for every architecture — the
+    per-arch helpers below are thin names over it, kept so their callers need not change."""
+    return _restore_into(build_model(arch, **overrides), checkpoint_path, step)
 
 
 def restore_model(checkpoint_path=None):

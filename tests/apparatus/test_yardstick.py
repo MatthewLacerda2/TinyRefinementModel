@@ -177,9 +177,9 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
 
     restored = {}
 
-    def tiny_restore(arch, checkpoint_path):
+    def tiny_restore(arch, checkpoint_path, step=None):
         restored["arch"] = arch
-        restored["model"], step = restore_arch(arch, checkpoint_path, **TINY_PLAIN)
+        restored["model"], step = restore_arch(arch, checkpoint_path, step=step, **TINY_PLAIN)
         return restored["model"], step
 
     monkeypatch.setattr(eval_yardstick, "restore_arch", tiny_restore)
@@ -200,3 +200,37 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     row = json.loads(out.read_text())
     assert row["arch"] == "plain" and row["checkpoint"]["step"] == 7
     assert row["lambada"]["num_examples"] == 2 and 0.0 <= row["lambada"]["lambada_acc"] <= 1.0
+
+
+def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
+    """#328: a milestones dir holds every milestone, and restore used to take the newest
+    step of whatever dir it was given. Scoring milestone M must load exactly M."""
+    import jax
+    import optax
+    import orbax.checkpoint as ocp
+    from flax import nnx
+
+    from instruments.arch import build
+    from trm.runtime import checkpoints as ck
+    from trm.runtime.monitor import LossMonitor
+    from trm.runtime.restore import restore_arch
+
+    mngr = ocp.CheckpointManager(str(tmp_path), item_names=ck.CHECKPOINT_ITEMS,
+                                 options=ocp.CheckpointManagerOptions(max_to_keep=None, create=True))
+    older, newer = build("plain", seed=1, **TINY_PLAIN), build("plain", seed=2, **TINY_PLAIN)
+    for step, model in ((3, older), (9, newer)):
+        ck.save_checkpoint(mngr, step, model, nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param),
+                           LossMonitor(), False, "run_tiny")
+
+    def leaves(model):
+        return jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
+
+    at_3, step = restore_arch("plain", str(tmp_path), step=3, **TINY_PLAIN)
+    assert len(leaves(older)) == len(leaves(at_3))
+    assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3)))
+    assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3))), \
+        "the two saved models must differ, or this test cannot tell the steps apart"
+    _, default_step = restore_arch("plain", str(tmp_path), **TINY_PLAIN)
+    assert default_step == 9, "with no step named, the newest stays the default"
+    with pytest.raises(SystemExit, match="step 5"):
+        restore_arch("plain", str(tmp_path), step=5, **TINY_PLAIN)
