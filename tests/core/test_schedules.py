@@ -5,15 +5,12 @@ Pinned here: the derivation math, the acceptance criteria (end step hits
 end_value, half-budget is mid-cosine), the unset-env default that keeps the
 golden run untouched, the loud failure on a degenerate budget, the deliberate
 decision that the λ anneals keep their own absolute horizon, and the recording
-of budget + resolved horizon in run metadata. Env-override cases run in a
-subprocess because config.py reads the environment at import time.
+of budget + resolved horizon in run metadata. Env-override cases are fresh imports
+in one child interpreter (`import_config_under`, tests/conftest.py), because config.py
+reads the environment at import time.
 """
 
-import json
 import os
-import pathlib
-import subprocess
-import sys
 
 import numpy as np
 import pytest
@@ -27,9 +24,6 @@ from trm.train.schedules import (
     build_learning_schedule,
     resolve_decay_steps,
 )
-
-# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
-REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 
 LR_PEAK, LR_END = 1e-4, 1e-6
 
@@ -102,25 +96,17 @@ def test_lambda_schedules_keep_their_own_horizon():
     assert np.isclose(float(diversity_lambda_schedule(LAMBDA_DECAY_STEPS)), 0.1, rtol=1e-6)
 
 
-def _resolved_in_subprocess(env_overrides):
-    env = {**os.environ, **env_overrides}
-    out = subprocess.check_output(
-        [sys.executable, "-c",
-         "import json; from trm import config; from trm.train import schedules; "
-         "print(json.dumps({'budget': config.TRAIN_TOKEN_BUDGET, 'decay': schedules.DECAY_STEPS}))"],
-        env=env, cwd=REPO,
-    )
-    return json.loads(out)
-
-
-def test_env_override_resolves_horizon():
+def test_env_override_resolves_horizon(import_config_under):
     budget = 20_000 * TOKENS_PER_OPT_STEP
-    assert _resolved_in_subprocess({"TRAIN_TOKEN_BUDGET": str(budget)}) == \
-        {"budget": budget, "decay": 20_000}
     # Scientific notation is accepted: 2e9 ≈ the historical 2.0B-token horizon.
-    resolved = _resolved_in_subprocess({"TRAIN_TOKEN_BUDGET": "2e9"})
-    assert resolved == {"budget": 2_000_000_000,
-                        "decay": round(2e9 / TOKENS_PER_OPT_STEP)}
+    exact, scientific = import_config_under(
+        [{"TRAIN_TOKEN_BUDGET": str(budget)}, {"TRAIN_TOKEN_BUDGET": "2e9"}],
+        attrs=("TRAIN_TOKEN_BUDGET", "trm.train.schedules:DECAY_STEPS"))
+    for case in (exact, scientific):
+        assert case["ok"], f"the budget override refused to import: {case.get('error')}"
+    assert exact["values"] == {"TRAIN_TOKEN_BUDGET": budget, "trm.train.schedules:DECAY_STEPS": 20_000}
+    assert scientific["values"] == {"TRAIN_TOKEN_BUDGET": 2_000_000_000,
+                                    "trm.train.schedules:DECAY_STEPS": round(2e9 / TOKENS_PER_OPT_STEP)}
 
 
 def test_horizon_recorded_in_run_metadata():
