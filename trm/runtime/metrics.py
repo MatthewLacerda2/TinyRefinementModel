@@ -166,9 +166,9 @@ class MetricsLogger:
 
         with fsspec.open(self.history_file, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')
-            if file_is_empty: 
+            if file_is_empty:
                 writer.writeheader()
-            
+
             args = {
                 "step": int(step), "ce": ce, "loss": loss, "seg1_ce": seg1_ce,
                 "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,

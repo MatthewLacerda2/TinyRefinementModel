@@ -193,21 +193,21 @@ class RunTracker:
     def _check_compatibility(self, metadata_path):
         if not os.path.exists(metadata_path):
             return
-        
+
         try:
             with open(metadata_path, "r") as f:
                 old_meta = json.load(f)
-            
+
             old_params = old_meta.get("parameters", {})
             current_params = self.get_hyperparameters()
-            
+
             # A key the run's metadata predates is skipped, not refused.
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
                 for k in TREE_KEYS[current_params["MODEL_ARCH"]]
                 if k in old_params and old_params[k] != current_params[k]
             ]
-            
+
             if mismatches:
                 # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
                 # uncaught one still ends the process with exit code 1 and this text.
@@ -311,7 +311,7 @@ class RunTracker:
         metadata_path = os.path.join(self.run_dir, "run_metadata.json")
         if not os.path.exists(metadata_path):
             return
-        
+
         try:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)
