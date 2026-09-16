@@ -40,6 +40,11 @@ from instruments.verdict import (
 )
 from trm.runtime.supervisor import BUDGET_COMPLETE, KILLED_DIVERGENCE, WALLCLOCK_COMPLETE
 
+# What each headline number is, and how it was obtained (#175): none — the audit
+# prints rule states and reasons; every number in a reason is the referee's own
+# (verdict.py's sigma_pooled and means) or a count read straight from the spec.
+REPORTS = {}
+
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SPEC_GLOB = "experiments/*/specs/*.toml"
 FINDINGS_DIR = pathlib.Path("docs/findings")
