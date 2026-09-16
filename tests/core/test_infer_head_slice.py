@@ -34,9 +34,10 @@ on the argmax** — because the only thing generation actually reads out of thes
 numbers is which token wins. A drifting logit that never changes the decision is
 not a behaviour change; a drifting argmax would be.
 
-Both architectures are covered. The refiner is the live bet; the reasoner is the
-control baseline, and a control that quietly disagrees with the live arch about
-what its own head computes is worse than no control.
+The refiner and the reasoner are covered here; the plain model's slice is
+test_the_sliced_row_matches_the_full_projection in test_plain_transformer.py. The
+reasoner is the control baseline, and a control that quietly disagrees about what
+its own head computes is worse than no control.
 """
 
 import jax.numpy as jnp

@@ -76,7 +76,7 @@ def test_shared_loop_names_no_architecture_internals(module):
     leaked = [word for word in ARCH_VOCABULARY if word in code]
     assert not leaked, (
         f"{module} mentions {leaked} in code — the shared loop is doing one "
-        f"architecture's bookkeeping again. Move it behind an lm_contract hook."
+        f"architecture's bookkeeping again. Move it behind a trm/model/contract.py hook."
     )
 
 
@@ -89,7 +89,7 @@ def test_the_leak_scan_can_actually_detect_a_leak():
     code = _code_without_comments_or_strings(REPO_ROOT / REASONER).lower()
     found = [word for word in ARCH_VOCABULARY if word in code]
     assert "hunch" in found and "forget" in found, (
-        f"the scan found only {found} in model.py — it is no longer reading real code"
+        f"the scan found only {found} in reasoner.py — it is no longer reading real code"
     )
 
 

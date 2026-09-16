@@ -4,7 +4,7 @@ import os
 #
 # CUDA's async mempool, not the default preallocated BFC arena. BFC is the faster
 # allocator in the abstract (17-22% over `platform`, whose synchronous cudaMalloc
-# per buffer it replaced — docs/PERFORMANCE_PLAN.md results log, 2026-06-10), and
+# per buffer it replaced — measured 2026-06-10 in ee8b170), and
 # that is still true. It just cannot serve this model on this card: at dim960 the
 # working set leaves ~190MB of slack in the arena, while every optimizer step asks
 # for a *contiguous* ~596MB param-tree buffer (138.7M x f32). BFC fragments until
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
-    parser = argparse.ArgumentParser(description="Train the Dynamic Latent Reasoner")
+    parser = argparse.ArgumentParser(description="Train the model MODEL_ARCH selects (plain by default)")
     parser.add_argument("--new-run", action="store_true", help="Force starting a brand new training run from scratch (ignores existing checkpoints)")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Custom folder for Orbax checkpoints")
     args = parser.parse_args()

@@ -1,4 +1,4 @@
-"""Plan A wired into the production trainer (plan_a_trainer.RefinerForTraining).
+"""Plan A wired into the production trainer (trm.model.refiner_lm.RefinerForTraining).
 
 test_plan_a.py proves the pure CausalRefiner; this proves the *integration* — that
 the adapter drives the real grad step, that it speaks the trainer's neutral contract

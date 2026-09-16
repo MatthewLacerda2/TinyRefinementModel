@@ -5,7 +5,7 @@
 key, so alternating it compiled the sampling step twice — two resident programs
 and two sets of CUDA graphs for one computation.
 
-The flag is inert on the live architecture: `RefinerForTraining.__call__` accepts
+The flag is inert on the refiner (and on plain): `RefinerForTraining.__call__` accepts
 `new_document` and never reads it, because Plan A carries no state between
 windows. On the reasoner it *is* read, but only through `jax.lax.cond`, which
 takes a traced predicate natively. So the fix is to stop making it static rather

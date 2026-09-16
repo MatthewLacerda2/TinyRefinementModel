@@ -159,7 +159,7 @@ class CausalRefiner(nnx.Module):
             # gate_bias sets the init retention/refine balance: sigmoid(gate_bias).
             # 0.0 -> 0.5 (balanced); negative -> retention-biased (small early update
             # steps), which stabilizes deep recurrence where balanced steps compound
-            # and diverge (the depth-8 collapse, ablation_results.md run 2).
+            # and diverge (the depth-8 collapse, docs/findings/2026-06-16-plan-a-depth-ablation.md).
             self.gate = nnx.Linear(2 * dim, dim, bias_init=jax.nn.initializers.constant(gate_bias), rngs=rngs, dtype=dtype)
 
     def __call__(self, tokens, depth=None, pad_mask=None, return_hidden=False,

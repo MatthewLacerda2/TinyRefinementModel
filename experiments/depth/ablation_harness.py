@@ -8,7 +8,7 @@ test where depth provably has to do work — cumulative scans, which require
 aggregating all prior tokens.
 
 Two arms (#34), selected with --arch:
-  refiner  — CausalRefiner: ONE shared block looped `depth` times (the live bet).
+  refiner  — CausalRefiner: ONE shared block looped `depth` times (the bet until 2026-09-12).
   vanilla  — VanillaTransformer: `depth` DISTINCT blocks, no weight sharing, no
              time embedding. Approximately matched per-token FLOPs at equal depth
              (the refiner spends a little extra on its update gate and time
