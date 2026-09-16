@@ -205,7 +205,7 @@ def card_fields(run_dir, spec_path=None) -> dict:
     sections = meta.get("sections", [])
     hours = sum((s.get("duration_seconds") or 0) for s in sections) / 3600.0
     last_step, last_val, peak = _metrics_summary(run_dir)
-    tokens_per_opt = runlog.recorded_tokens_per_opt_step(params) or 0  # 0: unrecorded, so no count is claimed
+    tokens_per_opt = runlog.recorded_tokens_per_opt_step(params)  # None: the recipe was not recorded
     ref = None
     if spec_path:
         spec = load_base_spec(spec_path)
@@ -224,7 +224,7 @@ def card_fields(run_dir, spec_path=None) -> dict:
         "seeds": f"DATA_SEED={params.get('DATA_SEED', '?')}, MODEL_SEED={params.get('MODEL_SEED', '?')}",
         "budget": params.get("TRAIN_TOKEN_BUDGET"),
         "sections": len(sections), "hours": hours,
-        "last_step": last_step, "tokens_seen": last_step * tokens_per_opt,
+        "last_step": last_step, "tokens_seen": None if tokens_per_opt is None else last_step * tokens_per_opt,
         "val_ce": last_val, "peak_vram_mib": peak,
         "lambada_acc": yard["lambada_acc"] if yard else None,
         "lambada_ppl": yard["lambada_ppl"] if yard else None,
@@ -272,7 +272,7 @@ def render_card(f: dict) -> str:
 |---|---|
 | Peak VRAM (arena) | {f['peak_vram_mib']:.0f} MiB of 6144 |
 | Wall-clock | {f['hours']:.1f} h across {f['sections']} session(s) |
-| Tokens seen | {f['tokens_seen']:,} (opt step {f['last_step']:,}) |
+| Tokens seen | {'unknown (recipe not recorded)' if f['tokens_seen'] is None else f"{f['tokens_seen']:,}"} (opt step {f['last_step']:,}) |
 
 ## Weights (the regenerable cache)
 

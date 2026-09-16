@@ -204,3 +204,14 @@ def test_the_card_shows_only_the_knobs_its_arch_reads():
     assert {"REFINER_ENCODER_LAYERS", "TIME_SIGNAL"} <= set(refiner) and "PLAIN_LAYERS" not in refiner
     assert {"PLAIN_LAYERS", "REFINER_ENCODER_LAYERS"} <= set(base_run.card_config_keys(None)), \
         "a run that recorded no arch shows every knob that might apply"
+
+
+def test_a_card_without_a_recorded_recipe_does_not_claim_zero_tokens(tmp_path):
+    """#343 review: an unrecorded ACCUMULATION/BATCH/SEQ recipe rendered 'Tokens seen 0'."""
+    run = tmp_path / "run_norecipe"
+    run.mkdir()
+    (run / "run_metadata.json").write_text(json.dumps({"run_id": "run_norecipe", "parameters": {"MODEL_ARCH": "plain"}}))
+    (run / "metrics.csv").write_text("step,ce\n40,3.1\n")
+    fields = base_run.card_fields(run)
+    assert fields["tokens_seen"] is None
+    assert "| Tokens seen | unknown (recipe not recorded) (opt step 40) |" in base_run.render_card(fields)

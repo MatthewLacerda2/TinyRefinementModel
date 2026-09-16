@@ -30,6 +30,7 @@ not to outwit a determined author.
 
 import ast
 import io
+import os
 import pathlib
 import re
 import tokenize
@@ -74,9 +75,22 @@ def direct_constructions(source):
     return _undeclared(source, ((node, names[name]) for node, name in calls if name in names))
 
 
+def scan(path):
+    """Both scans over one real file. The path is recorded only after its source parsed
+    and both scans ran, so `scan_all` reports what was actually read, not what was asked."""
+    source = path.read_text()
+    found = direct_constructions(source), retired_attribute_accesses(source)
+    return path, found
+
+
+def scan_all(paths):
+    """{path: (constructions, attribute accesses)} for every file the scanner read."""
+    return dict(scan(path) for path in paths)
+
+
 @pytest.mark.parametrize("path", ALL_INSTRUMENTS, ids=lambda p: str(p.relative_to(INSTRUMENTS)))
 def test_it_builds_through_the_selector_or_declares_why_not(path):
-    hits = direct_constructions(path.read_text())
+    _, (hits, _) = scan(path)
     assert not hits, (
         f"{path.name} constructs {', '.join(f'{c} (line {n})' for n, c in hits)} by class name. "
         f"Build through `instruments.arch.build` with `--arch` defaulting to MODEL_ARCH, or "
@@ -110,13 +124,17 @@ def test_the_constructor_scan_catches_what_it_was_written_for():
 
 
 def test_the_scans_read_every_real_instrument():
-    """The self-checks above run on strings. This one ties the scans to the files: every
-    .py under instruments/, subpackages included, parses and is in the scanned set, so a
-    real file cannot drop out of both scans without failing here."""
-    on_disk = sorted(INSTRUMENTS.rglob("*.py"))
-    parsed = [path for path in ALL_INSTRUMENTS if isinstance(ast.parse(path.read_text()), ast.Module)]
-    assert parsed == on_disk and len(parsed) > 20, f"scanned {len(parsed)} of {len(on_disk)}"
-    assert INSTRUMENTS / "yardstick" / "eval_yardstick.py" in parsed, "subpackages are scanned too"
+    """The self-checks above run on strings. This one ties the scans to the files: the
+    .py files counted by an independent walk of instruments/ (os.walk, not the rglob the
+    scan's input comes from) must all come back from the scanner, which records a path
+    only once it has parsed and scanned it. A file dropped from the input, or one the
+    scanner skipped, fails here."""
+    on_disk = {pathlib.Path(root) / name
+               for root, _dirs, files in os.walk(INSTRUMENTS)
+               if "__pycache__" not in root for name in files if name.endswith(".py")}
+    scanned = set(scan_all(ALL_INSTRUMENTS))
+    assert scanned == on_disk, f"not scanned: {sorted(map(str, on_disk - scanned))}"
+    assert len(scanned) > 20 and INSTRUMENTS / "yardstick" / "eval_yardstick.py" in scanned
 
 
 # --- reaching into a retired architecture's internals (#314) -------------------
@@ -141,7 +159,7 @@ def retired_attribute_accesses(source):
 
 @pytest.mark.parametrize("path", ALL_INSTRUMENTS, ids=lambda p: str(p.relative_to(INSTRUMENTS)))
 def test_it_does_not_reach_into_a_retired_arch_undeclared(path):
-    hits = retired_attribute_accesses(path.read_text())
+    _, (_, hits) = scan(path)
     assert not hits, (
         f"{path.name} reads {', '.join(f'.{a} (line {n})' for n, a in hits)}, attributes only a "
         f"retired architecture has, so it crashes on plain. Branch on the arch and mark that "

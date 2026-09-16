@@ -63,7 +63,7 @@ import matplotlib.ticker
 import numpy as np
 
 from instruments._common import REPO_ROOT
-from instruments.runlog import absence_reason, load
+from instruments.runlog import absence_reason, load, recorded_tokens_per_opt_step
 from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
@@ -336,11 +336,8 @@ class RunConfig:
         one optimizer step. Derived from the run's own recipe when it recorded
         all three, because a run at a different batch recipe is mis-scaled by
         this process's constant."""
-        keys = ("ACCUMULATION_STEPS", "BATCH_SIZE", "MAX_SEQ_LEN")
-        if all(self.recorded(key) for key in keys):
-            accumulation, batch, seq_len = (int(self.params[key]) for key in keys)
-            return accumulation * batch * 2 * seq_len
-        return this_process.TOKENS_PER_OPT_STEP
+        recorded = recorded_tokens_per_opt_step(self.params)
+        return this_process.TOKENS_PER_OPT_STEP if recorded is None else recorded
 
     @property
     def micro_steps(self):
@@ -954,11 +951,12 @@ def not_applicable(key, cfg):
     """Why this run's ARCHITECTURE makes a panel meaningless, whatever the CSV
     holds — the second way a panel can be wrong to draw, beside missing data.
 
-    `depth_avg` is logged only by the depth-dialled arches (refiner, reasoner);
-    plain leaves it blank. Older plain runs logged the sampler's draw anyway, which
-    `PlainTransformer` takes and ignores (trm/model/plain.py): on such a run the panel
-    plots the dice, not the model (#305). Only a run that *recorded* its arch is judged here — for one that did
-    not, drawing is the lesser error.
+    `depth_avg` measures something only for the depth-dialled arches (refiner,
+    reasoner). Plain runs before #316 logged a sampled depth_avg that `PlainTransformer`
+    took and ignored (trm/model/plain.py), so on such a run the panel plots the dice,
+    not the model (#305); from #316 on, plain leaves it blank. Either way the panel is
+    refused for plain. Only a run that *recorded* its arch is judged here — for one that
+    did not, drawing is the lesser error.
     """
     if key == "depth" and cfg.recorded("MODEL_ARCH") and cfg.arch == "plain":
         return ("PlainTransformer ignores the depth argument — this column is the "

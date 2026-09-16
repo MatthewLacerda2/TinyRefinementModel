@@ -118,10 +118,10 @@ def main(argv=None):
     ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS, help="for --arch refiner")
     ap.add_argument("--batch", type=int, default=BATCH_SIZE, help="micro-batch (per accumulation step)")
     ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
-                    help="deepest sampled depth; the run compiles one program per depth 1..DEPTH. "
-                         "For plain too: the trainer passes it the sampled depth as a static jit "
-                         "argument, so --depth 1 on plain measures one compiled program where a "
-                         "launch holds MAX_STEPS_LIMIT of them")
+                    help="deepest sampled depth; the run compiles one program per depth 1..DEPTH, "
+                         "following depth_schedule. Until #316 the trainer compiled one program per "
+                         "sampled depth for plain too, so there --depth 1 measures one program where "
+                         "such a launch holds MAX_STEPS_LIMIT of them")
     ap.add_argument("--micro-steps", type=int, default=ACCUMULATION_STEPS + 1,
                     help="default crosses one optimizer apply (ACCUMULATION_STEPS + 1)")
     args = ap.parse_args(argv)
@@ -162,10 +162,10 @@ def main(argv=None):
           f"{CARD_MIB - card.peak_mib:.0f} MiB of the card never touched)")
     print(f"crossed {args.micro_steps // ACCUMULATION_STEPS} optimizer apply(s) and one validation probe")
     if args.arch == "plain":
-        print(f"note: plain compiled {min(args.depth, args.micro_steps)} depth program(s) here, as the trainer "
-              f"does. The plain peaks recorded in trm/config.py and model_stats.MEASURED_PEAKS were taken "
-              f"with ONE program, so this reading is not like-for-like with them until they are "
-              f"re-measured on the card.")
+        print(f"note: plain compiled {min(args.depth, args.micro_steps)} depth program(s) here; until #316 "
+              f"the trainer compiled one program per sampled depth for plain too. The plain peaks "
+              f"recorded in trm/config.py and model_stats.MEASURED_PEAKS were taken with ONE program, "
+              f"so compare this reading with them only at the program count the trainer uses.")
     results.emit(f"{args.arch}-{shape.split()[0]}", arena_peak_mib=arena_mib, arena_limit_mib=limit_mib,
                  headroom_mib=limit_mib - arena_mib, outside_arena_sampled_mib=outside_mib)
 

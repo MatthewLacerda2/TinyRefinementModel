@@ -53,6 +53,13 @@ METADATA_FILENAME = "run_metadata.json"
 # and every reader depend on the schema), so for a run recorded as another arch their
 # absence is not news (#317).
 REASONER_ONLY_COLUMNS = frozenset({"temporal_drift", "avg_forget_cost", "diversity_loss", "tau"})
+# Every column only some architectures can fill, with the arches that can. `depth_avg`
+# is the sampled depth: a measurement only for an arch with a depth dial. Plain runs
+# before #316 logged a sampled value the model ignored; from #316 on it is blank.
+COLUMN_ARCHES = {
+    **{column: frozenset({"reasoner"}) for column in REASONER_ONLY_COLUMNS},
+    "depth_avg": frozenset({"refiner", "reasoner"}),
+}
 
 # DictReader parks fields beyond the header under this key; naming it keeps a
 # widened row from inventing a column called `None`.
@@ -238,9 +245,9 @@ def recorded_tokens_per_opt_step(params):
 
 
 def measured_by(arch, column):
-    """Can a run of `arch` fill this column at all? An unrecorded arch (None) is given
-    the benefit of the doubt: an old run's missing column may be the reasoner's."""
-    return arch in (None, "reasoner") or column not in REASONER_ONLY_COLUMNS
+    """Can a run of `arch` fill this column with a measurement? An unrecorded arch (None)
+    is given the benefit of the doubt: an old run's missing column may be the reasoner's."""
+    return arch is None or column not in COLUMN_ARCHES or arch in COLUMN_ARCHES[column]
 
 
 NOT_MEASURED = "not measured by this architecture"

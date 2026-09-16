@@ -84,3 +84,12 @@ def test_an_absent_column_is_blamed_on_the_architecture_only_when_it_is():
     assert runlog.absence_reason("reasoner", ["tau"]) == runlog.NOT_LOGGED
     assert runlog.absence_reason(None, ["grad_norm_avg"]) == runlog.NOT_MEASURED, \
         "a run that recorded no arch gives nothing to judge by"
+
+
+def test_depth_avg_is_a_measurement_only_for_an_arch_with_a_depth_dial():
+    """From #316 plain leaves depth_avg blank; before it, plain logged a sampled value the
+    model ignored. Either way it is not plain's measurement, and a blank one is not news."""
+    assert not runlog.measured_by("plain", "depth_avg")
+    assert runlog.measured_by("refiner", "depth_avg") and runlog.measured_by("reasoner", "depth_avg")
+    assert runlog.absence_reason("plain", ["depth_avg"]) == runlog.NOT_MEASURED
+    assert runlog.absence_reason("refiner", ["depth_avg"]) == runlog.NOT_LOGGED
