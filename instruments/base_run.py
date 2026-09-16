@@ -51,9 +51,25 @@ def load_base_spec(path) -> referee.Spec:
     return spec
 
 
+def recorded_arch(run_dir) -> str | None:
+    """The MODEL_ARCH the run recorded in run_metadata.json, or None if it recorded none.
+
+    A checkpoint has to be restored as the architecture it was trained as, and that is
+    a fact about the run, not about the process scoring it: a resumed or archived run
+    scores as what it was, whatever MODEL_ARCH this shell happens to have."""
+    path = pathlib.Path(run_dir) / "run_metadata.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text()).get("parameters", {}).get("MODEL_ARCH")
+
+
 def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False, arch=None,
                      python=sys.executable) -> dict | None:
-    """Run the yardstick on a checkpoint and append one line to the run's journal."""
+    """Run the yardstick on a checkpoint and append one line to the run's journal.
+
+    `arch` defaults to the run's recorded MODEL_ARCH; with none recorded the yardstick
+    falls back to MODEL_ARCH from config."""
+    arch = arch or recorded_arch(run_dir)
     run_dir = pathlib.Path(run_dir)
     out = run_dir / f"yardstick_step{step}{'_limit' + str(limit) if limit else ''}.json"
     argv = [python, "-m", "instruments.yardstick.eval_yardstick", "--checkpoint-path", str(checkpoint_path),

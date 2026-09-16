@@ -110,3 +110,22 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
     sup.score_new_milestones()
     sup.score_new_milestones()
     assert len(launched) == 2 and all("--cpu" in a and "--limit" in a for a in launched)
+
+
+def test_scoring_restores_the_arch_the_run_recorded_not_the_shells(tmp_path, monkeypatch):
+    """#313: the yardstick must rebuild the param tree the run trained, and that is in
+    the run's metadata. The champion recorded `refiner`; the default here is `plain`.
+    A run that recorded nothing falls back to the yardstick's own MODEL_ARCH default."""
+    calls = []
+    failed = type("Proc", (), {"returncode": 1, "stderr": "stubbed", "stdout": ""})()
+    monkeypatch.setattr(base_run.subprocess, "run", lambda argv, **kw: calls.append(argv) or failed)
+    recorded, bare = tmp_path / "recorded", tmp_path / "bare"
+    for run in (recorded, bare):
+        (run / "checkpoints" / "40").mkdir(parents=True)
+    (recorded / "run_metadata.json").write_text(FIXTURE.read_text())
+
+    assert base_run.main(["score", "--run", str(recorded), "--limit", "2", "--cpu"]) == 1
+    assert base_run.main(["score", "--run", str(bare), "--limit", "2", "--cpu"]) == 1
+    with_meta, without = calls
+    assert with_meta[with_meta.index("--arch") + 1] == "refiner"
+    assert "--arch" not in without

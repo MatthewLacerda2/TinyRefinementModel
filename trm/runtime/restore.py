@@ -12,7 +12,6 @@ import orbax.checkpoint as ocp
 from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
 from trm.config import LATENT_DIM, MODEL_ARCH, resolve_root
 from trm.data.loaders import TextDataGenerator
-from trm.model.reasoner import UniversalReasoner
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
 # reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
@@ -50,39 +49,47 @@ def _restore_into(model, checkpoint_path):
     return model, latest
 
 
-def build_model():
-    """Fresh skeleton matching MODEL_ARCH. The two arches have different param
-    trees, so a restore must build the same arch the checkpoint was trained as
-    (select it at launch, e.g. MODEL_ARCH=refiner)."""
-    if MODEL_ARCH == "plain":
+def build_model(arch=None, *, dim=None, **overrides):
+    """Fresh skeleton for `arch` (default MODEL_ARCH). The arches have different
+    param trees, so a restore must build the arch the checkpoint was trained as —
+    for a run, the MODEL_ARCH its run_metadata.json recorded.
+
+    `overrides` go to the constructor (a test restores a tiny checkpoint this way).
+    The reasoner is built at EVAL_BATCH_SIZE unless told otherwise; see above."""
+    arch = MODEL_ARCH if arch is None else arch
+    dim = LATENT_DIM if dim is None else dim
+    if arch == "plain":
         from trm.model.plain import PlainTransformer
-        return PlainTransformer(LATENT_DIM, nnx.Rngs(42))
-    if MODEL_ARCH == "refiner":
+        return PlainTransformer(dim, nnx.Rngs(42), **overrides)
+    if arch == "refiner":
         from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(42), batch_size=EVAL_BATCH_SIZE)
+        return RefinerForTraining(dim, nnx.Rngs(42), **overrides)
+    if arch == "reasoner":
+        from trm.model.reasoner import UniversalReasoner
+        return UniversalReasoner(dim, nnx.Rngs(42), **{"batch_size": EVAL_BATCH_SIZE, **overrides})
+    raise SystemExit(f"unknown arch {arch!r}; use one of plain, refiner or reasoner")
+
+
+def restore_arch(arch, checkpoint_path=None, **overrides):
+    """Model-only restore of `arch` from a checkpoint dir (default: the latest
+    run's). One path for every architecture — the per-arch helpers below are
+    thin names over it, kept so their callers need not change."""
+    return _restore_into(build_model(arch, **overrides), checkpoint_path)
 
 
 def restore_model(checkpoint_path=None):
-    """Model-only restore from a checkpoint dir, defaulting to the latest run's.
-    Builds the skeleton per MODEL_ARCH; use restore_reasoner/restore_refiner to
-    pin an arch explicitly (e.g. eval_yardstick's --arch override)."""
-    return _restore_into(build_model(), checkpoint_path)
+    """Restore as MODEL_ARCH, whatever this process was launched with."""
+    return restore_arch(MODEL_ARCH, checkpoint_path)
 
 
 def restore_reasoner(checkpoint_path=None):
-    """Reasoner restore regardless of MODEL_ARCH, for explicit --arch overrides."""
-    return _restore_into(
-        UniversalReasoner(LATENT_DIM, nnx.Rngs(42), batch_size=EVAL_BATCH_SIZE), checkpoint_path)
+    return restore_arch("reasoner", checkpoint_path)
 
 
 def restore_refiner(checkpoint_path=None):
     """Refiner restore into the production wrapper (RefinerForTraining), so the
-    checkpoint's saved 'model' state loads with matching structure. Imported
-    lazily: reasoner-only tools shouldn't pay for the Plan A import."""
-    from trm.model.refiner_lm import RefinerForTraining
-
-    return _restore_into(RefinerForTraining(LATENT_DIM, nnx.Rngs(42)), checkpoint_path)
+    checkpoint's saved 'model' state loads with matching structure."""
+    return restore_arch("refiner", checkpoint_path)
 
 
 def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=3_000_000):
