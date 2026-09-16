@@ -1,7 +1,7 @@
 [project]
 name = "tiny-refinement-model"
 version = "0.1.0"
-description = "Universal Reasoner — a tiny latent-reasoning language model written from scratch in JAX/Flax NNX"
+description = "Tiny Refinement Model — a small language model written from scratch in JAX/Flax NNX"
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]

@@ -1,6 +1,6 @@
-"""Test battery for the Plan A model (plan_a_model.CausalRefiner).
+"""Test battery for the Plan A model (trm.model.refiner.CausalRefiner).
 
-Self-contained (does not use the UniversalReasoner conftest fixtures) — constructs
+Self-contained (does not use the conftest model fixtures) — constructs
 tiny CausalRefiners directly. Runs on CPU in f32 by default, like the rest of the
 suite.
 """

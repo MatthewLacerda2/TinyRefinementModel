@@ -41,13 +41,8 @@ DEFAULT_TEMPERATURE = 0.7
 def build_serving_model(arch=MODEL_ARCH):
     """The architecture MODEL_ARCH selects — the same choice, and the same factory,
     the trainer uses. The seed is irrelevant: the checkpoint overwrites every weight.
-
-    This used to construct UniversalReasoner unconditionally, while MODEL_ARCH has
-    defaulted to 'refiner' since Plan A became the live bet. The two have different
-    param trees, so serving a refiner checkpoint failed on a structure mismatch and
-    inference was simply unavailable for the architecture we actually train — the
-    same defect the plotter carried (#181), from the same cause: a tool naming one
-    architecture while the run selects another.
+    Serving once hardcoded one architecture (#185); tests/core/test_infer_arch.py
+    guards the choice.
     """
     return build_model(arch, LATENT_DIM, nnx.Rngs(0))
 
@@ -145,8 +140,8 @@ def reject_unsampleable(logits, *, where):
 # resident programs and two sets of CUDA graphs, which is the driver-memory pressure
 # trm/config.py already blames for squeezing batch-2 from outside the BFC arena.
 #
-# Traced is correct for both architectures rather than only the live one. The
-# refiner ignores the flag outright (Plan A carries no state between windows, so
+# Traced is correct for every architecture, not only the plain one. Plain and the
+# refiner ignore the flag outright (they carry no state between windows, so
 # each window is a standalone causal prediction), and the reasoner reads it only
 # through jax.lax.cond — at reasoner.py:207 and end_step — which takes a traced
 # predicate natively. Nothing in the tree branches on it in Python.
@@ -243,10 +238,12 @@ def build_arg_parser():
     ap.add_argument("--max-new-tokens", type=int, default=256,
                     help="generation length cap (default 256)")
     ap.add_argument("--depth", type=int, default=INFERENCE_DEPTH,
-                    help="refinement loops per forward pass. The dense sweep put the "
-                         f"accuracy plateau at ~6 (default {INFERENCE_DEPTH}); the "
-                         "sinusoidal time signal is defined at any step, so this "
-                         "extrapolates past the trained range")
+                    help="refinement loops per forward pass, for the depth-recurrent "
+                         "arches (refiner, reasoner); the plain model ignores it. The "
+                         f"dense sweep put the refiner's plateau at ~6 (default "
+                         f"{INFERENCE_DEPTH}). The refiner's sinusoidal time signal is "
+                         "defined at any step, so it extrapolates past the trained range; "
+                         "the reasoner's learned time table stops at MAX_STEPS_LIMIT")
     return ap
 
 

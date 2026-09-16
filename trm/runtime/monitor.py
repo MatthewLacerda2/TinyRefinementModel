@@ -2,7 +2,8 @@ from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
 
 
 class LossMonitor:
-    """Tracks the held-out best for checkpointing and detects plateaus for phase changes."""
+    """Tracks the held-out best for checkpointing and detects CE plateaus. A plateau is
+    reported; it flips the run to SFT only when SFT_ON_PLATEAU opts in (#182)."""
 
     def __init__(self, patience=PLATEAU_PATIENCE, window=4, min_delta=PLATEAU_MIN_DELTA):
         # The plateau bar is config's (#318): these defaults used to be literals,
@@ -30,7 +31,7 @@ class LossMonitor:
     def reset_for_new_phase(self, step):
         """Forget the previous phase's plateau state so the new phase gets a
         fresh patience window and fresh bests. The attribute set must stay
-        stable — checkpoint_utils serializes these fields by name."""
+        stable — trm/runtime/checkpoints.py serializes these fields by name."""
         self.ce_history = []
         self.best_ce = float("inf")
         self.best_loss = float("inf")

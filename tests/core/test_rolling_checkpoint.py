@@ -2,7 +2,7 @@
 (a full smoke run needs DATA_ROOT + the GPU f16 path, so we test the mechanism
 directly instead):
 
-1. Rolling-latest checkpointing — at the save cadence the trainer now persists
+1. Rolling-latest checkpointing — at the save cadence the trainer persists
    the true latest state every time (not only on a new best), so a resume picks
    up where training actually left off. Best-CE state is preserved in a sibling
    'best_val_ce/' dir whose retention can't evict the latest.
