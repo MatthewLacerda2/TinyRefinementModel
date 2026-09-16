@@ -8,8 +8,10 @@ step arithmetic — are pinned rather than drifting quietly.
 So these guard the properties that make an old transcript *interpretable*, plus
 the one that stops the tool from killing the run it exists to observe.
 
-Deliberately importable without JAX: everything here is pure Python, so the suite
-stays fast and can run beside a live trainer without competing for memory.
+Importable without JAX, and everything here is pure Python EXCEPT `TestARealRunOfMain`,
+which drives `dump_transcripts.main()` and imports jax through trm.config and trm.infer.
+The rest can run beside a live trainer without competing for memory; deselect that
+class there (`-k "not TestARealRunOfMain"`). CI's pytest job runs all of it.
 """
 
 import pytest
@@ -215,11 +217,15 @@ class TestARealRunOfMain:
     """
 
     @staticmethod
-    def _run(tmp_path, monkeypatch, capsys, *argv):
+    def _run(tmp_path, monkeypatch, capsys, *argv, run_dir=None):
+        """Run main(). With `run_dir`, the checkpoint is discovered as that run's (so main
+        reads its metrics.csv and run_metadata.json); otherwise --checkpoint-path is passed."""
         import tiktoken
         import trm.infer
+        import trm.runtime.checkpoints
         import trm.runtime.restore
         from instruments import dump_transcripts as tool
+        from instruments import runlog
 
         events = []
 
@@ -239,12 +245,20 @@ class TestARealRunOfMain:
         monkeypatch.setattr(trm.runtime.restore, "restore_model",
                             lambda path: events.append(("restore", path)) or ("model", 1279))
         monkeypatch.setattr(tool, "git_head", lambda: events.append(("commit",)) or "abc1234")
+        real_load = runlog.load
+        monkeypatch.setattr(runlog, "load", lambda path: events.append(("run log", path)) or real_load(path))
+        if run_dir is None:
+            located = ["--checkpoint-path", str(tmp_path / "ck")]
+        else:
+            located = []
+            monkeypatch.chdir(run_dir.parents[1])  # main names the run as runs/<run_id>, relative
+            monkeypatch.setattr(trm.runtime.checkpoints, "discover_latest_checkpoint_run",
+                                lambda: (str(run_dir / "checkpoints"), run_dir.name))
         # select_device writes these; setting them first lets monkeypatch put them back.
         monkeypatch.setenv("JAX_PLATFORMS", "cpu")
         monkeypatch.setenv("FORCE_F32_COMPUTE", "1")
         capsys.readouterr()
-        tool.main(["--checkpoint-path", str(tmp_path / "ck"), "--out", str(tmp_path / "out"),
-                   "--depths", "1", *argv])
+        tool.main([*located, "--out", str(tmp_path / "out"), "--depths", "1", *argv])
         path = tool.written_transcript(capsys.readouterr().out)
         return events, path, open(path).read()
 
@@ -255,6 +269,22 @@ class TestARealRunOfMain:
         assert [i for i, e in enumerate(events) if e[0] == "restore"][0] < first_generation
         assert document.count("tool_commit: abc1234") == 1 and events.count(("commit",)) == 1, \
             "the frontmatter uses the value captured before generation, not a second read"
+
+    def test_the_run_metadata_is_read_before_any_generation(self, tmp_path, monkeypatch, capsys):
+        """`model_commit` and the CE fields come from the run's own files, read once before
+        generation, like the tool commit. Only a discovered run has a run dir to read."""
+        import json
+
+        run_dir = tmp_path / "runs" / "run_t"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metrics.csv").write_text("step,ce,val_ce\n5,6.1,\n10,5.9,6.2\n")
+        (run_dir / "run_metadata.json").write_text(json.dumps({"git_commit": "fedcba9876543", "git_dirty": False}))
+        events, _, document = self._run(tmp_path, monkeypatch, capsys, run_dir=run_dir)
+
+        first_generation = next(i for i, e in enumerate(events) if e[0] == "generate")
+        (read,) = [i for i, e in enumerate(events) if e[0] == "run log"]
+        assert read < first_generation
+        assert "model_commit: fedcba9" in document
 
     def test_a_subset_runs_a_prefix_and_the_frontmatter_says_how_many(self, tmp_path, monkeypatch, capsys):
         events, path, document = self._run(tmp_path, monkeypatch, capsys,
