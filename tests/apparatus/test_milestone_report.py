@@ -84,3 +84,66 @@ def test_the_val_ce_section_drives_the_real_probe(monkeypatch, tmp_path):
     assert built == {"data_root": str(tmp_path), "model": "model@ckpt"}
     assert body.startswith("validation CE: 3.2500 nats")
     assert f"fixed depth {validation.VAL_FIXED_DEPTH}, {validation.VAL_ROWS} rows" in body
+
+
+def _dump_transcripts_stdout(capsys, path):
+    """What dump_transcripts really prints at the end: its human line, then the contract line."""
+    from instruments.dump_transcripts import announce_written
+
+    capsys.readouterr()
+    print(f"\n✨ {path}")
+    announce_written(path)
+    return "▶ 2 prompts x 1 depths = 2 completions, seed 42, on cpu\n" + capsys.readouterr().out
+
+
+def test_the_transcripts_section_embeds_the_file_dump_transcripts_wrote(tmp_path, monkeypatch, capsys):
+    """#338: the section scanned for "Saved " while dump_transcripts printed "✨ <path>", so
+    every report embedded the progress output instead of the transcript."""
+    from instruments import milestone_report
+
+    transcript = tmp_path / "step_000184_cpu.md"
+    transcript.write_text("---\nstep: 184\n---\n# Transcripts — opt step 184\n")
+    stdout = _dump_transcripts_stdout(capsys, transcript)
+    monkeypatch.setattr(milestone_report, "run_tool", lambda module, argv, timeout: stdout)
+
+    body = milestone_report.section_transcripts([], [], None)
+    assert body.startswith(f"(from {transcript})")
+    assert "# Transcripts — opt step 184" in body and "▶ 2 prompts" not in body
+
+
+def test_no_transcript_named_keeps_the_output_and_says_so(monkeypatch):
+    from instruments import milestone_report
+
+    monkeypatch.setattr(milestone_report, "run_tool", lambda module, argv, timeout: "▶ progress only")
+    body = milestone_report.section_transcripts([], [], None)
+    assert "named no transcript file" in body and "▶ progress only" in body
+
+
+def test_main_quick_hands_dump_transcripts_the_quick_argv(tmp_path, monkeypatch):
+    """#338 review: the #335 test drove section_transcripts with QUICK_TRANSCRIPT_ARGS
+    directly, so main() could pass anything under --quick. Drive main() itself. Imports
+    trm.config and orbax, so it runs in CI's pytest job."""
+    import orbax.checkpoint as ocp
+
+    from instruments import milestone_report
+    from instruments.dump_transcripts import build_arg_parser
+
+    class Manager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def latest_step(self):
+            return 23551
+
+    sent = []
+    monkeypatch.setattr(ocp, "CheckpointManager", Manager)
+    monkeypatch.setattr(milestone_report, "run_tool", lambda module, argv, timeout: sent.append((module, argv)) or "")
+    monkeypatch.setattr(milestone_report, "section_val_ce", lambda path: "stubbed")
+    checkpoints = tmp_path / "run_q" / "checkpoints"
+    checkpoints.mkdir(parents=True)
+
+    milestone_report.main(["--quick", "--checkpoint-path", str(checkpoints), "--out", str(tmp_path / "report.md")])
+
+    (argv,) = [argv for module, argv in sent if module == "instruments.dump_transcripts"]
+    args = build_arg_parser().parse_args(argv)
+    assert (args.checkpoint_path, args.prompts, args.max_new_tokens) == (str(checkpoints), 2, 32)
