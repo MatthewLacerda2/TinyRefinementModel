@@ -26,11 +26,9 @@ from trm.runtime.supervisor import (
     CRASHED,
     GAVE_UP,
     GIVE_UP,
-    KILL,
     KILLED_DIVERGENCE,
     KILLED_DISK,
     KILLED_OOM,
-    KILLED_PLATEAU,
     RELAUNCH,
     RESTART,
     RUNNING,
@@ -43,7 +41,6 @@ from trm.runtime.supervisor import (
     decide,
     DELIBERATE,
     oom_in,
-    plateau_in,
     read_log_since,
     read_progress,
 )
@@ -52,7 +49,7 @@ LIMITS = Limits(stop_step=1000, max_ce=6.5, divergence_checks=2, max_retries=2)
 
 
 def obs(**kw):
-    base = dict(step=10, ce=3.0, plateau_detected=False, alive=True, elapsed_hours=0.0)
+    base = dict(step=10, ce=3.0, alive=True, elapsed_hours=0.0)
     return Observation(**{**base, **kw})
 
 
@@ -68,10 +65,8 @@ def test_a_finished_run_is_not_a_crash_even_though_the_process_is_gone():
 
 
 def test_a_deliberate_kill_is_not_a_crash_either():
-    """Same shape, other guards: a plateau kill or a divergence kill must not
-    come back as a relaunchable crash on the next look."""
-    assert decide(obs(alive=False, plateau_detected=True), LIMITS, State()).outcome == KILLED_PLATEAU
-
+    """Same shape, another guard: a divergence kill must not come back as a
+    relaunchable crash on the next look."""
     state = State(entered_band=True, divergence_streak=1)
     assert decide(obs(alive=False, ce=99.0), LIMITS, state).outcome == KILLED_DIVERGENCE
 
@@ -89,13 +84,6 @@ def test_a_genuine_crash_before_budget_still_relaunches():
 def test_a_healthy_run_is_left_alone():
     decision = decide(obs(step=500, ce=3.2), LIMITS, State())
     assert (decision.action, decision.outcome) == (CONTINUE, RUNNING)
-
-
-def test_plateau_outranks_everything():
-    """A CE-plateau SFT flip silently contaminates a pretrain run, so it is worth
-    killing an otherwise healthy — even a finished-looking — run."""
-    decision = decide(obs(step=1000, plateau_detected=True), LIMITS, State())
-    assert (decision.action, decision.outcome) == (KILL, KILLED_PLATEAU)
 
 
 def test_divergence_needs_a_streak_not_a_blip():
@@ -266,15 +254,6 @@ def test_a_missing_or_empty_metrics_file_reads_as_no_progress(tmp_path):
     assert read_progress(tmp_path / "empty.csv") == (0, None)
 
 
-def test_plateau_detection_matches_the_trainers_own_wording(tmp_path):
-    log = tmp_path / "train.log"
-    log.write_text("Step 0100 | CE: 3.5\n")
-    assert not plateau_in(read_log_since(log))
-    log.write_text("Step 0100 | CE: 3.5\n🔄 CE Plateau Detected — switching phase\n")
-    assert plateau_in(read_log_since(log))
-    assert not plateau_in(read_log_since(tmp_path / "absent.log"))
-
-
 # --- an OOM is not a crash (2026-08-13, 2026-08-15) ----------------------------
 
 def test_an_oom_is_terminal_not_relaunchable():
@@ -313,18 +292,17 @@ def test_an_oom_while_still_alive_is_not_terminal():
 
 def test_a_previous_sessions_markers_are_not_read_as_this_run(tmp_path):
     """The log is opened in append mode, so a resumed run writes after whatever the
-    last session left. Reading from byte 0, a plateau or an OOM from hours ago is
+    last session left. Reading from byte 0, an OOM from hours ago is
     still 'detected' — and the supervisor kills a healthy run on the strength of a
     dead session's output. This bit nothing yet only because no run had resumed
     after a failure that printed one."""
     log = tmp_path / "train.log"
-    log.write_text("...RESOURCE_EXHAUSTED: Out of memory\n🔄 CE Plateau Detected\n")
+    log.write_text("...RESOURCE_EXHAUSTED: Out of memory\n")
     stale = log.stat().st_size
 
     whole, since = read_log_since(log), read_log_since(log, stale)
-    assert oom_in(whole) and plateau_in(whole), "reading from 0 sees the old session"
+    assert oom_in(whole), "reading from 0 sees the old session"
     assert not oom_in(since), "reading from this launch's offset does not"
-    assert not plateau_in(since)
 
     with log.open("a") as f:
         f.write("Step 0005 | CE: 3.5\n")
@@ -362,7 +340,7 @@ def _play(polls, limits=None, state=None):
     """Feed (step, ce, alive) polls to decide(); return the decisions."""
     limits = limits or Limits(stop_step=30_000)
     state = state or State()
-    return [decide(Observation(step=s, ce=ce, plateau_detected=False, alive=alive), limits, state)
+    return [decide(Observation(step=s, ce=ce, alive=alive), limits, state)
             for s, ce, alive in polls], state
 
 
@@ -440,7 +418,7 @@ def test_the_budget_stop_holds_in_every_regime(regime):
 # --- the disk is checked while the run consumes it, not once at launch (#190) ---
 
 def _disk(free_gb, checkpoint_gb, alive=True, step=5000):
-    return Observation(step=step, ce=3.4, plateau_detected=False, alive=alive,
+    return Observation(step=step, ce=3.4, alive=alive,
                        free_gb=free_gb, checkpoint_gb=checkpoint_gb)
 
 

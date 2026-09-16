@@ -36,7 +36,7 @@ def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_i
 
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=ck.CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True))
-    ck.save_checkpoint(mngr, 10, model, optimizer, monitor, False, "run_x", wait=False)
+    ck.save_checkpoint(mngr, 10, model, optimizer, monitor, "run_x", wait=False)
     # Train on during the write: every weight moves, and the history grows.
     nnx.update(model, jax.tree_util.tree_map(lambda x: x + 1.0, nnx.state(model, nnx.Param)))
     monitor.ce_history.append(2.8)
@@ -72,8 +72,8 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     log = []
     rolling, best = _Manager(log, "rolling"), _Manager(log, "best")
-    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor(), False, "r", wait=False)
-    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor(), False, "r", wait=False)
+    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
+    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
     ck.wait_for_pending_saves()
     assert log == ["rolling.save", "rolling.wait", "best.save", "best.wait"]
 

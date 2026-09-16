@@ -134,8 +134,7 @@ Not the supervisor by hand: the launcher derives `--stop-step` from the budget (
 checkpoint boundary), pins `--checkpoint-path`, and never passes `--new-run`, which
 every crash relaunch would replay (#169).
 
-It enforces the token budget (the trainer has no hard stop), kills a CE-plateau
-SFT auto-flip that would contaminate a pretrain run, kills a diverging warm
+It enforces the token budget (the trainer has no hard stop), kills a diverging warm
 restart, restarts a wedged one, relaunches after a real crash within a retry
 budget, and heartbeats into a pinned issue. Preflight refuses to launch onto a
 nearly-full disk or a card another run already holds.

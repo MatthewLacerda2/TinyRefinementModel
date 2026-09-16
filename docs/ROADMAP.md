@@ -178,6 +178,13 @@ tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
 
+- **SFT-on-plateau flip** — removed 2026-09-16 (#323), non-novel. The one time it
+  fired it killed #157 at opt step 5,055 of 30,518 (CE 3.31 → 8.57, then the
+  optimizer rebuild OOM'd). The product is a base model; a fine-tune warm-starts
+  from a stored champion in its own run. The plateau detector stays, as a report.
+  Apparatus `instruments/sft_switch_smoke.py` and `tests/core/test_sft_autoflip_guard.py`
+  removed with it, and the supervisor's plateau kill that guarded it.
+
 - **Depth recurrence as the live architecture bet** — KILLED 2026-09-12. It works
   on sequential composition (`plan-a-depth-recurrence-works`, unretracted) and is
   *actively suppressed* on language: +0.003454 nats on code and nothing on prose or

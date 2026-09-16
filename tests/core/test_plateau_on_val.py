@@ -37,20 +37,11 @@ def test_push_val_without_a_step_only_tracks_the_best():
     assert m.ce_history == [] and not m.plateaued
 
 
-def test_a_new_phase_clears_the_plateau():
-    m = LossMonitor(patience=1, window=2)
-    m.push_val(3.0, step=1)
-    m.push_val(3.0, step=10)
-    assert m.plateaued
-    m.reset_for_new_phase(10)
-    assert not m.plateaued
-
-
 def test_the_trainer_reads_the_plateau_from_the_probe():
     import inspect
     from trm.train import trainer
     src = inspect.getsource(trainer.train_loop)
-    assert "monitor.push_val(val_ce, opt_step)" in src and "plateaued = monitor.plateaued" in src
+    assert "monitor.push_val(val_ce, opt_step)" in src and "monitor.plateaued" in src
     assert "plateaued = monitor.push(" not in src
 
 

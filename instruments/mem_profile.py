@@ -1,6 +1,6 @@
 """Where does a grad step's VRAM go? — a memory profiler for the recurring OOM problem.
 
-OOMs (the dim960 base run, the SFT phase switch, past dead runs) have been debugged by
+OOMs (the dim960 base run, #157's since-removed SFT phase switch, past dead runs) have been debugged by
 launch-and-watch-it-die roulette. This replaces that with a measurement: build the real
 model + optimizer at the *current config*, compile the real grad step, and report
 

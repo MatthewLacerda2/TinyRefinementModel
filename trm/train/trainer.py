@@ -3,7 +3,6 @@ their own modules: held-out scoring in validation.py, the optimizer chains in
 optimizers.py, schedules and mixture policies in schedules.py."""
 
 import os
-import gc
 import math
 import time
 import threading
@@ -24,7 +23,6 @@ from trm.config import (
     DATA_SEED,
     MODEL_SEED,
     PLAIN_LAYERS,
-    SFT_ON_PLATEAU,
     TOKENS_PER_OPT_STEP,
     TRAIN_TOKEN_BUDGET,
     resolve_root,
@@ -37,10 +35,9 @@ from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradien
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
-from trm.train.optimizers import optimizer_chain, create_sft_optimizer
+from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import (
     CURRICULUM_START_WEIGHTS,
-    SFT_MIX_WEIGHTS,
     DECAY_STEPS,
     WARMUP_STEPS,
     get_curriculum_weights,
@@ -58,9 +55,9 @@ PREFETCH_SIZE = 128
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
 
-# Opt steps between "still plateaued" notices. `monitor.push` keeps returning True
-# for every step until CE improves, so an unthrottled notice would print on every
-# one of them and bury the rest of the log.
+# Opt steps between "still plateaued" notices. `monitor.plateaued` stays True on
+# every logging step until held-out CE improves, so an unthrottled notice would
+# print on every one of them and bury the rest of the log.
 PLATEAU_NOTICE_EVERY = 200
 
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
@@ -72,8 +69,6 @@ if DATA_ROOT:
 # column of metrics.csv, so the recorded mixture cannot name a source other than
 # the one that was served.
 PRETRAIN_SOURCES = ("pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
-SFT_ONLY_SOURCE = "chat/ultrachat"
-SFT_SOURCES = (SFT_ONLY_SOURCE, *PRETRAIN_SOURCES)
 
 
 def mixture_label(sources, weights):
@@ -164,7 +159,7 @@ def init_model_and_optimizer():
 
     return model, optimizer
 
-def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, samples_seen=None):
+def setup_data_pipeline(start_step, samples_seen=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
     if not DATA_ROOT:
@@ -173,34 +168,16 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, sample
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
-    sft_sources = [TextDataGenerator(f"{DATA_ROOT}/{SFT_ONLY_SOURCE}"), *pretrain_sources]
-    sft_mixer = DataMixer(sft_sources, SFT_MIX_WEIGHTS)
-
     if start_step > 1:
         start_opt_step = start_step // ACCUMULATION_STEPS
         # Prefer the recorded sample count over re-deriving it from micro-steps
         # (#24): only the recorded figure survives a change in BATCH_SIZE between
         # the run that wrote the checkpoint and the one resuming it.
-        if sft_start_step is None or start_step < sft_start_step:
-            avg_weights = get_average_curriculum_weights(start_opt_step)
-            skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
-                     else samples_from_micro_steps(start_step - 1, avg_weights))
-            for gen, skip in zip(pretrain_sources, skips):
-                gen.skip_count = skip
-        else:
-            # 1. Catch up pretrain sources to the point where pretraining ended.
-            # The pretrain/SFT split is still counted in micro-steps: samples_seen
-            # is a single total and does not say where the phase boundary fell.
-            sft_start_opt_step = sft_start_step // ACCUMULATION_STEPS
-            avg_weights = get_average_curriculum_weights(sft_start_opt_step)
-            skips = samples_from_micro_steps(sft_start_step - 1, avg_weights)
-            for gen, skip in zip(pretrain_sources, skips):
-                gen.skip_count = skip
-
-            # 2. Add SFT usage for all blended sources (Chat + Replay)
-            sft_skips = samples_from_micro_steps(start_step - sft_start_step, SFT_MIX_WEIGHTS)
-            for gen, skip in zip(sft_sources, sft_skips):
-                gen.skip_count += skip
+        avg_weights = get_average_curriculum_weights(start_opt_step)
+        skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
+                 else samples_from_micro_steps(start_step - 1, avg_weights))
+        for gen, skip in zip(pretrain_sources, skips):
+            gen.skip_count = skip
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
@@ -208,11 +185,8 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, sample
         loader_step = start_step
         while True:
             loader_opt_step = loader_step // ACCUMULATION_STEPS
-            if not sft_phase_event.is_set():
-                pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
-                res = pretrain_mixer.get_batch(BATCH_SIZE)
-            else:
-                res = sft_mixer.get_batch(BATCH_SIZE)
+            pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
+            res = pretrain_mixer.get_batch(BATCH_SIZE)
 
             if res[0] is None:
                 data_queue.put((None, None))
@@ -224,7 +198,7 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, sample
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker):
+def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
     # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
     # (start_step == 1) appends to any existing CSV untouched.
@@ -361,7 +335,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         # retention never evict each other.
                         if monitor.push_val(val_ce, opt_step):
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
-                                            sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                            run_tracker.run_id, wait=False)
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
@@ -370,11 +344,11 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # The best-CE state is saved on the validation probe, above.
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
-                                    sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                    run_tracker.run_id, wait=False)
                     # Milestones: never evicted by recency (#187), in their own dir.
                     if milestone_due(opt_step, CHECKPOINT_EVERY_OPT_STEPS, TOKENS_PER_OPT_STEP):
                         save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
-                                        sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                        run_tracker.run_id, wait=False)
 
             if is_log_step:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
@@ -398,8 +372,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
-                    mix=(mixture_label(SFT_SOURCES, SFT_MIX_WEIGHTS) if sft_phase_event.is_set()
-                         else mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step))),
+                    mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = None
@@ -420,67 +393,25 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     + ("warming up" if ceiling_now is None else f"{ceiling_now:.1f}")
                 )
 
-                if not sft_phase_event.is_set():
-                    curr_weights = get_curriculum_weights(opt_step)
-                    print(
-                        f"📚 [Curriculum] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | "
-                        f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
-                    )
-                else:
-                    sft_w = " / ".join(f"{w:.2f}" for w in SFT_MIX_WEIGHTS)
-                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | Weights (Chat/Web/Code/Math): {sft_w}")
+                curr_weights = get_curriculum_weights(opt_step)
+                print(
+                    f"📚 [Curriculum] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | "
+                    f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
+                )
 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()
 
                 monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
-                # Plateau is a property of HELD-OUT CE now (#184), advanced by the
-                # validation probe above on its own cadence; read here where it is acted on.
-                plateaued = monitor.plateaued
-                if plateaued and not sft_phase_event.is_set() and not SFT_ON_PLATEAU:
-                    # Report it and keep pretraining. A plateau is a fact about the
-                    # loss curve; it is not a verdict that the run is done, and at a
-                    # high LR it usually means "cannot descend further yet" rather
-                    # than "converged" (see SFT_ON_PLATEAU in trm/config.py).
-                    #
-                    # The wording matters as much as the behaviour: the supervisor
-                    # greps the log for "CE Plateau Detected" and kills the run on
-                    # sight, so this line must NOT contain that phrase. The phrase
-                    # stays reserved for an actual flip, which keeps the
-                    # supervisor's guard working as a backstop.
-                    if opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
-                        last_plateau_notice = opt_step
-                        print(f"📉 [Plateau] held-out CE flat for >{monitor.patience} opt steps "
-                              f"(best windowed val CE {monitor.best_avg_ce:.4f}). Pretraining "
-                              f"continues — the SFT auto-flip is off (SFT_ON_PLATEAU).")
-                    plateaued = False
-
-                if plateaued:
-                    if sft_phase_event.is_set():
-                        print("🛑 Training halted: No improvement in CE during SFT phase.")
-                        break
-
-                    print("\n" + "🔄"*30)
-                    print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
-                    print("🔄"*30 + "\n")
-                    sft_phase_event.set()
-                    monitor.sft_start_step = step
-
-                    # OOM-critical ordering (#30): pull the optimizer moments to
-                    # host, then free the old optimizer IN THIS SCOPE, before
-                    # nnx.Optimizer eagerly allocates the new full-size mu/nu on
-                    # the GPU — otherwise both states coexist for an instant, a
-                    # ~2x spike that OOM'd the 6GB card. (This block must stay
-                    # inline: a helper's `del` cannot release the loop's local
-                    # reference.) Momentum survives via the host copy.
-                    old_state = jax.device_get(nnx.state(optimizer))
-                    del optimizer
-                    gc.collect()
-                    optimizer = create_sft_optimizer(model, old_state)
-                    del old_state
-                    gc.collect()
-
-                    monitor.reset_for_new_phase(opt_step)
+                # Plateau is a property of HELD-OUT CE (#184), advanced by the
+                # validation probe above on its own cadence. It is a report, never an
+                # action: a flat curve at a high LR usually means "cannot descend
+                # further yet", not "converged" — the in-run SFT flip that treated it
+                # as the latter killed #157 and was removed (#323).
+                if monitor.plateaued and opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
+                    last_plateau_notice = opt_step
+                    print(f"📉 [Plateau] held-out CE flat for >{monitor.patience} opt steps "
+                          f"(best windowed val CE {monitor.best_avg_ce:.4f}); pretraining continues.")
 
                 window.reset()
                 t_compute = 0.0
@@ -488,7 +419,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             step += 1
     finally:
         # An asynchronous checkpoint write may still be landing (#218) — a crash, a
-        # budget stop's TERM, or a plateau kill must not cut the last one short.
+        # budget stop's TERM, or a divergence kill must not cut the last one short.
         wait_for_pending_saves()
         # Guarantee run metadata is finalized on exit
         run_tracker.update_session_duration()

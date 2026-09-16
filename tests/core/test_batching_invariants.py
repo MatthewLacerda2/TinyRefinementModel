@@ -142,17 +142,6 @@ def test_samples_seen_is_counted_not_derived():
     assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
 
 
-def test_phase_flip_preserves_the_data_position():
-    """An SFT phase flip resets plateau state, never the consumed-sample count —
-    zeroing it would rewind the data stream to the start of the corpus."""
-    from trm.runtime.monitor import LossMonitor
-
-    m = LossMonitor()
-    m.samples_seen = 123456
-    m.reset_for_new_phase(step=10)
-    assert m.samples_seen == 123456
-
-
 def test_pre_24_checkpoints_resume_exactly():
     """A checkpoint with no samples_seen was written at BATCH_SIZE=1, so one
     sample per micro-step is its exact position — not an approximation."""

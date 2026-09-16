@@ -1,7 +1,6 @@
 """Resuming from an earlier checkpoint is one mechanical act, and a refused save is loud (#188)."""
 
 import datetime
-import json
 
 import pytest
 
@@ -11,25 +10,56 @@ from trm.runtime.layout import BEST_SUBDIR
 ACCUM = 128
 
 
-def _ckpt(directory, opt_step, sft=False, finalized=True):
+def _ckpt(directory, opt_step, finalized=True):
     step = opt_step * ACCUM - 1
     path = directory / str(step)
-    (path / "monitor_state").mkdir(parents=True)
-    (path / "monitor_state" / "metadata").write_text(json.dumps(
-        {"sft_active": sft, "sft_start_step": 1 if sft else None}))
+    path.mkdir(parents=True)
     if finalized:
         (path / "_CHECKPOINT_METADATA").write_text("{}")
     return path
 
 
-def test_listing_reads_opt_steps_and_phase_from_disk(tmp_path):
-    """The #157 recovery, as a listing: two clean checkpoints and a contaminated one."""
-    for opt, sft in ((4928, False), (4992, False), (5056, True)):
-        _ckpt(tmp_path, opt, sft)
+def test_listing_reads_opt_steps_from_disk(tmp_path):
+    """The #157 recovery, as a listing: finalized checkpoints only, oldest first."""
+    for opt in (4928, 4992, 5056):
+        _ckpt(tmp_path, opt)
     _ckpt(tmp_path, 5120, finalized=False)
     found = rw.checkpoints_in(tmp_path, ACCUM)
-    assert [(c.step, c.opt_step, c.sft_active) for c in found] == [
-        (630783, 4928, False), (638975, 4992, False), (647167, 5056, True)]
+    assert [(c.step, c.opt_step) for c in found] == [(630783, 4928), (638975, 4992), (647167, 5056)]
+
+
+# --- a checkpoint from the retired SFT phase is refused, not resumed (#323) ----
+
+def test_a_pretraining_monitor_state_resumes_with_or_without_the_legacy_phase_fields():
+    """Checkpoints written before #323 carry sft_active/sft_start_step; new ones
+    carry neither. Both read as pretraining."""
+    rw.refuse_sft_phase_resume({"samples_seen": 5}, 638975, "ckpts", ACCUM)
+    rw.refuse_sft_phase_resume({"sft_active": False, "sft_start_step": None}, 638975, "ckpts", ACCUM)
+
+
+def test_an_sft_phase_monitor_state_is_refused_and_names_the_rewind():
+    """A flip at micro-step 647,167 (opt step 5,056). Resuming a checkpoint past
+    it as pretraining would silently change the mixture and the LR, so the loader
+    stops and points at the last clean opt step."""
+    with pytest.raises(SystemExit) as refused:
+        rw.refuse_sft_phase_resume({"sft_active": True, "sft_start_step": 647167},
+                                   655359, "runs/run_X/checkpoints", ACCUM)
+    message = str(refused.value)
+    assert "655359" in message and "647167" in message
+    assert "python -m trm.runtime.rewind runs/run_X/checkpoints --to-opt-step 5056" in message
+
+
+def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
+    """The checkpoint saved on the flip's own boundary was written before the flip,
+    so it is clean; the suggested opt step must select it and nothing later."""
+    for opt in (4992, 5056, 5120):
+        _ckpt(tmp_path, opt)
+    flip_micro_step = 5056 * ACCUM - 1
+    with pytest.raises(SystemExit) as refused:
+        rw.refuse_sft_phase_resume({"sft_start_step": flip_micro_step}, 5120 * ACCUM - 1, tmp_path, ACCUM)
+    to_opt_step = int(str(refused.value).rsplit("--to-opt-step ", 1)[1])
+    chosen = rw.resolve(rw.checkpoints_in(tmp_path, ACCUM), to_opt_step)
+    assert chosen.step == flip_micro_step
 
 
 def test_rewind_sets_aside_newer_checkpoints_in_both_dirs_and_deletes_nothing(tmp_path):
@@ -75,6 +105,6 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True))
-    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), False, "run_x")
+    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
-        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), False, "run_x")
+        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), "run_x")

@@ -9,7 +9,6 @@ import textwrap
 from trm.runtime.supervisor import (
     BUDGET_COMPLETE,
     GAVE_UP,
-    KILLED_PLATEAU,
     Limits,
 )
 
@@ -74,18 +73,6 @@ def test_the_heartbeat_survives_github_being_unreachable(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "still going" in out, "the message still reaches the local log"
     assert "heartbeat to #16 failed" in out
-
-
-def test_the_supervisor_kills_a_child_that_trips_the_plateau_guard(tmp_path):
-    log = tmp_path / "train.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    sup, _ = _supervisor_over(tmp_path, """
-        import time
-        print("CE Plateau Detected", flush=True)
-        time.sleep(60)
-    """, Limits(stop_step=10_000, max_retries=0))
-
-    assert sup.run() == KILLED_PLATEAU
 
 
 # --- the heartbeat is for humans, and humans stop reading -----------------------

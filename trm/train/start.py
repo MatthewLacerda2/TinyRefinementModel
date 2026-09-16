@@ -40,14 +40,9 @@ if adopt_recorded_budget(checkpoint_path_from_argv(sys.argv)):
     # what this says is where it came from.
     print("🗓️ Recovered TRAIN_TOKEN_BUDGET from the resumed run's own metadata (#197)")
 
-import gc
 import argparse
-import threading
 import multiprocessing as mp
 
-from flax import nnx
-
-from trm.train.optimizers import create_sft_optimizer
 from trm.train.schedules import DECAY_STEPS
 from trm.train.trainer import (
     init_model_and_optimizer,
@@ -114,29 +109,13 @@ if __name__ == "__main__":
 
     active_checkpoint_path = os.path.abspath(active_checkpoint_path)
 
-    sft_phase_event = threading.Event()
-
     model, optimizer = init_model_and_optimizer()
 
     mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
         model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
-    # Set event if resuming in SFT phase
-    if monitor.sft_start_step is not None:
-        print(f"🔄 Resuming in SFT phase (started at step {monitor.sft_start_step})")
-        sft_phase_event.set()
-
-        old_state = nnx.state(optimizer)
-        del optimizer
-        gc.collect()
-
-        optimizer = create_sft_optimizer(model, old_state)
-        del old_state
-        gc.collect()
-
-    data_queue = setup_data_pipeline(start_step, sft_phase_event, monitor.sft_start_step,
-                                     samples_seen=monitor.samples_seen or None)
+    data_queue = setup_data_pipeline(start_step, samples_seen=monitor.samples_seen or None)
 
     exit_cleanly_on_sigterm()  # so a TERM waits for an in-flight checkpoint write (#218)
-    train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker)
+    train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
