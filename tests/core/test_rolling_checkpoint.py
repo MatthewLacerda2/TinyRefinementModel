@@ -227,6 +227,18 @@ def test_probe_fires_at_configured_cadence():
     assert fired == [8, 16, 24], f"probe should fire every {val_every} opt-steps, got {fired}"
 
 
+def test_the_run_records_the_cadence_the_trainer_used():
+    """#305: the training curve labels its val CE line "measured every N steps",
+    and N has to be the plotted run's own — VAL_EVERY_OPT_STEPS is an env knob
+    (the #26 arms run 16, the supervisor's fit gate runs 1). The tracker cannot
+    import the trainer, which imports it, so it reads the same knob separately;
+    the two declarations are held together here."""
+    from trm.runtime.run_tracker import RunTracker
+    from trm.train import trainer
+
+    assert RunTracker.get_hyperparameters()["VAL_EVERY_OPT_STEPS"] == trainer.VAL_EVERY_OPT_STEPS
+
+
 def test_old_nested_cadence_was_multiplied():
     """Guard documenting the bug: nesting the probe inside the logging block
     multiplied the cadence by LOG_REAL_STEPS — the fix must NOT reproduce this."""

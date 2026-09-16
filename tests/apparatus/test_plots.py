@@ -17,6 +17,7 @@ torn final row. A live run gets plotted while it is being written to, so the
 instrument meets all three routinely.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -30,7 +31,7 @@ REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents
 
 HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,avg_forget_cost,"
           "diversity_loss,temporal_drift,forget_density,tau,out_entropy,logz_mean,"
-          "max_abs_logit,depth_avg,val_ce")
+          "max_abs_logit,depth_avg,val_ce,arena_peak_mib")
 
 
 def row(step, **overrides):
@@ -43,6 +44,8 @@ def row(step, **overrides):
         "forget_density": "", "tau": "", "out_entropy": 9.0 - step / 800,
         "logz_mean": 11.3, "max_abs_logit": 4.3 + step / 200,
         "depth_avg": 4.5, "val_ce": "",
+        # The allocator's high-water mark, as every run has logged it since #168.
+        "arena_peak_mib": 4400 + step // 10,
     }
     cells.update(overrides)
     return ",".join([str(step)] + [str(cells[name]) for name in HEADER.split(",")[1:]])
@@ -116,7 +119,7 @@ def test_every_diagnostic_panel_appears_for_a_full_log(tmp_path):
     figures = build(a_run(tmp_path), tmp_path)
 
     assert panels_of(figures, "optimization_health.png") == [
-        "grad_norm", "depth", "zero_grad", "logits"]
+        "grad_norm", "depth", "vram", "zero_grad", "logits"]
     assert figures["optimization_health.png"]["omitted"] == []
 
 
@@ -232,7 +235,163 @@ def test_the_grad_norm_panel_reads_against_the_clip_when_the_run_logged_it(tmp_p
     import matplotlib
     matplotlib.use("Agg")
     fig, ax = matplotlib.pyplot.subplots()
-    plots._panel_grad_norm(ax, runlog.load(str(run_dir / "metrics.csv")))
+    log = runlog.load(str(run_dir / "metrics.csv"))
+    plots._panel_grad_norm(ax, log, plots.RunConfig.of(log))
     title = ax.get_title(loc="left")
     assert "clip sees" in title and "50%" in title
     matplotlib.pyplot.close(fig)
+
+
+# ── the run's own config decides the figure, not this process's (#305) ───────
+
+def with_metadata(csv_path, **parameters):
+    """Give a run the `parameters` block its tracker would have written. A None
+    value means the run predates that key and never recorded it."""
+    recorded = {key: value for key, value in parameters.items() if value is not None}
+    (csv_path.parent / "run_metadata.json").write_text(json.dumps(
+        {"run_id": csv_path.parent.name, "parameters": recorded}))
+    return csv_path
+
+
+def a_short_arm(tmp_path, name="run_026_muon_m100_s1", **parameters):
+    """A 512-step ablation arm: the shape that crashed the plotter. Its LR
+    schedule completes inside the run, so its warmup is 100, not the 1000 this
+    process defaults to."""
+    rows = [row(step, val_ce=(6.0 if step % 80 == 0 else "")) for step in range(5, 513, 5)]
+    recorded = {"MODEL_ARCH": "plain", "LATENT_DIM": 960, "PLAIN_LAYERS": 9,
+                "MAX_SEQ_LEN": 512, "BATCH_SIZE": 1, "ACCUMULATION_STEPS": 128,
+                "TRAIN_TOKEN_BUDGET": 512 * 131072, "DECAY_STEPS": 512,
+                "WARMUP_STEPS": 100, "VAL_EVERY_OPT_STEPS": 16,
+                "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 100.0}
+    recorded.update(parameters)
+    return with_metadata(write_csv(tmp_path, rows, name=name), **recorded)
+
+
+def test_a_short_run_renders_with_its_own_warmup(tmp_path):
+    """The crash (#305): the plotter rebuilt the LR schedule with WARMUP_STEPS
+    from its own environment, so a 512-step horizon minus a 1000-step warmup
+    handed optax decay_steps=-488 and the whole report died."""
+    from trm.train.schedules import WARMUP_STEPS
+
+    assert WARMUP_STEPS > 512, "this test is only meaningful with the long default warmup"
+    figures = build(a_short_arm(tmp_path), tmp_path)
+
+    assert "lr" in figures["training_curve.png"]["panels"]
+    assert figures["training_curve.png"]["omitted"] == []
+
+
+def test_a_run_that_never_recorded_its_warmup_omits_the_lr_panel(tmp_path, capsys):
+    """The only honest answer for a pre-#305 short run: this process's warmup is
+    a guess, it does not fit, and a guessed anneal is worse than none."""
+    figures = build(a_short_arm(tmp_path, WARMUP_STEPS=None), tmp_path)
+
+    curve = figures["training_curve.png"]
+    assert "lr" not in curve["panels"] and "ce" in curve["panels"]
+    assert "did not record its warmup" in dict(curve["omitted"])["lr"]
+    assert "warmup" in capsys.readouterr().out
+
+
+def test_a_plain_run_omits_the_depth_panel_and_says_why(tmp_path):
+    """PlainTransformer ignores the depth argument, so depth_avg is the sampler's
+    dice roll — logged, and not a measurement of this model."""
+    figures = build(a_short_arm(tmp_path), tmp_path)
+
+    health = figures["optimization_health.png"]
+    assert "depth" not in health["panels"]
+    assert "ignores the depth argument" in dict(health["omitted"])["depth"]
+
+
+def test_a_refiner_run_still_draws_the_depth_panel(tmp_path):
+    """The looping arches do have a depth, and the realised mean of the draw is
+    still worth a check there (the 4B champion is one of these)."""
+    figures = build(a_short_arm(tmp_path, MODEL_ARCH="refiner", MAX_STEPS_LIMIT=8), tmp_path)
+
+    assert "depth" in figures["optimization_health.png"]["panels"]
+
+
+def test_the_subtitle_identifies_a_plain_run_by_arch_layers_and_optimizer(tmp_path):
+    """`depth ≤8` said nothing about a plain run. What separates two runs of this
+    stack is the layer count and the optimizer — the #26 pair differs in nothing
+    else."""
+    from instruments import plots
+    from instruments.runlog import load
+
+    described = plots.describe(plots.RunConfig.of(load(str(a_short_arm(tmp_path)))))
+    assert described == "plain · dim 960 · 9 layers · muon (LR ×100 on matrices)"
+    assert "depth" not in described
+
+    refiner = plots.RunConfig({"parameters": {"MODEL_ARCH": "refiner", "LATENT_DIM": 960,
+                                              "MAX_STEPS_LIMIT": 8, "TRM_OPTIMIZER": "adamw"}})
+    assert plots.describe(refiner) == "refiner · dim 960 · depth ≤8 · adamw"
+
+
+def test_a_fact_the_run_did_not_record_is_named_as_missing(tmp_path):
+    """The failure this rule prevents: every run on disk predates #305, and
+    labelling the muon arm `adamw` from this process's default is exactly the
+    confident-wrong picture the issue is about. PLAIN_LAYERS is the same story —
+    it was 8 before 2026-09-13."""
+    from instruments import plots
+
+    older = plots.RunConfig({"parameters": {"MODEL_ARCH": "plain", "LATENT_DIM": 960}})
+    assert plots.describe(older) == "plain · dim 960 · layer count not recorded · optimizer not recorded"
+
+
+def test_the_val_cadence_comes_from_the_run(tmp_path):
+    """The note used to read "every 64 optimizer steps" whatever the run did;
+    every arm of the #26 pair probes every 16."""
+    from instruments import plots
+    from instruments.runlog import load
+
+    recorded = load(str(a_short_arm(tmp_path)))
+    assert plots.val_cadence(recorded, plots.RunConfig.of(recorded)) == (16, "recorded")
+
+    # A run that never recorded the knob: read the spacing off its val rows. The
+    # mean gap, not the median — a probe every 16 steps logged every 5 writes its
+    # value on the next logged row, so the gaps alternate and only the mean is 16.
+    older = load(str(a_short_arm(tmp_path / "older", VAL_EVERY_OPT_STEPS=None)))
+    assert plots.val_cadence(older, plots.RunConfig.of(older)) == (80, "observed")
+
+    uneven = load(str(write_csv(tmp_path / "uneven",
+                                [row(step, val_ce=(6.0 if step in (20, 35, 50, 65, 80, 100) else ""))
+                                 for step in range(5, 201, 5)], name="run_20990101_000000")))
+    assert plots.val_cadence(uneven, plots.RunConfig.of(uneven)) == (16, "observed")
+
+
+def test_a_run_written_before_these_parameters_still_renders(tmp_path):
+    """Every finished run on disk predates #305. They keep their figures: the
+    plotter falls back to this process's config for what they never recorded,
+    and only drops what that fallback cannot honestly reconstruct."""
+    rows = [row(step) for step in range(5, 1001, 5)]
+    csv_path = with_metadata(write_csv(tmp_path, rows, name="run_20260719_020802"),
+                             MODEL_ARCH="refiner", LATENT_DIM=960, MAX_STEPS_LIMIT=8,
+                             TRAIN_TOKEN_BUDGET=4_000_000_000, DECAY_STEPS=30518)
+    figures = build(csv_path, tmp_path)
+
+    assert figures["training_curve.png"]["panels"] == ["ce", "lr"]
+    assert "depth" in figures["optimization_health.png"]["panels"]
+
+
+def test_a_run_with_no_metadata_at_all_still_renders(tmp_path):
+    """A hand-assembled run directory, or one from before the tracker."""
+    figures = build(a_run(tmp_path), tmp_path)
+
+    assert "training_curve.png" in figures and figures["optimization_health.png"]["panels"]
+
+
+def test_the_vram_panel_draws_the_peak_against_the_arena_limit(tmp_path):
+    """arena_peak_mib is in every CSV and was drawn nowhere (#305). It is the
+    number that says whether the next layer fits."""
+    from instruments import plots
+
+    figures = build(a_short_arm(tmp_path, name="run_026_adamw_s2"), tmp_path)
+
+    assert "vram" in figures["optimization_health.png"]["panels"]
+    assert plots.ARENA_LIMIT_MIB == 4883.0, "the measured cuda_async bytes_limit on this card"
+
+
+def test_no_vram_panel_where_the_allocator_kept_no_statistics(tmp_path):
+    """A CPU run logs an empty cell — the panel is omitted, not drawn at zero."""
+    figures = build(a_run(tmp_path, arena_peak_mib=""), tmp_path)
+
+    assert "vram" not in figures["optimization_health.png"]["panels"]
+    assert "vram" in dict(figures["optimization_health.png"]["omitted"])
