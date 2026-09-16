@@ -45,7 +45,6 @@ from trm.train.schedules import (
     WARMUP_STEPS,
     get_curriculum_weights,
     get_average_curriculum_weights,
-    sample_reasoning_depth,
 )
 from trm.train.validation import ValidationProbe
 from trm.runtime.metrics import MetricsLogger
@@ -134,11 +133,17 @@ class LogWindow:
 
     def add(self, **values):
         for name in self.FIELDS:
-            self.sums[name] += values[name]
+            # None: a quantity this run does not have — depth, on an arch without a
+            # depth dial (#316). Its mean is None, never a zero that reads as a draw.
+            if values[name] is None or self.sums[name] is None:
+                self.sums[name] = None
+            else:
+                self.sums[name] += values[name]
         self.count += 1
 
     def means(self):
-        return tuple(self.sums[name] / self.count for name in self.FIELDS)
+        return tuple(None if self.sums[name] is None else self.sums[name] / self.count
+                     for name in self.FIELDS)
 
 
 def init_model_and_optimizer():
@@ -273,7 +278,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
             t_compute_start = time.time()
 
-            depth = sample_reasoning_depth(step)
+            # The architecture's depth for this micro-step, or None for one without a
+            # depth dial (#316): one static value, so the grad step compiles once.
+            depth = model.training_depth(step)
             # The logging micro-step: its gradient stats are sampled before the
             # update below and logged after it, so both blocks read this one flag.
             is_log_step = (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0
@@ -394,7 +401,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     t_compute,
                     grad_norm_avg=float(accum_grad_norm),
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
-                    depth_avg=float(accum_depth),
+                    depth_avg=None if accum_depth is None else float(accum_depth),
                     val_ce=latest_val_ce,
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
@@ -421,15 +428,16 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     + ("warming up" if ceiling_now is None else f"{ceiling_now:.1f}")
                 )
 
+                depth_note = "" if accum_depth is None else f" | Avg Sampled Depth: {accum_depth:.2f}"
                 if not sft_phase_event.is_set():
                     curr_weights = get_curriculum_weights(opt_step)
                     print(
-                        f"📚 [Curriculum] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | "
+                        f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
                         f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
                     )
                 else:
                     sft_w = " / ".join(f"{w:.2f}" for w in SFT_MIX_WEIGHTS)
-                    print(f"💬 [SFT Phase] Opt Step: {opt_step} | Avg Sampled Depth: {accum_depth:.2f} | Weights (Chat/Web/Code/Math): {sft_w}")
+                    print(f"💬 [SFT Phase] Opt Step: {opt_step}{depth_note} | Weights (Chat/Web/Code/Math): {sft_w}")
 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()

@@ -53,9 +53,10 @@ def test_the_factory_imports_each_arch_only_in_its_own_branch():
     tree = ast.parse(Path(trm.model.__file__).read_text())
 
     def runs_at_import(node):
-        """Every statement import runs: module level, into try/if/with/for bodies,
-        but not into a function or class body, which only runs when called."""
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        """Every statement import runs: module level, into try/if/with/for bodies
+        and class bodies (a class body executes when the class is defined), but not
+        into a function body, which only runs when called."""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             return
         yield node
         for child in ast.iter_child_nodes(node):

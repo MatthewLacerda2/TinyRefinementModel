@@ -150,8 +150,9 @@ class MetricsLogger:
         # of (Tau, Drift on the plain stack) reads as a measurement (#317).
         reported = "".join(f" | {label}: {diag_dict[key]:.{places}f}"
                            for key, label, places in CONSOLE_DIAGNOSTICS if key in diag_dict)
+        depth = "" if depth_avg is None else f" | Depth: {depth_avg:.2f}"  # None: no depth dial (#316)
         print(
-            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | Depth: {depth_avg:.2f}\n"
+            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}){depth}\n"
             f"      Loss: {loss:.4f}{reported} | Compute: {compute_time:.3f}s"
         )
 

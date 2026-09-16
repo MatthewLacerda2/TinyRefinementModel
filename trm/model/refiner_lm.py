@@ -34,6 +34,7 @@ from trm.config import (
 )
 from trm.model.contract import LMOutput, LanguageModel
 from trm.model.refiner import CausalRefiner
+from trm.train.schedules import sample_reasoning_depth
 
 
 class RefinerForTraining(LanguageModel):
@@ -57,6 +58,11 @@ class RefinerForTraining(LanguageModel):
             time_signal=time_signal,
             post_norm=post_norm,
         )
+
+    def training_depth(self, micro_step):
+        """Loops of the shared block for this micro-step: uniform in
+        [1, MAX_STEPS_LIMIT], replayed exactly on resume (#316)."""
+        return sample_reasoning_depth(micro_step)
 
     def __call__(self, tokens, depth=INFERENCE_DEPTH, training=False, new_document=True,
                  logits_at=None):
