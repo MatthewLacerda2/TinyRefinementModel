@@ -98,32 +98,6 @@ def affine_chain_task(K, m):
     return fn
 
 
-def variable_chain_task(K, m):
-    """Variable-length affine chain (#123): k_eff ~ U{1..K} real links, then
-    recognizable pad links (a = b = 0; real links always have a >= 1). The
-    sub-target is STATIONARY after the chain ends — r stays r_{k_eff} through
-    the pad links — so 'done' is detectable as the state no longer changing,
-    and the final answer is sub[:, -1] = r_{k_eff}. Returns (tokens, subs,
-    k_eff) so halting evals can correlate the halt step with the true length."""
-    def fn(key, batch):
-        ka, kb, kk = jax.random.split(key, 3)
-        a = jax.random.randint(ka, (batch, K), 1, m)
-        b = jax.random.randint(kb, (batch, K), 0, m)
-        k_eff = jax.random.randint(kk, (batch,), 1, K + 1)
-        live = jnp.arange(K)[None, :] < k_eff[:, None]
-        a = jnp.where(live, a, 0)
-        b = jnp.where(live, b, 0)
-        tokens = jnp.stack([a, b], axis=-1).reshape(batch, 2 * K)
-
-        def step(r, ab):
-            r_new = jnp.where(ab[:, 0] > 0, (r * ab[:, 0] + ab[:, 1]) % m, r)
-            return r_new, r_new
-        _, subs = jax.lax.scan(step, jnp.zeros(batch, jnp.int32),
-                               jnp.stack([a.T, b.T], axis=-1).astype(jnp.int32))
-        return tokens.astype(jnp.int32), subs.T, k_eff.astype(jnp.int32)
-    return fn
-
-
 class CrossBlock(nnx.Module):
     """Pre-norm cross-attention + SwiGLU: queries read a separate context. No
     positional encoding on the queries — slot identity comes from the caller's
@@ -374,69 +348,6 @@ class DenseDepthNet(nnx.Module):
         return answer_logits, step_logits
 
 
-class HaltingScratchpadNet(nnx.Module):
-    """#123: serial scratchpad + a halting head scoring 'stop after write k'.
-
-    Halting is a READOUT choice, not a compute cut: all K writes always run
-    (the per-slot grade stays on, #67), a per-step answer is read from slots
-    1..k after each write, and p = softmax(halt_logits) weights those answers
-    in the loss — so min-depth collapse is expressible but never
-    architecturally forced. halt_context is THE one variable:
-
-      "trajectory" — the halt query cross-attends slots 1..k: the decision can
-                     reread the model's own thinking, the way thinking-token
-                     models can (the issue's hypothesis).
-      "current"    — the SAME head, context = slot k alone: the decision sees
-                     only the latest state — the graveyard-ACT configuration.
-
-    Identical parameter tree either way; only the context width differs.
-    The answer readout is slots-only (#62 wiring), so answers can only come
-    from memory."""
-
-    def __init__(self, *, dim, vocab, num_slots, num_heads=4, num_encoder_layers=2,
-                 max_seq_len=64, halt_context="trajectory", rngs, dtype=jnp.float32):
-        assert halt_context in ("trajectory", "current"), f"unknown halt_context {halt_context!r}"
-        self.num_slots = num_slots
-        self.halt_context = halt_context
-        self.embed = nnx.Embed(vocab, dim, rngs=rngs, dtype=dtype)
-        self.encoder = nnx.List([
-            Block(dim, num_heads, max_seq_len, rngs, dtype) for _ in range(num_encoder_layers)
-        ])
-        self.write_block = CrossBlock(dim, num_heads, rngs, dtype)   # shared across k
-        self.slot_index = nnx.Embed(num_slots, dim, rngs=rngs, dtype=dtype)
-        self.slot_readout = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)  # the grade head
-        self.read_block = CrossBlock(dim, num_heads, rngs, dtype)
-        self.answer_query = nnx.Param(
-            jax.nn.initializers.normal(0.02)(rngs(), (1, 1, dim), jnp.float32))
-        self.answer_head = nnx.Linear(dim, vocab, rngs=rngs, dtype=dtype)
-        self.halt_block = CrossBlock(dim, num_heads, rngs, dtype)
-        self.halt_query = nnx.Param(
-            jax.nn.initializers.normal(0.02)(rngs(), (1, 1, dim), jnp.float32))
-        self.halt_head = nnx.Linear(dim, 1, rngs=rngs, dtype=dtype)
-
-    def __call__(self, tokens):
-        h = self.embed(tokens)
-        for blk in self.encoder:
-            h = blk(h)
-        bsz = tokens.shape[0]
-        queries = jnp.broadcast_to(self.slot_index(jnp.arange(self.num_slots))[None, :, :],
-                                   (bsz, self.num_slots, h.shape[-1]))
-        aq = jnp.broadcast_to(self.answer_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
-        hq = jnp.broadcast_to(self.halt_query[...].astype(h.dtype), (bsz, 1, h.shape[-1]))
-
-        slots, answers, halts = [], [], []
-        for k in range(self.num_slots):
-            ctx = jnp.concatenate([h] + slots, axis=1) if slots else h
-            slots.append(self.write_block(queries[:, k:k + 1], ctx))    # written once
-            bank = jnp.concatenate(slots, axis=1)                       # slots 1..k
-            answers.append(self.answer_head(self.read_block(aq, bank))[:, 0])
-            halt_ctx = bank if self.halt_context == "trajectory" else slots[-1]
-            halts.append(self.halt_head(self.halt_block(hq, halt_ctx))[:, 0, 0])
-
-        slot_logits = self.slot_readout(jnp.concatenate(slots, axis=1))  # [B, K, m]
-        return jnp.stack(answers, 1), slot_logits, jnp.stack(halts, 1)   # [B,K,m], [B,K,m], [B,K]
-
-
 def n_params(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
@@ -623,247 +534,6 @@ def train_one_arm(arm, *, K=4, m=7, dim=64, heads=4, enc=2, steps=2500, batch=25
     }
 
 
-# #123: the halting arms run the variable-length chain. halt_traj vs
-# halt_state is the observability comparison; halt_off is the rule-4 ceiling
-# (read out at K, halting head untrained).
-HALT_ARMS = ("halt_traj", "halt_state", "halt_off")
-
-
-def halt_task_data(K, m, seed, n_pool=32768, n_test=4096):
-    """The exact train/test draw `train_one_halt_arm` makes for `seed` —
-    factored so eval-only consumers (the #39 ladder) see the same split
-    without retraining. Returns (key, tr_tok, tr_sub, te_tok, te_sub, te_keff)
-    with `key` already advanced past the data split, ready for training."""
-    task = variable_chain_task(K, m)
-    key = jax.random.PRNGKey(seed)
-    key, dk_tr, dk_te = jax.random.split(key, 3)
-    tr_tok, tr_sub, _ = task(dk_tr, n_pool)
-    te_tok, te_sub, te_keff = task(dk_te, n_test)
-    return key, tr_tok, tr_sub, te_tok, te_sub, te_keff
-
-
-def train_one_halt_arm(arm, *, K=6, m=7, dim=64, heads=4, enc=2, steps=2500,
-                       batch=256, lr=2e-3, wd=0.01, seed=0, lam_slot=1.0,
-                       lam_ponder=0.2, n_pool=32768, n_test=4096,
-                       return_model=False):
-    assert arm in HALT_ARMS, f"unknown halt arm {arm!r}"
-    key, tr_tok, tr_sub, te_tok, te_sub, te_keff = halt_task_data(
-        K, m, seed, n_pool=n_pool, n_test=n_test)
-
-    model = HaltingScratchpadNet(
-        dim=dim, vocab=m, num_slots=K, num_heads=heads, num_encoder_layers=enc,
-        max_seq_len=2 * K,
-        halt_context=("current" if arm == "halt_state" else "trajectory"),
-        rngs=nnx.Rngs(seed))
-    opt = nnx.Optimizer(model, optax.adamw(lr, weight_decay=wd), wrt=nnx.Param)
-    step_frac = (jnp.arange(K, dtype=jnp.float32) + 1.0) / K   # ponder cost per halt step
-
-    def halt_losses(mdl, tok, sub):
-        answers, slot_logits, halt_logits = mdl(tok)
-        target = sub[:, -1]                                    # r_{k_eff} (stationary tail)
-        ce_k = optax.softmax_cross_entropy_with_integer_labels(
-            answers, jnp.broadcast_to(target[:, None], target.shape + (K,)))   # [B, K]
-        ce_slots = optax.softmax_cross_entropy_with_integer_labels(slot_logits, sub).mean()
-        if arm == "halt_off":
-            # Ceiling: full-depth readout, no halting pressure. The halting
-            # head's outputs are unused, so its params receive no gradient.
-            return ce_k[:, -1].mean() + lam_slot * ce_slots, (answers, halt_logits)
-        p = jax.nn.softmax(halt_logits, axis=-1)               # [B, K]
-        ce_halted = (p * ce_k).sum(-1).mean()
-        ponder = (p * step_frac[None, :]).sum(-1).mean()
-        return ce_halted + lam_slot * ce_slots + lam_ponder * ponder, (answers, halt_logits)
-
-    @nnx.jit
-    def step(mdl, op, k):
-        idx = jax.random.randint(k, (batch,), 0, tr_tok.shape[0])
-        def loss_fn(mm):
-            loss, _ = halt_losses(mm, tr_tok[idx], tr_sub[idx])
-            return loss
-        loss, grads = nnx.value_and_grad(loss_fn)(mdl)
-        op.update(mdl, grads)
-        return loss
-
-    @nnx.jit
-    def eval_all(mdl):
-        answers, slot_logits, halt_logits = mdl(te_tok)
-        target = te_sub[:, -1]
-        halt_step = halt_logits.argmax(-1)                     # [B], 0-indexed
-        halted_pred = jnp.take_along_axis(
-            answers.argmax(-1), halt_step[:, None], axis=1)[:, 0]
-        full_acc = jnp.mean(answers[:, -1].argmax(-1) == target)
-        halted_acc = jnp.mean(halted_pred == target)
-        # Pearson correlation between the chosen halt step and the true length.
-        hs = halt_step.astype(jnp.float32) + 1.0
-        ke = te_keff.astype(jnp.float32)
-        hs_c, ke_c = hs - hs.mean(), ke - ke.mean()
-        corr = (hs_c * ke_c).mean() / jnp.sqrt((hs_c**2).mean() * (ke_c**2).mean() + 1e-12)
-        p = jax.nn.softmax(halt_logits, axis=-1)
-        return full_acc, halted_acc, corr, p[:, 0].mean(), hs.mean()
-
-    for i in range(steps):
-        key, k = jax.random.split(key)
-        step(model, opt, k)
-
-    full_acc, halted_acc, corr, p1, mean_halt = eval_all(model)
-    results = {
-        "full_acc": float(full_acc), "halted_acc": float(halted_acc),
-        "corr": float(corr), "p1_mass": float(p1), "mean_halt": float(mean_halt),
-        "params": n_params(model),
-    }
-    return (results, model) if return_model else results
-
-
-# ---------------------------------------------------------------------------
-# #39: deterministic convergence halting in grade-logit space. The raw-latent
-# version of this rule is dead (PR #96, tombstoned); what survived is #96's
-# diagnostic — consecutive-slot *grade logits* separate converged from
-# computing steps where the latents do not. Everything here is eval-only on a
-# trained halt_off model: no halting pressure, no learned halting (#123 killed
-# that separately — the failure there is the incentive; a detector has none).
-
-GRADE_TAUS = (0.0, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99)
-
-
-def grade_cosines(slot_logits):
-    """Cosine between consecutive slots' grade logits, f32. [B, K, m] ->
-    [B, K-1]; column j compares slot j+1 against slot j (0-indexed), i.e. the
-    transition into slot k = j+2 in 1-indexed terms."""
-    x = slot_logits.astype(jnp.float32)
-    a, b = x[:, 1:], x[:, :-1]
-    return (a * b).sum(-1) / (
-        jnp.linalg.norm(a, axis=-1) * jnp.linalg.norm(b, axis=-1) + 1e-12)
-
-
-def grade_halt_steps(slot_logits, tau):
-    """First-crossing rule (#39): halt at the first slot k >= 2 (1-indexed)
-    whose grade-logit cosine against slot k-1 exceeds tau; run all K slots if
-    none does. Returns the 0-indexed halt step [B] — writes spent = step + 1
-    (the detector reads slot k's grade, so slot k is already written)."""
-    cos = grade_cosines(slot_logits)                # [B, K-1]
-    crossed = cos > tau
-    first = jnp.argmax(crossed, axis=-1)            # first True column, 0 if none
-    K = slot_logits.shape[1]
-    return jnp.where(crossed.any(-1), first + 1, K - 1)
-
-
-def converged_transition_labels(k_eff, K):
-    """Ground-truth label per cosine column: transition j is *converged* iff
-    the state was already final before it, i.e. 1-indexed k = j+2 > k_eff.
-    Exact by construction of variable_chain_task — never inferred from
-    repeated residues (#96 mislabelled 11.4% of steps that way)."""
-    j = jnp.arange(K - 1)
-    return j[None, :] >= (k_eff[:, None] - 1)       # [B, K-1] bool
-
-
-def _pearson(x, y):
-    xc, yc = x - x.mean(), y - y.mean()
-    return (xc * yc).mean() / jnp.sqrt((xc**2).mean() * (yc**2).mean() + 1e-12)
-
-
-def grade_gate_stats(slot_logits, k_eff):
-    """The pre-registered gate (#39): converged-vs-computing grade-logit
-    cosine on one seed. If the two means sit within 1 pooled sigma, the signal
-    is dead and the ladder must not run."""
-    cos = grade_cosines(slot_logits)
-    conv = converged_transition_labels(k_eff, slot_logits.shape[1])
-    def masked(mask):
-        w = mask.astype(jnp.float32)
-        mean = (cos * w).sum() / w.sum()
-        var = (((cos - mean) ** 2) * w).sum() / w.sum()
-        return float(mean), float(jnp.sqrt(var))
-    cm, cs = masked(conv)
-    pm, ps = masked(~conv)
-    pooled = ((cs**2 + ps**2) / 2) ** 0.5
-    return {"converged_mean": cm, "converged_std": cs,
-            "computing_mean": pm, "computing_std": ps,
-            "pooled_std": pooled, "separated": abs(cm - pm) > pooled}
-
-
-def grade_halting_ladder(model, te_tok, te_sub, te_keff, taus=GRADE_TAUS):
-    """Eval-only tau ladder on a trained model: one forward gives every stop
-    point (answers[:, k] is the readout from slots 1..k) and the detector
-    signal. Per tau: halted accuracy, mean writes, corr(halt step, k_eff)."""
-    answers, slot_logits, _ = model(te_tok)
-    target = te_sub[:, -1]
-    pred_k = answers.argmax(-1)                     # [B, K]
-    rows = []
-    for tau in taus:
-        hs = grade_halt_steps(slot_logits, tau)     # [B], 0-indexed
-        halted_pred = jnp.take_along_axis(pred_k, hs[:, None], axis=1)[:, 0]
-        writes = hs.astype(jnp.float32) + 1.0
-        rows.append({
-            "tau": tau,
-            "halted_acc": float(jnp.mean(halted_pred == target)),
-            "mean_writes": float(writes.mean()),
-            "corr": float(_pearson(writes, te_keff.astype(jnp.float32))),
-        })
-    return rows
-
-
-def run_halting_protocol(*, K, m, dim, steps, seeds, taus=GRADE_TAUS):
-    """The #39 protocol, verdict computed mechanically against the
-    pre-registered bars: train halt_off per seed, gate on the first seed
-    (stop if the signal doesn't separate), then the tau ladder, judged on
-    3-seed means at one global tau. KEEP needs all of
-    (a) halted acc within 2 sigma_pooled of the same seeds' full-depth acc,
-    (b) mean writes <= 3.5 (oracle 3.25 at K=4), (c) corr(halt, k_eff) >= 0.8."""
-    print(f"== #39 grade-logit halting: K={K} m={m} dim={dim} steps={steps} "
-          f"seeds={seeds} ==", flush=True)
-    runs = []
-    for i, seed in enumerate(seeds):
-        t0 = time.time()
-        r, model = train_one_halt_arm("halt_off", K=K, m=m, dim=dim,
-                                      steps=steps, seed=seed, return_model=True)
-        _, _, _, te_tok, te_sub, te_keff = halt_task_data(K, m, seed)
-        print(f"halt_off seed={seed} full_acc={r['full_acc']:.4f} "
-              f"({time.time()-t0:.0f}s)", flush=True)
-        if i == 0:
-            _, slot_logits, _ = model(te_tok)
-            g = grade_gate_stats(slot_logits, te_keff)
-            print(f"gate: converged {g['converged_mean']:+.3f}±{g['converged_std']:.3f} "
-                  f"vs computing {g['computing_mean']:+.3f}±{g['computing_std']:.3f} "
-                  f"(pooled σ {g['pooled_std']:.3f}) -> "
-                  f"{'separated' if g['separated'] else 'OVERLAP — STOP'}", flush=True)
-            if not g["separated"]:
-                print("verdict: KILL at the gate — grade-logit cosine does not "
-                      "separate converged from computing on this model; the "
-                      "pre-registered protocol says do not run the sweep.", flush=True)
-                return {"gate": g, "verdict": "kill-at-gate"}
-        runs.append((r, grade_halting_ladder(model, te_tok, te_sub, te_keff, taus)))
-
-    import statistics
-    mu = statistics.mean
-
-    def sd(v):
-        return statistics.stdev(v) if len(v) > 1 else 0.0
-
-    full = [r["full_acc"] for r, _ in runs]
-    full_mu, full_sd = mu(full), sd(full)
-    print(f"\nfull-depth ceiling: {full_mu:.4f} ± {full_sd:.4f}  "
-          f"(oracle writes {sum(min(k + 2, K) for k in range(K)) / K:.2f}, fixed {K})")
-    print(f"{'tau':>5} {'halted_acc':>16} {'writes':>13} {'corr':>13}  verdict")
-    verdict, keep_tau = "kill", None
-    for ti, tau in enumerate(taus):
-        acc = [lad[ti]["halted_acc"] for _, lad in runs]
-        wr = [lad[ti]["mean_writes"] for _, lad in runs]
-        co = [lad[ti]["corr"] for _, lad in runs]
-        pooled = ((sd(acc)**2 + full_sd**2) / 2) ** 0.5
-        a = abs(mu(acc) - full_mu) <= 2 * pooled
-        b = mu(wr) <= 3.5
-        c = mu(co) >= 0.8
-        marks = f"a={'✓' if a else '✗'} b={'✓' if b else '✗'} c={'✓' if c else '✗'}"
-        if a and b and c and keep_tau is None:
-            verdict, keep_tau = "keep", tau
-        print(f"{tau:>5.2f} {mu(acc):>7.4f}±{sd(acc):.4f} {mu(wr):>7.3f}±{sd(wr):.3f} "
-              f"{mu(co):>+7.3f}±{sd(co):.3f}  {marks}", flush=True)
-    print(f"\nverdict: {verdict.upper()}"
-          + (f" at tau={keep_tau}" if keep_tau is not None else "")
-          + "  (bars: (a) within 2σ_pooled of full-depth, (b) writes ≤ 3.5, "
-            "(c) corr ≥ 0.8 — all three at one global tau)", flush=True)
-    return {"verdict": verdict, "keep_tau": keep_tau, "runs": runs,
-            "full_mu": full_mu, "full_sd": full_sd}
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arms", default="serial,parallel,depthonly",
@@ -871,8 +541,7 @@ def main():
                          "finalonly (#67),annealed (#73),densedepth,"
                          "densedepth_tied (#79),overwrite,budget1,budget2,"
                          "unlimited (#63),budget1_local,budget2_local,"
-                         "unlimited_local (#116),halt_traj,halt_state,"
-                         "halt_off (#123); annealed takes an"
+                         "unlimited_local (#116); annealed takes an"
                          " optional onset and floor (#95), e.g. annealed@0.2"
                          " or annealed@0.4f0.1")
     ap.add_argument("--seeds", default="0,1,2")
@@ -880,18 +549,9 @@ def main():
     ap.add_argument("--m", type=int, default=7, help="modulus (prime); vocab and chance level 1/m")
     ap.add_argument("--steps", type=int, default=2500)
     ap.add_argument("--dim", type=int, default=64)
-    ap.add_argument("--halting", action="store_true",
-                    help="run the #39 grade-logit convergence-halting protocol "
-                         "(trains halt_off per seed, gates on seed one, then the "
-                         "pre-registered tau ladder) instead of --arms")
     args = ap.parse_args()
 
     seeds = [int(s) for s in args.seeds.split(",")]
-    if args.halting:
-        run_halting_protocol(K=args.K, m=args.m, dim=args.dim,
-                             steps=args.steps, seeds=seeds)
-        return
-
     # The sweep point for machine-readable output: the task shape. Arms and seeds
     # are not part of it — the runner supplies those (instruments/results.py).
     point = f"K{args.K}m{args.m}"
@@ -906,16 +566,6 @@ def main():
         arm, anneal_kw = parse_arm_spec(spec)
         for seed in seeds:
             t0 = time.time()
-            if arm in HALT_ARMS:
-                r = train_one_halt_arm(arm, K=args.K, m=args.m,
-                                       dim=args.dim, steps=args.steps, seed=seed)
-                print(f"{spec:>16} {seed:>5} {r['params']/1e6:>8.2f}M "
-                      f"full={r['full_acc']:.4f} halted={r['halted_acc']:.4f} "
-                      f"corr={r['corr']:+.3f} p1={r['p1_mass']:.3f} "
-                      f"mean_halt={r['mean_halt']:.2f} {time.time()-t0:>7.1f}s", flush=True)
-                emit_result(point, acc=r["halted_acc"], full_acc=r["full_acc"],
-                            corr=r["corr"], mean_halt=r["mean_halt"])
-                continue
             r = train_one_arm(arm, K=args.K, m=args.m,
                               dim=args.dim, steps=args.steps, seed=seed, **anneal_kw)
             print(f"{spec:>16} {seed:>5} {r['params']/1e6:>8.2f}M {r['cut_step']:>5} "
