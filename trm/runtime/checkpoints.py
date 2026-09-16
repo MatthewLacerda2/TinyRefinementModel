@@ -1,5 +1,8 @@
-import os
 import gc
+import glob
+import os
+import signal
+
 from flax import nnx
 import orbax.checkpoint as ocp
 from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
@@ -8,7 +11,6 @@ from trm.runtime.monitor import LossMonitor
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):
         return None
-    import glob
     run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
     if run_dirs:
         return os.path.basename(run_dirs[-1])
@@ -18,7 +20,6 @@ def discover_latest_checkpoint_run(runs_root="runs"):
     if not os.path.exists(runs_root):
         return None, None
     
-    import glob
     run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
     
     for r_dir in reversed(run_dirs):
@@ -198,9 +199,6 @@ def exit_cleanly_on_sigterm():
     the run's final checkpoint is still being written. Unwinding lets the trainer
     wait for that write (~16s at the shipping config) inside the grace.
     """
-    import os
-    import signal
-
     def _raise(signum, _frame):
         # Say so in the log. SystemExit prints no traceback, so a TERM'd trainer
         # used to end mid-stream with nothing to distinguish it from a hard kill —

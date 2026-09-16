@@ -209,15 +209,19 @@ class RunTracker:
             ]
             
             if mismatches:
-                print("\n" + "🛑"*20)
-                print("🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:")
-                print("\n".join(mismatches))
-                print("\n💡 Options:")
-                print("  1. Revert your code parameters back to match the run's parameters.")
-                print("  2. Start a brand new training run with: python -m trm.train.start --new-run")
-                print("  3. Point to a different checkpoint folder with: python -m trm.train.start --checkpoint-path <path>")
-                print("🛑"*20 + "\n")
-                sys.exit(1)
+                # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
+                # uncaught one still ends the process with exit code 1 and this text.
+                raise SystemExit("\n".join([
+                    "\n" + "🛑" * 20,
+                    "🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:",
+                    *mismatches,
+                    "\n💡 Options:",
+                    "  1. Revert your code parameters back to match the run's parameters.",
+                    "  2. Start a brand new training run with: python -m trm.train.start --new-run",
+                    "  3. Point to a different checkpoint folder with: "
+                    "python -m trm.train.start --checkpoint-path <path>",
+                    "🛑" * 20 + "\n",
+                ]))
         except SystemExit:
             raise
         except (OSError, json.JSONDecodeError, KeyError) as e:

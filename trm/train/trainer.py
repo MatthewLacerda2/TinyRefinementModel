@@ -4,6 +4,7 @@ optimizers.py, schedules and mixture policies in schedules.py."""
 
 import os
 import gc
+import math
 import time
 import threading
 import queue
@@ -12,8 +13,6 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 from dotenv import load_dotenv
-
-import math
 
 from trm.config import (
     BATCH_SIZE,
@@ -24,6 +23,7 @@ from trm.config import (
     MAX_STEPS_LIMIT,
     DATA_SEED,
     MODEL_SEED,
+    PLAIN_LAYERS,
     SFT_ON_PLATEAU,
     TOKENS_PER_OPT_STEP,
     TRAIN_TOKEN_BUDGET,
@@ -67,8 +67,6 @@ PLATEAU_NOTICE_EVERY = 200
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
 if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
-else:
-    print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
 
 
 # Data sources, in mixer order. One list feeds both the loaders and the `mix`
@@ -145,7 +143,6 @@ class LogWindow:
 
 def init_model_and_optimizer():
     if MODEL_ARCH == "plain":
-        from trm.config import PLAIN_LAYERS
         print(f"🚀 Initializing PlainTransformer (Dim={LATENT_DIM}, layers={PLAIN_LAYERS})...")
     elif MODEL_ARCH == "refiner":
         print(f"🚀 Initializing Plan A CausalRefiner "
@@ -169,6 +166,10 @@ def init_model_and_optimizer():
     return model, optimizer
 
 def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, samples_seen=None):
+    # Warned here, where data is first needed, not at import: every importer of this
+    # module (instruments that never load data included) used to print it.
+    if not DATA_ROOT:
+        print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
@@ -273,6 +274,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             t_compute_start = time.time()
 
             depth = sample_reasoning_depth(step)
+            # The logging micro-step: its gradient stats are sampled before the
+            # update below and logged after it, so both blocks read this one flag.
+            is_log_step = (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0
 
             # The ceiling is built from the micro-steps already seen, so it is
             # known before this one runs — an outlier cannot widen the gate it is
@@ -323,7 +327,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             # kept apart (#191): the gradient that actually updates the weights (the
             # window's mean), and this one micro-step's, which carries per-draw
             # artifacts that never reach the weights.
-            if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
+            if is_log_step:
                 applied_fracs, applied_norm = applied_gradient_stats(optimizer, grads)
                 zero_fracs = {k: float(v) for k, v in applied_fracs.items()}
                 # The norm the clip actually sees (#180). grad_norm_avg is per-micro-step
@@ -373,7 +377,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
                                         sft_phase_event.is_set(), run_tracker.run_id, wait=False)
 
-            if (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0:
+            if is_log_step:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
                 accum_loss, accum_token_loss, accum_grad_norm, accum_depth = window.means()
 

@@ -37,8 +37,10 @@ REPORTS = {}  # ranks issues and says why; prints no quantities
 TYPE_ORDER = ("architecture", "tools", "ideas", "optimization", "documentation")
 UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
 
-BLOCKED_BY = re.compile(r"blocked by\s+((?:#\d+(?:\s*(?:,|and|&|/)\s*)?)+)", re.I)
-BLOCKED_ON_CONDITION = re.compile(r"blocked by", re.I)
+# "Blocked by" alone marks a block; followed by issue numbers, it names the blockers.
+_BLOCKED = r"blocked by"
+BLOCKED_ON_CONDITION = re.compile(_BLOCKED, re.I)
+BLOCKED_BY = re.compile(_BLOCKED + r"\s+((?:#\d+(?:\s*(?:,|and|&|/)\s*)?)+)", re.I)
 CLOSES = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.I)
 TITLE_REF = re.compile(r"\(#(\d+)\)")
 
@@ -121,10 +123,11 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
     not_ready, needs_human = [], []
     for issue in sorted(issues, key=lambda i: i["number"]):
         n, labels = issue["number"], {lb["name"] for lb in issue.get("labels", [])}
-        live_blockers = [b for b in blockers_named(issue.get("body", "")) if b in open_numbers]
-        named = blockers_named(issue.get("body", ""))
+        body = issue.get("body") or ""
+        named = blockers_named(body)
+        live_blockers = [b for b in named if b in open_numbers]
 
-        on_condition = not named and BLOCKED_ON_CONDITION.search(issue.get("body") or "")
+        on_condition = not named and BLOCKED_ON_CONDITION.search(body)
         if "blocked" in labels and not named and not on_condition:
             needs_human.append((n, "labelled blocked but says nothing about what blocks it"))
         elif "blocked" in labels and named and not live_blockers:

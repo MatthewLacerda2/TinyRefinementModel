@@ -3,6 +3,9 @@ import datetime
 import math
 from typing import NamedTuple
 import fsspec
+# jax at module level: the module already needs jax.numpy, so a lazy import in
+# _arena_peak_mib bought nothing.
+import jax
 import jax.numpy as jnp
 
 
@@ -79,7 +82,6 @@ def _cell(value, places):
 def _arena_peak_mib():
     """peak_bytes_in_use in MiB, or empty where the allocator keeps no statistics
     (CPU, the platform allocator)."""
-    import jax
     try:
         stats = jax.local_devices()[0].memory_stats() or {}
     except (AttributeError, RuntimeError):

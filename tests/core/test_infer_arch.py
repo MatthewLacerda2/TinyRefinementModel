@@ -51,7 +51,17 @@ def test_the_factory_imports_each_arch_only_in_its_own_branch():
     from pathlib import Path
     import trm.model
     tree = ast.parse(Path(trm.model.__file__).read_text())
-    top_level = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+
+    def runs_at_import(node):
+        """Every statement import runs: module level, into try/if/with/for bodies,
+        but not into a function or class body, which only runs when called."""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return
+        yield node
+        for child in ast.iter_child_nodes(node):
+            yield from runs_at_import(child)
+
+    top_level = [node for node in runs_at_import(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
     assert not top_level, "arch modules are imported inside build_model, lazily"
     lazy = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     assert {node.module for node in lazy} >= {"trm.model.plain", "trm.model.refiner_lm", "trm.model.reasoner"}
