@@ -40,10 +40,6 @@ def _imported_roots(path):
     return names
 
 
-def _all_module_files():
-    return [(tree, p) for tree in TREES for p in _module_files(tree)]
-
-
 def test_trees_exist():
     """If a rename silently drops a tree, every check below would pass vacuously."""
     for tree in TREES:

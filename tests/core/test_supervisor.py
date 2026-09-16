@@ -45,7 +45,9 @@ from trm.runtime.supervisor import (
     check_disk_headroom,
     decide,
     DELIBERATE,
+    oom_in,
     plateau_in,
+    read_log_since,
     read_progress,
 )
 
@@ -270,10 +272,10 @@ def test_a_missing_or_empty_metrics_file_reads_as_no_progress(tmp_path):
 def test_plateau_detection_matches_the_trainers_own_wording(tmp_path):
     log = tmp_path / "train.log"
     log.write_text("Step 0100 | CE: 3.5\n")
-    assert not plateau_in(log)
+    assert not plateau_in(read_log_since(log))
     log.write_text("Step 0100 | CE: 3.5\n🔄 CE Plateau Detected — switching phase\n")
-    assert plateau_in(log)
-    assert not plateau_in(tmp_path / "absent.log")
+    assert plateau_in(read_log_since(log))
+    assert not plateau_in(read_log_since(tmp_path / "absent.log"))
 
 
 # --- preflight ----------------------------------------------------------------
@@ -449,23 +451,22 @@ def test_a_previous_sessions_markers_are_not_read_as_this_run(tmp_path):
     still 'detected' — and the supervisor kills a healthy run on the strength of a
     dead session's output. This bit nothing yet only because no run had resumed
     after a failure that printed one."""
-    from trm.runtime.supervisor import oom_in
-
     log = tmp_path / "train.log"
     log.write_text("...RESOURCE_EXHAUSTED: Out of memory\n🔄 CE Plateau Detected\n")
     stale = log.stat().st_size
 
-    assert oom_in(log) and plateau_in(log), "reading from 0 sees the old session"
-    assert not oom_in(log, stale), "reading from this launch's offset does not"
-    assert not plateau_in(log, stale)
+    whole, since = read_log_since(log), read_log_since(log, stale)
+    assert oom_in(whole) and plateau_in(whole), "reading from 0 sees the old session"
+    assert not oom_in(since), "reading from this launch's offset does not"
+    assert not plateau_in(since)
 
     with log.open("a") as f:
         f.write("Step 0005 | CE: 3.5\n")
-    assert not oom_in(log, stale), "healthy output after the offset stays clean"
+    assert not oom_in(read_log_since(log, stale)), "healthy output after the offset stays clean"
 
     with log.open("a") as f:
         f.write("CUDA_ERROR_OUT_OF_MEMORY: out of memory\n")
-    assert oom_in(log, stale), "a fresh OOM after the offset is still caught"
+    assert oom_in(read_log_since(log, stale)), "a fresh OOM after the offset is still caught"
 
 
 @pytest.mark.parametrize("marker", [
@@ -473,13 +474,10 @@ def test_a_previous_sessions_markers_are_not_read_as_this_run(tmp_path):
     "cuMemAllocAsync failed: CUDA_ERROR_OUT_OF_MEMORY: out of memory",
     "Allocator (GPU_0_bfc) ran out of memory trying to allocate 720.0KiB",
 ])
-def test_every_allocator_spells_oom_differently(tmp_path, marker):
+def test_every_allocator_spells_oom_differently(marker):
     """BFC, cuda_async and the command-buffer path each word it their own way, and
     this project has now seen all three."""
-    from trm.runtime.supervisor import oom_in
-    log = tmp_path / "train.log"
-    log.write_text(marker + "\n")
-    assert oom_in(log)
+    assert oom_in(marker + "\n")
 
 
 # --- the heartbeat is for humans, and humans stop reading -----------------------

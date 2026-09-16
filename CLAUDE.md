@@ -219,8 +219,8 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
    an optimization.) Can land any time it's ready.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
-   mid training-run. Doc-only commits (markdown and/or comments) need no issue — make
-   them in their own small PR, judiciously.
+   mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
+   small one into a PR already in flight; open its own small PR only when none is.
 
 **Orthogonal labels (combine with a type):**
 - **Lane** — `cpu` runs alongside a GPU job; `gpu` is the single RTX 2060, a serial
@@ -344,13 +344,13 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 | **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `layers.py`, `attention.py`, `rope.py` |
 | **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` (UniversalReasoner) |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
-| **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py`, `curation/` |
+| **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py` |
 | **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `rewind.py` (list a run's checkpoints; resume from an earlier one — `python -m trm.runtime.rewind`), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, plateau/divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), the `eval_*` depth probes, `playground.py`; `experiments/scratchpad/harness.py` |
 | **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
-| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus `ruff check .` as its own status (errors and bugs only, config in `pyproject.toml` — run it locally before pushing). |
+| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs only) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`. `make lint` runs both; run it before pushing, and delete what it finds. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
 compute is the permanent policy** (`trm/config.py`); the GPU lane is serial. Tokenizer is
