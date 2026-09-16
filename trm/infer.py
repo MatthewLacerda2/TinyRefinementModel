@@ -17,7 +17,9 @@ from trm.config import (
     TOKENIZER_NAME,
     resolve_root,
 )
+from trm.model import build_model
 from trm.model.contract import LanguageModel
+from trm.runtime.layout import CHECKPOINT_ITEMS
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -33,8 +35,9 @@ HUNCH_REFRESH_EVERY = 4
 DEFAULT_TEMPERATURE = 0.7
 
 
-def build_model(arch=MODEL_ARCH):
-    """The architecture MODEL_ARCH selects — the same choice the trainer makes.
+def build_serving_model(arch=MODEL_ARCH):
+    """The architecture MODEL_ARCH selects — the same choice, and the same factory,
+    the trainer uses. The seed is irrelevant: the checkpoint overwrites every weight.
 
     This used to construct UniversalReasoner unconditionally, while MODEL_ARCH has
     defaulted to 'refiner' since Plan A became the live bet. The two have different
@@ -43,16 +46,7 @@ def build_model(arch=MODEL_ARCH):
     same defect the plotter carried (#181), from the same cause: a tool naming one
     architecture while the run selects another.
     """
-    if arch == "plain":
-        from trm.model.plain import PlainTransformer
-        return PlainTransformer(LATENT_DIM, nnx.Rngs(0))
-    if arch == "refiner":
-        # Imported lazily so the baseline path never touches Plan A code, matching
-        # trm/train/trainer.py's init.
-        from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(LATENT_DIM, nnx.Rngs(0))
-    from trm.model.reasoner import UniversalReasoner
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+    return build_model(arch, LATENT_DIM, nnx.Rngs(0))
 
 def run_model_inference(
     model: LanguageModel,
@@ -262,7 +256,7 @@ def run_inference(argv=None):
 
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
-    model = build_model()
+    model = build_serving_model()
 
     active_checkpoint_dir = CHECKPOINT_DIR
     if os.environ.get("CHECKPOINT_ROOT") is None:
@@ -278,7 +272,7 @@ def run_inference(argv=None):
 
     mngr = ocp.CheckpointManager(
         active_checkpoint_dir,
-        item_names=('model', 'optimizer', 'monitor_state', 'step'),
+        item_names=CHECKPOINT_ITEMS,
     )
 
     latest_step = mngr.latest_step()

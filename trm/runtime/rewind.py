@@ -30,9 +30,8 @@ import pathlib
 import shutil
 from dataclasses import dataclass
 
-# Kept in step with trm/runtime/checkpoints.py; a test holds the two together.
-BEST_SUBDIR = "best_val_ce"
-MILESTONE_SUBDIR = "milestones"
+from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
+
 SET_ASIDE_PREFIX = "set_aside_"
 
 

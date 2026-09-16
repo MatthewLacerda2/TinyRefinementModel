@@ -6,6 +6,7 @@ import json
 import pytest
 
 from trm.runtime import rewind as rw
+from trm.runtime.layout import BEST_SUBDIR
 
 ACCUM = 128
 
@@ -34,13 +35,13 @@ def test_listing_reads_opt_steps_and_phase_from_disk(tmp_path):
 def test_rewind_sets_aside_newer_checkpoints_in_both_dirs_and_deletes_nothing(tmp_path):
     for opt in (4928, 4992, 5056):
         _ckpt(tmp_path, opt)
-    _ckpt(tmp_path / rw.BEST_SUBDIR, 4928)
-    _ckpt(tmp_path / rw.BEST_SUBDIR, 5056)
+    _ckpt(tmp_path / BEST_SUBDIR, 4928)
+    _ckpt(tmp_path / BEST_SUBDIR, 5056)
 
     chosen, moved = rw.rewind(tmp_path, 5000, ACCUM, now=datetime.datetime(2026, 9, 13))
     assert chosen.opt_step == 4992, "the newest at or below the request"
     assert [c.opt_step for c in rw.checkpoints_in(tmp_path, ACCUM)] == [4928, 4992]
-    assert [c.opt_step for c in rw.checkpoints_in(tmp_path / rw.BEST_SUBDIR, ACCUM)] == [4928]
+    assert [c.opt_step for c in rw.checkpoints_in(tmp_path / BEST_SUBDIR, ACCUM)] == [4928]
     assert len(moved) == 2 and all(p.exists() for p in moved), "set aside, never deleted"
     assert all(rw.SET_ASIDE_PREFIX in str(p) for p in moved)
 
@@ -61,23 +62,19 @@ def test_no_checkpoint_at_or_below_is_an_error_not_a_fallback(tmp_path):
         rw.rewind(tmp_path, 100, ACCUM)
 
 
-def test_the_best_subdir_name_matches_the_trainers():
-    from trm.runtime.checkpoints import BEST_SUBDIR
-    assert rw.BEST_SUBDIR == BEST_SUBDIR
-
-
 def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     """orbax.save() returns False, without a word, for a step below its newest.
     That is how a naive resume-from-earlier would have run for days uncheckpointed."""
     import optax
     import orbax.checkpoint as ocp
     from flax import nnx
-    from trm.runtime.checkpoints import CHECKPOINT_ITEMS, save_checkpoint
+    from trm.runtime.checkpoints import save_checkpoint
+    from trm.runtime.layout import CHECKPOINT_ITEMS, ROLLING_KEEP
     from trm.runtime.monitor import LossMonitor
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=CHECKPOINT_ITEMS,
-                                 options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True))
+                                 options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True))
     save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), False, "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
         save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), False, "run_x")
