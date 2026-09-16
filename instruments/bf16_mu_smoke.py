@@ -33,7 +33,7 @@ from flax import nnx
 import optax
 
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import BATCH_SIZE, MAX_SEQ_LEN
+from trm.config import BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, NUM_HEADS, resolve_root
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -73,19 +73,32 @@ def dtype_histogram(opt):
 
 
 def load_batches(dim_stride, n_seqs):
-    """First n_seqs sequences from the first real r50k chunk, shaped [n_seqs, stride]."""
-    chunks = sorted(glob.glob("runs/data/pretrain/fineweb-edu/chunk_*.npy"))
+    """First n_seqs sequences from the first real r50k chunk under DATA_ROOT, shaped
+    [n_seqs, stride]."""
+    source = f"{resolve_root(os.environ.get('DATA_ROOT', 'runs/data'))}/pretrain/fineweb-edu"
+    chunks = sorted(glob.glob(f"{source}/chunk_*.npy"))
     if not chunks:
-        raise SystemExit("no r50k chunks on disk yet — run prefill first")
+        raise SystemExit(f"no r50k chunks under {source} — set DATA_ROOT, or run prefill first")
     flat = np.load(chunks[0], mmap_mode="r")
     need = n_seqs * dim_stride
     seqs = np.asarray(flat[:need], dtype=np.int32).reshape(n_seqs, dim_stride)
     return jnp.asarray(seqs)
 
 
-def run(mu_dtype, batches, depth, steps, batch, lr, arch=None):
+def model_size(arch, dim, heads):
+    """Constructor kwargs for --dim/--heads. The reasoner takes no num_heads (it reads
+    NUM_HEADS from config itself), so a --heads it would ignore is refused, not dropped."""
+    if arch == "reasoner":
+        if heads != NUM_HEADS:
+            raise SystemExit(f"--arch reasoner has no heads knob (it uses config NUM_HEADS={NUM_HEADS}); "
+                             f"drop --heads {heads}")
+        return {"dim": dim}
+    return {"dim": dim, "num_heads": heads}
+
+
+def run(mu_dtype, batches, depth, steps, batch, lr, arch, size):
     """Fresh model+opt at a fixed seed; same batches every call → only mu_dtype differs."""
-    model = arch_build(arch, dim=512, num_heads=16)
+    model = arch_build(arch, **size)
     opt = build_optimizer(model, mu_dtype, lr)
     doc_boundary = jnp.zeros((batch,), dtype=bool)
     losses = []
@@ -103,14 +116,17 @@ def main():
     ap.add_argument("--batch", type=int, default=BATCH_SIZE)
     ap.add_argument("--depth", type=int, default=6, help="fixed refinement depth for a clean A/B")
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--dim", type=int, default=LATENT_DIM, help="model width (default: config LATENT_DIM)")
+    ap.add_argument("--heads", type=int, default=NUM_HEADS, help="attention heads (default: config NUM_HEADS)")
     add_arch_argument(ap)
     args = ap.parse_args()
+    size = model_size(args.arch, args.dim, args.heads)
 
     stride = 2 * MAX_SEQ_LEN + 1
     batches = load_batches(stride, args.steps * args.batch)
 
-    f32_losses, f32_hist = run(jnp.float32, batches, args.depth, args.steps, args.batch, args.lr, args.arch)
-    bf16_losses, bf16_hist = run(jnp.bfloat16, batches, args.depth, args.steps, args.batch, args.lr, args.arch)
+    f32_losses, f32_hist = run(jnp.float32, batches, args.depth, args.steps, args.batch, args.lr, args.arch, size)
+    bf16_losses, bf16_hist = run(jnp.bfloat16, batches, args.depth, args.steps, args.batch, args.lr, args.arch, size)
 
     finite = all(np.isfinite(bf16_losses))
     has_bf16 = any("bfloat16" in d for d in bf16_hist)

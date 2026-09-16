@@ -182,10 +182,11 @@ def _main(argv=None):
                          "only honest source of variation across repeats is which "
                          "documents get scored — that is what a spec's seeds must vary "
                          "here, and it is what its sigma then means.")
-    ap.add_argument("--skip", type=int, default=3_000_000,
-                    help="rows to skip past trained-through data. Smaller corpora "
-                         "need a smaller value (finemath has 19 chunks to the "
-                         "others' 30 and runs out before the default)")
+    ap.add_argument("--skip", type=int, default=None,
+                    help="rows to skip past trained-through data (default: the trainer's "
+                         "VAL_SKIP_SAMPLES). Smaller corpora need a smaller value "
+                         "(finemath has 19 chunks to the others' 30 and runs out before "
+                         "the default)")
     args = ap.parse_args(argv)
     from trm.config import MODEL_ARCH
     if MODEL_ARCH == "plain":
@@ -196,12 +197,13 @@ def _main(argv=None):
     from dotenv import load_dotenv
     load_dotenv()
     from trm.runtime.restore import load_eval_batches, restore_model
+    from trm.train.validation import VAL_SKIP_SAMPLES
 
     model, _ = restore_model(args.checkpoint)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
     # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
     # cannot overlap even at the largest --rows this is run with.
-    skip = args.skip + args.seed * args.rows * 2
+    skip = (VAL_SKIP_SAMPLES if args.skip is None else args.skip) + args.seed * args.rows * 2
     corpora = {n: load_eval_batches(n, num_rows=args.rows, skip=skip) for n in names}
 
     print(f"paired: depth {args.treatment_depth} (treatment) vs depth "

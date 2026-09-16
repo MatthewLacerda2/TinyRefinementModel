@@ -61,8 +61,11 @@ def test_eval_loaders_read_one_row_at_a_time():
     That reproduces the pre-#24 access pattern exactly — same rows, same order,
     same place a file boundary lands — so a val CE stays comparable to the
     champion's 4.7092 and the #17 noise floor no matter what BATCH_SIZE is."""
-    for loader in (validation.ValidationProbe._load, restore.load_eval_batches,
-                   depth_transfer.load_domain_batches):
+    for loader in (validation.ValidationProbe._load, restore.load_eval_batches):
+        # One shared reader (#319): the trainer's probe and the offline tools cannot drift.
+        assert "read_heldout_rows(" in inspect.getsource(loader), \
+            f"{loader.__qualname__} must read through validation.read_heldout_rows"
+    for loader in (validation.read_heldout_rows, depth_transfer.load_domain_batches):
         src = inspect.getsource(loader)
         assert "get_batch(1)" in src, (
             f"{loader.__qualname__} must read one row per call; a get_batch(BATCH_SIZE) "

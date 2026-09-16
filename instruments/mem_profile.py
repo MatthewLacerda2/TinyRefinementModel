@@ -124,7 +124,9 @@ def main():
             ms = jax.devices()[0].memory_stats()
             print(f"  peak_bytes_in_use: {_gib(ms.get('peak_bytes_in_use', 0))}")
             print(f"  largest_alloc:     {_gib(ms.get('largest_alloc_size', 0))}")
-        except Exception as e:
+        except jax.errors.JaxRuntimeError as e:
+            # XLA's RESOURCE_EXHAUSTED lands here. Anything else is a bug in this
+            # tool or the step, and should surface with its traceback.
             print(f"  step raised (likely OOM): {type(e).__name__}: {str(e)[:160]}")
 
 
