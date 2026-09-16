@@ -202,7 +202,7 @@ def test_sinusoidal_encoding_distinct_and_deterministic():
     assert np.isfinite(far).all()
 
 
-def test_none_time_signal_is_step_blind_and_unbounded():
+def test_none_time_signal_is_step_blind_and_unbounded(n_params):
     """#138: time_signal="none" removes the step signal entirely — the refine
     block conditions only on the state. Step-blindness is structural: the param
     tree must carry NO time-signal parameters (no table, no time_signal_norm),
@@ -223,6 +223,4 @@ def test_none_time_signal_is_step_blind_and_unbounded():
     assert "time_embed" not in state and "time_signal_norm" not in state, \
         "none mode must build no time-signal parameters at all"
 
-    def n_params(mm):
-        return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(mm, nnx.Param)))
     assert n_params(build("none")) < n_params(build("sinusoidal")) < n_params(build("table"))
