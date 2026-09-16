@@ -23,9 +23,10 @@ on:
 #                         quietly is worse than one that fails loudly; the cure
 #                         for accumulation is deletion at tombstone time, not
 #                         skipping (tests/README.md).
-#   golden-run (CPU)    — the opt-in exact-trajectory regression, forced on here
-#                         so silent numeric drift can't go unnoticed (the
-#                         committed golden went stale once already, pre-#50)
+#   golden-run (CPU)    — the opt-in loss-trajectory regression on the shipped
+#                         arch, forced on here. Compared within 10x the measured
+#                         cross-machine noise, so it catches numeric changes of
+#                         a real bug's size, not one-ULP drift (#322)
 #   overfit smoke (CPU) — end-to-end training-path smoke at tiny scale: the
 #                         real grad step must collapse CE on one batch
 #   lint                — errors and bugs only, never formatting (see the ruff
@@ -168,15 +169,15 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
-      - name: Runner CPU (TEMPORARY, #322 noise measurement)
+      - name: Runner CPU (the golden noise floor is measured per CPU model, #322)
         run: grep -m1 "model name" /proc/cpuinfo
 
       - name: Golden trajectory + reference numerics + determinism
-        # The exact-loss-trajectory regression (opt-in locally, mandatory here),
-        # plus the two test classes that catch silent numeric drift: the
-        # reference-numerics suite (caught the double-applied attention scaling)
-        # and step determinism (what makes golden comparisons meaningful at all).
-        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q -s
+        # The loss-trajectory regression (opt-in locally, mandatory here), plus
+        # the reference-numerics suite (caught the double-applied attention
+        # scaling) and step determinism (same-process repeatability; it says
+        # nothing about identity across machines, which the golden tolerates).
+        run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q
 
   smoke:
     name: overfit smoke (CPU)

@@ -98,9 +98,15 @@ def tiny_model(make_tiny_model):
 
 
 @pytest.fixture(scope="session")
-def reasoner_model():
-    """A small UniversalReasoner, for the tests that read state only the reasoner
-    has: the carried hunch and the aux regularizers. Goes with #292."""
+def make_reasoner_model():
+    """Build a small UniversalReasoner at `seed`, for the tests that read state only
+    the reasoner has: the carried hunch and the aux regularizers. Goes with #292."""
     from instruments.arch import build
 
-    return build("reasoner", dim=TINY_DIM, seed=0)
+    return lambda seed=0: build("reasoner", dim=TINY_DIM, seed=seed)
+
+
+@pytest.fixture(scope="session")
+def reasoner_model(make_reasoner_model):
+    """A small UniversalReasoner, shared across the session."""
+    return make_reasoner_model(seed=0)
