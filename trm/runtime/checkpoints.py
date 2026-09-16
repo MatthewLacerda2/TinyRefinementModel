@@ -2,6 +2,7 @@ import os
 import gc
 from flax import nnx
 import orbax.checkpoint as ocp
+from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
 
 def discover_latest_run(runs_root="runs"):
@@ -26,7 +27,7 @@ def discover_latest_checkpoint_run(runs_root="runs"):
             try:
                 mngr = ocp.CheckpointManager(
                     chk_dir,
-                    item_names=("model", "optimizer", "monitor_state", "step"),
+                    item_names=CHECKPOINT_ITEMS,
                 )
                 if mngr.latest_step() is not None:
                     run_id = os.path.basename(r_dir)
@@ -37,21 +38,13 @@ def discover_latest_checkpoint_run(runs_root="runs"):
                 print(f"⚠️ Skipping unreadable checkpoint dir {chk_dir}: {e}")
     return None, None
 
-# Sibling subdir of the rolling-latest checkpoints holding the best held-out-CE
-# checkpoints. Kept separate so best-retention never evicts the latest. Named for
-# its criterion (#222): the old `best/` was selected on noisy train CE and went
-# stale on two runs, and a new name keeps those archives from passing for these.
-BEST_SUBDIR = "best_val_ce"
-CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
-
-# Sibling subdir holding milestone checkpoints, which nothing evicts (#187).
+# Milestone checkpoints (MILESTONE_SUBDIR, trm/runtime/layout.py) are never evicted (#187).
 # Retention keeps the newest, and when a run goes bad the newest are the broken
 # ones: #157's SFT flip came within two saves of evicting every clean checkpoint.
 # A milestone every MILESTONE_EVERY_TOKENS is kept regardless of recency — the
 # recovery point when a run goes wrong, and the branch point the registry wants
 # ("fine-tune from the 1B-token checkpoint"), which rolling retention has always
 # deleted by the time a run ends.
-MILESTONE_SUBDIR = "milestones"
 MILESTONE_EVERY_TOKENS = int(os.environ.get("MILESTONE_EVERY_TOKENS", 500_000_000))
 
 
@@ -84,7 +77,7 @@ def _make_best_manager(checkpoint_path):
     return ocp.CheckpointManager(
         os.path.join(checkpoint_path, BEST_SUBDIR),
         item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
 
 
@@ -221,12 +214,11 @@ def exit_cleanly_on_sigterm():
 
 
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
-    from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
-    monitor = LossMonitor(patience=PLATEAU_PATIENCE, min_delta=PLATEAU_MIN_DELTA)
+    monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
     best_mngr = _make_best_manager(checkpoint_path)
 

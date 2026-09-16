@@ -1,7 +1,12 @@
+from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
+
+
 class LossMonitor:
     """Tracks the held-out best for checkpointing and detects plateaus for phase changes."""
 
-    def __init__(self, patience=400, window=4, min_delta=0.005):
+    def __init__(self, patience=PLATEAU_PATIENCE, window=4, min_delta=PLATEAU_MIN_DELTA):
+        # The plateau bar is config's (#318): these defaults used to be literals,
+        # and drifted to 0.005 while config raised PLATEAU_MIN_DELTA to 0.01.
         # `window` counts VALIDATION readings (one per VAL_EVERY_OPT_STEPS), not
         # logging rows: 4 readings at the 64-step cadence is a 256-step smoothing.
         self.patience = patience

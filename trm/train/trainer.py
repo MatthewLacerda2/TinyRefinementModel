@@ -29,7 +29,8 @@ from trm.config import (
     TRAIN_TOKEN_BUDGET,
     resolve_root,
 )
-from trm.model.reasoner import UniversalReasoner
+from trm.model import build_model
+from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
@@ -58,15 +59,6 @@ PREFETCH_SIZE = 128
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
 
-# Cadences, in optimizer steps, both firing at the opt-step boundary — NOT
-# nested in the logging block (nesting would multiply the interval by
-# LOG_REAL_STEPS, the bug that hid the probe). The full-state checkpoint save
-# blocks the loop (wait_until_finished), so it must stay rare.
-# Env-overridable for one caller: the supervisor's fit gate (#168) sets both to 1,
-# so a few-minute probe crosses a validation pass and a checkpoint write — where
-# every observed launch OOM landed — instead of waiting 8,192 micro-steps for them.
-VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
-CHECKPOINT_EVERY_OPT_STEPS = int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64))
 # Opt steps between "still plateaued" notices. `monitor.push` keeps returning True
 # for every step until CE improves, so an unthrottled notice would print on every
 # one of them and bury the rest of the log.
@@ -153,21 +145,14 @@ class LogWindow:
 
 def init_model_and_optimizer():
     if MODEL_ARCH == "plain":
-        # Imported lazily, like the others: a run of one arch never pays to import
-        # the code of another.
         from trm.config import PLAIN_LAYERS
-        from trm.model.plain import PlainTransformer
         print(f"🚀 Initializing PlainTransformer (Dim={LATENT_DIM}, layers={PLAIN_LAYERS})...")
-        model = PlainTransformer(LATENT_DIM, nnx.Rngs(MODEL_SEED))
     elif MODEL_ARCH == "refiner":
-        # Imported lazily so the baseline path never touches Plan A code.
-        from trm.model.refiner_lm import RefinerForTraining
         print(f"🚀 Initializing Plan A CausalRefiner "
               f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
-        model = RefinerForTraining(LATENT_DIM, nnx.Rngs(MODEL_SEED))
     else:
         print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
-        model = UniversalReasoner(LATENT_DIM, nnx.Rngs(MODEL_SEED))
+    model = build_model(MODEL_ARCH, LATENT_DIM, nnx.Rngs(MODEL_SEED))
 
     print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
           f"(MODEL_SEED={MODEL_SEED}, DATA_SEED={DATA_SEED})")
@@ -377,9 +362,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
-                # (max_to_keep=3 by recency). Kept out of the logging block — the
-                # full-state save blocks, so it must stay rare. The best-CE state
-                # is saved on the validation probe, above.
+                # (ROLLING_KEEP by recency, trm/runtime/layout.py). Kept out of the
+                # logging block — the full-state save blocks, so it must stay rare.
+                # The best-CE state is saved on the validation probe, above.
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
                                     sft_phase_event.is_set(), run_tracker.run_id, wait=False)

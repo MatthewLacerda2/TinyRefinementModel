@@ -24,6 +24,13 @@ def test_train_ce_no_longer_drives_the_plateau():
     assert m.best_ce == 3.2
 
 
+def test_a_bare_monitor_uses_the_configured_plateau_bar():
+    """#318: the defaults were literals and drifted from config (0.005 vs 0.01)."""
+    from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
+    m = LossMonitor()
+    assert (m.min_delta, m.patience) == (PLATEAU_MIN_DELTA, PLATEAU_PATIENCE)
+
+
 def test_push_val_without_a_step_only_tracks_the_best():
     m = LossMonitor()
     assert m.push_val(3.0) and not m.push_val(3.1)
