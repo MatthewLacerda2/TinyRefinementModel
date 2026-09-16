@@ -15,12 +15,8 @@ import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
 
-from trm.runtime.checkpoints import (
-    BEST_SUBDIR,
-    CHECKPOINT_ITEMS,
-    save_checkpoint,
-    discover_latest_checkpoint_run,
-)
+from trm.runtime.checkpoints import save_checkpoint, discover_latest_checkpoint_run
+from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
 
 
@@ -28,7 +24,7 @@ def _make_manager(path):
     return ocp.CheckpointManager(
         path,
         item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
 
 
@@ -123,7 +119,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
     chk = str(tmp_path / "checkpoints")
     save_mngr = ocp.CheckpointManager(
         chk, item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
     save_checkpoint(save_mngr, 42, tiny_model, optimizer, monitor, False, "run_x")
     del save_mngr
@@ -226,13 +222,11 @@ def test_probe_fires_at_configured_cadence():
 def test_the_run_records_the_cadence_the_trainer_used():
     """#305: the training curve labels its val CE line "measured every N steps",
     and N has to be the plotted run's own — VAL_EVERY_OPT_STEPS is an env knob
-    (the #26 arms run 16, the supervisor's fit gate runs 1). The tracker cannot
-    import the trainer, which imports it, so it reads the same knob separately;
-    the two declarations are held together here."""
+    (the #26 arms run 16, the supervisor's fit gate runs 1)."""
+    from trm.runtime import layout
     from trm.runtime.run_tracker import RunTracker
-    from trm.train import trainer
 
-    assert RunTracker.get_hyperparameters()["VAL_EVERY_OPT_STEPS"] == trainer.VAL_EVERY_OPT_STEPS
+    assert RunTracker.get_hyperparameters()["VAL_EVERY_OPT_STEPS"] == layout.VAL_EVERY_OPT_STEPS
 
 
 def test_old_nested_cadence_was_multiplied():
