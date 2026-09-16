@@ -106,3 +106,13 @@ def test_results_are_emitted_one_line_per_pass(capsys):
     assert all("step_size" in r and "gate_openness" in r for r in rows)
     assert "turning_angle" not in rows[0], "the first pass has no previous step to turn from"
     assert np.isclose(rows[2]["gate_openness"], 0.3)
+
+
+@pytest.mark.parametrize("arch", ["plain", "reasoner"])
+def test_an_arch_without_a_refine_loop_is_refused_before_anything_loads(monkeypatch, arch):
+    import instruments.latents as latents
+    monkeypatch.setattr("trm.config.MODEL_ARCH", arch)
+    monkeypatch.setattr("trm.runtime.restore.restore_model",
+                        lambda *a, **k: pytest.fail("restored a model it should have refused"))
+    with pytest.raises(SystemExit, match=f"MODEL_ARCH='{arch}'"):
+        latents._main(["--checkpoint", "nowhere"])

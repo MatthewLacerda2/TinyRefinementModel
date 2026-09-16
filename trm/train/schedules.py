@@ -62,30 +62,6 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
 DECAY_STEPS = resolve_decay_steps(TRAIN_TOKEN_BUDGET)
 learning_schedule = build_learning_schedule(DECAY_STEPS)
 
-# The λ anneals deliberately do NOT follow DECAY_STEPS (#83): they relax
-# regularization pressure over early training — absolute-step optimizer
-# dynamics, like warmup — not a function of the run's energy budget. On a
-# longer run they sit at their end values from 15k on, which is today's
-# behavior made explicit rather than silently stretched. (For the refiner
-# arch both terms are exactly zero anyway.)
-LAMBDA_DECAY_STEPS = 15000
-
-forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0,
-    peak_value=0.05,
-    warmup_steps=WARMUP_STEPS,
-    decay_steps=LAMBDA_DECAY_STEPS,
-    end_value=0.001
-)
-
-diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0,
-    peak_value=1.0,
-    warmup_steps=WARMUP_STEPS,
-    decay_steps=LAMBDA_DECAY_STEPS,
-    end_value=0.1
-)
-
 weight_decay_schedule = optax.constant_schedule(1e-2)
 
 

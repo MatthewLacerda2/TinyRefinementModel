@@ -18,7 +18,8 @@ Now, in one fresh process per config:
   * production's optimizer chain (bf16 first moment, masked weight decay, MultiSteps);
   * ACCUMULATION_STEPS + 1 micro-steps, so the optimizer apply is inside the
     measurement, cycling every sampled depth so each depth's program is compiled
-    (for the plain stack there is only one);
+    (the plain stack too: the trainer passes it the sampled depth as a static jit
+    argument, #316);
   * then one validation probe, as the trainer runs on its cadence.
 
 Two numbers, kept apart because they fail differently:
@@ -103,12 +104,15 @@ class CardSampler:
         self._thread.join(timeout=1.0)
 
 
-def depth_schedule(arch, micro_steps, max_depth=MAX_STEPS_LIMIT):
+def depth_schedule(micro_steps, max_depth=MAX_STEPS_LIMIT):
     """Depths to run, cycling 1..max so every depth program is compiled — the
-    trainer samples them all, and each compiled graph costs driver memory. The plain
-    stack ignores depth, so one value compiles its one program."""
-    if arch == "plain":
-        return [max_depth] * micro_steps
+    trainer samples them all, and each compiled graph costs driver memory.
+
+    For every arch, the plain stack included. It ignores depth, but the trainer
+    still samples one per micro-step and passes it to the grad step as a static jit
+    argument, so a plain run holds one compiled program per depth (#316). This used
+    to compile one program for plain and so measured less than a launch holds. When
+    #316 makes depth an arch property, this follows the trainer."""
     return [(i % max_depth) + 1 for i in range(micro_steps)]
 
 
@@ -143,7 +147,7 @@ def main(argv=None):
     device = jax.local_devices()[0]
 
     with CardSampler() as card:
-        for step, depth in enumerate(depth_schedule(args.arch, args.micro_steps, args.depth)):
+        for step, depth in enumerate(depth_schedule(args.micro_steps, args.depth)):
             loss, _out, grads, _gn = compute_grad_step(model, batch, step, depth, doc_boundary)
             apply_grads(optimizer, grads, model)
         float(loss)

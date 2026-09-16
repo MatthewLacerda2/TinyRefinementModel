@@ -19,14 +19,12 @@ import numpy as np
 import pytest
 
 from trm.config import TOKENS_PER_OPT_STEP
+from trm.model.reasoner import LAMBDA_DECAY_STEPS, diversity_lambda_schedule, forget_lambda_schedule
 from trm.train.schedules import (
     DECAY_STEPS,
-    LAMBDA_DECAY_STEPS,
     PEAK_LR,
     WARMUP_STEPS,
     build_learning_schedule,
-    diversity_lambda_schedule,
-    forget_lambda_schedule,
     resolve_decay_steps,
 )
 
