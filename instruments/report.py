@@ -34,10 +34,10 @@ import os
 # and a second JAX process on it is a real hazard. Set before anything imports jax.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import argparse   # noqa: E402
-import math       # noqa: E402
+import argparse
+import math
 
-from trm.config import (           # noqa: E402
+from trm.config import (
     ACCUMULATION_STEPS,
     BATCH_SIZE,
     INFERENCE_DEPTH,
@@ -53,9 +53,9 @@ from trm.config import (           # noqa: E402
     TRAIN_TOKEN_BUDGET,
     VOCAB_SIZE,
 )
-from instruments import model_stats, runlog   # noqa: E402
-from instruments.arch import ARCHES   # noqa: E402
-from instruments.invariants import clean_column, describe, suspect_rows   # noqa: E402
+from instruments import model_stats, runlog
+from instruments.arch import ARCHES
+from instruments.invariants import clean_column, describe, suspect_rows
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

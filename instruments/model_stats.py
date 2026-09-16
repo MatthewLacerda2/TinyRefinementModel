@@ -51,7 +51,7 @@ from trm.config import (
 
 MIB = 1024 ** 2
 
-# Dtype widths in bytes. Parameters are stored f32 (config.PARAM_DTYPE) whatever
+# Dtype widths in bytes. Parameters are stored f32 (NNX's default, see trm/config.py) whatever
 # the compute dtype is; the optimizer's widths are set in trm/train/optimizers.py.
 F32, BF16, F16 = 4, 2, 2
 

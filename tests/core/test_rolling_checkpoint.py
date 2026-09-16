@@ -201,7 +201,7 @@ def test_the_best_dir_is_named_for_its_criterion():
 
 # --- Validation-probe cadence -------------------------------------------------
 
-def _probe_opt_steps(total_micro_steps, accumulation_steps, log_real_steps, val_every):
+def _probe_opt_steps(total_micro_steps, accumulation_steps, val_every):
     """Replays exactly the step-gating the trainer uses and returns the list of
     opt-steps at which the probe fires. Mirrors trainer.train_loop's conditions."""
     fired = []
@@ -214,15 +214,11 @@ def _probe_opt_steps(total_micro_steps, accumulation_steps, log_real_steps, val_
 
 
 def test_probe_fires_at_configured_cadence():
-    from trm.train import trainer
-
-
     accum = 4          # keep the test fast; ratio is what matters
-    log_real = trainer.LOG_REAL_STEPS
     val_every = 8
 
     total = accum * val_every * 3  # cover several probe intervals
-    fired = _probe_opt_steps(total, accum, log_real, val_every)
+    fired = _probe_opt_steps(total, accum, val_every)
 
     assert fired == [8, 16, 24], f"probe should fire every {val_every} opt-steps, got {fired}"
 
@@ -252,7 +248,7 @@ def test_old_nested_cadence_was_multiplied():
             if opt_step % val_every == 0:
                 buggy.append(opt_step)
 
-    fixed = _probe_opt_steps(accum * log_real * val_every * 2, accum, log_real, val_every)
+    fixed = _probe_opt_steps(accum * log_real * val_every * 2, accum, val_every)
 
     # Buggy cadence is lcm(log_real, val_every); fixed is val_every.
     assert buggy[0] == 40 and fixed[0] == 8

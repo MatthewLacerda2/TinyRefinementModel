@@ -208,7 +208,7 @@ def exit_cleanly_on_sigterm():
     import os
     import signal
 
-    def _raise(signum, frame):
+    def _raise(signum, _frame):
         # Say so in the log. SystemExit prints no traceback, so a TERM'd trainer
         # used to end mid-stream with nothing to distinguish it from a hard kill —
         # three Muon arms of #26 died that way on 2026-09-14 and the cause was
