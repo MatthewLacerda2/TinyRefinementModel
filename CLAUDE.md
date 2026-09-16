@@ -219,8 +219,8 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
    an optimization.) Can land any time it's ready.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
-   mid training-run. Doc-only commits (markdown and/or comments) need no issue — make
-   them in their own small PR, judiciously.
+   mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
+   small one into a PR already in flight; open its own small PR only when none is.
 
 **Orthogonal labels (combine with a type):**
 - **Lane** — `cpu` runs alongside a GPU job; `gpu` is the single RTX 2060, a serial
