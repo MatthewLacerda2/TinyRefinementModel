@@ -24,7 +24,7 @@ from trm.config import (
     TRM_OPTIMIZER,
     MUON_LR_MULT,
 )
-from trm.train.schedules import DECAY_STEPS, WARMUP_STEPS
+from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
 
 # The validation-probe cadence the run used. It is declared in trm/train/trainer.py,
 # which imports this module, so it cannot be imported back — the same duplicate-with-a-
@@ -169,6 +169,7 @@ class RunTracker:
             # run: the plotter crashed rebuilding a 512-step arm's LR schedule with
             # a 1000-step warmup, and labelled a plain run with the refiner's depth.
             "WARMUP_STEPS": WARMUP_STEPS,
+            "PEAK_LR": PEAK_LR,
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,

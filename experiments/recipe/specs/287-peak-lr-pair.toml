@@ -1,0 +1,128 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "287-peak-lr"
+status = "open"
+title = "Peak LR 3e-4 vs the shipped 1e-4: tokens to a fixed held-out CE"
+hypothesis = """
+The peak the cosine warms up to has been 1e-4 since this project started. It was
+chosen once, never compared against anything, and it is 2.5-6x below what models
+of a comparable size train at (GPT-2-small 124M at 6e-4; later reproductions at
+2.5e-4). At the same shipped config as #26 stage 2 -- plain, dim 960, 9 layers,
+f16, tied embeddings -- peak 3e-4 reaches held-out CE 5.85 in at least 15% fewer
+tokens than 1e-4.
+
+One variable: the LR scale. The whole schedule scales with the peak (init =
+peak/10, end = peak/100, same warmup, same cosine, same horizon), so the arms
+differ in the height of one curve and in nothing else. Seed matched, so same init
+and same data order.
+
+Prediction registered: KEEP, but by much less than #26 -- I expect 3e-4 to need
+roughly 30-40% fewer tokens (a ratio near 1.5x), not Muon's 2.1x, and I put real
+weight on INCONCLUSIVE: an LR 3x higher in f16 with no bf16 tensor cores is where
+this card's dynamic loss scaling starts working hard, and an arm that thrashes the
+scaler can lose the tokens it gains. I do NOT expect a KILL.
+
+Two things make that prediction worth distrusting in opposite directions. The
+repo's registered predictions were wrong four times running on depth recurrence,
+every one crediting the mechanism too much -- and "the LR was simply too low" is
+exactly the kind of tidy explanation that flatters whoever proposes it. Against
+that: #26 just showed a 2.1x gap over this same control, which is itself evidence
+that the control is undertuned, so predicting a small win may be the timid error.
+
+Why this matters beyond the number: #26's KEEP was measured against this control,
+so if 3e-4 closes a large part of that 2.1x, Muon's win was partly a comparison
+against an undertuned baseline (rule 4), and the base-run recipe decision changes
+shape. Both results are useful; only this one tells us which.
+"""
+issue = 287
+
+[protocol]
+floor_note = """
+The metric is tokens to reach a target, capped at the run length (67.1M): an arm
+that never reaches 5.85 reports the cap. Two arms both at the cap are a TIE the
+referee reads as INCONCLUSIVE, never as a win. The control reached this target at
+44.6M in #26 stage 2 on the same config and the same 512-step horizon, so the cap
+is not binding for it -- but that reading was on a 4-row probe and this pair runs
+on the 64-row probe #184 shipped, so the absolute CE is a better estimate of the
+same quantity and the step it is first crossed may move. A seed where the CONTROL
+fails to reach the target voids that seed and is re-registered rather than
+averaged in.
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed); only PEAK_LR differs"
+notes = """
+512 opt steps per run (67.1M tokens), warmup 100, the cosine completing inside the
+run (TRAIN_TOKEN_BUDGET = 67,108,864), AdamW throughout (this is the control
+optimizer's own knob; Muon is #26 and is deliberately NOT changed here).
+
+Validation every 8 opt steps, not #26's 16. The metric cannot resolve finer than
+the probe interval, and at 16 steps every seed of an arm landed in the same bucket
+and sigma_pooled came out exactly 0 -- the referee printed +inf sigma and the
+verdict rested entirely on min_delta. At 8 steps the quantum is 1.05M tokens.
+Expect sigma to be small again: a quantized metric is why min_delta is here, and
+`require = "all"` makes the gap clear it.
+
+EVAL_ROWS is pinned to 64 (the post-#184 default) for every arm, so the pair is
+matched on the probe. Absolute CE numbers here are NOT comparable to #26 stage 2's,
+which were scored on 4 rows.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "adamw", "--tag", "287"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.lr1e4]
+role = "control"
+flags = ["--peak-lr", "1e-4"]
+
+[arms.lr3e4]
+role = "treatment"
+flags = ["--peak-lr", "3e-4"]
+
+# Tokens: LOWER is better, so a 3e-4 win is the CONTROL's number being larger.
+# (The referee's `beats` means the arm in `treatment` reads HIGHER.)
+[criteria.higher_lr_needs_fewer_tokens]
+rule = "beats"
+treatment = "lr1e4"
+control = "lr3e4"
+sigmas = 2.0
+min_delta = 6.7
+points = ["run"]
+require = "all"
+
+[criteria.higher_lr_needs_more_tokens]
+rule = "loses"
+treatment = "lr1e4"
+control = "lr3e4"
+sigmas = 2.0
+min_delta = 6.7
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["higher_lr_needs_fewer_tokens"]
+kill_if = ["higher_lr_needs_more_tokens"]
+
+[readouts]
+notes = """
+final_val_ce at the 512-step cap (the point estimate CLAUDE.md warns about;
+recorded, no weight) -- and unlike the tokens metric it is continuous, so it is
+the honest place to look at seed spread on this apparatus.
+Non-finite skip count per run from train.log: at 3e-4 in f16 the dynamic loss
+scaler is the thing most likely to be doing work, and an arm that thrashes it is
+paying for the LR in a way tokens-to-target does not show. Muon at x100 took such
+skips where AdamW at 1e-4 took none (#26).
+wall-clock and arena peak per run: both arms run the same optimizer and the same
+shapes, so these are expected identical and are recorded as a check that nothing
+else moved.
+min_delta = 6.7M tokens is 15% of the control's 44.6M reading from #26 stage 2.
+A 6e-4 arm is NOT part of this spec: per #287 it is registered separately, only if
+3e-4 wins cleanly and stays finite.
+"""
