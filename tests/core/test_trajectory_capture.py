@@ -105,7 +105,7 @@ def test_capture_does_not_drag_the_per_pass_logits_along(toy_refiner, tokens):
         "the trajectory carries the origin state that the per-pass logits path does not")
 
 
-def test_an_architecture_without_a_refine_loop_refuses(): 
+def test_an_architecture_without_a_refine_loop_refuses():
     """The control baseline has no trajectory. Returning a flat one would invite
     exactly the wrong conclusion — that depth does nothing — from an instrument
     pointed at a model that has no depth to begin with."""
