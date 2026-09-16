@@ -7,21 +7,23 @@ optimizer. The losses are compared against tests/expensive/golden/train_step_los
 
 WHAT IT CAN AND CANNOT SEE. The file is compared across machines, and float kernels
 differ by CPU: the same commit gives numbers one or two ULPs apart. Measured on #330 for
-this exact config (this box, a Ryzen 5 3400G, against CI runs on AMD EPYC 7763), the
-largest relative loss difference over the first 20 steps was NOISE_FLOOR = 1.8e-7, and
-CI runs agreed with each other exactly. Grad norms were left out on purpose: the
-optimizer amplifies the same noise to 1.7e-5 by step 20. RTOL is set 10x above the
-floor. Measured by mutation at this tolerance (#330, never committed):
+this exact config, one commit across six runs on four CPU models (this box's Ryzen 5
+3400G; CI's AMD EPYC 7763, 9V45 and 9V74), the largest relative loss difference over
+these 10 steps was NOISE_FLOOR = 1.8e-7 (3.0e-7 over 20). CI runners disagree with each
+other, not only with this box. Grad norms were left out on purpose: the optimizer
+amplifies the same noise to 4.0e-5 by step 20. RTOL is set 10x above the floor. A later
+CI run on an Intel Xeon Platinum 8573C also passed at this tolerance. Measured in CI by
+mutation at this tolerance (#330's probe PR #333, never merged), max relative loss move:
 
-  caught      attention scores double-scaled (the historical post-mortem): 3.7e-2
+  caught      targets shifted by one: 2.0e-1
+              attention scores double-scaled (the historical post-mortem): 3.7e-2
               causal mask dropped: 1.2e-2
-              targets shifted by one: 2.0e-1
               attention residual branch scaled by 1+1e-2 / 1+1e-3 / 1+1e-4:
-              9.3e-4 / 1.6e-4 / 6.4e-6
-  not caught  attention residual branch scaled by 1+1e-5: 8.0e-7
-              every block output scaled by one ULP: 9.8e-8
-              pad mask dropped: 0 (the batch has no pads; that is
-              tests/core/test_model_invariants.py's job)
+              9.3e-4 / 1.6e-4 / 6.5e-6
+  not caught  attention residual branch scaled by 1+1e-5
+              every block output scaled by one ULP
+              pad mask dropped (the batch has no pads; the leading-pad test in
+              tests/core/test_model_invariants.py catches it)
 
 So this catches numeric changes of about 1e-4 relative in one residual branch and up,
 not one-ULP drift. Same-process bit-repeatability is tests/core/test_step_determinism.py.
