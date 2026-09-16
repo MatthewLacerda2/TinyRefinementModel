@@ -292,17 +292,22 @@ _REPORT_CHILD = r"""
 import contextlib, io, json, runpy, sys, traceback
 out = {}
 for arch in sys.argv[1:]:
-    buf = io.StringIO()
+    stdout, stderr = io.StringIO(), io.StringIO()
     sys.argv = ["report", "--model-only", "--arch", arch]
     code = 0
     try:
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             runpy.run_module("instruments.report", run_name="__main__", alter_sys=True)
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    except SystemExit as exc:  # argparse and sys.exit("message") land here
+        if isinstance(exc.code, int):
+            code = exc.code
+        elif exc.code is not None:
+            code = 1
+            stderr.write(str(exc.code) + "\n")
     except BaseException:
-        code, buf = 1, io.StringIO(buf.getvalue() + traceback.format_exc())
-    out[arch] = {"code": code, "stdout": buf.getvalue()[-4000:]}
+        code = 1
+        stderr.write(traceback.format_exc())
+    out[arch] = {"code": code, "stdout": stdout.getvalue()[-4000:], "stderr": stderr.getvalue()[-4000:]}
 print("REPORTS " + json.dumps(out))
 """
 
@@ -329,7 +334,7 @@ def test_the_report_runs_for_every_arch(arch, reports):
 
     assert arch in ARCHES
     run = reports[arch]
-    assert run["code"] == 0, run["stdout"][-2000:]
+    assert run["code"] == 0, f"stderr:\n{run['stderr'][-2000:]}\nstdout:\n{run['stdout'][-2000:]}"
     assert "total" in run["stdout"]
 
 

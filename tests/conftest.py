@@ -167,16 +167,19 @@ for case in cases:
     # reads the environment at load would otherwise stay cached from the first case.
     for name in [m for m in sys.modules if m == "trm" or m.startswith("trm.")]:
         del sys.modules[name]
+    # "NAME" reads trm.config; "pkg.module:NAME" reads that module, imported here too
+    # because importing it can refuse the same way config does.
+    targets = [(a, *a.rpartition(":")[::2]) for a in attrs]
     try:
-        config = importlib.import_module("trm.config")
-        values = {}
-        for a in attrs:  # "NAME" reads trm.config; "pkg.module:NAME" imports that module
-            module, _, name = a.rpartition(":")
-            values[a] = getattr(importlib.import_module(module) if module else config, name)
+        modules = {"": importlib.import_module("trm.config")}
+        for _, module, _ in targets:
+            if module and module not in modules:
+                modules[module] = importlib.import_module(module)
     except BaseException as exc:  # SystemExit included: that is how the guards refuse
         out.append({"ok": False, "error": str(exc)})
-    else:
-        out.append({"ok": True, "values": values})
+        continue
+    # Outside the refusal try: a mistyped attribute name crashes the child, loudly.
+    out.append({"ok": True, "values": {a: getattr(modules[module], name) for a, module, name in targets}})
 print("CONFIG_CASES " + json.dumps(out))
 """
 
