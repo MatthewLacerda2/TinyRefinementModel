@@ -231,3 +231,18 @@ def in_vocab_encoder():
             return "".join(chr(97 + (i % 26)) for i in ids)
 
     return InVocabEncoder
+
+
+@pytest.fixture
+def champion_run(tmp_path):
+    """A copy of the recorded champion run, `runs/run_20260813_214725`, in tmp_path:
+    its full run_metadata.json and an excerpt of its metrics.csv. What was kept, and
+    why, is tests/apparatus/fixtures/README.md. Returns the run directory."""
+    import shutil
+
+    fixtures = pathlib.Path(__file__).parent / "apparatus" / "fixtures"
+    run = tmp_path / "runs" / "run_20260813_214725"
+    run.mkdir(parents=True)
+    shutil.copy(fixtures / "run_20260813_214725" / "metrics.csv", run / "metrics.csv")
+    shutil.copy(fixtures / "champion_run_metadata.json", run / "run_metadata.json")
+    return run

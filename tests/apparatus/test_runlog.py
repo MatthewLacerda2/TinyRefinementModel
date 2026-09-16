@@ -213,17 +213,17 @@ def test_auto_discovery_says_so_when_there_is_nothing(tmp_path, monkeypatch):
         runlog.load()
 
 
-def test_the_live_run_reads_cleanly():
-    """Against the real artifact, not a fixture: whatever is in runs/ right now
-    must parse, and its arch-optional columns must come back absent."""
-    try:
-        log = runlog.load()
-    except FileNotFoundError:
-        pytest.skip("no runs/ on this machine")
+def test_the_live_run_reads_cleanly(champion_run, monkeypatch):
+    """Against a real artifact: the recorded champion run (tests/apparatus/fixtures),
+    found the way a bare `runlog.load()` finds the latest run. It must parse, and its
+    arch-optional columns must come back absent."""
+    monkeypatch.chdir(champion_run.parent.parent)
+    log = runlog.load()
+    assert log.run_id == "run_20260813_214725"
     assert log.fields, "the run's CSV has no header"
-    if not log.metrics:
-        pytest.skip("latest run has no rows yet")
+    assert log.metrics, "the recorded excerpt has rows"
     assert log.has("ce") and log.last_step > 0
+    assert not log.has("avg_forget_cost"), "a refiner run never measures the forget cost"
     for row in log.metrics:
         assert isinstance(row["step"], int)
         assert all(value is None or isinstance(value, float)

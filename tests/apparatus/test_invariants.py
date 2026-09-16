@@ -91,35 +91,31 @@ def test_fractions_must_lie_in_zero_to_one():
     assert invariants.suspect_rows(_log([(10, {"zero_frac_dense_max": 0.5}) ])) == {}
 
 
-LIVE_RUN_CSV = "runs/run_20260813_214725/metrics.csv"
-
-
-def _live_run_suspects():
-    import pathlib
+def _live_run_suspects(run_dir):
     from instruments.runlog import load
 
-    csv = pathlib.Path(LIVE_RUN_CSV)
-    if not csv.exists():
-        pytest.skip("live run's metrics.csv not present")
-    return invariants.suspect_rows(load(str(csv)))
+    return invariants.suspect_rows(load(str(run_dir)))
 
 
-def test_the_live_run_flags_rows_only_for_known_reasons():
-    """Integration against the real file, when it is present: every row the invariants
-    flag on the champion run is flagged for depth_avg, the accumulator check.
+def test_the_live_run_flags_rows_only_for_known_reasons(champion_run):
+    """Integration against the recorded champion run (tests/apparatus/fixtures, which
+    keeps every suspect row and its neighbours): every flagged row is flagged for
+    depth_avg, the accumulator check.
 
     #196 measured 2 suspect rows of 1,567, both resume artifacts. The finished run
-    measures 32 suspect rows, 22 of them with depth_avg 8.4-9.2, above the maximum
-    depth of 8, which a resume artifact cannot produce. That is #355."""
-    suspect = _live_run_suspects()
+    has 32: 24 with depth_avg 8.44-9.20, above the maximum depth of 8, which a resume
+    artifact cannot produce, and 8 below the corridor. That is #355."""
+    suspect = _live_run_suspects(champion_run)
+    assert len(suspect) == 32, "the recorded excerpt must keep every suspect row"
     assert all("depth_avg" in reasons[0] for reasons in suspect.values())
 
 
 @pytest.mark.xfail(strict=True, reason="#355: the finished champion run flags 32 rows "
-                                       "(22 with depth_avg above 8), not the <= 5 this bound expects")
-def test_the_live_run_flags_few_rows():
-    """The bound #196 set (2 measured, slack to 5), kept as it was. Recorded as a known
-    failure rather than hidden; it turns XPASS, and fails loudly, once #355 is fixed and
-    the bound can be revisited. Skips, not xfails, where the file is absent."""
-    suspect = _live_run_suspects()
+                                       "(24 with depth_avg above 8), not the <= 5 this bound expects")
+def test_the_live_run_flags_few_rows(champion_run):
+    """The bound #196 set (2 measured, slack to 5), kept as it was and recorded as a
+    known failure rather than hidden. The run is a recording, so fixing #355's cause
+    will not change these rows; this turns XPASS only if the invariants learn to tell
+    #355's rows apart, and then the bound should be revisited."""
+    suspect = _live_run_suspects(champion_run)
     assert len(suspect) <= 5, f"unexpectedly many suspect rows: {sorted(suspect)}"
