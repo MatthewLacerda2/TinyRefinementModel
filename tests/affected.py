@@ -8,7 +8,9 @@ any runner that iterates, it is minutes per edit. This follows imports instead:
 a test is selected when it imports — directly or through any chain of repo
 modules — a module that changed, or when it names the changed file's tree or
 filename in a string (the lints that read source by path rather than importing
-it: package layout, instrument defaults and environment, the findings gate).
+it: package layout, instrument defaults and environment, the spec floor lint).
+The same diff, mapped to experiment specs instead of tests, is
+`python -m instruments.audit` — both read `instruments/changed.py`.
 
 It fails OPEN, never closed. A missed test is worse than a slow one, so anything
 it cannot reason about selects the whole suite: a change outside Python and docs
@@ -20,10 +22,13 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO))  # run as a script, not a module, so the repo is not on the path yet
+
+from instruments.changed import changed_paths  # noqa: E402  (needs the path above; shared with instruments/audit.py)
+
 TREES = ("trm", "instruments", "experiments")
 SUITE = ["tests/core", "tests/apparatus"]
 DOC_SUFFIXES = {".md", ".txt", ".svg", ".png"}
@@ -121,15 +126,8 @@ def select(changed: list[str], repo: pathlib.Path = REPO) -> list[str]:
     return sorted(tests)
 
 
-def changed_vs_main(repo: pathlib.Path = REPO) -> list[str]:
-    def git(*args):
-        return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.split()
-    base = git("merge-base", "HEAD", "main")[0]
-    return sorted(set(git("diff", "--name-only", base)) | set(git("ls-files", "--others", "--exclude-standard")))
-
-
 if __name__ == "__main__":
-    changed = changed_vs_main()
+    changed = changed_paths(REPO, base="main")
     selection = select(changed) if changed else []
     print(" ".join(selection))
     print(f"# {len(changed)} changed path(s) -> {'full suite' if selection == SUITE else f'{len(selection)} test file(s)'}",

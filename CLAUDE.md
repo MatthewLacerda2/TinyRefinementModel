@@ -118,11 +118,14 @@ is how the apparatus that produced it gets cleaned up afterwards:
      pre-registered spec that judged it, and it must resolve) or
      `Evidence: observational — <why no control applies>`. Observational is a real
      category — #229's all-NaN logits were found by accident while running something
-     else — not a loophole. Enforced by
-     `tests/apparatus/test_findings_cite_their_evidence.py`; entries before
-     2026-09-12 are grandfathered, since rewriting their provenance now would be
-     inventing it. **Exploration needs no ceremony; publication does.** Start a spec
-     with `python -m instruments.experiment <path> --new`.
+     else — not a loophole. Enforced by the `finding-cites-spec` rule of
+     `python -m instruments.audit` (#304), which CI runs over whatever a change
+     can reach; entries before 2026-09-12 are grandfathered, since rewriting their
+     provenance now would be inventing it. The same audit asks of every spec
+     whether its verdict can be *trusted* — floor, seeds, sigma, criteria committed
+     before results, verdict reproducible — and never what the verdict is (that
+     stays with `instruments/verdict.py`). **Exploration needs no ceremony;
+     publication does.** Start a spec with `python -m instruments.experiment <path> --new`.
 
 6. **A tombstone takes its apparatus with it.** The knowledge is what we keep; the
    scaffolding that produced it is not. So the PR that writes a graveyard entry also
