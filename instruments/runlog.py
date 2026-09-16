@@ -1,14 +1,8 @@
 """Read one training run's recorded metrics — once, and properly.
 
-Every consumer of `runs/<run>/metrics.csv` used to re-parse it inline, and each
-re-parse made the same mistake: a blank cell read as `0.0`. A blank does not
-mean zero. It means this architecture does not measure that quantity (#105) —
-`avg_forget_cost`, `diversity_loss` and `temporal_drift` are empty in every
-refiner run because the refiner has no forget gate and no slots. Reading them
-as zero invents a measurement, and a plotter then draws a confident flat line
-through data that was never collected.
-
-So here: a blank is `None`, `has(name)` says whether a column holds anything at
+A blank cell means this architecture does not measure that quantity (#105), never
+`0.0`; reading it as zero invents a measurement (the cases are pinned in
+tests/apparatus/test_runlog.py). So here: a blank is `None`, `has(name)` says whether a column holds anything at
 all (the test a caller uses to *omit* a panel instead of drawing zeros), and
 `column(name)` hands back only the rows that actually carry a value.
 

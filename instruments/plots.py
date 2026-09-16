@@ -699,13 +699,9 @@ def throughput_progress(runlog, outdir):
     hours = np.array([(t - times[0]).total_seconds() / 3600.0 for t in times])
     tokens = steps * tokens_per_step
 
-    # How much of the run the heartbeats actually witnessed. They are a separate
-    # stream from metrics.csv — the supervisor's stdout — so they stop the moment
-    # a relaunch redirects that stdout or lengthens --heartbeat-hours, while the
-    # run itself carries happily on. run_20260813_214725 lost them at step 13,890
-    # of 30,520 and this figure drew 45% of a run as though it were the whole
-    # thing, with a "recent mean" computed from six-day-old data. metrics.csv is
-    # the authority on how far the run got; compare against it and say so.
+    # How much of the run the heartbeats actually witnessed. Heartbeats are a
+    # separate stream that can stop while the run carries on, so metrics.csv is the
+    # authority on how far the run got. The incident: tests/apparatus/test_plots_throughput.py (#223).
     last_beat_step = int(steps[-1])
     coverage = last_beat_step / runlog.last_step if runlog.last_step else 0.0
     stale = coverage < 0.98

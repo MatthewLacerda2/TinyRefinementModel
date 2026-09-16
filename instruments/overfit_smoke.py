@@ -60,13 +60,9 @@ BLOCKS_OVERRIDE = {
 
 def _build(args):
     """The architecture --arch names (default MODEL_ARCH, the one a run launched now
-    would train), through the shared selector.
-
-    This used to construct UniversalReasoner unconditionally. That is the CONTROL
-    architecture, so the pre-launch gate in CI never smoked the model actually being
-    trained: the refiner was the live bet for months and never passed through here.
-    Same defect as smoke_refiner_gpu testing f16 overflow on random tokens (#235) — a
-    gate aimed at something other than what ships.
+    would train), through the shared selector. It once built the control arch
+    unconditionally; that incident is listed in
+    tests/core/test_instruments_know_their_architecture.py.
     """
     return build(args.arch, dim=args.dim, seed=0, **BLOCKS_OVERRIDE[args.arch](args.blocks))
 
