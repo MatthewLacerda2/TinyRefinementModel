@@ -15,7 +15,6 @@ import jax.numpy as jnp
 # test suite (which defaults to CPU while the GPU trains) sets it. Never set
 # it for training.
 COMPUTE_DTYPE = jnp.float32 if os.environ.get("FORCE_F32_COMPUTE") else jnp.float16
-PARAM_DTYPE = jnp.float32
 
 # Persistent compilation cache (#204). Every process used to compile from scratch:
 # each supervisor relaunch, test run, smoke and instrument. It makes nothing

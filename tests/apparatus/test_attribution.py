@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from instruments.attribution import (
-    attribute, by_confidence_decile, by_first_occurrence, by_token_category, render,
+    attribute, by_confidence_decile, by_first_occurrence, by_nesting_depth, by_token_category, render,
 )
 
 
@@ -87,6 +87,13 @@ def test_first_occurrence_tracks_what_was_seen_before_it():
     assert by_first_occurrence([7, 7, 8, 7]) == [
         "first occurrence", "seen earlier", "first occurrence", "seen earlier"]
 
+
+def test_nesting_depth_labels_the_depth_a_token_sits_at_and_caps_it():
+    """An opening bracket sits at the depth outside it; what follows sits one deeper.
+    Depths past the cap pool into one "+" bucket rather than thinning into rare ones."""
+    decode = lambda ids: {1: "(", 2: ")", 3: "x"}[ids[0]]  # noqa: E731
+    assert by_nesting_depth([3, 1, 3, 2, 3], decode) == ["nest 0", "nest 0", "nest 1", "nest 1", "nest 0"]
+    assert by_nesting_depth([1, 1, 3], decode, cap=1)[-1] == "nest 1+"
 
 def test_confidence_deciles_cover_the_closed_unit_interval():
     """p = 1.0 must land in the top bucket, not in an eleventh one — an off-by-one

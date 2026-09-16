@@ -376,7 +376,7 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
         while True:
             text = read_log_since(log_path)
-            if any(marker in text for marker in OOM_MARKERS):
+            if oom_in(text):
                 return FitResult(False, "out of memory before the first logged row — this config does not fit",
                                  seconds=time.time() - started)
             row = _first_row(run_dir / "metrics.csv")
@@ -530,12 +530,11 @@ def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
         return ""
 
 
-def plateau_in(log_path: pathlib.Path, offset: int = 0) -> bool:
-    return PLATEAU_MARKER in read_log_since(log_path, offset)
+def plateau_in(text: str) -> bool:
+    return PLATEAU_MARKER in text
 
 
-def oom_in(log_path: pathlib.Path, offset: int = 0) -> bool:
-    text = read_log_since(log_path, offset)
+def oom_in(text: str) -> bool:
     return any(marker in text for marker in OOM_MARKERS)
 
 
@@ -613,10 +612,10 @@ class Supervisor:
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            plateau_detected=PLATEAU_MARKER in text,
+            plateau_detected=plateau_in(text),
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
-            oom_detected=any(marker in text for marker in OOM_MARKERS),
+            oom_detected=oom_in(text),
         )
 
     def run(self) -> str:
