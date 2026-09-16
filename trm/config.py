@@ -194,7 +194,8 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 #   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
 #     cannot instantiate a CUDA command buffer, 28 alive graphs (random-depth
 #     training compiles one program per sampled depth, x the accumulate/apply
-#     branches). Squeezed from both sides on a 6GB card.
+#     branches; since #316 only for the looped arches — plain compiles one).
+#     Squeezed from both sides on a 6GB card.
 # bench_train_step times a grad step; it never ran the trainer, which also holds
 # the validation probe and the checkpoint managers. So the +40% was real for what
 # it measured and irrelevant to what we ship — every run that ever finished, both

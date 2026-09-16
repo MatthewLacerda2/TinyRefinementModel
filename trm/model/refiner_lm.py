@@ -7,8 +7,9 @@ neutral model contract (`lm_contract.LanguageModel`).
 
 Plan A is a plain causal LM as far as the training loop is concerned: each window
 is scored independently, there is no state carried between them, and there are no
-auxiliary objectives. So it implements `__call__` and nothing else — the contract's
-defaults (no carried state, no graded extras) are already the truth here. Before
+auxiliary objectives. So beyond `__call__` it overrides only `training_depth` (the
+sampled loop depth, #316) and `capture_trajectory` (for instruments) — the contract's
+other defaults (no carried state, no graded extras) are already the truth here. Before
 #105 this same fact had to be expressed as *impersonation*: a zero forget-cost and
 a zero diversity loss for schedules to multiply, a never-read hunch buffer for the
 trainer's bookkeeping to write into, and placeholder zeros for the reasoner's
