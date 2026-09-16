@@ -134,6 +134,25 @@ is how the apparatus that produced it gets cleaned up afterwards:
    suite from growing forever: tests aren't retired by judgment calls nobody makes,
    they're retired by the kill they belong to. The finding survives the harness.
 
+**Three rules the build enforces, so nobody has to remember them.** Each has a
+test behind it (or one landing with the issue named); this file keeps only the *why*.
+- **No hidden defaults on the hot path.** Every knob the optimizer or model reads
+  is named in `trm/config.py` and recorded in the run's metadata. Adam's β2 sat at
+  optax's 0.999 for the whole project without appearing anywhere we could read it —
+  a recipe nobody chose, that a library upgrade could change silently (#358).
+- **The dtype policy is about compute, not state.** Matmuls run f16; anything that
+  *accumulates* — the residual stream, the gradient accumulator, an optimizer
+  moment — is f32 unless a line in `config.py` says why not. f16 has 10 mantissa
+  bits: once the residual stream passes ~4k, a block's O(1) contribution rounds to
+  nothing, and the 4B champion sat at 65k with its loss scaler pinned at 1 (#357).
+- **Every schedule declares its horizon** — absolute steps or a fraction of the
+  budget — and the launch banner prints both. The LR cosine scales with the run;
+  the mixture ramp did not, so every 512-step recipe pair trained on ~web-only data
+  while the base run it licensed ended at 65% code and math (#362). Judgment call
+  that stays prose: *a short pair inherits the shape of the run it informs* —
+  warmup is the legitimate exception, since it stabilizes optimizer state, not the
+  recipe.
+
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
 "drunk" (locally fluent, globally lost). That is not "small models can't work"; it's a
@@ -213,7 +232,11 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    runners, CI. Comes second — tools are what let ideas be tested cheaply.
 3. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
    hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
-   tool only when it genuinely makes sense — usually when it's small.
+   tool only when it genuinely makes sense — usually when it's small. The label means
+   *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
+   the model with a known method (the document separator masked as pad, #373) is a
+   **`bug`**, even though it changes what the model is; the matched pair still judges
+   it before a base run adopts it, but nobody is wondering whether to do it.
 4. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
    what the model is**. Same model, fewer resources. (If it changes the model, it's an
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
