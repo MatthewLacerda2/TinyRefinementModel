@@ -2,10 +2,12 @@
 
 The decoder keys slots at negative positions, which wrap around the RoPE cache.
 That wrap lands exactly on the write positions of the FINAL reasoning step at
-FULL depth — an accident that happens to work. It was load-bearing while
-random-depth training wrote slots at shallower positions every micro-step; nothing
-has trained the reasoner's slot path since June 2026, so today it guards the
-control arch only.
+FULL depth — an accident that happens to work, and load-bearing whenever
+random-depth training writes slots at shallower positions every micro-step. The path
+was last trained in July 2026, as the #16 matched control carded in
+docs/registry/run_20260720_012843-control-base-v1.md (SHARED_SLOTS=32,
+MAX_STEPS_LIMIT=8, random depth), so this guard protects that stored checkpoint
+until #292 retires the reasoner.
 These tests pin the accident down so any change to the cache size or position
 scheme fails loudly instead of silently shifting where slots get keyed.
 """

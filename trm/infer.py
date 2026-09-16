@@ -241,8 +241,9 @@ def build_arg_parser():
                     help="refinement loops per forward pass, for the depth-recurrent "
                          "arches (refiner, reasoner); the plain model ignores it. The "
                          f"dense sweep put the refiner's plateau at ~6 (default "
-                         f"{INFERENCE_DEPTH}); the sinusoidal time signal is defined at "
-                         "any step, so this extrapolates past the trained range")
+                         f"{INFERENCE_DEPTH}). The refiner's sinusoidal time signal is "
+                         "defined at any step, so it extrapolates past the trained range; "
+                         "the reasoner's learned time table stops at MAX_STEPS_LIMIT")
     return ap
 
 
