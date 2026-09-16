@@ -171,7 +171,8 @@ jobs:
 
       - name: Runner CPU (the golden noise floor is measured per CPU model, #322)
         # Must never fail the job: arm64 runners have no "model name" field.
-        run: grep -m1 "model name" /proc/cpuinfo || echo "model name: not reported by /proc/cpuinfo"
+        run: |
+          grep -m1 "model name" /proc/cpuinfo || echo "model name not reported by /proc/cpuinfo"
 
       - name: Golden trajectory + reference numerics + determinism
         # The loss-trajectory regression (opt-in locally, mandatory here), plus
