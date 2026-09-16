@@ -192,8 +192,10 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
                          "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out), *arch_flag])
 
     assert restored["arch"] == "plain"
-    assert all(np.array_equal(a, b) for a, b in zip(jax.tree_util.tree_leaves(nnx.state(saved)),
-                                                    jax.tree_util.tree_leaves(nnx.state(restored["model"])))), \
+    saved_leaves = jax.tree_util.tree_leaves(nnx.state(saved))
+    restored_leaves = jax.tree_util.tree_leaves(nnx.state(restored["model"]))
+    assert len(saved_leaves) == len(restored_leaves), "a restore that drops leaves must not pass"
+    assert all(np.array_equal(a, b) for a, b in zip(saved_leaves, restored_leaves)), \
         "the checkpoint's weights, not the skeleton's own initialization"
     row = json.loads(out.read_text())
     assert row["arch"] == "plain" and row["checkpoint"]["step"] == 7

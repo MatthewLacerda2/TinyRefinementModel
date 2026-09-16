@@ -49,14 +49,13 @@ def _restore_into(model, checkpoint_path):
     return model, latest
 
 
-def build_model(arch=None, *, dim=None, **overrides):
-    """Fresh skeleton for `arch` (default MODEL_ARCH). The arches have different
-    param trees, so a restore must build the arch the checkpoint was trained as —
-    for a run, the MODEL_ARCH its run_metadata.json recorded.
+def build_model(arch, *, dim=None, **overrides):
+    """Fresh skeleton for `arch`. The arches have different param trees, so a
+    restore must build the arch the checkpoint was trained as — for a run, the
+    MODEL_ARCH its run_metadata.json recorded.
 
     `overrides` go to the constructor (a test restores a tiny checkpoint this way).
     The reasoner is built at EVAL_BATCH_SIZE unless told otherwise; see above."""
-    arch = MODEL_ARCH if arch is None else arch
     dim = LATENT_DIM if dim is None else dim
     if arch == "plain":
         from trm.model.plain import PlainTransformer
