@@ -67,7 +67,7 @@ def build_model(arch=None, *, dim=None, **overrides):
     if arch == "reasoner":
         from trm.model.reasoner import UniversalReasoner
         return UniversalReasoner(dim, nnx.Rngs(42), **{"batch_size": EVAL_BATCH_SIZE, **overrides})
-    raise SystemExit(f"unknown arch {arch!r}; use one of plain, refiner or reasoner")
+    raise SystemExit(f"unknown arch {arch!r}; use plain, refiner or reasoner")
 
 
 def restore_arch(arch, checkpoint_path=None, **overrides):
@@ -80,10 +80,6 @@ def restore_arch(arch, checkpoint_path=None, **overrides):
 def restore_model(checkpoint_path=None):
     """Restore as MODEL_ARCH, whatever this process was launched with."""
     return restore_arch(MODEL_ARCH, checkpoint_path)
-
-
-def restore_reasoner(checkpoint_path=None):
-    return restore_arch("reasoner", checkpoint_path)
 
 
 def restore_refiner(checkpoint_path=None):
