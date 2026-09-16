@@ -128,15 +128,14 @@ def load_batch(rng):
     root = os.environ.get("DATA_ROOT", "")
     if root:
         from trm.config import resolve_root
-        from trm.data.loaders import TextDataGenerator
+        from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
         for source in ("codeparrot", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue
-            gen = TextDataGenerator(path)
-            gen.skip_count = 3_000_000
-            row, _ = gen.get_batch(1)
-            if row is not None:
+            rows = read_heldout_rows(path, 1, VAL_SKIP_SAMPLES)
+            if rows:
+                (row,) = rows
                 print(f"📚 real tokens from {source} (the distribution that stresses f16)")
                 return jnp.asarray(row[:, :2 * MAX_SEQ_LEN + 1].astype(np.int32))
     print("🎲 random tokens — DATA_ROOT unset, so the corpus-specific overflow "

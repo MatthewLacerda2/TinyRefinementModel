@@ -15,60 +15,91 @@ week, all the same shape:
 - two determinism tests compared NaN to NaN and passed, because NaN is deterministic
   (#229).
 
-A file that *constructs* a model has made an architecture choice. This requires that
-choice to be visible: either it reads `MODEL_ARCH`, or it says in one line that it is
-deliberately arch-specific and why. The point is not that arch-specific tools are
-wrong — several are correct — it is that the decision must be written down, so the
-next default change surfaces them instead of silently pointing them at the past.
+A file that *constructs* a model has made an architecture choice, and a class name
+in the middle of a file is where that choice went unseen. So instruments build through
+`instruments.arch.build` (which defaults to MODEL_ARCH) or `trm.model.build_model`,
+never by class name — unless one line declares the file deliberately arch-specific and
+why. The point is not that arch-specific tools are wrong — several are correct — it is
+that the decision must be written down, so the next default change surfaces them
+instead of silently pointing them at the past.
+
+Known limitations, accepted: both scans read syntax. `build("refiner")` with a literal
+arch, or `getattr(model, "refiner")`, walks past them. They exist to catch the accident,
+not to outwit a determined author.
 """
 
+import ast
+import io
 import pathlib
 import re
+import tokenize
 
 import pytest
 
 INSTRUMENTS = pathlib.Path(__file__).resolve().parents[2] / "instruments"
-BUILDS_A_MODEL = re.compile(
-    r"\b(RefinerForTraining|UniversalReasoner|PlainTransformer|CausalRefiner)\s*\(")
+ARCH_CLASSES = {"RefinerForTraining", "UniversalReasoner", "PlainTransformer", "CausalRefiner"}
 # The declaration a deliberately single-architecture instrument writes instead.
 EXEMPTION = re.compile(r"#\s*ARCH-SPECIFIC:\s*\S+")
+ALL_INSTRUMENTS = sorted(INSTRUMENTS.rglob("*.py"))
 
 
-def _model_building_instruments():
-    for path in sorted(INSTRUMENTS.glob("*.py")):
-        text = path.read_text()
-        if BUILDS_A_MODEL.search(text):
-            yield pytest.param(path, id=path.name)
+def _arch_specific_comments(source):
+    """{line: column} of every real `# ARCH-SPECIFIC: <why>` comment.
+
+    Read from the tokenizer, not the text: the same words inside a docstring are a
+    string, and a regex over the file let a quotation exempt the whole file (#331 and
+    #334 reviews). A comment at column 0 declares the file; an inline one, its line."""
+    return {tok.start[0]: tok.start[1]
+            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+            if tok.type == tokenize.COMMENT and EXEMPTION.match(tok.string)}
+
+
+def _undeclared(source, nodes):
+    """(line, name) for each (node, name) not covered by an ARCH-SPECIFIC comment."""
+    marked = _arch_specific_comments(source)
+    if 0 in marked.values():
+        return []
+    return sorted({(node.lineno, name) for node, name in nodes if node.lineno not in marked})
+
+
+def direct_constructions(source):
+    """Sorted (line, class) for every undeclared call that builds an arch by class name."""
+    calls = ((node, getattr(node.func, "id", getattr(node.func, "attr", None)))
+             for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call))
+    return _undeclared(source, ((node, name) for node, name in calls if name in ARCH_CLASSES))
+
+
+@pytest.mark.parametrize("path", ALL_INSTRUMENTS, ids=lambda p: str(p.relative_to(INSTRUMENTS)))
+def test_it_builds_through_the_selector_or_declares_why_not(path):
+    hits = direct_constructions(path.read_text())
+    assert not hits, (
+        f"{path.name} constructs {', '.join(f'{c} (line {n})' for n, c in hits)} by class name. "
+        f"Build through `instruments.arch.build` with `--arch` defaulting to MODEL_ARCH, or "
+        f"write `# ARCH-SPECIFIC: <why>` if one architecture is genuinely the point. Silently "
+        f"building a fixed architecture is how the pre-launch gate spent months smoking the "
+        f"control instead of the live bet.")
 
 
 def test_the_shared_selector_is_itself_arch_aware():
-    """Most instruments now go through `instruments/arch.py` instead of naming a
-    class, which is the fix — but it concentrates the risk in one file. If THAT
-    stops reading MODEL_ARCH, every caller silently points at a fixed architecture
-    again and the per-file guard below sees nothing to complain about."""
+    """Instruments go through `instruments/arch.py` instead of naming a class, which is
+    the fix — but it concentrates the risk in one file. If THAT stops reading
+    MODEL_ARCH, every caller silently points at a fixed architecture again and the
+    per-file guard sees nothing to complain about."""
     selector = (INSTRUMENTS / "arch.py").read_text()
     assert "MODEL_ARCH" in selector
     assert all(a in selector for a in ("plain", "refiner", "reasoner"))
 
 
-def test_the_scan_still_matches_something():
-    """A guard that matches nothing passes forever. If the constructor names change,
-    this fails before the per-file checks quietly stop looking."""
-    found = list(_model_building_instruments())
-    assert found, "the constructor pattern matches no instrument — has it gone stale?"
-
-
-@pytest.mark.parametrize("path", _model_building_instruments())
-def test_it_reads_MODEL_ARCH_or_declares_why_not(path):
-    text = path.read_text()
-    if "MODEL_ARCH" in text:
-        return
-    assert EXEMPTION.search(text), (
-        f"{path.name} constructs a model but neither reads MODEL_ARCH nor declares "
-        f"itself arch-specific. Add `--arch` defaulting to MODEL_ARCH, or write a "
-        f"line `# ARCH-SPECIFIC: <why>` if one architecture is genuinely the point. "
-        f"Silently building a fixed architecture is how the pre-launch gate spent "
-        f"months smoking the control instead of the live bet.")
+def test_the_constructor_scan_catches_what_it_was_written_for():
+    """A guard that matches nothing passes forever. The shape overfit_smoke had must be
+    flagged; the selector, a declared file and a docstring quotation must not exempt
+    or be flagged wrongly."""
+    assert direct_constructions("m = UniversalReasoner(dim, rngs)\n") == [(1, "UniversalReasoner")]
+    assert direct_constructions("m = plain.PlainTransformer(dim, rngs)\n") == [(1, "PlainTransformer")]
+    assert direct_constructions("m = build(args.arch, dim=dim)\n") == []
+    assert direct_constructions("# ARCH-SPECIFIC: refiner only\nm = RefinerForTraining(d, r)\n") == []
+    quoted = '"""Notes.\n# ARCH-SPECIFIC: only a quotation\n"""\nm = RefinerForTraining(d, r)\n'
+    assert direct_constructions(quoted) == [(4, "RefinerForTraining")]
 
 
 # --- reaching into a retired architecture's internals (#314) -------------------
@@ -78,23 +109,8 @@ def test_it_reads_MODEL_ARCH_or_declares_why_not(path):
 # `model.refiner.encoder` or `model.encoder_stack` — attributes only a retired arch
 # has — and crash with AttributeError on `plain`, the default. `smoke_refiner_gpu`
 # and `bench_train_step` both did exactly this.
-#
-# Known limitation, accepted: it reads attribute syntax, so `getattr(model, "refiner")`
-# walks past it. The scan exists to catch the accident, not to outwit a determined author.
 
 RETIRED_ARCH_ATTRIBUTES = {"refiner", "encoder_stack", "decoder_stack", "reasoning_stack", "hunch_cache"}
-
-
-def _arch_specific_comments(source):
-    """{line: column} of every real `# ARCH-SPECIFIC: <why>` comment.
-
-    Read from the tokenizer, not the text: the same words inside a docstring are a
-    string, and a regex over the file let one exempt the whole file (#331 review)."""
-    import io
-    import tokenize
-    return {tok.start[0]: tok.start[1]
-            for tok in tokenize.generate_tokens(io.StringIO(source).readline)
-            if tok.type == tokenize.COMMENT and EXEMPTION.match(tok.string)}
 
 
 def retired_attribute_accesses(source):
@@ -102,16 +118,11 @@ def retired_attribute_accesses(source):
 
     A whole file declares itself with the comment on a line of its own at column 0; a
     multi-arch file declares each branch into a retired arch with the comment on that line."""
-    import ast
-    marked = _arch_specific_comments(source)
-    if 0 in marked.values():
-        return []
-    return sorted({(node.lineno, node.attr) for node in ast.walk(ast.parse(source))
-                   if isinstance(node, ast.Attribute) and node.attr in RETIRED_ARCH_ATTRIBUTES
-                   and node.lineno not in marked})
+    return _undeclared(source, ((node, node.attr) for node in ast.walk(ast.parse(source))
+                                if isinstance(node, ast.Attribute) and node.attr in RETIRED_ARCH_ATTRIBUTES))
 
 
-@pytest.mark.parametrize("path", sorted(INSTRUMENTS.rglob("*.py")), ids=lambda p: str(p.relative_to(INSTRUMENTS)))
+@pytest.mark.parametrize("path", ALL_INSTRUMENTS, ids=lambda p: str(p.relative_to(INSTRUMENTS)))
 def test_it_does_not_reach_into_a_retired_arch_undeclared(path):
     hits = retired_attribute_accesses(path.read_text())
     assert not hits, (
