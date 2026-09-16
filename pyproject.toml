@@ -8,6 +8,9 @@ requires-python = ">=3.12"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+markers = [
+    "jaxfree: needs neither jax, numpy nor tests/conftest.py; CI runs it in the lint job (#325)",
+]
 
 [tool.ruff]
 line-length = 120
@@ -32,4 +35,6 @@ ignore_names = [
     "REPORTS", "ENV_DIVERGENCES", "CONFIG_DIVERGENCES",
     # Hooks pytest calls by name.
     "pytest_*",
+    # The module-level mark variable pytest reads by name.
+    "pytestmark",
 ]
