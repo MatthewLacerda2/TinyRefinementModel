@@ -24,8 +24,11 @@ from trm.runtime.layout import CHECKPOINT_ITEMS
 from dotenv import load_dotenv
 load_dotenv()
 
-CHECKPOINT_DIR = resolve_root(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
-HUNCH_REFRESH_EVERY = 4
+# `new_document` is flipped on every Nth generated token. Only the reasoner reads it
+# (it resets its cross-window hunch cache, proven inert — docs/findings/
+# 2026-06-13-cross-window-hunch-inert.md); plain and refiner ignore it. Kept so the
+# reasoner's generation stays what it was.
+REASONER_REFRESH_EVERY = 4
 
 # Sampling default. 0.5 was too cold to see the model: it divides the logits, so it
 # *doubles* every gap, and with max|logit| already ~21 partway through the base run
@@ -137,7 +140,7 @@ def reject_unsampleable(logits, *, where):
         )
 
 
-# `refresh` is deliberately NOT static (#207). It flips every HUNCH_REFRESH_EVERY
+# `refresh` is deliberately NOT static (#207). It flips every REASONER_REFRESH_EVERY
 # tokens, so as a jit cache key it built two executables for one computation — two
 # resident programs and two sets of CUDA graphs, which is the driver-memory pressure
 # trm/config.py already blames for squeezing batch-2 from outside the BFC arena.
@@ -192,7 +195,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         if valid_len >= MAX_SEQ_LEN:
             break
 
-        new_document = (i % HUNCH_REFRESH_EVERY == 0)
+        new_document = (i % REASONER_REFRESH_EVERY == 0)
 
         # temperature=0 means greedy argmax below; pass 1.0 so the jitted
         # truncation step is a no-op scale rather than a division by zero.
@@ -258,17 +261,20 @@ def run_inference(argv=None):
 
     model = build_serving_model()
 
-    active_checkpoint_dir = CHECKPOINT_DIR
-    if os.environ.get("CHECKPOINT_ROOT") is None:
+    # CHECKPOINT_ROOT names a checkpoint dir; without it, the latest checkpointed run
+    # under runs/ is served. There is no third, default path: the old one
+    # (`orbax_checkpoints`) pointed at a directory nothing writes.
+    if os.environ.get("CHECKPOINT_ROOT") is not None:
+        active_checkpoint_dir = resolve_root(os.environ["CHECKPOINT_ROOT"])
+    else:
         from trm.runtime.checkpoints import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()
-        if discovered_path is not None:
-            active_checkpoint_dir = os.path.abspath(discovered_path)
-            print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
-        else:
-            print("❌ Error: No available weights here.")
-            print("Please train the model first using: python -m trm.train.start")
+        if discovered_path is None:
+            print("❌ Error: no checkpointed run under runs/, and CHECKPOINT_ROOT is not set.")
+            print("Train one with `python -m trm.train.start`, or set CHECKPOINT_ROOT to a checkpoint dir.")
             return
+        active_checkpoint_dir = os.path.abspath(discovered_path)
+        print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
 
     mngr = ocp.CheckpointManager(
         active_checkpoint_dir,

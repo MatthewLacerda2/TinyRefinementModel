@@ -47,11 +47,14 @@ def test_infer_names_no_model_class():
 
 def test_the_factory_imports_each_arch_only_in_its_own_branch():
     """Importing the model package must not drag in every architecture's code."""
+    import ast
     from pathlib import Path
     import trm.model
-    source = Path(trm.model.__file__).read_text()
-    header = source.split("def build_model")[0]
-    assert "import" not in header, "arch modules are imported inside build_model, lazily"
+    tree = ast.parse(Path(trm.model.__file__).read_text())
+    top_level = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+    assert not top_level, "arch modules are imported inside build_model, lazily"
+    lazy = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    assert {node.module for node in lazy} >= {"trm.model.plain", "trm.model.refiner_lm", "trm.model.reasoner"}
 
 
 @pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])

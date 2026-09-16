@@ -59,6 +59,17 @@ COLUMNS = (
 )
 
 
+# The diagnostics the console line shows when the model reports them:
+# (diagnostic, label, decimals).
+CONSOLE_DIAGNOSTICS = (
+    ("tau", "Tau", 4),
+    ("temporal_drift", "Drift", 6),
+    ("out_entropy", "H", 3),
+    ("logz_mean", "logZ", 2),
+    ("max_abs_logit", "max|logit|", 1),
+)
+
+
 def _cell(value, places):
     if value is None:
         return ""
@@ -133,15 +144,13 @@ class MetricsLogger:
                 self._warned_nonfinite.add(name)
                 print(f"⚠️ Non-finite metric '{name}' ({value}) at step {step} — check the diagnostics pipeline.")
 
-        # Log to BOTH and TERMINAL ONLY
+        # Console: only the diagnostics this model reported. A 0 for one it has none
+        # of (Tau, Drift on the plain stack) reads as a measurement (#317).
+        reported = "".join(f" | {label}: {diag_dict[key]:.{places}f}"
+                           for key, label, places in CONSOLE_DIAGNOSTICS if key in diag_dict)
         print(
-            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | "
-            f"Tau: {diag_dict.get('tau', 0):.4f} | Depth: {depth_avg:.2f}\n"
-            f"      Loss: {loss:.4f} | Drift: {diag_dict.get('temporal_drift', 0):.6f} | "
-            f"H: {diag_dict.get('out_entropy', 0):.3f} | "
-            f"logZ: {diag_dict.get('logz_mean', 0):.2f} | "
-            f"max|logit|: {diag_dict.get('max_abs_logit', 0):.1f} | "
-            f"Compute: {compute_time:.3f}s"
+            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}) | Depth: {depth_avg:.2f}\n"
+            f"      Loss: {loss:.4f}{reported} | Compute: {compute_time:.3f}s"
         )
 
         # Check if file exists and has content to avoid duplicate headers

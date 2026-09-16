@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import jax
 import jax.numpy as jnp
+import optax
 from flax import nnx
 from trm.config import (
     NUM_BLOCKS,
@@ -20,7 +21,34 @@ from trm.model.layers import (
     calculate_slot_stability_loss,
 )
 from trm.model.contract import LMOutput, LanguageModel
-from trm.train.schedules import diversity_lambda_schedule, forget_lambda_schedule
+from trm.train.schedules import WARMUP_STEPS
+
+# The weights of this model's two auxiliary objectives, by opt step. They live here,
+# not in trm/train/schedules.py: no other architecture reports an auxiliary term
+# (#105), so no other code reads them (#317).
+#
+# The λ anneals deliberately do NOT follow DECAY_STEPS (#83): they relax
+# regularization pressure over early training — absolute-step optimizer
+# dynamics, like warmup — not a function of the run's energy budget. On a
+# longer run they sit at their end values from 15k on, which is today's
+# behavior made explicit rather than silently stretched.
+LAMBDA_DECAY_STEPS = 15000
+
+forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0,
+    peak_value=0.05,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
+    end_value=0.001
+)
+
+diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0,
+    peak_value=1.0,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
+    end_value=0.1
+)
 
 class UniversalReasoner(LanguageModel):
     def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):

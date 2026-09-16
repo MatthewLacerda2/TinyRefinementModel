@@ -21,11 +21,25 @@ from trm.config import (
     TRAIN_TOKEN_BUDGET,
     MODEL_ARCH,
     PLAIN_LAYERS,
+    POST_NORM,
+    REFINER_ENCODER_LAYERS,
+    TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
 from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
+
+# What each architecture's param tree is built from (#317). A resume that changes one
+# of these cannot load its checkpoint, or loads it into a different network whose tree
+# happens to match. Keyed per arch: a knob only another arch reads must not refuse the
+# resume — and PLAIN_LAYERS used to pass unchecked while retired-arch knobs were checked.
+_SHARED_TREE_KEYS = ("MODEL_ARCH", "LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN")
+TREE_KEYS = {
+    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM"),
+    "refiner": (*_SHARED_TREE_KEYS, "REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL", "POST_NORM"),
+    "reasoner": (*_SHARED_TREE_KEYS, "NUM_BLOCKS", "SHARED_SLOTS", "MAX_STEPS_LIMIT"),
+}
 
 class RunTracker:
     def __init__(self, runs_root="runs"):
@@ -167,6 +181,11 @@ class RunTracker:
             "PEAK_LR": PEAK_LR,
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # Tree-shaping knobs the resume check compares (#317); runs recorded
+            # before them skip the comparison.
+            "POST_NORM": POST_NORM,
+            "REFINER_ENCODER_LAYERS": REFINER_ENCODER_LAYERS,
+            "TIME_SIGNAL": TIME_SIGNAL,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,
             "MUON_LR_MULT": MUON_LR_MULT,
         }
@@ -182,13 +201,10 @@ class RunTracker:
             old_params = old_meta.get("parameters", {})
             current_params = self.get_hyperparameters()
             
-            critical_keys = [
-                "LATENT_DIM", "NUM_BLOCKS", "SHARED_SLOTS", "MAX_SEQ_LEN", 
-                "VOCAB_SIZE", "NUM_HEADS"
-            ]
+            # A key the run's metadata predates is skipped, not refused.
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                for k in critical_keys
+                for k in TREE_KEYS[current_params["MODEL_ARCH"]]
                 if k in old_params and old_params[k] != current_params[k]
             ]
             

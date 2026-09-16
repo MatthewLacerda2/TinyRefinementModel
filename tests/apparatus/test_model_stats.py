@@ -195,13 +195,24 @@ def test_vram_terms_are_the_dtypes_the_optimizer_actually_uses():
 
 def test_the_floor_stays_under_the_measured_peak():
     """A floor that exceeds the measured peak is not a floor, it is a bug. The
-    live run's measured peak at this config is ~5.0 GB."""
-    floor_gb = (model_stats.vram_estimate("train", batch=1, depth=8, arch="refiner")
-                [model_stats.TOTAL_KEY] * model_stats.MIB / 1e9)
-    assert 0 < floor_gb < model_stats.MEASURED_PEAK_GB
-    assert model_stats.measured_peak_applies("refiner", batch=1)
-    assert not model_stats.measured_peak_applies("reasoner", batch=1)
-    assert not model_stats.measured_peak_applies("refiner", batch=4)
+    4B refiner run's measured peak was ~5.0 GB; the plain stacks' are arena peaks."""
+    for arch, overrides in (("refiner", {"dim": 960, "encoder_layers": 7}),
+                            *(("plain", {"dim": 960, "num_heads": 15, "num_layers": n, "post_norm": False})
+                              for n in (8, 9, 10))):
+        peak = model_stats.measured_peak(arch, batch=1, **overrides)
+        assert peak is not None, (arch, overrides)
+        floor_gb = (model_stats.vram_estimate("train", batch=1, depth=8, arch=arch, **overrides)
+                    [model_stats.TOTAL_KEY] * model_stats.MIB / 1e9)
+        assert 0 < floor_gb < peak.gb, (arch, overrides)
+
+
+def test_a_measured_peak_is_quoted_only_for_its_exact_config():
+    assert model_stats.measured_peak("reasoner", batch=1) is None
+    assert model_stats.measured_peak("refiner", batch=4, dim=960, encoder_layers=7) is None
+    plain = {"dim": 960, "num_heads": 15, "post_norm": False}
+    assert model_stats.measured_peak("plain", batch=1, num_layers=11, **plain) is None
+    assert model_stats.measured_peak("plain", batch=1, num_layers=9, **{**plain, "post_norm": True}) is None
+    assert model_stats.measured_peak("plain", batch=1, num_layers=9, **plain).gb == pytest.approx(4437 * 2**20 / 1e9)
 
 
 def test_vram_rejects_a_mode_it_cannot_estimate():

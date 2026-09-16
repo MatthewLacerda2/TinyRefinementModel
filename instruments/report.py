@@ -143,14 +143,16 @@ def print_vram(arch, batch, train_depth, infer_depth):
     print("  remat'd region, XLA scratch, the f16 casts of f32 weights, and the")
     print("  allocator's own overhead across the ~28 compiled programs random-depth")
     print("  training keeps alive (see the 2026-08-14 BFC fragmentation finding).")
-    if model_stats.measured_peak_applies(arch, batch=batch):
+    peak = model_stats.measured_peak(arch, batch=batch)
+    if peak is None:
+        print("  No measured training peak on record for this config — the floor is all there is.")
+    else:
         floor_mib = model_stats.vram_estimate(
             "train", batch=batch, depth=train_depth, arch=arch)[model_stats.TOTAL_KEY]
         floor_gb = floor_mib * model_stats.MIB / 1e9
-        print(f"  For this exact config the measured training peak is "
-              f"~{model_stats.MEASURED_PEAK_GB:.1f} GB [measured]")
-        print(f"    source: {model_stats.MEASURED_PEAK_SOURCE}")
-        print(f"    so ~{model_stats.MEASURED_PEAK_GB - floor_gb:.1f} GB of the real cost "
+        print(f"  For this exact config the measured training peak is ~{peak.gb:.1f} GB [measured]")
+        print(f"    source: {peak.source}")
+        print(f"    so ~{peak.gb - floor_gb:.1f} GB of the real cost "
               f"sits in terms this tool does not model.")
 
 
@@ -286,11 +288,18 @@ _DIAGNOSTICS = (
     ("diversity_loss", "diversity loss", "sampled", "reasoner only"),
     ("tau", "tau", "measured", "reasoner only"),
 )
+# Columns only the reasoner can fill. metrics.csv keeps them for every arch (old runs
+# and every reader depend on the schema), so for a run recorded as another arch their
+# absence is not news and is not listed (#317).
+_REASONER_ONLY = frozenset({"temporal_drift", "avg_forget_cost", "diversity_loss", "tau"})
 
 
 def _print_diagnostics(log):
-    present = [(col, label, tag, note) for col, label, tag, note in _DIAGNOSTICS if log.has(col)]
-    absent = [col for col, *_ in _DIAGNOSTICS if not log.has(col)]
+    arch = log.metadata.get("parameters", {}).get("MODEL_ARCH")
+    applicable = [row for row in _DIAGNOSTICS
+                  if arch in (None, "reasoner") or row[0] not in _REASONER_ONLY]
+    present = [(col, label, tag, note) for col, label, tag, note in applicable if log.has(col)]
+    absent = [col for col, *_ in applicable if not log.has(col)]
     if present:
         print("  diagnostics (last value):")
         for col, label, tag, note in present:

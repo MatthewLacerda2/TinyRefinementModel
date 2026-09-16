@@ -16,6 +16,7 @@ import pytest
 
 from instruments.dump_transcripts import (
     DEFAULT_DEPTHS,
+    depths_for,
     PROMPTS,
     PROMPT_SET_VERSION,
     nearest_metric,
@@ -57,6 +58,16 @@ class TestDepthLadder:
         without 1 there is no floor to compare against, without 8 the 'does it
         overthink' question cannot be asked at all."""
         assert DEFAULT_DEPTHS == (1, 2, 4, 8)
+
+    def test_a_looped_arch_runs_the_whole_ladder(self):
+        assert depths_for("refiner") == DEFAULT_DEPTHS
+        assert depths_for("reasoner", (4, 8)) == (4, 8)
+
+    def test_an_arch_without_a_depth_dial_runs_once(self):
+        """Plain ignores depth: four rungs were four identical completions at 4x the
+        cost, and a repetition table of four identical rows (#317)."""
+        assert depths_for("plain") == (1,)
+        assert depths_for("plain", (4, 8)) == (4,)
 
     def test_depths_parse_in_order(self):
         assert parse_depths("1,2,4,8") == (1, 2, 4, 8)

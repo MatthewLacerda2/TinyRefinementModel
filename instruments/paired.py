@@ -39,6 +39,8 @@ import numpy as np
 from instruments import results as result_lines
 from trm.config import MAX_SEQ_LEN
 
+# ARCH-SPECIFIC: refiner/reasoner — it compares one model at two depths, and plain has no depth dial (#317).
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "mean, se, t (RESULT)": ("sampled", "paired per-token CE difference over --rows rows; se is across those rows, not across seeds"),
@@ -185,6 +187,11 @@ def _main(argv=None):
                          "need a smaller value (finemath has 19 chunks to the "
                          "others' 30 and runs out before the default)")
     args = ap.parse_args(argv)
+    from trm.config import MODEL_ARCH
+    if MODEL_ARCH == "plain":
+        raise SystemExit("instruments.paired compares one model at two depths; MODEL_ARCH='plain' "
+                         "ignores depth, so both arms would score the same forward pass. "
+                         "Load a looped checkpoint with MODEL_ARCH=refiner or reasoner.")
 
     from dotenv import load_dotenv
     load_dotenv()

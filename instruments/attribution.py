@@ -32,6 +32,10 @@ import numpy as np
 
 from instruments import results as result_lines
 
+# ARCH-SPECIFIC: refiner/reasoner — it buckets instruments.paired's depth differences; the arithmetic is
+# arch-agnostic, but on plain there is no depth difference to attribute. No entry point, so nothing to refuse
+# here: instruments.paired refuses plain before any difference exists (#317).
+
 
 @dataclasses.dataclass(frozen=True)
 class Bucket:
