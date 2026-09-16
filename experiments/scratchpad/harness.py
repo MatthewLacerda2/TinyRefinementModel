@@ -17,7 +17,10 @@ The arms, one line each; what each measured, and why, is in its finding:
       docs/findings/2026-07-07-dense-supervision-without-slots-collapses.md
   overwrite, budget1, budget2, unlimited — fixed-budget memory (#63): one slot
       overwritten on the chain task; 1, 2 or unlimited slots on the recall task.
-      docs/design/budget-scratchpad.md and the 2026-07-05 / 2026-07-16 findings.
+      docs/design/budget-scratchpad.md;
+      docs/findings/2026-07-05-budget-scratchpad-overwrite-carries-chain.md,
+      docs/findings/2026-07-05-budget-scratchpad-recall-inconclusive-readout-confound.md,
+      docs/findings/2026-07-16-budget-scratchpad-recall-rerun-readout-fine-writer-leaks.md
   budget1_local, budget2_local, unlimited_local — the same, per-link writer
       context (#116). docs/findings/2026-07-18-budget-scratchpad-retention-win-slot-parking.md
 
