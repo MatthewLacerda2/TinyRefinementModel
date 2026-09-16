@@ -1,8 +1,10 @@
 """Build the architecture a run would actually train — one place, for every smoke.
 
 Every smoke takes `--arch` defaulting to `MODEL_ARCH` and builds through here. Why a
-class name in an instrument is refused, and the four incidents behind it:
-`tests/core/test_instruments_know_their_architecture.py`, which enforces it.
+class name in an instrument is refused, and the incidents behind it:
+`tests/core/test_instruments_know_their_architecture.py`, which enforces it. The
+memory profiler hardcoded the refiner too; that case is recorded in
+`instruments/mem_profile.py` and commit 3b2c7a8 (#248).
 
 The network itself comes from `trm.model.build_model`, the factory the trainer and
 the restore path use, so a smoke cannot build a model the trainer would not. Keyword

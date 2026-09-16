@@ -13,8 +13,9 @@ through its unrolled refine loop. The reasoner has no trace here and is refused 
 name. The file keeps its historical name because the doctrine and findings cite it.
 
 With DATA_ROOT set the smoke reads real tokens and prefers **code**, the distribution
-that stresses activations; random tokens are the no-corpus fallback. It fails on peak
-activation below a headroom margin of the f16 max, not only on non-finite values.
+that stresses activations; random tokens are the no-corpus fallback. Beyond non-finite
+values, it fails when peak |activation| exceeds (1 - MIN_HEADROOM) x F16_MAX, i.e. when
+less than MIN_HEADROOM (currently 0.50) of the f16 range is left unused.
 Why both (the overflow is corpus-specific, and finiteness passed a model at 99.4% of
 the ceiling): `tests/apparatus/test_smoke_headroom.py` and #235.
 
