@@ -70,12 +70,43 @@ def token_batch():
     return tokens.astype(np.int32)
 
 
-@pytest.fixture(scope="session")
-def tiny_model():
-    """Full UniversalReasoner (batch 1), shared across the session — construction
-    dominates test time on CPU, the forwards are cheap at short sequence lengths."""
-    from flax import nnx
-    from trm.config import LATENT_DIM
-    from trm.model.reasoner import UniversalReasoner
+# Small enough that building one costs seconds on CPU, big enough for every
+# property the consumers check (padding, causality, init loss, checkpoint schema).
+# Before #322 this was the full 138M-param reasoner — the control arch — so eight
+# core tests asserted general properties through an architecture nothing ships.
+TINY_DIM = 60
+TINY_OVERRIDES = {"plain": {"num_layers": 2}}
 
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(0), batch_size=1)
+
+@pytest.fixture(scope="session")
+def make_tiny_model():
+    """Build a small model of the architecture a run would train (MODEL_ARCH), at
+    `seed`. For tests that need a second instance of the same shape, e.g. to
+    restore a checkpoint into a differently-initialized model."""
+    from instruments.arch import build
+    from trm.config import MODEL_ARCH
+
+    def make(seed=0):
+        return build(MODEL_ARCH, dim=TINY_DIM, seed=seed, **TINY_OVERRIDES.get(MODEL_ARCH, {}))
+    return make
+
+
+@pytest.fixture(scope="session")
+def tiny_model(make_tiny_model):
+    """A small MODEL_ARCH model (plain by default), shared across the session."""
+    return make_tiny_model(seed=0)
+
+
+@pytest.fixture(scope="session")
+def make_reasoner_model():
+    """Build a small UniversalReasoner at `seed`, for the tests that read state only
+    the reasoner has: the carried hunch and the aux regularizers. Goes with #292."""
+    from instruments.arch import build
+
+    return lambda seed=0: build("reasoner", dim=TINY_DIM, seed=seed)
+
+
+@pytest.fixture(scope="session")
+def reasoner_model(make_reasoner_model):
+    """A small UniversalReasoner, shared across the session."""
+    return make_reasoner_model(seed=0)

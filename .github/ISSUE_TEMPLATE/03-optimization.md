@@ -25,7 +25,12 @@ labels: ["optimization"]
 ## Validation plan
 <!-- How you confirm it is a win AND did not break anything. -->
 - [ ] `JAX_PLATFORMS=cpu pytest tests/ -q` still green
-- [ ] `RUN_GOLDEN=1 pytest tests/expensive -q` still green — an optimization claiming
-      math-identity must reproduce the trajectory exactly (the plain run above skips it)
+- [ ] `RUN_GOLDEN=1 pytest tests/expensive -q` still green (the plain run above skips it).
+      Green is necessary, not proof of math identity: the golden tolerates cross-machine
+      noise, so it catches numeric changes of about 1e-4 in a residual branch and larger,
+      and misses a 1e-5 one (#322)
+- [ ] If the change claims exact math identity: a same-machine A/B of main against the
+      branch — the same loss list computed on each, same process type, compared bit for
+      bit — with the result stated in the PR
 - [ ] Measured before/after for the target metric
 - [ ] Outputs unchanged (or change explained and accepted)

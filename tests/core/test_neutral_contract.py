@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.model.contract import LanguageModel
 
@@ -119,18 +119,12 @@ def _tiny_refiner():
     )
 
 
-def _reasoner():
-    from trm.model.reasoner import UniversalReasoner
-
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(5), batch_size=1)
-
-
-@pytest.mark.parametrize("build", [_tiny_refiner, _reasoner], ids=["refiner", "reasoner"])
-def test_both_arches_train_through_the_identical_call(build):
+@pytest.mark.parametrize("arch", ["refiner", "reasoner"])
+def test_both_arches_train_through_the_identical_call(arch, make_reasoner_model):
     """The same `compute_grad_step` invocation — no arch branch, no adapter
     shim — drives a model that carries state and grades two regularizers, and one
     that does neither."""
-    model = build()
+    model = _tiny_refiner() if arch == "refiner" else make_reasoner_model(seed=5)
     rng = np.random.default_rng(11)
     batch = jnp.asarray(rng.integers(1, 37, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
 

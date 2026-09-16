@@ -100,14 +100,12 @@ def test_best_subdir_does_not_break_discovery(tmp_path):
     assert found_path == str(chk)
 
 
-def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
+def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_model):
     """save_checkpoint must write exactly what load_or_create_checkpoint reads:
     full round-trip with the real model + a real optimizer, restored into a
     fresh model with identical forward output."""
     import optax
     from flax import nnx
-    from trm.config import LATENT_DIM
-    from trm.model.reasoner import UniversalReasoner
     from trm.runtime.checkpoints import load_or_create_checkpoint
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
@@ -124,7 +122,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model):
     save_checkpoint(save_mngr, 42, tiny_model, optimizer, monitor, False, "run_x")
     del save_mngr
 
-    fresh = UniversalReasoner(LATENT_DIM, nnx.Rngs(99), batch_size=1)
+    fresh = make_tiny_model(seed=99)
     fresh_opt = nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param)
     _, _, resumed, start_step = load_or_create_checkpoint(fresh, fresh_opt, chk)
 
