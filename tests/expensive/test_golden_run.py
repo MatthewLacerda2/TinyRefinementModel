@@ -50,6 +50,8 @@ from trm.train.grad_step import apply_grads, compute_grad_step
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "golden", "train_step_losses.json")
 CONFIG = {"arch": "plain", "dim": 60, "num_layers": 2, "seed": 9, "steps": 10}
 NOISE_FLOOR = 1.8e-7  # max relative loss difference, this box vs CI runs (#330)
+# The CPU models that floor was sampled on. Outside them, the floor is an assumption.
+FLOOR_CPUS = ("AMD Ryzen 5 3400G", "AMD EPYC 7763", "AMD EPYC 9V45", "AMD EPYC 9V74")
 RTOL = 10 * NOISE_FLOOR
 
 
@@ -93,7 +95,10 @@ def test_loss_trajectory_matches_golden():
                       for i, r in enumerate(rel))
     assert rel.max() <= RTOL, (
         f"The loss trajectory moved by up to {rel.max():.1e} relative. Cross-machine noise "
-        f"measured for this config is {NOISE_FLOOR:.1e} and the tolerance is {RTOL:.1e}, so "
-        f"this is a numeric change in the training path, not drift. If the change was "
-        f"intentional, re-record deliberately (see the module docstring).\n{table}"
+        f"measured for this config is {NOISE_FLOOR:.1e}, sampled on {', '.join(FLOOR_CPUS)}; "
+        f"the tolerance is {RTOL:.1e}. On one of those CPUs this is a numeric change in the "
+        f"training path, not drift. On a CPU outside that list it MAY be noise: check the "
+        f"runner CPU the golden job prints before concluding, and if it is new, measure the "
+        f"floor there (#330). If the change was intentional, re-record deliberately (see the "
+        f"module docstring).\n{table}"
     )
