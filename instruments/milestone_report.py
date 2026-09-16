@@ -46,6 +46,9 @@ REPORTS = {}  # assembles other tools' sections; each number is declared by the 
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# What `--quick` hands dump_transcripts. A name, so a test can feed this exact argv to
+# that tool's real parser: it once passed a flag the tool did not define (#335).
+QUICK_TRANSCRIPT_ARGS = ("--prompts", "2", "--max-new-tokens", "32")
 
 
 def run_tool(module, extra_args=(), timeout=None):
@@ -138,7 +141,8 @@ def main():
     parser.add_argument("--out", default=None,
                         help="report path (default: <run dir>/milestone_report_step_<n>.md)")
     parser.add_argument("--quick", action="store_true",
-                        help="tiny settings (2 batches, 2 prompts, 32 new tokens) for a fast smoke pass")
+                        help="tiny settings (2 batches, the first 2 standard prompts, 32 new tokens) "
+                             "for a fast smoke pass")
     parser.add_argument("--section-timeout", type=float, default=None,
                         help="seconds before a diagnostic subprocess is killed (default: none)")
     args = parser.parse_args()
@@ -171,7 +175,7 @@ def main():
     # self-discovers the same latest run (and keeps its own output placement).
     fwd_args = ["--checkpoint-path", checkpoint_path] if args.checkpoint_path else []
     batches = 2 if args.quick else None
-    transcript_args = ["--prompts", "2", "--max-new-tokens", "32"] if args.quick else []
+    transcript_args = list(QUICK_TRANSCRIPT_ARGS) if args.quick else []
 
     sections = [
         run_section("Depth curve", lambda: section_depth_curve(

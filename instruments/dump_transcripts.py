@@ -232,6 +232,14 @@ def select_device(device, force=False):
     os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 
 
+def prompt_count(value):
+    """`--prompts N`: how many of the standard set to run, from the front."""
+    n = int(value)
+    if not 1 <= n <= len(PROMPTS):
+        raise argparse.ArgumentTypeError(f"must be between 1 and {len(PROMPTS)}, got {n}")
+    return n
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="fixed-prompt transcript logbook")
     parser.add_argument("--checkpoint-path", default=None,
@@ -250,6 +258,10 @@ def build_arg_parser():
     parser.add_argument("--temperature", type=float, default=None,
                         help="default: trm.infer.DEFAULT_TEMPERATURE")
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--prompts", type=prompt_count, default=len(PROMPTS),
+                        help=f"run only the first N standard prompts (default: all {len(PROMPTS)}). "
+                             "Always a prefix, so each prompt still compares with the same "
+                             "prompt in a full entry; the frontmatter records N")
     parser.add_argument("--prompt", action="append", default=[],
                         help="extra prompt; recorded but marked non-standard so it "
                              "cannot pollute a comparison")
@@ -274,8 +286,8 @@ def main():
     from trm.runtime.restore import restore_model
 
     temperature = DEFAULT_TEMPERATURE if args.temperature is None else args.temperature
-    prompts = list(PROMPTS) + list(args.prompt)
-    standard = len(PROMPTS)
+    prompts = list(PROMPTS[:args.prompts]) + list(args.prompt)
+    standard = args.prompts
 
     run_dir = None
     if args.checkpoint_path is None:
@@ -342,6 +354,7 @@ def main():
 
     fields = {
         "prompt_set_version": PROMPT_SET_VERSION,
+        "standard_prompts": standard,
         "step": opt_step,
         "checkpoint_step": ckpt_step,
         "tokens": opt_step * TOKENS_PER_OPT_STEP,
