@@ -36,6 +36,7 @@ import argparse
 import subprocess
 
 from instruments import runlog
+from trm.runtime.layout import LOG_REAL_STEPS  # standard library only
 from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -229,32 +230,38 @@ def checkpoint_opt_step(checkpoint_step, accumulation_steps):
     return (int(checkpoint_step) + 1) // int(accumulation_steps)
 
 
-def val_ce_for_checkpoint(val_ces, checkpoint_step, accumulation_steps):
-    """(val CE, how it was chosen) for the checkpoint the yardstick scored.
+def val_ce_for_checkpoint(val_ces, checkpoint_step, accumulation_steps, log_every=LOG_REAL_STEPS):
+    """(val CE or None, how it was found) for the checkpoint the yardstick scored.
 
     The run's own held-out val CE is the number a faithful revival must reproduce; it
-    is what the #17 noise floor is stated in (2σ = 0.06 nats). metrics.csv is keyed by
-    OPT step and orbax by micro-step (#348), so the checkpoint is converted with the
-    run's RECORDED accumulation, never today's config. Val CE is logged only every
-    VAL_EVERY_OPT_STEPS, so a checkpoint between probes is compared with the nearest
-    val row at or before it — and the returned text says which row that is. With no
-    recorded accumulation, or no val row at or before the checkpoint, there is nothing
-    honest to compare with: the value is None and the text says why. Never silent."""
+    is what the #17 noise floor is stated in (2σ = 0.06 nats). Two offsets stand
+    between a checkpoint and its row in metrics.csv:
+
+    * orbax names the checkpoint by MICRO-step and metrics.csv by opt step (#348), so
+      the checkpoint is converted with the run's RECORDED accumulation, never today's;
+    * the trainer does not write a probe's val CE on the probe's own opt step. It holds
+      it and writes it on the next logging row, the first multiple of LOG_REAL_STEPS at
+      or after the probe (#351). So the checkpoint at opt step N reads its value from
+      the first val row in [N, N + LOG_REAL_STEPS). On run_287: checkpoint 23551 is
+      opt 184, whose value is on row 185, not the earlier probe's row 180.
+
+    LOG_REAL_STEPS is not recorded per run (#351); this uses today's value from
+    trm/runtime/layout.py, which every run so far has used. A row outside that window
+    belongs to another probe, so no row in it means None and a reason naming the
+    window — never an earlier or later probe's value, and never silence."""
     if not val_ces:
         return None, "no val CE in metrics.csv"
     if not accumulation_steps:
         return None, (f"run_metadata.json records no ACCUMULATION_STEPS, so checkpoint "
                       f"{checkpoint_step} cannot be placed on the opt-step axis metrics.csv uses")
     opt_step = checkpoint_opt_step(checkpoint_step, accumulation_steps)
-    if opt_step in val_ces:
-        return val_ces[opt_step], f"val row at opt step {opt_step} (checkpoint {checkpoint_step})"
-    earlier = [s for s in val_ces if s <= opt_step]
-    if not earlier:
-        return None, (f"checkpoint {checkpoint_step} is opt step {opt_step}, before the first val "
-                      f"row (opt step {min(val_ces)})")
-    row = max(earlier)
-    return val_ces[row], (f"checkpoint {checkpoint_step} is opt step {opt_step}, which has no val row; "
-                          f"using the nearest one at or before it, opt step {row}")
+    window = range(opt_step, opt_step + log_every)
+    rows = sorted(s for s in val_ces if s in window)
+    if not rows:
+        return None, (f"checkpoint {checkpoint_step} is opt step {opt_step}, and no val row lies in "
+                      f"[{window.start}, {window.stop}), where its probe's value would be logged")
+    return val_ces[rows[0]], (f"checkpoint {checkpoint_step} is opt step {opt_step}; its probe's value "
+                              f"is logged on row {rows[0]}")
 
 
 def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
@@ -333,7 +340,9 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
     print(f"  recorded held-out val CE : {'—' if expect is None else f'{expect:.4f}'}  ({chosen})")
     if expect is None:
         # A DoD gate that can't find the recorded metric must not exit success —
-        # otherwise an un-checkable run reads as "reproduced". Distinct code 2.
+        # otherwise an un-checkable run reads as "reproduced". Distinct code 2. Only a
+        # value found in the checkpoint's own logging window reaches the comparison
+        # below, so REPRODUCED (exit 0) is never read off another probe's number.
         print("  verdict: NO recorded metric to compare against — cannot verify "
               "(measured value logged above).")
         raise SystemExit(2)

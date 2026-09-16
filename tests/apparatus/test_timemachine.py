@@ -60,34 +60,57 @@ def test_recorded_val_ces_are_the_finite_rows_by_opt_step(runs):
     assert tm.recorded_val_ces("r") == {10: pytest.approx(5.10), 40: pytest.approx(4.8947)}
 
 
-def test_a_real_micro_step_checkpoint_matches_its_own_val_row(runs):
-    """#348: orbax names checkpoints by micro-step. run_287's opt step 184 is checkpoint
-    23551 at 128 accumulation steps; matching 23551 against the opt-step keys never
-    fired, so every revival silently compared against the last logged val CE."""
-    metrics = "step,val_ce\n120,5.30\n184,4.9021\n248,4.71\n"
-    _make_run(runs, "r", meta={"parameters": {"ACCUMULATION_STEPS": 128}}, metrics=metrics)
+# Val rows copied by hand from runs/run_287_adamw_lr0.0001_s0/metrics.csv, around its
+# checkpoints. That run probes every 8 opt steps and logs a row every 5, so each probe's
+# value lands on the first multiple of 5 at or after it: probe 56 -> row 60, 64 -> 65,
+# 176 -> 180, 184 -> 185, 248 -> 250, 256 -> 260, 264 -> 265, 504 -> 505, 512 -> 515.
+RUN_287_VAL_ROWS = "step,val_ce\n60,7.8468\n65,7.6431\n180,6.5459\n185,6.4883\n250,6.1998\n" \
+                   "260,6.1670\n265,6.1478\n505,5.8352\n515,5.8346\n"
+RUN_287_ACCUMULATION = 128
+
+
+@pytest.mark.parametrize("checkpoint, opt_step, row, value, previous_probe", [
+    (8191, 64, 65, 7.6431, 7.8468),    # the first checkpoint
+    (23551, 184, 185, 6.4883, 6.5459),
+    (32767, 256, 260, 6.1670, 6.1998),
+    (65535, 512, 515, 5.8346, 5.8352),  # the latest
+])
+def test_a_real_checkpoint_reads_its_own_probe_from_run_287(runs, checkpoint, opt_step, row, value, previous_probe):
+    """#348: orbax names checkpoints by micro-step, metrics.csv by opt step. #351: a probe's
+    val CE is written on the next logging row, not its own step. None of run_287's
+    checkpoints has a row at its exact opt step, so matching either way failed on real
+    data: first against opt-step keys that micro-steps never hit, then against the
+    previous probe's row."""
+    _make_run(runs, "r", meta={"parameters": {"ACCUMULATION_STEPS": RUN_287_ACCUMULATION}},
+              metrics=RUN_287_VAL_ROWS)
     val_ces = tm.recorded_val_ces("r")
     accumulation = tm.runlog.recorded_params(tm.load_meta("r"))["ACCUMULATION_STEPS"]
-    assert tm.checkpoint_opt_step(23551, accumulation) == 184
-    value, chosen = tm.val_ce_for_checkpoint(val_ces, 23551, accumulation)
-    assert value == pytest.approx(4.9021), "the checkpoint's own row, not the last one (4.71)"
-    assert "opt step 184" in chosen
+    assert tm.checkpoint_opt_step(checkpoint, accumulation) == opt_step
+    assert opt_step not in val_ces, "run_287 never logs a val row at a checkpoint's own opt step"
+    got, how = tm.val_ce_for_checkpoint(val_ces, checkpoint, accumulation)
+    assert got == pytest.approx(value) and got != pytest.approx(previous_probe)
+    assert f"row {row}" in how
 
 
-def test_a_checkpoint_between_probes_says_which_row_it_is_compared_with():
-    val_ces = {120: 5.30, 184: 4.9021, 248: 4.71}
-    value, chosen = tm.val_ce_for_checkpoint(val_ces, 25599, 128)  # opt step 200
-    assert value == pytest.approx(4.9021)
-    assert "opt step 200" in chosen and "no val row" in chosen and "opt step 184" in chosen
+def test_the_first_checkpoint_matches_even_with_no_earlier_row():
+    """The old fallback returned None when no row sat at or before the checkpoint, so a
+    CSV whose first val row is the first probe's (row 65 for opt 64) lost it."""
+    got, _ = tm.val_ce_for_checkpoint({65: 7.6431, 185: 6.4883}, 8191, RUN_287_ACCUMULATION)
+    assert got == pytest.approx(7.6431)
 
 
-def test_nothing_honest_to_compare_with_is_none_and_says_why():
-    val_ces = {120: 5.30}
-    value, why = tm.val_ce_for_checkpoint(val_ces, 12799, None)
-    assert value is None and "ACCUMULATION_STEPS" in why, "today's config is never used to guess"
-    value, why = tm.val_ce_for_checkpoint(val_ces, 1279, 128)  # opt step 10, before the first row
-    assert value is None and "before the first val row" in why
-    assert tm.val_ce_for_checkpoint({}, 23551, 128)[0] is None
+def test_no_row_in_the_window_is_none_never_another_probe():
+    """run_287 has no val row in [190, 195): probe 192 is on row 195. Checkpoint 24319 is
+    opt 190, and returning row 185 or 195 would compare the weights with another probe."""
+    val_ces = {180: 6.5459, 185: 6.4883, 195: 6.4487}  # run_287's rows; row 190 is blank there
+    got, why = tm.val_ce_for_checkpoint(val_ces, 24319, RUN_287_ACCUMULATION)
+    assert got is None and "[190, 195)" in why
+
+
+def test_nothing_to_place_the_checkpoint_by_is_none_and_says_why():
+    got, why = tm.val_ce_for_checkpoint({65: 7.6431}, 8191, None)
+    assert got is None and "ACCUMULATION_STEPS" in why, "today's config is never used to guess"
+    assert tm.val_ce_for_checkpoint({}, 8191, RUN_287_ACCUMULATION)[0] is None
 
 
 def test_recorded_val_ces_missing_file_is_empty(runs):

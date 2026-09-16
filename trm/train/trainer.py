@@ -30,7 +30,7 @@ from trm.config import (
     resolve_root,
 )
 from trm.model import build_model
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
+from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS, VAL_EVERY_OPT_STEPS
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
@@ -53,7 +53,6 @@ from trm.data.loaders import TextDataGenerator, DataMixer
 
 load_dotenv()
 
-LOG_REAL_STEPS = 5
 PREFETCH_SIZE = 128
 
 # Abort training after this many consecutive non-finite micro-steps.
