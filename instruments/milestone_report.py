@@ -37,6 +37,7 @@ import sys
 import time
 import traceback
 
+from instruments._common import REPO_ROOT, add_checkpoint_argument, git_head, module_env
 from trm.runtime.layout import CHECKPOINT_ITEMS  # standard library only, so --help stays instant
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -45,7 +46,6 @@ REPORTS = {}  # assembles other tools' sections; each number is declared by the 
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # What `--quick` hands dump_transcripts. A name, so a test can feed this exact argv to
 # that tool's real parser: it once passed a flag the tool did not define (#335).
 QUICK_TRANSCRIPT_ARGS = ("--prompts", "2", "--max-new-tokens", "32")
@@ -58,8 +58,7 @@ def run_tool(module, extra_args=(), timeout=None):
     so a module path is what identifies them — and it keeps working wherever the
     file sits inside its package."""
     cmd = [sys.executable, "-m", module, *extra_args]
-    env = dict(os.environ, PYTHONPATH=REPO_ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
-    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, env=module_env(), capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
         stderr_tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
         raise RuntimeError(
@@ -102,7 +101,7 @@ def section_transcripts(fwd_args, quick_args, timeout):
     # Inline the transcript file it saved — cleaner than the streamed stdout.
     for line in out.splitlines():
         if "Saved " in line:
-            path = os.path.join(REPO_ROOT, line.split("Saved ", 1)[1].strip())
+            path = os.path.join(str(REPO_ROOT), line.split("Saved ", 1)[1].strip())
             if os.path.exists(path):
                 with open(path) as f:
                     return f"(from {path})\n\n{f.read().strip()}"
@@ -126,18 +125,9 @@ def section_val_ce(checkpoint_path):
             f"skip {VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
 
 
-def git_commit():
-    try:
-        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                              capture_output=True, text=True).stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
-
-
 def main():
     parser = argparse.ArgumentParser(description="run all diagnostics against a checkpoint, emit one report")
-    parser.add_argument("--ckpt", "--checkpoint-path", dest="checkpoint_path", default=None,
-                        help="Orbax checkpoint dir (default: the latest run's)")
+    add_checkpoint_argument(parser, aliases=("--ckpt",))
     parser.add_argument("--out", default=None,
                         help="report path (default: <run dir>/milestone_report_step_<n>.md)")
     parser.add_argument("--quick", action="store_true",
@@ -191,7 +181,7 @@ def main():
         f"- generated: {datetime.datetime.now().astimezone().isoformat()}",
         f"- arch: {MODEL_ARCH}",
         f"- checkpoint: {checkpoint_path}",
-        f"- commit: {git_commit()}",
+        f"- commit: {git_head() or 'unknown'}",
         "",
     ]
     for s in sections:

@@ -62,7 +62,8 @@ class MeasuredPeak(NamedTuple):
     arch: str
     config: dict   # resolved-config values that must all match, plus "batch"
     gb: float
-    source: str    # where the number came from, and what kind of reading it is
+    source: str    # where the number came from
+    reading: str   # what it measured: "card" (nvidia-smi, the whole card) or "arena" (the allocator's pool only)
 
 
 # Training peaks measured on the card, each for one exact config — the only numbers
@@ -71,11 +72,11 @@ class MeasuredPeak(NamedTuple):
 _PLAIN_ARENA_PEAKS_MIB = {8: 4112, 9: 4437, 10: 4762}   # trm/config.py, the PLAIN_LAYERS note
 MEASURED_PEAKS = (
     MeasuredPeak("refiner", {"dim": 960, "encoder_layers": 7, "batch": 1}, 5.0,
-                 "runs/run_20260813_214725 (#157), nvidia-smi on the 6GB RTX 2060"),
+                 "runs/run_20260813_214725 (#157), nvidia-smi on the 6GB RTX 2060", "card"),
     *(MeasuredPeak("plain", {"dim": 960, "num_heads": 15, "num_layers": layers, "post_norm": False,
                              "batch": 1}, mib * MIB / 1e9,
                    f"instruments.vram_headroom_smoke 2026-09-13: {mib} MiB allocator arena peak "
-                   f"under cuda_async (trm/config.py, PLAIN_LAYERS)")
+                   f"under cuda_async (trm/config.py, PLAIN_LAYERS)", "arena")
       for layers, mib in _PLAIN_ARENA_PEAKS_MIB.items()),
 )
 

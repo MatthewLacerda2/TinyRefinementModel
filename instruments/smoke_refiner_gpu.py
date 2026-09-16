@@ -46,6 +46,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from instruments._common import F16_MAX, param_count
 from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
@@ -58,8 +59,7 @@ REPORTS = {
 }
 
 
-# f16's largest finite value. The margin is what the smoke demands is left unused.
-F16_MAX = 65504.0
+# The margin is what the smoke demands is left unused of F16_MAX.
 # The champion sits at 0.6% headroom and is one rounding from #229's whole-window
 # NaN. 50% (a factor of two) is the smallest bar that would have caught it while
 # leaving ordinary activation growth alone -- prose runs at 47.7, six orders below.
@@ -154,8 +154,7 @@ def main():
 
     refuse_untraced(args.arch)  # before building 138M params for nothing
     model = arch_build(args.arch, dim=LATENT_DIM, seed=42)
-    n = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
-    print(f"📐 {args.arch}: {n / 1e6:.2f}M params")
+    print(f"📐 {args.arch}: {param_count(model) / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as
     # in training — the peak that matters is grad step + resident optimizer state.
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)

@@ -11,6 +11,13 @@ mu_dtype (f32 vs bf16). If bf16-mu is sound, its loss trajectory tracks f32-mu c
 stored as bfloat16 while the variance (nu) stays f32.
 
     PYTHONPATH=. ./venv/bin/python -m instruments.bf16_mu_smoke
+
+The one recorded result — bf16-mu tracks f32-mu to 0.06% of loss, cited in
+trm/train/optimizers.py — was measured at commit 3859e57 on a RefinerForTraining at dim
+512, 16 heads, 7 encoder layers. The defaults here now follow config (#167, #319), so
+running with no flags does NOT reproduce that recording; pass `--arch refiner --dim 512
+--heads 16` for that. And at config's dim 960 the A/B runs in f32 compute with two
+models' optimizer state in one process, which may not fit the 6GB card.
 """
 
 import os
@@ -116,8 +123,11 @@ def main():
     ap.add_argument("--batch", type=int, default=BATCH_SIZE)
     ap.add_argument("--depth", type=int, default=6, help="fixed refinement depth for a clean A/B")
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--dim", type=int, default=LATENT_DIM, help="model width (default: config LATENT_DIM)")
-    ap.add_argument("--heads", type=int, default=NUM_HEADS, help="attention heads (default: config NUM_HEADS)")
+    ap.add_argument("--dim", type=int, default=LATENT_DIM,
+                    help="model width (default: config LATENT_DIM). The recorded 0.06%% result was at 512, "
+                         "and dim 960 in f32 compute may not fit 6 GB")
+    ap.add_argument("--heads", type=int, default=NUM_HEADS,
+                    help="attention heads (default: config NUM_HEADS; the recorded result used 16)")
     add_arch_argument(ap)
     args = ap.parse_args()
     size = model_size(args.arch, args.dim, args.heads)

@@ -40,7 +40,10 @@ Usage — safe to run while training, as long as you leave --device alone:
 import argparse
 import datetime
 import os
-import subprocess
+
+# Module-level names on purpose: select_device and main look them up here, which is
+# also where a test replaces them.
+from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -187,28 +190,6 @@ def transcript_filename(opt_step, device):
     return f"step_{opt_step:06d}_{device}.md"
 
 
-def git_head():
-    """The commit generating this transcript — distinct from the one that trained
-    the weights, and after a few PRs they are nowhere near each other."""
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def gpu_memory_used_mib():
-    """Used VRAM, or None if the card cannot be queried."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
-        return int(out.stdout.strip().splitlines()[0])
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        return None
-
-
 def select_device(device, force=False):
     """Write the backend choice into the environment before JAX is imported.
 
@@ -242,8 +223,7 @@ def prompt_count(value):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="fixed-prompt transcript logbook")
-    parser.add_argument("--checkpoint-path", default=None,
-                        help="checkpoint dir (default: the latest checkpointed run)")
+    add_checkpoint_argument(parser)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu",
                         help="cpu (default) is safe beside a training run; gpu is the "
                              "canonical series but needs a free card")

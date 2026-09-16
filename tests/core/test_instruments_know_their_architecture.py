@@ -63,10 +63,15 @@ def _undeclared(source, nodes):
 
 
 def direct_constructions(source):
-    """Sorted (line, class) for every undeclared call that builds an arch by class name."""
+    """Sorted (line, class) for every undeclared call that builds an arch by class name,
+    including through an import alias (`from trm.model.plain import PlainTransformer as P`)."""
+    tree = ast.parse(source)
+    names = {cls: cls for cls in ARCH_CLASSES}
+    names.update({alias.asname: alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                  for alias in node.names if alias.name in ARCH_CLASSES and alias.asname})
     calls = ((node, getattr(node.func, "id", getattr(node.func, "attr", None)))
-             for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call))
-    return _undeclared(source, ((node, name) for node, name in calls if name in ARCH_CLASSES))
+             for node in ast.walk(tree) if isinstance(node, ast.Call))
+    return _undeclared(source, ((node, names[name]) for node, name in calls if name in names))
 
 
 @pytest.mark.parametrize("path", ALL_INSTRUMENTS, ids=lambda p: str(p.relative_to(INSTRUMENTS)))
@@ -100,6 +105,18 @@ def test_the_constructor_scan_catches_what_it_was_written_for():
     assert direct_constructions("# ARCH-SPECIFIC: refiner only\nm = RefinerForTraining(d, r)\n") == []
     quoted = '"""Notes.\n# ARCH-SPECIFIC: only a quotation\n"""\nm = RefinerForTraining(d, r)\n'
     assert direct_constructions(quoted) == [(4, "RefinerForTraining")]
+    aliased = "from trm.model.plain import PlainTransformer as P\nm = P(dim, rngs)\n"
+    assert direct_constructions(aliased) == [(2, "PlainTransformer")], "an import alias hides nothing"
+
+
+def test_the_scans_read_every_real_instrument():
+    """The self-checks above run on strings. This one ties the scans to the files: every
+    .py under instruments/, subpackages included, parses and is in the scanned set, so a
+    real file cannot drop out of both scans without failing here."""
+    on_disk = sorted(INSTRUMENTS.rglob("*.py"))
+    parsed = [path for path in ALL_INSTRUMENTS if isinstance(ast.parse(path.read_text()), ast.Module)]
+    assert parsed == on_disk and len(parsed) > 20, f"scanned {len(parsed)} of {len(on_disk)}"
+    assert INSTRUMENTS / "yardstick" / "eval_yardstick.py" in parsed, "subpackages are scanned too"
 
 
 # --- reaching into a retired architecture's internals (#314) -------------------

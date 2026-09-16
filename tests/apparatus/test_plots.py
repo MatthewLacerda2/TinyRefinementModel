@@ -395,3 +395,26 @@ def test_no_vram_panel_where_the_allocator_kept_no_statistics(tmp_path):
 
     assert "vram" not in figures["optimization_health.png"]["panels"]
     assert "vram" in dict(figures["optimization_health.png"]["omitted"])
+
+
+def test_the_arena_limit_is_the_runs_own_when_logged_and_flagged_when_assumed():
+    """#319: the limit was one frozen card's number for every run. A run that logs its
+    own is drawn against it; one that does not gets the RTX 2060 number, marked assumed."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    logged = RunLog("r", [{"step": 5, "arena_limit_mib": 5100.0}, {"step": 10, "arena_limit_mib": 5120.0}], {})
+    assert plots.arena_limit_mib(logged) == (5120.0, True)
+    assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], {})) == (plots.ARENA_LIMIT_MIB, False)
+
+
+def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp_path):
+    """#332 review: on a plain run, a missing column plain does log was reported as
+    'not measured by this architecture'. The reason comes from runlog, shared with report."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    plain = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {"parameters": {"MODEL_ARCH": "plain"}})
+    assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
+    reasoner_only = plots.why_omitted(plain, ["tau"])
+    assert reasoner_only == "not measured by this architecture"
