@@ -169,10 +169,14 @@ for case in cases:
         del sys.modules[name]
     try:
         config = importlib.import_module("trm.config")
+        values = {}
+        for a in attrs:  # "NAME" reads trm.config; "pkg.module:NAME" imports that module
+            module, _, name = a.rpartition(":")
+            values[a] = getattr(importlib.import_module(module) if module else config, name)
     except BaseException as exc:  # SystemExit included: that is how the guards refuse
         out.append({"ok": False, "error": str(exc)})
     else:
-        out.append({"ok": True, "values": {a: getattr(config, a) for a in attrs}})
+        out.append({"ok": True, "values": values})
 print("CONFIG_CASES " + json.dumps(out))
 """
 
@@ -185,7 +189,9 @@ def import_config_under(repo_root):
     long since imported it, so each case needs a fresh import. A separate interpreter
     per case paid a cold Python + jax start each time (#325); here one child re-executes
     the module per case instead. `cases` is a list of {VAR: value} overrides, where None
-    unsets VAR. Each case returns {"ok": True, "values": {attr: value}} when the import
+    unsets VAR. `attrs` name trm.config attributes, or "pkg.module:NAME" for a module
+    that reads config at import (it is re-imported per case too). Each case returns
+    {"ok": True, "values": {attr: value}} when the import
     succeeded, or {"ok": False, "error": message} when it raised. The fail-closed guards
     raise SystemExit, the same exception a bare `import trm.config` would have died of."""
     import json
@@ -200,3 +206,25 @@ def import_config_under(repo_root):
         line = [ln for ln in r.stdout.splitlines() if ln.startswith("CONFIG_CASES ")][-1]
         return json.loads(line[len("CONFIG_CASES "):])
     return run
+
+
+@pytest.fixture(scope="session")
+def in_vocab_encoder():
+    """Build a tokenizer whose ids fit a toy vocabulary of size `vocab`.
+
+    The real `r50k_base` emits ids in the tens of thousands, and `generate_text` pads
+    with the config PAD_TOKEN_ID (50256) on top of that. One out-of-range id makes a toy
+    model return all-NaN logits for the whole window (#233), so a generation test on the
+    real tokenizer sampled every token from NaN and passed only because NaN is
+    deterministic. The #229 guard is what surfaced it."""
+    class InVocabEncoder:
+        def __init__(self, vocab):
+            self.vocab = vocab
+
+        def encode(self, text):
+            return [1 + (ord(c) % (self.vocab - 2)) for c in text]
+
+        def decode(self, ids):
+            return "".join(chr(97 + (i % 26)) for i in ids)
+
+    return InVocabEncoder

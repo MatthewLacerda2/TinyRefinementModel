@@ -63,6 +63,9 @@ def test_the_card_reproduces_the_champions_fields_from_its_archived_metadata(tmp
     f = base_run.card_fields(run)
     assert f["commit"].startswith("5455e4d") and f["arch"] == "refiner" and f["dirty"] is True
     assert f["budget"] == 4000000000 and f["seeds"] == "DATA_SEED=42, MODEL_SEED=42"
+    # The champion's card records 259.4 h running across 11 sections
+    # (docs/registry/run_20260813_214725-refiner-base-4B.md). The band brackets it
+    # instead of pinning the float sum of per-section durations.
     assert f["sections"] == 11 and 250 < f["hours"] < 270, f["hours"]
     assert f["tokens_seen"] == 30465 * 131072 and f["val_ce"] == 3.6474 and f["peak_vram_mib"] == 5002
     assert f["lambada_acc"] is None and f["weights_sha256"] == "n/a"

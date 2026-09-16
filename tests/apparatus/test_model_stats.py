@@ -276,26 +276,61 @@ def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_n
 def test_the_plain_parameter_count_is_reproduced():
     """136.9M at 8 layers — the count the plain arch's launch banner prints."""
     assert model_stats.total_params("plain", num_layers=8, post_norm=False) == 136_862_144
-    # 9 layers, the default since 2026-09-13 (446 MiB headroom on the RTX 2060).
-    assert model_stats.total_params("plain", num_layers=9, post_norm=False) == 147933312
+    # 9 layers, the default since 2026-09-13 (446 MiB headroom on the RTX 2060). The
+    # count is the formula's; test_plain_formula_matches_the_real_model ties the formula
+    # to the instantiated tree, so this pins the default's size, not a measurement.
+    assert model_stats.total_params("plain", num_layers=9, post_norm=False) == 147_933_312
     from trm.config import PLAIN_LAYERS
     assert PLAIN_LAYERS == 9
 
 
-@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
-def test_the_report_runs_for_every_arch(arch):
-    """The report crashed on the default arch for a week, because its choices and
-    formulas were written when there were two. Every arch instruments.arch knows
-    must produce a report."""
+REPORT_ARCHES = ("plain", "refiner", "reasoner")
+
+# Every arch's report in one child interpreter, each run as `python -m instruments.report`
+# would run it; a run that raises or exits non-zero is recorded, not fatal to the rest.
+_REPORT_CHILD = r"""
+import contextlib, io, json, runpy, sys, traceback
+out = {}
+for arch in sys.argv[1:]:
+    buf = io.StringIO()
+    sys.argv = ["report", "--model-only", "--arch", arch]
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            runpy.run_module("instruments.report", run_name="__main__", alter_sys=True)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    except BaseException:
+        code, buf = 1, io.StringIO(buf.getvalue() + traceback.format_exc())
+    out[arch] = {"code": code, "stdout": buf.getvalue()[-4000:]}
+print("REPORTS " + json.dumps(out))
+"""
+
+
+@pytest.fixture(scope="module")
+def reports():
+    import json
     import subprocess
     import sys
+
+    proc = subprocess.run([sys.executable, "-c", _REPORT_CHILD, *REPORT_ARCHES],
+                          capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, f"the report child itself failed:\n{proc.stderr[-2000:]}"
+    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORTS ")][-1]
+    return json.loads(line[len("REPORTS "):])
+
+
+@pytest.mark.parametrize("arch", REPORT_ARCHES)
+def test_the_report_runs_for_every_arch(arch, reports):
+    """The report crashed on the default arch for a week, because its choices and
+    formulas were written when there were two. Every arch instruments.arch knows
+    must produce a report. All three run in one child interpreter (#325)."""
     from instruments.arch import ARCHES
 
     assert arch in ARCHES
-    proc = subprocess.run([sys.executable, "-m", "instruments.report", "--model-only", "--arch", arch],
-                          capture_output=True, text=True, timeout=300)
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    assert "total" in proc.stdout
+    run = reports[arch]
+    assert run["code"] == 0, run["stdout"][-2000:]
+    assert "total" in run["stdout"]
 
 
 def test_every_known_arch_is_covered_here():

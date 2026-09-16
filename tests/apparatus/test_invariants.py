@@ -97,10 +97,11 @@ def test_fractions_must_lie_in_zero_to_one():
     assert invariants.suspect_rows(_log([(10, {"zero_frac_dense_max": 0.5}) ])) == {}
 
 
-def test_the_live_run_has_exactly_the_two_known_artifacts():
-    """Integration against the real file, when it is present. 1,567 rows, two
-    resumes, two artifacts, no false positives — the ratio that makes the check
-    trustworthy rather than noisy."""
+def test_the_live_run_flags_only_resume_artifacts():
+    """Integration against the real file, when it is present. #196 measured 2 suspect
+    rows of 1,567, both resume artifacts, no false positives. The run kept going and
+    resumed again after that measurement, so the bound allows a few more; what must not
+    change is that every suspect row is a depth_avg (accumulator) artifact."""
     import pathlib
     from instruments.runlog import load
 
@@ -109,4 +110,4 @@ def test_the_live_run_has_exactly_the_two_known_artifacts():
         pytest.skip("live run's metrics.csv not present")
     suspect = invariants.suspect_rows(load(str(csv)))
     assert all("depth_avg" in reasons[0] for reasons in suspect.values())
-    assert len(suspect) <= 5, f"unexpectedly many suspect rows: {sorted(suspect)}"
+    assert len(suspect) <= 5, f"unexpectedly many suspect rows: {sorted(suspect)}"  # 2 at #196, plus slack
