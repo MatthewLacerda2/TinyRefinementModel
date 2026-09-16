@@ -37,6 +37,8 @@ import sys
 import time
 import traceback
 
+from trm.runtime.layout import CHECKPOINT_ITEMS  # standard library only, so --help stays instant
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # assembles other tools' sections; each number is declared by the tool that produced it
 
@@ -44,7 +46,6 @@ REPORTS = {}  # assembles other tools' sections; each number is declared by the 
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CKPT_ITEMS = ("model", "optimizer", "monitor_state", "step")
 
 
 def run_tool(module, extra_args=(), timeout=None):
@@ -161,7 +162,7 @@ def main():
         source = f"latest run {run_id}"
         print(f"🔎 Using latest checkpointed run: {run_id}")
 
-    step = ocp.CheckpointManager(checkpoint_path, item_names=CKPT_ITEMS).latest_step()
+    step = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS).latest_step()
     if step is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}.")
     print(f"📋 Milestone report: {source}, step {step}, arch '{MODEL_ARCH}'")
