@@ -1,32 +1,9 @@
 """Generation projects the tied head over one position, not all of them (#206).
 
-`get_logits_for_token` used to compute logits for every position and then take
-one row:
-
-    all_logits = run_model_inference(...)      # [1, 512, 50304]
-    logits = all_logits[0, token_idx, :]
-
-`token_idx` is traced, so XLA could not dead-code the other 511 rows. At the live
-config that is ~24.7 GMAC and a ~103MB f32 transient **per emitted token** — about
-a fifth of per-token generation compute — spent on rows nobody reads.
-
-The fix slices the pre-head state before the matmul. #206 pre-registered that
-this must be **bit-identical** — "slicing before vs after a matmul is exact, not
-approximate". That turned out to be false, and the difference matters enough to
-write down rather than quietly relax.
-
-Measured here, feeding the *same* pre-head state to both shapes:
-
-    matmul [1, 512, 32] @ [32, 37]  vs  matmul [1, 1, 32] @ [32, 37]
-    bit-identical : False
-    max abs diff  : 2.384e-07
-    max rel diff  : 1.816e-05
-    argmax agrees : True
-
-Float matmul is not shape-invariant: XLA selects a different kernel and reduction
-order for a 512-row operand than for a 1-row one, so the last ulp moves. The
-identity is exact in real arithmetic and inexact in f32, and no amount of correct
-slicing changes that.
+The pre-head state is sliced before the matmul instead of reading one row of the
+full projection. Slicing is exact in real arithmetic but not bit-identical in f32:
+float matmul is not shape-invariant, so the last ulp moves. The cost it removes and
+the measurement are in PR #213 and its comment on #206.
 
 So the gate is: agreement to a tolerance far below anything meaningful (the val-CE
 noise floor is σ≈0.03 nats, ~5 orders of magnitude larger), plus **exact agreement

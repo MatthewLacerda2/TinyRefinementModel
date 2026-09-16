@@ -1,61 +1,25 @@
 """Toy proof harness for the supervised serial latent scratchpad (#38, #62, #63, #67, #73, #79, #116).
 
-The arms on the chained-affine-maps task (docs/design/serial-scratchpad.md):
+The arms, one line each; what each measured, and why, is in its finding:
 
-  serial    — K ordered sub-slots, each written ONCE by a shared cross-attention
-              write block reading tokens + EARLIER slots only, each graded
-              against its sub-result r_k. The bet.
-  parallel  — identical module and parameters, but all K slots written in one
-              step from tokens only (no slot-to-slot flow, no order). The
-              matched control: exactly one variable removed.
-  depthonly — CausalRefiner at depth K, final-answer supervision only. The
-              is-it-just-depth control.
-  slotsonly — serial arm, but the answer readout sees ONLY the slots (tokens
-              removed from its context; identical parameters again). The #62
-              compression probe: if the slots really carry the computation, a
-              readout blinded to the tokens costs nothing; if accuracy
-              collapses, the readout was secretly re-reading the problem.
-  finalonly — serial wiring and parameters, but the slot grade is detached
-              (stop-gradient probe): the model is taught by final-answer CE
-              only, while the readout head still measures what each slot
-              carries. The does-the-decomposition-emerge ablation (#67).
-  annealed  — the graded serial arm, but λ_slot follows a schedule: fully on
-              for the first 40% of training, linear decay to zero across
-              40–60%, exactly zero for the last 40%. The scaffold-or-crutch
-              ablation (#73): #67 proved the grade must be present to
-              nucleate the chain — this asks whether, once the chain exists,
-              it sustains itself on final-answer loss alone. Held-out
-              accuracy is also measured at the grade-off step so decay across
-              the grade-free stretch is visible (crutch vs frozen-but-stable).
-              #95 parameterizes the schedule on the command line: the arm spec
-              `annealed@0.2` starts the decay at 20% of training (window stays
-              20%), and `annealed@0.4f0.1` decays to a floor of λ=0.1 and
-              holds, instead of going to zero. Plain `annealed` is #73's arm.
-  densedepth — CausalRefiner at depth K with the serial arm's supervision
-              schedule but NO slots: pass k's state at the answer position is
-              graded against sub-result r_k through a dedicated linear head —
-              the same grade path shape as the serial arm's slot_readout. The
-              is-it-the-grade-or-the-offload ablation (#79): if this matches
-              serial, the per-step grade carried the #38 win; if serial beats
-              it, external slots add performance beyond identical supervision.
-  densedepth_tied — same, but the per-step grade goes through the refiner's
-              tied LM head (the #75 per-pass path), which forces the working
-              state itself to approximate embed(r_k) each pass. Robustness
-              check on the grade-head choice, not the primary arm.
-
-Plus four fixed-budget arms (docs/design/budget-scratchpad.md, #63) — forgetting
-by capacity instead of by gate:
-
-  overwrite — BudgetScratchpadNet, S=1 physical slot, K sequential writes, each
-              overwriting the last. Same final target as serial (r_K). Phase 1:
-              does forgetting-by-overwrite still carry the chain with O(1) memory?
-  budget1   — BudgetScratchpadNet, S=1, on the RECALL task (final = (r_1+r_K) mod
-              m, needs r_1 held past the point it would normally be overwritten).
-              The no-retention-possible control for phase 2.
-  budget2   — BudgetScratchpadNet, S=2, same recall task. Must learn to park r_1
-              in one slot and let the other churn through r_2..r_K. The bet.
-  unlimited — ScratchpadNet (serial, append-all, tokens hidden from the readout)
-              on the recall task — the ceiling: nothing needs to be evicted.
+  serial, parallel, depthonly — the #38 bet and its two controls (order removed;
+      depth only). docs/findings/2026-07-03-serial-scratchpad-beats-controls.md
+  slotsonly — serial, readout sees only the slots (#62).
+      docs/findings/2026-07-04-slots-only-readout-compression-real.md
+  finalonly — serial, slot grade detached into a probe (#67).
+      docs/findings/2026-07-04-final-only-supervision-decomposition-is-taught.md
+  annealed — serial, grade on for 40%, decayed to zero by 60% (#73).
+      docs/findings/2026-07-10-grade-annealing-scaffold-not-crutch.md
+      `annealed@<onset>` and `annealed@<onset>f<floor>` move the decay and hold a
+      floor (#95). docs/findings/2026-07-12-anneal-floor-wins-onset-is-a-state.md
+  densedepth, densedepth_tied — CausalRefiner with per-pass grades and no slots,
+      through a linear head or the tied LM head (#79).
+      docs/findings/2026-07-07-dense-supervision-without-slots-collapses.md
+  overwrite, budget1, budget2, unlimited — fixed-budget memory (#63): one slot
+      overwritten on the chain task; 1, 2 or unlimited slots on the recall task.
+      docs/design/budget-scratchpad.md and the 2026-07-05 / 2026-07-16 findings.
+  budget1_local, budget2_local, unlimited_local — the same, per-link writer
+      context (#116). docs/findings/2026-07-18-budget-scratchpad-retention-win-slot-parking.md
 
 Task: r_0 = 0; r_k = (r_{k-1} * a_k + b_k) mod m from tokens [a_1 b_1 ... a_K b_K].
 Affine composition mod m is non-commutative — no order-free shortcut — and

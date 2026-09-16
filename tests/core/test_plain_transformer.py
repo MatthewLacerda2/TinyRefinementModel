@@ -1,10 +1,7 @@
 """The plain transformer is what remains after depth recurrence was retired.
 
-Plan A looped ONE shared block K times. That works on sequential composition
-([[plan-a-depth-recurrence-works]], unretracted) and is actively suppressed on
-language — the trained gate routes to 6 of 960 channels on prose, the second refine
-pass costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the activation scale
-does not recover it (docs/findings/2026-09-12-...).
+Plan A looped ONE shared block K times; why that was retired is
+docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md.
 
 What these guard is that the removal was a REMOVAL: no loop, no gate, no time
 signal, no depth dial, and `depth` accepted-and-ignored rather than quietly doing
