@@ -6,7 +6,7 @@
 
 [experiment]
 id = "238"
-status = "open"
+status = "recorded"
 title = "Does post-norm remove the depth-8 collapse?"
 hypothesis = """
 Two facts, established separately, may have one cause.
@@ -122,6 +122,13 @@ require = "all"
 [verdict]
 keep_if = ["collapse_removed", "benefit_is_depth_specific"]
 kill_if = ["collapse_survives"]
+recorded = "KILL"
+recorded_note = """
+2026-09-16 (#321). Stored from instruments/verdict.py's reading of the [results]
+below: collapse_survives fired (min_deep -0.35σ), collapse_removed not met. Matches
+docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md and the
+ROADMAP graveyard ("#238, KILL").
+"""
 
 # --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
 [results.d1]

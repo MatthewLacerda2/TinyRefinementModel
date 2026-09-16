@@ -189,6 +189,8 @@ its PR.
   `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
   **Not killed:** the mechanism on tasks that need cumulative computation, and
   `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
+  `experiments/depth/eval_refiner_finetune.py`, the Stage-2 transfer probe this
+  answered, removed 2026-09-16 (#321).
 
 - **Chunked (blockwise) attention on the live block** — KILLED 2026-08-03, apparatus
   removed 2026-09-15 (#291). Measured on the card against stock
@@ -242,7 +244,11 @@ its PR.
   write-once scratchpad has no iterated state for a fixed-point detector. The one
   untried home is the refiner's depth loop, where the state genuinely iterates:
   #140, with the transferable lessons (readout space, exact labels, gate-then-
-  ladder) written into it.
+  ladder) written into it. **Apparatus removed 2026-09-16 (#321)**, for this kill
+  and #123's learned-halting kill together: `HaltingScratchpadNet`,
+  `variable_chain_task`, the halt arms, the grade-logit gate and ladder and the
+  `--halting` flag in `experiments/scratchpad/harness.py`, and their six tests in
+  `tests/apparatus/test_scratchpad_harness.py`. The non-halting scratchpad line stays.
 - **time-blind refiner — no step signal** (#86 third arm, 2026-07-10, PR #97, closed
   unmerged; this line is the record): pre-registered on #86 before any result and run
   as the third arm of the time-signal grid (statetrack, dim 96, seeds {0,1,2}).
