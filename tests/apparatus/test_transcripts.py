@@ -114,7 +114,9 @@ class TestStepArithmetic:
         assert opt_step_from_checkpoint(1458175, 128) == 11392
 
     def test_the_boundary_does_not_drift(self):
-        assert opt_step_from_checkpoint(1409023, 128) == 11008
+        # The last sample of opt step 11,008 (11,008 x 128 - 1 = 1,409,023): resuming at
+        # n+1 lands exactly on the boundary, so it must not round down to 11,007.
+        assert opt_step_from_checkpoint(11_008 * 128 - 1, 128) == 11_008
 
 
 class TestNearestMetric:
