@@ -45,6 +45,7 @@ def test_init_loss_near_ln_vocab():
     tok = jax.random.randint(jax.random.PRNGKey(1), (8, 32), 0, vocab)
     logits = m(tok, depth=4)
     ce = float(jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=tok)))
+    print(f"PROBE init_ce={ce!r} ln_vocab={math.log(vocab)!r} gap={abs(ce - math.log(vocab))!r}")
     assert abs(ce - math.log(vocab)) < 0.7, f"init CE {ce:.3f} far from ln(vocab)={math.log(vocab):.3f}"
 
 
@@ -68,6 +69,7 @@ def test_overfit_single_batch():
     first = float(step(m, opt, inp, tgt))
     for _ in range(250):
         last = float(step(m, opt, inp, tgt))
+    print(f"PROBE first={first!r} last={last!r} ratio={last / first!r}")
     assert last < 0.15 * first, f"failed to overfit: {first:.3f} -> {last:.3f}"
 
 
