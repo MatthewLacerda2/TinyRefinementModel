@@ -190,7 +190,8 @@ its PR.
   **Not killed:** the mechanism on tasks that need cumulative computation, and
   `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
   `experiments/depth/eval_refiner_finetune.py`, the Stage-2 transfer probe this
-  answered, removed 2026-09-16 (#321).
+  answered, removed 2026-09-16 (#321); `experiments/depth/playground.py`, the
+  by-eye depth-sweep generator nothing ran any more, removed 2026-09-16 (#314).
 
 - **Chunked (blockwise) attention on the live block** — KILLED 2026-08-03, apparatus
   removed 2026-09-15 (#291). Measured on the card against stock

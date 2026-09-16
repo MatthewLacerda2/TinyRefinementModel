@@ -46,3 +46,41 @@ def test_no_checkpoint_degrades_gracefully(tmp_path):
     assert proc.returncode != 0
     assert "No checkpoint found" in proc.stderr + proc.stdout
     assert "Traceback" not in proc.stderr
+
+
+def test_the_depth_section_says_plain_has_no_dial_not_that_it_is_the_reasoner():
+    """#314: plain fell through to the reasoner's explanation."""
+    from instruments.milestone_report import section_depth_curve
+
+    body = section_depth_curve("plain", [], None, None)
+    assert "plain" in body and "reasoner" not in body
+
+
+def test_the_val_ce_section_drives_the_real_probe(monkeypatch, tmp_path):
+    """#314: section 3 called `trainer.ValidationProbe()` without its data_root and read
+    constants (VAL_BATCHES among them) that exist nowhere, so every report printed it as
+    FAILED. It must build the probe the trainer builds and name the probe's real knobs."""
+    from instruments.milestone_report import section_val_ce
+    from trm.runtime import restore
+    from trm.train import validation
+
+    monkeypatch.delenv("DATA_ROOT", raising=False)
+    assert section_val_ce("unused").startswith("skipped")
+
+    built = {}
+
+    class FakeProbe:
+        def __init__(self, data_root):
+            built["data_root"] = data_root
+
+        def run(self, model):
+            built["model"] = model
+            return 3.25
+
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path))
+    monkeypatch.setattr(restore, "restore_model", lambda path: (f"model@{path}", 7))
+    monkeypatch.setattr(validation, "ValidationProbe", FakeProbe)
+    body = section_val_ce("ckpt")
+    assert built == {"data_root": str(tmp_path), "model": "model@ckpt"}
+    assert body.startswith("validation CE: 3.2500 nats")
+    assert f"fixed depth {validation.VAL_FIXED_DEPTH}, {validation.VAL_ROWS} rows" in body
