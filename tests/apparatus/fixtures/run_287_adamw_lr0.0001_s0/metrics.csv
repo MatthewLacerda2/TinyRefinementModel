@@ -1,0 +1,6 @@
+step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,applied_zero_frac_dense_max,applied_grad_norm,avg_forget_cost,diversity_loss,temporal_drift,forget_density,tau,out_entropy,logz_mean,max_abs_logit,act_max,depth_avg,val_ce,wall_clock,mix,arena_peak_mib
+5,11.0061,22.0017,10.7057,25.8612,0.000073,0.000000,9.0973,,,,,,10.3235,11.3169,4.72,11.2,4.5235,,2026-09-16T16:21:47Z,fineweb-edu=0.850 codeparrot=0.100 finemath=0.050,4438
+10,10.2311,20.4782,10.6817,21.7775,0.000071,0.000000,7.4634,,,,,,10.1124,11.3270,8.25,12.0,4.7221,10.3416,2026-09-16T16:23:49Z,fineweb-edu=0.850 codeparrot=0.100 finemath=0.050,4438
+15,9.4953,19.0099,9.6872,16.5804,0.000067,0.000000,6.3855,,,,,,9.6054,11.3851,8.89,11.9,4.4664,,2026-09-16T16:25:43Z,fineweb-edu=0.849 codeparrot=0.100 finemath=0.050,4438
+510,5.5228,11.0560,5.7166,8.8232,0.000096,0.000000,1.5813,,,,,,6.3282,11.6791,17.62,18.8,4.4178,,2026-09-16T19:38:03Z,fineweb-edu=0.825 codeparrot=0.115 finemath=0.060,4438
+515,5.6141,11.2382,6.0851,8.8426,0.000089,0.000000,1.4801,,,,,,6.5769,11.5088,13.71,18.2,4.4788,5.8346,2026-09-16T19:40:11Z,fineweb-edu=0.824 codeparrot=0.115 finemath=0.060,4438

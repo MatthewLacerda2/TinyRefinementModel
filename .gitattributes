@@ -1,0 +1,2 @@
+# Recorded run excerpts keep the trainer's real bytes, CRLF line endings included (#325).
+tests/apparatus/fixtures/**/*.csv -text

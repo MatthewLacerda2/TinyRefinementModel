@@ -213,18 +213,27 @@ def test_auto_discovery_says_so_when_there_is_nothing(tmp_path, monkeypatch):
         runlog.load()
 
 
-def test_the_live_run_reads_cleanly(champion_run, monkeypatch):
-    """Against a real artifact: the recorded champion run (tests/apparatus/fixtures),
-    found the way a bare `runlog.load()` finds the latest run. It must parse, and its
-    arch-optional columns must come back absent."""
-    monkeypatch.chdir(champion_run.parent.parent)
+@pytest.mark.parametrize("name", ["run_20260813_214725", "run_287_adamw_lr0.0001_s0"])
+def test_a_recorded_run_reads_cleanly(name, recorded_run, monkeypatch):
+    """Against real artifacts, found the way a bare `runlog.load()` finds the latest run:
+    the 4B champion (August format) and a #287 arm (today's format, with wall_clock, mix
+    and arena_peak_mib). Each must parse to the types runlog promises, and the arch-optional
+    columns must come back absent. Excerpts: tests/apparatus/fixtures/README.md."""
+    import datetime
+
+    run = recorded_run(name)
+    monkeypatch.chdir(run.parent.parent)
     log = runlog.load()
-    assert log.run_id == "run_20260813_214725"
+    assert log.run_id == name
     assert log.fields, "the run's CSV has no header"
     assert log.metrics, "the recorded excerpt has rows"
-    assert log.has("ce") and log.last_step > 0
-    assert not log.has("avg_forget_cost"), "a refiner run never measures the forget cost"
+    assert log.has("ce") and log.has("val_ce") and log.last_step > 0
+    assert not log.has("avg_forget_cost"), "neither refiner nor plain measures the forget cost"
+    expected = {"wall_clock": datetime.datetime, "mix": str}  # runlog's _TEXT_COLUMNS
     for row in log.metrics:
         assert isinstance(row["step"], int)
-        assert all(value is None or isinstance(value, float)
-                   for key, value in row.items() if key != "step")
+        for key, value in row.items():
+            if key != "step":
+                assert value is None or isinstance(value, expected.get(key, float)), (key, value)
+    if "wall_clock" in log.fields:
+        assert log.has("wall_clock") and log.has("mix") and log.has("arena_peak_mib")
