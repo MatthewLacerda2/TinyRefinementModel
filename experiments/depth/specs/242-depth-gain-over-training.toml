@@ -4,7 +4,7 @@
 
 [experiment]
 id = "242"
-status = "open"
+status = "recorded"
 title = "Does the code-specific depth gain grow over training, or is it there from early on?"
 hypothesis = """
 Depth recurrence buys the champion +0.003454 nats on code (t=+15.8, n=204,380) and
@@ -129,6 +129,15 @@ require = "all"
 [verdict]
 keep_if = ["gain_grows_on_code", "prose_stays_neutral"]
 kill_if = ["gain_was_there_from_the_start"]
+recorded = "INCONCLUSIVE"
+recorded_note = """
+2026-09-16 (#321). Stored from instruments/verdict.py's reading of the [results]
+below: gain_grows_on_code met (+124.80σ) but prose_stays_neutral did not
+(+283.66σ), and the kill criterion did not fire. The sigma frame has stopped
+applying at this separation (see [protocol] floor_note); the raw table is the
+evidence. Matches docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md
+("#242, verdict INCONCLUSIVE").
+"""
 
 # --- Results (per seed, written by instruments/experiment.py; metric = mean) ---
 [results."pretrain/codeparrot"]

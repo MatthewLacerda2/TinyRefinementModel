@@ -1,11 +1,11 @@
 # PRE-REGISTERED. Criteria written and committed BEFORE any run; git records that
-# this commit precedes the [results] the runner appends. status = "open" is the
-# opposite of the three "retrofit" specs already here — this is the first spec in
+# this commit precedes the [results] the runner appends. status was "open" at
+# registration, the opposite of the three "retrofit" specs here — the first spec in
 # the repo written the way the format intends.
 
 [experiment]
 id = "235"
-status = "open"
+status = "recorded"
 title = "Post-norm on the residual branches: does bounding the SwiGLU output cost capability?"
 hypothesis = """
 The champion's encoder block 7 turns a norm2 input of magnitude 6 into a branch
@@ -97,6 +97,13 @@ require = "any"
 [verdict]
 keep_if = ["parity_at_every_depth"]
 kill_if = ["loses_at_a_depth"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-16 (#321). Stored from instruments/verdict.py's reading of the [results]
+below, not typed from prose: parity_at_every_depth met (d1 -1.21σ, d2 -1.93σ,
+d4 +0.59σ, d8 +0.84σ). The same verdict PR #237 reported when the run landed, with
+the same caveat: a thin KEEP, d2 a hair from the -2σ kill line.
+"""
 
 # --- Results (per seed, written by instruments/experiment.py; metric = acc) ---
 [results.d1]
