@@ -10,13 +10,14 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.config import MAX_SEQ_LEN
+from trm.model.plain import PlainTransformer
 from trm.train.grad_step import compute_grad_step
-from trm.model.reasoner import UniversalReasoner
 
 
 def _one_step():
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(5), batch_size=1)
+    # The shipped arch at the golden run's small config (#322).
+    model = PlainTransformer(60, nnx.Rngs(5), num_layers=2)
     rng = np.random.default_rng(11)
     batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     loss, out, grads, grad_norm = compute_grad_step(model, batch, step=0, depth=1)

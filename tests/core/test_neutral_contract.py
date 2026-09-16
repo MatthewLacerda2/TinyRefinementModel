@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN
+from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.model.contract import LanguageModel
 
@@ -122,7 +122,7 @@ def _tiny_refiner():
 def _reasoner():
     from trm.model.reasoner import UniversalReasoner
 
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(5), batch_size=1)
+    return UniversalReasoner(60, nnx.Rngs(5), batch_size=1)
 
 
 @pytest.mark.parametrize("build", [_tiny_refiner, _reasoner], ids=["refiner", "reasoner"])
