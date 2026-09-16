@@ -122,9 +122,6 @@ def load_execution(spec: Spec) -> Execution:
         raise ValueError(f"spec {spec.id}: [execution] is missing 'command'")
 
     if isinstance(ex["command"], str):
-        # A string is iterable, so this used to become one argument per CHARACTER
-        # and the sweep launched `p`, `y`, `t`, ... — 103 arguments for a command
-        # nobody could read in the failure. Reject it where the mistake is made.
         raise ValueError(
             f"spec {spec.id}: [execution] command must be a LIST of arguments, not a "
             f'string. Write ["python", "-m", "pkg.mod", "--flag", "value"], because a '

@@ -1,17 +1,9 @@
 """Capture the refinement trajectory — every latent state the model passes
 through while it thinks (#225).
 
-Depth inertness was found at the *end* of a 10-day run by eyeballing eight
-sampled prompts, because the production model could not hand back a single
-intermediate state: `return_all_states` existed only on the toy `CausalRefiner`,
-and even there it was entangled with `return_all_iters`, which drags the
-`[depth, b, s, vocab]` logit tensor along. States alone were never expensive.
-At the live config a whole trajectory is
-
-    9 states x 1 x 512 x 960 x 2 bytes = 8.8 MB
-
-so this has been affordable the entire time; the coupling is what kept it out of
-reach.
+States alone are cheap: a whole trajectory at dim 960 and seq 512 is
+9 x 512 x 960 x 2 bytes = 8.8 MB. Why the production model could not hand one back
+before, and the depth-inertness it would have caught earlier: #225.
 
 This module is the one API every downstream depth instrument uses (#227's
 readout probe, #228's visualiser). It ships the measurement and makes no claim

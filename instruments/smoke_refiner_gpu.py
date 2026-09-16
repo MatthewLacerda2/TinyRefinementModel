@@ -12,21 +12,11 @@ traces its encoder (where #235 overflowed) and also sweeps depths 1..MAX_STEPS_L
 through its unrolled refine loop. The reasoner has no trace here and is refused by
 name. The file keeps its historical name because the doctrine and findings cite it.
 
-**Token content is NOT irrelevant, and this file used to say it was.** The overflow
-that eventually mattered (#229 -> #235) is corpus-specific: the encoder's output
-reaches 65,120 on code against 47.7 on prose, with an f16 ceiling of 65,504. Random
-tokens produce prose-like magnitudes, so this smoke ran clean through an entire
-10-day run while the model trained itself to 0.6% of the ceiling.
-
-Two consequences, both fixed here:
-
-- with DATA_ROOT set the smoke reads REAL tokens and prefers **code**, the
-  distribution that actually stresses activations; random tokens stay the fallback so
-  the no-corpus path still works.
-- finiteness is not a sufficient assertion. A model at 99.4% of the ceiling is finite
-  and passes -- the champion passes today. So the smoke now measures peak activation
-  as a fraction of the f16 max and fails below a headroom margin. That is the
-  difference between a gate and a post-mortem.
+With DATA_ROOT set the smoke reads real tokens and prefers **code**, the distribution
+that stresses activations; random tokens are the no-corpus fallback. It fails on peak
+activation below a headroom margin of the f16 max, not only on non-finite values.
+Why both (the overflow is corpus-specific, and finiteness passed a model at 99.4% of
+the ceiling): `tests/apparatus/test_smoke_headroom.py` and #235.
 
 Also reads the underflow instrument (#82) on every grad step: per-group zero-gradient
 fractions. Embedding rows for absent tokens are legitimately zero; the dense groups

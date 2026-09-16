@@ -1,13 +1,7 @@
 """Metrics with a fixed expectation, used to condemn rows their accumulator broke.
 
-The motivating case (#194): a resume wrote `ce = 1.8746` into metrics.csv, 40%
-below its neighbours. Two explanations, very far apart in consequence — a
-harmless logging artifact, or the data pipeline re-serving text already trained
-on, which is silent in both directions by `split_samples`' own admission. What
-settled it was `depth_avg = 2.7641` on the same row: depth is a mean of uniform
-draws over 1..MAX_STEPS_LIMIT, so that number is not a measurement of anything.
-
-These tests pin the two properties that make the check worth having: it fires on
+The motivating case (#194), and why a fixed-expectation metric settles it, is
+`instruments/invariants.py`'s module docstring. These tests pin the two properties that make the check worth having: it fires on
 the real artifact, and it does not fire on a healthy run.
 """
 
