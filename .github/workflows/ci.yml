@@ -83,12 +83,13 @@ jobs:
       - name: Jax-free lint tests
         # AST and source lints marked `jaxfree` (#325): they need no jax, numpy or
         # tests/conftest.py, so they fail here in seconds instead of in the pytest job.
-        # The file list comes from the marker itself, so there is nothing to keep in
-        # sync; an empty list is an error rather than "pytest with no args", which
-        # would collect the whole suite. A marked file that grows a jax import fails
-        # here loudly, since this job has no jax.
+        # The file list is every test file that mentions `pytest.mark.jaxfree`, in any
+        # form (module pytestmark, a list, a decorator); an empty list is an error
+        # rather than "pytest with no args", which would collect the whole suite. A
+        # marked file that grows a jax import fails here loudly, since this job has no
+        # jax. The pytest job checks this selection against pytest's own (see there).
         run: |
-          files=$(grep -rl --include='test_*.py' 'pytestmark = pytest.mark.jaxfree' tests)
+          files=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)
           test -n "$files"
           pytest --noconftest -p no:cacheprovider -m jaxfree $files
 
@@ -153,6 +154,20 @@ jobs:
           # build, then the rest of the file with the cuda jax line stripped.
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
+
+      - name: Every jaxfree test is one the lint job runs
+        # The suites below deselect `-m jaxfree` however a test got the mark; the lint
+        # job selects files by grepping for it. If the two ever disagree, a test runs in
+        # neither job with CI green. This compares pytest's own collection of the mark
+        # with the lint job's file list, and fails on any difference (#342).
+        run: |
+          marked=$(pytest --collect-only -q -o addopts= -m jaxfree tests/core tests/apparatus | grep '::' | sed 's/::.*//' | sort -u)
+          listed=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests | sort)
+          if [ "$marked" != "$listed" ]; then
+            echo "pytest marks jaxfree in:"; echo "$marked"
+            echo "the lint job collects:"; echo "$listed"
+            exit 1
+          fi
 
       - name: Core suite
         # jaxfree tests run in the lint job instead (#325).

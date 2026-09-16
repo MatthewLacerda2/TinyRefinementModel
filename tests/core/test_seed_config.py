@@ -8,6 +8,8 @@ time, so the cases are fresh imports, both in one child interpreter
 def test_seeds_default_and_override(import_config_under):
     default, override = import_config_under(
         [{}, {"MODEL_SEED": "7", "DATA_SEED": "1234"}], attrs=("MODEL_SEED", "DATA_SEED"))
+    assert default["ok"], f"the default config refused to import: {default.get('error')}"
+    assert override["ok"], f"the seed-override config refused to import: {override.get('error')}"
     assert default["values"] == {"MODEL_SEED": 42, "DATA_SEED": 42}
     assert override["values"] == {"MODEL_SEED": 7, "DATA_SEED": 1234}
 

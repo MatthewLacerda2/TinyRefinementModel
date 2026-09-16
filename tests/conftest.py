@@ -117,7 +117,13 @@ def reasoner_model(make_reasoner_model):
 # Anchored on the marker file, not on a fixed number of parent hops: a
 # `dirname(dirname(__file__))` silently became `tests/` the day test files moved into
 # tier folders, and a subprocess run from there failed with a bare ModuleNotFoundError.
-REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
+_REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
+
+
+@pytest.fixture(scope="session")
+def repo_root():
+    """The repository root (the directory holding pyproject.toml), as a pathlib.Path."""
+    return _REPO
 
 
 @pytest.fixture
@@ -157,7 +163,10 @@ for case in cases:
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
-    sys.modules.pop("trm.config", None)
+    # Evict every repo module, not only trm.config: anything config imports that also
+    # reads the environment at load would otherwise stay cached from the first case.
+    for name in [m for m in sys.modules if m == "trm" or m.startswith("trm.")]:
+        del sys.modules[name]
     try:
         config = importlib.import_module("trm.config")
     except BaseException as exc:  # SystemExit included: that is how the guards refuse
@@ -169,7 +178,7 @@ print("CONFIG_CASES " + json.dumps(out))
 
 
 @pytest.fixture(scope="session")
-def import_config_under():
+def import_config_under(repo_root):
     """Import trm.config once per environment case, all cases in ONE fresh interpreter.
 
     config reads the environment and validates it at import, and the test process has
@@ -186,7 +195,7 @@ def import_config_under():
     def run(cases, attrs=()):
         r = subprocess.run(
             [sys.executable, "-c", _CONFIG_CHILD, json.dumps(cases), json.dumps(list(attrs))],
-            env={**os.environ, "JAX_PLATFORMS": "cpu"}, cwd=REPO, capture_output=True, text=True)
+            env={**os.environ, "JAX_PLATFORMS": "cpu"}, cwd=repo_root, capture_output=True, text=True)
         assert r.returncode == 0, f"the config-import child itself failed:\n{r.stderr}"
         line = [ln for ln in r.stdout.splitlines() if ln.startswith("CONFIG_CASES ")][-1]
         return json.loads(line[len("CONFIG_CASES "):])
