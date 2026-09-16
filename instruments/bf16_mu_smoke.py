@@ -3,7 +3,8 @@
 The VRAM win is already measured (it's what lets dim960 fit). The open question #18
 names is "optax state-dtype handling": does optax actually keep mu in bf16, upcast it
 for the update math, and still train *soundly* — or does the coarser moment quietly
-derail the loss? bf16-mu is now load-bearing for the base run, so we check it head-on.
+derail the loss? Every run stores mu in bf16 (`mu_dtype` in trm/train/optimizers.py,
+both the AdamW and the Muon partitions), so we check it head-on.
 
 Two runs, identical seed and identical batches of real r50k tokens, differing only in
 mu_dtype (f32 vs bf16). If bf16-mu is sound, its loss trajectory tracks f32-mu closely
