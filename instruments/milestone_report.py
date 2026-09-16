@@ -97,15 +97,19 @@ def section_depth_curve(arch, fwd_args, batches, timeout):
 
 
 def section_transcripts(fwd_args, quick_args, timeout):
+    """Run dump_transcripts and embed the transcript file it wrote, found through its
+    contract line (`dump_transcripts.written_transcript`), not its human output. The old
+    scan looked for "Saved " while the tool printed "✨ <path>", so no report ever
+    embedded a transcript (#338). If no file is named, the raw output is kept and says so."""
+    from instruments.dump_transcripts import written_transcript
+
     out = run_tool("instruments.dump_transcripts", [*fwd_args, *quick_args], timeout)
-    # Inline the transcript file it saved — cleaner than the streamed stdout.
-    for line in out.splitlines():
-        if "Saved " in line:
-            path = os.path.join(str(REPO_ROOT), line.split("Saved ", 1)[1].strip())
-            if os.path.exists(path):
-                with open(path) as f:
-                    return f"(from {path})\n\n{f.read().strip()}"
-    return out
+    path = written_transcript(out)
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return f"(from {path})\n\n{f.read().strip()}"
+    reason = f"named {path}, which does not exist" if path else "named no transcript file"
+    return f"(dump_transcripts {reason}; its output follows)\n\n{out}"
 
 
 def section_val_ce(checkpoint_path):
@@ -125,7 +129,7 @@ def section_val_ce(checkpoint_path):
             f"skip {VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="run all diagnostics against a checkpoint, emit one report")
     add_checkpoint_argument(parser, aliases=("--ckpt",))
     parser.add_argument("--out", default=None,
@@ -135,7 +139,7 @@ def main():
                              "for a fast smoke pass")
     parser.add_argument("--section-timeout", type=float, default=None,
                         help="seconds before a diagnostic subprocess is killed (default: none)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Heavy imports after arg parsing so --help stays instant.
     from trm.config import MODEL_ARCH
