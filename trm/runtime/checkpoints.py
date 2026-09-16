@@ -168,7 +168,7 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, w
                 "last_improvement_step": monitor.last_improvement_step,
                 "sft_active": sft_active,
                 "sft_start_step": monitor.sft_start_step,
-                "run_id": run_id,  # Save run_id inside checkpoint metadata
+                "run_id": run_id,
                 # Samples actually consumed, counted as they were served rather
                 # than re-derived (#24). Resume rebuilds the data position from
                 # this; computing it as step x BATCH_SIZE would mis-seek exactly

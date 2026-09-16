@@ -116,36 +116,10 @@ def state_tracking_task(key, batch, seq, n_states=5, n_gen=4):
 
 # --- nested arithmetic: a TREE, where every other task here is a chain ---------
 #
-# parity / cumsum5 / statetrack are all sequential scans: fold left to right, and
-# position t needs every input <= t. Depth helps them because aggregation is
-# cumulative in SEQUENCE LENGTH.
-#
-# This one is different, and it is the task the architecture was actually designed
-# for (#245). Evaluating ((a+b)*(c+d)) does not require scanning -- it requires
-# evaluating two independent subtrees and combining them. The compute needed scales
-# with NESTING DEPTH, not with sequence length, and a recurrent block that can do
-# one level of the tree per pass should need about `depth` passes.
-#
-# That yields a prediction no chain task can make: the refinement depth required
-# should track the expression's nesting depth, and stay flat in its length.
-#
-# Real data points the same way from the other side -- the one place depth
-# measurably pays on the corpus is bracket nesting in code (+0.00086 at nest 0
-# rising to +0.00541 at nest 4+).
-
-# Composition is over a fixed set of permutations, NOT arithmetic. The first
-# version of this task used +/* mod 7 and was uninformative, for a reason worth
-# recording: multiplication mod 7 makes zero absorbing, so 34% of nest-4
-# expressions evaluate to 0 and "always guess 0" scores 0.340. Both architectures
-# scored 0.334-0.341 -- i.e. both learned the majority class and nothing else,
-# while the spec had registered chance as 1/7 = 0.143. A floor computed from the
-# task instead of assumed would have caught it before the sweep.
-#
-# Permutation composition fixes it: composing random permutations leaves the final
-# state near-uniform, so the majority class sits at ~1/n_states, and the operation
-# is non-abelian so there is no sum/count shortcut (the Liu et al. "Transformers
-# Learn Shortcuts to Automata" regime that statetrack already uses -- but arranged
-# as a TREE rather than a chain, which is the whole point).
+# Compute scales with NESTING depth here, not sequence length (#245). Composition is
+# over a fixed set of permutations: near-uniform final state, no sum/count shortcut.
+# Why not +/* mod 7 (an absorbing zero made build 1 a majority-class floor), the
+# prediction, and the verdict: experiments/depth/specs/246-nested-arith-depth.toml.
 ARITH_N_STATES = 5
 ARITH_N_GEN = 4
 
