@@ -110,3 +110,93 @@ def make_reasoner_model():
 def reasoner_model(make_reasoner_model):
     """A small UniversalReasoner, shared across the session."""
     return make_reasoner_model(seed=0)
+
+
+# --- helpers several test files used to copy byte for byte (#325) -------------------
+
+# Anchored on the marker file, not on a fixed number of parent hops: a
+# `dirname(dirname(__file__))` silently became `tests/` the day test files moved into
+# tier folders, and a subprocess run from there failed with a bare ModuleNotFoundError.
+_REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
+
+
+@pytest.fixture(scope="session")
+def repo_root():
+    """The repository root (the directory holding pyproject.toml), as a pathlib.Path."""
+    return _REPO
+
+
+@pytest.fixture
+def ce_batch():
+    """Build a random (hidden [b, s, d], embedding [vocab, d], targets [b, s]) triple for
+    checking the chunked cross-entropy against a naive full-logit computation."""
+    import jax.numpy as jnp
+
+    def make(seed=0, b=2, s=40, d=8, vocab=17):
+        rng = np.random.default_rng(seed)
+        hidden = jnp.asarray(rng.standard_normal((b, s, d)), dtype=jnp.float32)
+        embedding = jnp.asarray(rng.standard_normal((vocab, d)), dtype=jnp.float32)
+        targets = jnp.asarray(rng.integers(0, vocab, size=(b, s)), dtype=jnp.int32)
+        return hidden, embedding, targets
+    return make
+
+
+@pytest.fixture(scope="session")
+def n_params():
+    """Count a model's trainable parameters: the sum of every nnx.Param leaf's size."""
+    import jax
+    from flax import nnx
+
+    return lambda model: sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
+
+
+_CONFIG_CHILD = r"""
+import importlib, json, os, sys
+cases, attrs = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+base = dict(os.environ)
+out = []
+for case in cases:
+    os.environ.clear()
+    os.environ.update(base)
+    for key, value in case.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    # Evict every repo module, not only trm.config: anything config imports that also
+    # reads the environment at load would otherwise stay cached from the first case.
+    for name in [m for m in sys.modules if m == "trm" or m.startswith("trm.")]:
+        del sys.modules[name]
+    try:
+        config = importlib.import_module("trm.config")
+    except BaseException as exc:  # SystemExit included: that is how the guards refuse
+        out.append({"ok": False, "error": str(exc)})
+    else:
+        out.append({"ok": True, "values": {a: getattr(config, a) for a in attrs}})
+print("CONFIG_CASES " + json.dumps(out))
+"""
+
+
+@pytest.fixture(scope="session")
+def import_config_under(repo_root):
+    """Import trm.config once per environment case, all cases in ONE fresh interpreter.
+
+    config reads the environment and validates it at import, and the test process has
+    long since imported it, so each case needs a fresh import. A separate interpreter
+    per case paid a cold Python + jax start each time (#325); here one child re-executes
+    the module per case instead. `cases` is a list of {VAR: value} overrides, where None
+    unsets VAR. Each case returns {"ok": True, "values": {attr: value}} when the import
+    succeeded, or {"ok": False, "error": message} when it raised. The fail-closed guards
+    raise SystemExit, the same exception a bare `import trm.config` would have died of."""
+    import json
+    import subprocess
+    import sys
+
+    def run(cases, attrs=()):
+        r = subprocess.run(
+            [sys.executable, "-c", _CONFIG_CHILD, json.dumps(cases), json.dumps(list(attrs))],
+            env={**os.environ, "JAX_PLATFORMS": "cpu"}, cwd=repo_root, capture_output=True, text=True)
+        assert r.returncode == 0, f"the config-import child itself failed:\n{r.stderr}"
+        line = [ln for ln in r.stdout.splitlines() if ln.startswith("CONFIG_CASES ")][-1]
+        return json.loads(line[len("CONFIG_CASES "):])
+    return run

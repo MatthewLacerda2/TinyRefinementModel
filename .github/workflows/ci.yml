@@ -65,7 +65,7 @@ jobs:
         # only those lines are installed — the rest of the file pulls jax, which this
         # job has no use for. Pinned at all because an unpinned linter turns
         # "upstream shipped a new rule" into a red build on an unrelated PR.
-        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)"
+        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)" "$(grep '^pytest==' requirements.txt)"
 
       - name: Ruff
         # Rule selection lives in pyproject.toml, so local `ruff check .` and CI
@@ -79,6 +79,19 @@ jobs:
         # read by reflection, or a module attribute a checkpoint's param tree still
         # needs to load — goes in ignore_names with its reason, never a lower bar.
         run: vulture
+
+      - name: Jax-free lint tests
+        # AST and source lints marked `jaxfree` (#325): they need no jax, numpy or
+        # tests/conftest.py, so they fail here in seconds instead of in the pytest job.
+        # The file list is every test file that mentions `pytest.mark.jaxfree`, in any
+        # form (module pytestmark, a list, a decorator); an empty list is an error
+        # rather than "pytest with no args", which would collect the whole suite. A
+        # marked file that grows a jax import fails here loudly, since this job has no
+        # jax. The pytest job checks this selection against pytest's own (see there).
+        run: |
+          files=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)
+          test -n "$files"
+          pytest --noconftest -p no:cacheprovider -m jaxfree $files
 
       - name: No stray branches
         # A pushed branch with no PR and no commit in a week is work nobody can
@@ -142,11 +155,26 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
+      - name: Every jaxfree test is one the lint job runs
+        # The suites below deselect `-m jaxfree` however a test got the mark; the lint
+        # job selects files by grepping for it. If the two ever disagree, a test runs in
+        # neither job with CI green. This compares pytest's own collection of the mark
+        # with the lint job's file list, and fails on any difference (#342).
+        run: |
+          marked=$(pytest --collect-only -q -o addopts= -m jaxfree tests/core tests/apparatus | grep '::' | sed 's/::.*//' | sort -u)
+          listed=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests | sort)
+          if [ "$marked" != "$listed" ]; then
+            echo "pytest marks jaxfree in:"; echo "$marked"
+            echo "the lint job collects:"; echo "$listed"
+            exit 1
+          fi
+
       - name: Core suite
-        run: pytest tests/core -q
+        # jaxfree tests run in the lint job instead (#325).
+        run: pytest tests/core -q -m "not jaxfree"
 
       - name: Apparatus suite
-        run: pytest tests/apparatus -q
+        run: pytest tests/apparatus -q -m "not jaxfree"
 
   golden:
     name: golden-run (CPU)

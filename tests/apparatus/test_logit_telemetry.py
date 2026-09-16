@@ -35,17 +35,9 @@ def _naive_stats(hidden, embedding, targets, pad_id):
     }
 
 
-def _fixture(seed=0, b=2, s=40, d=8, vocab=17):
-    rng = np.random.default_rng(seed)
-    hidden = jnp.asarray(rng.standard_normal((b, s, d)), dtype=jnp.float32)
-    embedding = jnp.asarray(rng.standard_normal((vocab, d)), dtype=jnp.float32)
-    targets = jnp.asarray(rng.integers(0, vocab, size=(b, s)), dtype=jnp.int32)
-    return hidden, embedding, targets
-
-
 @pytest.mark.parametrize("chunk_size", [16, 13, 40, 64])  # divides, doesn't divide, ==s, >s
-def test_stats_match_naive(chunk_size):
-    hidden, embedding, targets = _fixture()
+def test_stats_match_naive(chunk_size, ce_batch):
+    hidden, embedding, targets = ce_batch()
     pad_id = 0  # some targets are 0, so the pad mask genuinely excludes positions
     naive = _naive_stats(hidden, embedding, targets, pad_id)
     _, stats = chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=chunk_size)
@@ -54,10 +46,10 @@ def test_stats_match_naive(chunk_size):
             (name, float(naive[name]), float(stats[name]))
 
 
-def test_stats_carry_no_gradient():
+def test_stats_carry_no_gradient(ce_batch):
     """Differentiating through a stat must yield exactly zero — the backward drops
     the stats cotangent, so telemetry can never leak into training gradients."""
-    hidden, embedding, targets = _fixture(seed=1)
+    hidden, embedding, targets = ce_batch(seed=1)
 
     def stat_sum(h, e):
         _, stats = chunked_cross_entropy(h, e, targets, pad_id=0, chunk_size=16)

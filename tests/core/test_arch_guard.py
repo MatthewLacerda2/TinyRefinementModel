@@ -3,52 +3,57 @@ a typo would silently train the wrong architecture for a whole run — on the
 base run, ~9 GPU-hours discovered late or never. Import-time validation turns
 that into an immediate, explicit launch failure.
 
-Subprocess-based: config validates at import, and this process has long since
-imported it, so each case gets a fresh interpreter.
+config validates at import, and this process has long since imported it, so every
+case is a fresh import of trm.config. All nine run in one child interpreter
+(`import_config_under` in tests/conftest.py) rather than nine cold starts (#325); a
+refused case is one whose import raised, exactly what would kill a launch.
 """
 
-import os
-import subprocess
-import sys
+import pytest
 
-def _import_config_with(arch):
-    env = {**os.environ, "JAX_PLATFORMS": "cpu"}
-    if arch is None:
-        env.pop("MODEL_ARCH", None)
-    else:
-        env["MODEL_ARCH"] = arch
-    return subprocess.run([sys.executable, "-c", "import trm.config"],
-                          env=env, capture_output=True, text=True)
+CASES = {
+    "arch=refnier": {"MODEL_ARCH": "refnier"},
+    "arch=plain": {"MODEL_ARCH": "plain"},
+    "arch=refiner": {"MODEL_ARCH": "refiner"},
+    "arch=reasoner": {"MODEL_ARCH": "reasoner"},
+    "arch unset": {"MODEL_ARCH": None},
+    "time_signal=sinsuoidal": {"TIME_SIGNAL": "sinsuoidal"},
+    "time_signal=sinusoidal": {"TIME_SIGNAL": "sinusoidal"},
+    "time_signal=table": {"TIME_SIGNAL": "table"},
+    "time_signal unset": {"TIME_SIGNAL": None},
+}
 
-def test_unknown_model_arch_fails_closed_before_anything_builds():
-    r = _import_config_with("refnier")
-    assert r.returncode != 0, "a typo'd MODEL_ARCH must refuse to start"
-    assert "refnier" in r.stderr, "the error must echo the bad value"
-    assert all(name in r.stderr.split("use one of", 1)[-1] for name in ("plain", "refiner", "reasoner")), \
+
+@pytest.fixture(scope="module")
+def outcomes(import_config_under):
+    return dict(zip(CASES, import_config_under(list(CASES.values()))))
+
+
+def test_unknown_model_arch_fails_closed_before_anything_builds(outcomes):
+    r = outcomes["arch=refnier"]
+    assert not r["ok"], "a typo'd MODEL_ARCH must refuse to start"
+    assert "refnier" in r["error"], "the error must echo the bad value"
+    assert all(name in r["error"].split("use one of", 1)[-1] for name in ("plain", "refiner", "reasoner")), \
         "the error must list every valid name, the default included"
 
-def test_known_arches_and_unset_default_still_launch():
-    # plain is the default, so it is the one arch a fail-closed guard must never refuse.
-    for arch in ("plain", "refiner", "reasoner", None):
-        r = _import_config_with(arch)
-        assert r.returncode == 0, f"MODEL_ARCH={arch!r} must be accepted: {r.stderr}"
 
-def test_unknown_time_signal_fails_closed():
+def test_known_arches_and_unset_default_still_launch(outcomes):
+    # plain is the default, so it is the one arch a fail-closed guard must never refuse.
+    for case in ("arch=plain", "arch=refiner", "arch=reasoner", "arch unset"):
+        r = outcomes[case]
+        assert r["ok"], f"{case} must be accepted: {r.get('error')}"
+
+
+def test_unknown_time_signal_fails_closed(outcomes):
     """#86: same fail-closed contract as MODEL_ARCH — the time signal picks the
     refiner's param tree, so a typo must refuse to launch, not silently train
     a different model."""
-    env = {**os.environ, "JAX_PLATFORMS": "cpu", "TIME_SIGNAL": "sinsuoidal"}
-    r = subprocess.run([sys.executable, "-c", "import trm.config"],
-                       env=env, capture_output=True, text=True)
-    assert r.returncode != 0
-    assert "sinsuoidal" in r.stderr and "sinusoidal" in r.stderr and "table" in r.stderr
+    r = outcomes["time_signal=sinsuoidal"]
+    assert not r["ok"]
+    assert "sinsuoidal" in r["error"] and "sinusoidal" in r["error"] and "table" in r["error"]
 
-def test_known_time_signals_and_unset_default_launch():
-    for ts in ("sinusoidal", "table", None):
-        env = {**os.environ, "JAX_PLATFORMS": "cpu"}
-        env.pop("TIME_SIGNAL", None)
-        if ts is not None:
-            env["TIME_SIGNAL"] = ts
-        r = subprocess.run([sys.executable, "-c", "import trm.config"],
-                           env=env, capture_output=True, text=True)
-        assert r.returncode == 0, f"TIME_SIGNAL={ts!r} must be accepted: {r.stderr}"
+
+def test_known_time_signals_and_unset_default_launch(outcomes):
+    for case in ("time_signal=sinusoidal", "time_signal=table", "time_signal unset"):
+        r = outcomes[case]
+        assert r["ok"], f"{case} must be accepted: {r.get('error')}"
