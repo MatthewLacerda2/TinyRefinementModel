@@ -145,7 +145,7 @@ through marker lines in a log, so "did it crash, or did the watchdog stop it?"
 was answered by reading a file the watchdog had not finished writing — and a
 clean finish landing in that window read as a crash and got relaunched. The
 supervisor owns its child, and every decision comes from one pure function whose
-guards are evaluated *before* liveness. `tests/core/test_supervisor.py` states
+guards are evaluated *before* liveness. `tests/core/test_supervisor_decide.py` states
 that original bug as an assertion.
 - **Resumability**: state visible enough that a fresh session knows exactly where
   the loop left off and continues without re-deriving context.

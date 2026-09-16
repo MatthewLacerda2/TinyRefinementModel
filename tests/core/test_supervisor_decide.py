@@ -1,4 +1,5 @@
-"""The unattended-run guards, and the race that made them worth writing down.
+"""The unattended-run guards — `decide()` and the observations it is fed — and the
+race that made them worth writing down.
 
 The #16 base run was supervised by two bash processes talking through marker
 lines in a log file. The sentinel asked "the trainer is gone — did it crash, or
@@ -11,12 +12,11 @@ closing it.
 whose guards are evaluated before liveness. The load-bearing test in this file
 is `test_a_finished_run_is_not_a_crash_even_though_the_process_is_gone` — it is
 the original bug, stated as an assertion.
-"""
 
-import os
-import subprocess
-import sys
-import textwrap
+The rest of the supervisor lives beside this file: preflight and the GPU lock
+(`test_supervisor_preflight.py`), the loop and its heartbeat
+(`test_supervisor_heartbeat.py`), and the fit gate (`test_supervisor_fit_gate.py`).
+"""
 
 import pytest
 
@@ -37,12 +37,9 @@ from trm.runtime.supervisor import (
     STALLED,
     STOP,
     WALLCLOCK_COMPLETE,
-    GpuLock,
     Limits,
     Observation,
-    Preflight,
     State,
-    check_disk_headroom,
     decide,
     DELIBERATE,
     oom_in,
@@ -278,137 +275,6 @@ def test_plateau_detection_matches_the_trainers_own_wording(tmp_path):
     assert not plateau_in(read_log_since(tmp_path / "absent.log"))
 
 
-# --- preflight ----------------------------------------------------------------
-
-def test_disk_headroom_refuses_a_nearly_full_disk(tmp_path):
-    """A long run that fills the disk dies with a corrupt final checkpoint — it
-    costs the compute AND the artifact, which is the worst trade available."""
-    with pytest.raises(Preflight, match="free"):
-        check_disk_headroom(tmp_path, min_free_gb=1e9)
-    assert check_disk_headroom(tmp_path, min_free_gb=0.0) > 0
-
-
-def test_the_gpu_lock_is_a_serial_queue(tmp_path):
-    first = GpuLock(tmp_path / "gpu.lock", label="run-a")
-    first.acquire()
-    with pytest.raises(Preflight, match="one run at a time"):
-        GpuLock(tmp_path / "gpu.lock", label="run-b").acquire()
-    first.release()
-    GpuLock(tmp_path / "gpu.lock", label="run-b").acquire()  # now free
-
-
-def test_a_stale_lock_is_taken_over_not_respected(tmp_path):
-    """A lock nobody can clear turns one crash into a card that stays idle until
-    a human notices — worse than no lock at all."""
-    path = tmp_path / "gpu.lock"
-    dead = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead.wait()
-    path.write_text(f"{dead.pid} long-gone\n")
-
-    lock = GpuLock(path, label="new-run")
-    lock.acquire()
-    assert lock.holder()[0] == os.getpid()
-
-
-def test_an_unreadable_lock_is_stale(tmp_path):
-    path = tmp_path / "gpu.lock"
-    path.write_text("garbage written by a half-finished process\n")
-    GpuLock(path).acquire()
-
-
-def test_releasing_never_removes_someone_elses_lock(tmp_path):
-    """A supervisor that took over a stale lock must not delete whatever
-    replaced it — that would hand the card to two runs at once."""
-    path = tmp_path / "gpu.lock"
-    mine = GpuLock(path, label="mine")
-    mine.acquire()
-    path.write_text("999999 someone-else\n")
-    mine.release()
-    assert path.exists(), "we only ever remove our own lock"
-
-
-def test_the_lock_releases_on_the_way_out_of_a_with_block(tmp_path):
-    path = tmp_path / "gpu.lock"
-    with pytest.raises(RuntimeError):
-        with GpuLock(path, label="x"):
-            raise RuntimeError("the run blew up")
-    assert not path.exists()
-
-
-# --- the loop, against a real child process -----------------------------------
-
-def _supervisor_over(tmp_path, script: str, limits: Limits, **kw):
-    from trm.runtime.supervisor import Supervisor
-
-    child = tmp_path / "child.py"
-    child.write_text(textwrap.dedent(script))
-    reported = []
-    sup = Supervisor(
-        command=(sys.executable, str(child)),
-        limits=limits,
-        log_path=tmp_path / "train.log",
-        metrics_csv=tmp_path / "metrics.csv",
-        poll_seconds=0.2,
-        heartbeat_every=1,
-        report=reported.append,
-        **kw,
-    )
-    return sup, reported
-
-
-def test_the_supervisor_stops_a_child_that_reaches_the_budget(tmp_path):
-    csv_path = tmp_path / "metrics.csv"
-    sup, reported = _supervisor_over(tmp_path, f"""
-        import time, pathlib
-        p = pathlib.Path({str(csv_path)!r})
-        p.write_text("step,ce\\n")
-        for step in range(0, 200, 10):
-            p.write_text("step,ce\\n" + f"{{step}},3.0\\n")
-            time.sleep(0.1)
-        time.sleep(60)
-    """, Limits(stop_step=50, max_retries=0))
-
-    assert sup.run() == BUDGET_COMPLETE
-    assert any("BUDGET_COMPLETE" in line for line in reported)
-
-
-def test_the_supervisor_relaunches_a_crashing_child_then_gives_up(tmp_path):
-    sup, reported = _supervisor_over(tmp_path, """
-        import sys
-        sys.exit(1)
-    """, Limits(stop_step=10_000, max_retries=1))
-
-    assert sup.run() == GAVE_UP
-    assert sum("relaunched" in line for line in reported) == 1
-
-
-def test_the_heartbeat_survives_github_being_unreachable(tmp_path, monkeypatch, capsys):
-    """A supervisor that died because the network blipped would abandon a
-    running job over something that has nothing to do with the run."""
-    from trm.runtime import supervisor as sup_mod
-
-    def explode(*a, **k):
-        raise OSError("gh: command not found")
-
-    monkeypatch.setattr(sup_mod.subprocess, "run", explode)
-    sup_mod.github_reporter(16)("still going")
-    out = capsys.readouterr().out
-    assert "still going" in out, "the message still reaches the local log"
-    assert "heartbeat to #16 failed" in out
-
-
-def test_the_supervisor_kills_a_child_that_trips_the_plateau_guard(tmp_path):
-    log = tmp_path / "train.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    sup, _ = _supervisor_over(tmp_path, """
-        import time
-        print("CE Plateau Detected", flush=True)
-        time.sleep(60)
-    """, Limits(stop_step=10_000, max_retries=0))
-
-    assert sup.run() == KILLED_PLATEAU
-
-
 # --- an OOM is not a crash (2026-08-13, 2026-08-15) ----------------------------
 
 def test_an_oom_is_terminal_not_relaunchable():
@@ -478,135 +344,6 @@ def test_every_allocator_spells_oom_differently(marker):
     """BFC, cuda_async and the command-buffer path each word it their own way, and
     this project has now seen all three."""
     assert oom_in(marker + "\n")
-
-
-# --- the heartbeat is for humans, and humans stop reading -----------------------
-
-def test_routine_reports_are_daily_not_hourly():
-    """At hourly cadence a nine-day run posts ~270 identical RUNNING lines to its
-    tracking issue — #157 had 57 in two days — burying the launch decision, the
-    findings and the diagnoses the issue exists to record. A status feed nobody
-    can read is not a status feed."""
-    from trm.runtime.supervisor import Supervisor
-    import pathlib
-    sup = Supervisor(command=(), limits=Limits(stop_step=1),
-                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"))
-    assert sup.heartbeat_every * sup.poll_seconds / 3600 == 24.0
-
-
-def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
-    """Hours, not poll counts — the cadence a person cares about should not require
-    dividing by a polling interval they did not choose."""
-    from trm.runtime import supervisor as sup_mod
-
-    captured = {}
-
-    class Stub:
-        def __init__(self, **kw):
-            captured.update(kw)
-
-        def run(self):
-            return sup_mod.BUDGET_COMPLETE
-
-    original = sup_mod.Supervisor
-    sup_mod.Supervisor = Stub
-    try:
-        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
-                      "--heartbeat-hours", "6", "--poll-seconds", "300"])
-    finally:
-        sup_mod.Supervisor = original
-
-    assert captured["heartbeat_every"] == 72, "6h at a 300s poll is 72 polls"
-
-
-def test_a_decision_always_reports_regardless_of_cadence():
-    """Quieting the routine case must not quiet the events that matter. Every
-    non-CONTINUE decision posts immediately — that is what makes a daily heartbeat
-    safe rather than negligent."""
-    from pathlib import Path
-    from trm.runtime import supervisor as sup_mod
-    source = Path(sup_mod.__file__).read_text()
-    assert "decision.action != CONTINUE" in source, (
-        "decisions must bypass the heartbeat interval"
-    )
-
-
-# --- the heartbeat file survives relaunch (#224) --------------------------------
-
-def test_the_heartbeat_file_keeps_appending_across_relaunches(tmp_path):
-    """run_20260813_214725 lost six days of heartbeats because they went to whatever
-    stdout the relaunching shell provided. The supervisor now owns the file: a
-    crash-relaunch inside one supervisor, and a whole new supervisor process on the
-    same run, both append to it."""
-    beats = tmp_path / "run_x.supervisor.log"
-    crash = """
-        import sys
-        sys.exit(1)
-    """
-    sup, _ = _supervisor_over(tmp_path, crash, Limits(stop_step=10_000, max_retries=1),
-                              heartbeat_log=beats)
-    assert sup.run() == GAVE_UP
-    first = beats.read_text()
-    assert "supervising pid" in first and "relaunched as pid" in first and "GAVE_UP" in first
-
-    again, _ = _supervisor_over(tmp_path, crash, Limits(stop_step=10_000, max_retries=0),
-                                heartbeat_log=beats)
-    again.run()
-    text = beats.read_text()
-    assert text.startswith(first), "a new supervisor must append, never truncate"
-    assert text.count("supervising pid") == 2
-
-
-def test_routine_beats_reach_the_file_hourly_without_flooding_the_issue(tmp_path):
-    """The issue feed stays daily (it buries decisions otherwise); the file is what
-    the throughput plot samples, so it gets the finer cadence — in the exact
-    format the plot's reader parses."""
-    import re
-    from instruments.plots import _HEARTBEAT
-
-    beats = tmp_path / "run_x.supervisor.log"
-    csv_path = tmp_path / "metrics.csv"
-    sup, reported = _supervisor_over(tmp_path, f"""
-        import time, pathlib
-        p = pathlib.Path({str(csv_path)!r})
-        for step in range(0, 60, 2):
-            p.write_text("step,ce\\n" + f"{{step}},3.0\\n")
-            time.sleep(0.1)
-        time.sleep(60)
-    """, Limits(stop_step=50, max_retries=0), heartbeat_log=beats)
-    sup.heartbeat_every, sup.log_every = 10_000, 1
-
-    assert sup.run() == BUDGET_COMPLETE
-    routine = [ln for ln in beats.read_text().splitlines() if "RUNNING" in ln]
-    assert routine, "routine beats must reach the file"
-    assert all(_HEARTBEAT.match(ln) for ln in routine), routine[:2]
-    assert not any("RUNNING" in ln for ln in reported), "the issue feed stays quiet"
-    assert any(re.search("BUDGET_COMPLETE", ln) for ln in reported), "decisions still report"
-
-
-def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
-    from trm.runtime import supervisor as sup_mod
-
-    captured = {}
-
-    class Stub:
-        def __init__(self, **kw):
-            captured.update(kw)
-
-        def run(self):
-            return sup_mod.BUDGET_COMPLETE
-
-    run_dir = tmp_path / "run_20990101_000000"
-    original = sup_mod.Supervisor
-    sup_mod.Supervisor = Stub
-    try:
-        sup_mod.main(["--stop-step", "10", "--run-dir", str(run_dir),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate"])
-    finally:
-        sup_mod.Supervisor = original
-
-    assert captured["heartbeat_log"] == tmp_path / "run_20990101_000000.supervisor.log"
 
 
 # --- every guard, in every regime (#176) ----------------------------------------
@@ -750,94 +487,3 @@ def test_largest_checkpoint_counts_rolling_and_best_and_ignores_torn_writes(tmp_
         if finalized:
             (step / "_CHECKPOINT_METADATA").write_text("{}")
     assert largest_checkpoint_gb(tmp_path) == (3000 + 2) / 1e9
-
-
-# --- the fit gate: the real trainer, briefly, before committing the card (#168) ---
-
-def _gate(tmp_path, body, **kw):
-    from trm.runtime.supervisor import preflight_fit
-    script = tmp_path / "fake_trainer.py"
-    script.write_text(textwrap.dedent(body))
-    return preflight_fit(command=[sys.executable, str(script)], workroot=tmp_path / "runs",
-                         poll_s=0.1, tokens_per_opt_step=1000, **kw)
-
-
-def test_the_gate_passes_on_a_first_logged_row_and_leaves_nothing_behind(tmp_path):
-    (tmp_path / "runs").mkdir()
-    result = _gate(tmp_path, """
-        import os, pathlib, time
-        assert os.environ["VAL_EVERY_OPT_STEPS"] == "1" and os.environ["CHECKPOINT_EVERY_OPT_STEPS"] == "1"
-        print("Step 0005 | CE: 9.1 | Compute: 2.000s", flush=True)
-        p = pathlib.Path("runs/run_fitgate/metrics.csv")
-        p.write_text("step,ce,arena_peak_mib\\n5,9.1,4112\\n")
-        time.sleep(60)
-    """)
-    assert result.ok and result.arena_peak_mib == 4112.0
-    assert result.tokens_per_second == 5 * 1000 / 2.0
-    assert list((tmp_path / "runs").iterdir()) == [], "the probe's directory must be removed"
-
-
-def test_the_gate_refuses_an_out_of_memory(tmp_path):
-    (tmp_path / "runs").mkdir()
-    result = _gate(tmp_path, """
-        import time
-        print("2026-08-13 E external/xla: RESOURCE_EXHAUSTED: Out of memory allocating 626MiB", flush=True)
-        time.sleep(60)
-    """)
-    assert not result.ok and "does not fit" in result.reason
-    assert list((tmp_path / "runs").iterdir()) == []
-
-
-def test_the_gate_refuses_a_trainer_that_dies_or_never_logs(tmp_path):
-    (tmp_path / "runs").mkdir()
-    died = _gate(tmp_path, """
-        import sys
-        print("Traceback: data root missing", flush=True)
-        sys.exit(3)
-    """)
-    assert not died.ok and "exited (3)" in died.reason and "data root missing" in died.reason
-    hung = _gate(tmp_path, "import time\ntime.sleep(60)\n", timeout_s=1.0)
-    assert not hung.ok and "no logged row" in hung.reason
-    assert list((tmp_path / "runs").iterdir()) == []
-
-
-def test_the_gate_never_points_the_probe_at_the_real_run():
-    from trm.runtime.supervisor import _without_path_flags
-    assert _without_path_flags(["--checkpoint-path", "runs/run_real/checkpoints", "--new-run", "--x", "1"]) == ["--x", "1"]
-    assert _without_path_flags(["--checkpoint-path=runs/run_real/checkpoints"]) == []
-
-
-def test_a_refused_gate_stops_the_launch_and_releases_the_card(tmp_path, monkeypatch):
-    from trm.runtime import supervisor as sup_mod
-
-    launched = []
-
-    class Stub:
-        def __init__(self, **kw):
-            pass
-
-        def run(self):
-            launched.append(True)
-            return sup_mod.BUDGET_COMPLETE
-
-    lock_path = tmp_path / "gpu.lock"
-    monkeypatch.setattr(sup_mod, "Supervisor", Stub)
-    monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
-    monkeypatch.setattr(sup_mod, "preflight_fit",
-                        lambda args: sup_mod.FitResult(False, "out of memory — this config does not fit"))
-    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log")])
-    assert code == 1 and launched == []
-    assert not lock_path.exists(), "a refused launch must not keep holding the card"
-
-    monkeypatch.setattr(sup_mod, "preflight_fit", lambda args: (_ for _ in ()).throw(AssertionError("gate ran")))
-    assert sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
-                         "--skip-fit-gate"]) == 0
-    assert launched == [True]
-
-
-def test_a_killed_gates_leftovers_are_swept_by_the_next_gate(tmp_path):
-    runs = tmp_path / "runs"
-    (runs / ".fitgate_20260101_000000" / "runs").mkdir(parents=True)
-    (runs / "run_real").mkdir()
-    _gate(tmp_path, "import sys\nsys.exit(1)\n")
-    assert sorted(p.name for p in runs.iterdir()) == ["run_real"], "sweep probe dirs, never a real run"
