@@ -179,8 +179,8 @@ result that killed or gates something to this section, one line each, linking
 its PR.
 
 - **SFT-on-plateau flip** — removed 2026-09-16 (#323), non-novel. The one time it
-  fired it killed #157 at opt step 5,055 of 30,518 (CE 3.31 → 8.57, then the
-  optimizer rebuild OOM'd). The product is a base model; a fine-tune warm-starts
+  fired, at opt step 5,055 of #157's 30,518, it killed that launch (CE 3.31 → 8.57,
+  then the optimizer rebuild OOM'd); #157 was rewound past it and continued. The product is a base model; a fine-tune warm-starts
   from a stored champion in its own run. The plateau detector stays, as a report.
   Apparatus `instruments/sft_switch_smoke.py` and `tests/core/test_sft_autoflip_guard.py`
   removed with it, and the supervisor's plateau kill that guarded it.

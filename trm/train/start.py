@@ -43,12 +43,14 @@ if adopt_recorded_budget(checkpoint_path_from_argv(sys.argv)):
 import argparse
 import multiprocessing as mp
 
+from trm.config import ACCUMULATION_STEPS
 from trm.train.schedules import DECAY_STEPS
 from trm.train.trainer import (
     init_model_and_optimizer,
     setup_data_pipeline,
     train_loop,
 )
+from trm.runtime.rewind import refuse_sft_phase_checkpoint_dir
 from trm.runtime.run_tracker import RunTracker
 from trm.runtime.checkpoints import (discover_latest_run, discover_latest_checkpoint_run, exit_cleanly_on_sigterm,
                                      load_or_create_checkpoint)
@@ -91,6 +93,12 @@ if __name__ == "__main__":
                 checkpoint_run_id = discovered_run_id
                 active_checkpoint_path = os.path.join("runs", checkpoint_run_id, "checkpoints")
                 print(f"🔎 Auto-discovered latest run (no checkpoints yet): {checkpoint_run_id}")
+
+    # A checkpoint from the retired SFT phase is refused here, before the session
+    # below appends to run_metadata.json (#323). load_or_create_checkpoint repeats
+    # the check as a backstop.
+    if active_checkpoint_path is not None and not args.new_run:
+        refuse_sft_phase_checkpoint_dir(active_checkpoint_path, ACCUMULATION_STEPS)
 
     # 2. Start/Resume Run Tracker session
     run_tracker = RunTracker()

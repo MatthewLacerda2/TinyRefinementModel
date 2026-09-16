@@ -45,6 +45,26 @@ def test_the_trainer_reads_the_plateau_from_the_probe():
     assert "plateaued = monitor.push(" not in src
 
 
+def test_the_plateau_notice_is_rate_limited():
+    """`monitor.plateaued` stays True on every logging step until held-out CE
+    improves, so an unthrottled notice would bury the log. The throttle is inline
+    in train_loop, which needs data and a device to run, so its structure is
+    checked instead: the print sits under a condition on PLATEAU_NOTICE_EVERY and
+    last_plateau_notice, and that branch records when it fired."""
+    import ast
+    import inspect
+    from trm.train import trainer
+
+    assert trainer.PLATEAU_NOTICE_EVERY >= 50, "the notice should be occasional, not per-step"
+    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    notices = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+               and "PLATEAU_NOTICE_EVERY" in ast.unparse(node.test)
+               and "last_plateau_notice" in ast.unparse(node.test)]
+    assert len(notices) == 1, "one throttled plateau notice"
+    body = ast.unparse(notices[0])
+    assert "[Plateau]" in body and "last_plateau_notice = opt_step" in body
+
+
 def test_probe_slices_are_disjoint_and_start_at_the_trainers_own():
     from instruments.probe_sigma import slice_offsets
     from trm.train.validation import VAL_SKIP_SAMPLES

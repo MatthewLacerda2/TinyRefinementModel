@@ -1,6 +1,10 @@
 """Resuming from an earlier checkpoint is one mechanical act, and a refused save is loud (#188)."""
 
+import ast
 import datetime
+import json
+import pathlib
+import re
 
 import pytest
 
@@ -49,6 +53,44 @@ def test_an_sft_phase_monitor_state_is_refused_and_names_the_rewind():
     assert "python -m trm.runtime.rewind runs/run_X/checkpoints --to-opt-step 5056" in message
 
 
+def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
+    """The on-disk check fires on the newest finalized checkpoint and writes
+    nothing: run_metadata.json is byte-for-byte what it was."""
+    run = tmp_path / "run_X"
+    metadata = run / "run_metadata.json"
+    run.mkdir()
+    metadata.write_text('{"sessions": [{"start": "2026-08-15"}]}\n')
+    before = metadata.read_bytes()
+    checkpoints = run / "checkpoints"
+    _ckpt(checkpoints, 4992)
+    newest = _ckpt(checkpoints, 5120)
+    (newest / "monitor_state").mkdir()
+    (newest / "monitor_state" / "metadata").write_text(json.dumps({"sft_start_step": 5056 * ACCUM - 1}))
+    _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
+
+    with pytest.raises(SystemExit, match="--to-opt-step 5056"):
+        rw.refuse_sft_phase_checkpoint_dir(checkpoints, ACCUM)
+    assert metadata.read_bytes() == before
+
+
+def test_a_pretraining_checkpoint_dir_passes_the_launch_check(tmp_path):
+    _ckpt(tmp_path, 4992)
+    rw.refuse_sft_phase_checkpoint_dir(tmp_path, ACCUM)            # no monitor state: left to restore
+    rw.refuse_sft_phase_checkpoint_dir(tmp_path / "absent", ACCUM)  # a fresh run
+
+
+def test_the_trainer_refuses_before_it_starts_a_session():
+    """Read, not imported (start.py pulls in jax): the on-disk check must come
+    before RunTracker.start_session, which appends to run_metadata.json."""
+    source = (pathlib.Path(__file__).parents[2] / "trm" / "train" / "start.py").read_text()
+    lines = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            lines[name] = min(lines.get(name, node.lineno), node.lineno)
+    assert lines["refuse_sft_phase_checkpoint_dir"] < lines["start_session"]
+
+
 def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
     """The checkpoint saved on the flip's own boundary was written before the flip,
     so it is clean; the suggested opt step must select it and nothing later."""
@@ -57,7 +99,7 @@ def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path)
     flip_micro_step = 5056 * ACCUM - 1
     with pytest.raises(SystemExit) as refused:
         rw.refuse_sft_phase_resume({"sft_start_step": flip_micro_step}, 5120 * ACCUM - 1, tmp_path, ACCUM)
-    to_opt_step = int(str(refused.value).rsplit("--to-opt-step ", 1)[1])
+    to_opt_step = int(re.search(r"--to-opt-step (\d+)", str(refused.value)).group(1))
     chosen = rw.resolve(rw.checkpoints_in(tmp_path, ACCUM), to_opt_step)
     assert chosen.step == flip_micro_step
 
