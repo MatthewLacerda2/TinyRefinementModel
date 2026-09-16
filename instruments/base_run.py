@@ -51,9 +51,32 @@ def load_base_spec(path) -> referee.Spec:
     return spec
 
 
+def recorded_arch(run_dir) -> str | None:
+    """The MODEL_ARCH the run recorded in run_metadata.json, or None if none is readable.
+
+    A checkpoint has to be restored as the architecture it was trained as, and that is
+    a fact about the run, not about the process scoring it. Only the arch comes from the
+    run: LATENT_DIM, PLAIN_LAYERS, NUM_HEADS and the rest still come from this process's
+    config, and a mismatch there fails loudly at restore.
+
+    RunTracker rewrites the file in place at session start and end, so a milestone
+    scorer can read it half-written. That reads as no record (the MODEL_ARCH fallback)
+    rather than an exception, which would leave the milestone unscored with no journal
+    line, since the supervisor sends the scorer's output to /dev/null."""
+    try:
+        meta = json.loads((pathlib.Path(run_dir) / "run_metadata.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return meta.get("parameters", {}).get("MODEL_ARCH")
+
+
 def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False, arch=None,
                      python=sys.executable) -> dict | None:
-    """Run the yardstick on a checkpoint and append one line to the run's journal."""
+    """Run the yardstick on a checkpoint and append one line to the run's journal.
+
+    `arch` defaults to the run's recorded MODEL_ARCH; with none recorded the yardstick
+    falls back to MODEL_ARCH from config."""
+    arch = arch or recorded_arch(run_dir)
     run_dir = pathlib.Path(run_dir)
     out = run_dir / f"yardstick_step{step}{'_limit' + str(limit) if limit else ''}.json"
     argv = [python, "-m", "instruments.yardstick.eval_yardstick", "--checkpoint-path", str(checkpoint_path),

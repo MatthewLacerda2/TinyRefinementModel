@@ -110,3 +110,26 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
     sup.score_new_milestones()
     sup.score_new_milestones()
     assert len(launched) == 2 and all("--cpu" in a and "--limit" in a for a in launched)
+
+
+def test_scoring_restores_the_arch_the_run_recorded_not_the_shells(tmp_path, monkeypatch):
+    """#313: the yardstick must rebuild the param tree the run trained, and that is in
+    the run's metadata. The champion recorded `refiner`; the default here is `plain`.
+    A run that recorded nothing falls back to the yardstick's own MODEL_ARCH default, and
+    so does one whose metadata is caught mid-rewrite: RunTracker rewrites it in place, and
+    the milestone scorer's output goes to /dev/null, so raising would lose the milestone."""
+    calls = []
+    failed = type("Proc", (), {"returncode": 1, "stderr": "stubbed", "stdout": ""})()
+    monkeypatch.setattr(base_run.subprocess, "run", lambda argv, **kw: calls.append(argv) or failed)
+    recorded, bare, torn = tmp_path / "recorded", tmp_path / "bare", tmp_path / "torn"
+    for run in (recorded, bare, torn):
+        (run / "checkpoints" / "40").mkdir(parents=True)
+    (recorded / "run_metadata.json").write_text(FIXTURE.read_text())
+    (torn / "run_metadata.json").write_text(FIXTURE.read_text()[:100])
+
+    for run in (recorded, bare, torn):
+        assert base_run.main(["score", "--run", str(run), "--limit", "2", "--cpu"]) == 1
+        assert base_run.journal(run)[-1]["error"] == "stubbed", "a failed score still leaves its journal line"
+    with_meta, without, half_written = calls
+    assert with_meta[with_meta.index("--arch") + 1] == "refiner"
+    assert "--arch" not in without and "--arch" not in half_written
