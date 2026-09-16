@@ -126,14 +126,12 @@ def test_adoption_and_the_guard_agree_on_a_real_resume(tmp_path):
     assert horizon_mismatch(str(run), resolve_decay_steps(budget)) is None
 
 
-def test_the_live_run_would_survive_its_own_relaunch():
-    """Against the real #157 metadata, when present. This is the exact scenario the
-    power cut produced, and the reason the issue exists."""
+def test_the_live_run_would_survive_its_own_relaunch(champion_run):
+    """Against the #157 run's recorded metadata (tests/apparatus/fixtures). This is the
+    exact scenario the power cut produced, and the reason the issue exists."""
     from trm.train.schedules import resolve_decay_steps
 
-    run = "runs/run_20260813_214725"
-    if not os.path.exists(os.path.join(run, "run_metadata.json")):
-        pytest.skip("the #157 run is not on this machine")
+    run = str(champion_run)
     budget = adopt_recorded_budget(os.path.join(run, "checkpoints"), {})
     assert budget == 4_000_000_000
     assert horizon_mismatch(run, resolve_decay_steps(budget)) is None
