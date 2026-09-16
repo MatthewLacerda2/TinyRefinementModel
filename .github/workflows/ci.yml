@@ -28,7 +28,7 @@ on:
 #                         committed golden went stale once already, pre-#50)
 #   overfit smoke (CPU) — end-to-end training-path smoke at tiny scale: the
 #                         real grad step must collapse CE on one batch
-#   lint (ruff)         — errors and bugs only, never formatting (see the ruff
+#   lint                — errors and bugs only, never formatting (see the ruff
 #                         config in pyproject.toml). Its job is to catch the
 #                         class of defect that costs a run: an unused import
 #                         masking a rename, a shadowed name, an f-string that
@@ -48,7 +48,7 @@ on:
 # be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
   lint:
-    name: lint (ruff)
+    name: lint (ruff + vulture)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
@@ -74,8 +74,9 @@ jobs:
       - name: Dead code (vulture)
         # Paths, confidence and the few names read by reflection live in
         # [tool.vulture] in pyproject.toml, so `make lint` is the same check. A
-        # finding means delete it; a false positive goes in ignore_names with its
-        # reason, never a lower bar.
+        # finding means delete it. A name that is used without being referenced —
+        # read by reflection, or a module attribute a checkpoint's param tree still
+        # needs to load — goes in ignore_names with its reason, never a lower bar.
         run: vulture
 
       - name: No stray branches

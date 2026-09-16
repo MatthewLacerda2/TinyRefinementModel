@@ -95,6 +95,7 @@ def test_nesting_depth_labels_the_depth_a_token_sits_at_and_caps_it():
     assert by_nesting_depth([3, 1, 3, 2, 3], decode) == ["nest 0", "nest 0", "nest 1", "nest 1", "nest 0"]
     assert by_nesting_depth([1, 1, 3], decode, cap=1)[-1] == "nest 1+"
 
+
 def test_confidence_deciles_cover_the_closed_unit_interval():
     """p = 1.0 must land in the top bucket, not in an eleventh one — an off-by-one
     here silently creates a bucket holding only perfectly-confident positions."""
