@@ -17,6 +17,11 @@ Then tighten it — denser, more compact — but compactness serves readability,
 the finish line. If the clearest version of something isn't the densest, leave it
 clear. Don't end on clever one-liners nobody can debug later.
 
+A comment names the knob and links where the story lives; the story is written once.
+The incident behind a constant belongs in its finding, its PR, or the test that guards
+it — the comment says what the thing is, why this value, and points there. A story
+retold in four files drifts in four directions.
+
 Push back when it's earned:
 - If a feature or addition doesn't move the model's final performance, say so and say
   why it isn't pulling its weight.
