@@ -36,6 +36,7 @@ things, it doesn't go in this folder.
 - `2026-09-12-depth-recurrence-is-suppressed-not-exploited.md` — #242/#238/#246: depth recurrence works on chains but is actively switched off on language — the gate routes to 6 of 960 channels on prose, and bounding the activation scale does not rescue it (kill)
 - `2026-09-16-muon-halves-the-tokens-to-a-fixed-ce.md` — #26: Muon (x100 on the 2-D matrices) reaches held-out CE 5.85 in 20.97M tokens against AdamW's 44.56M, all three seeds, at 148M in f16 on Turing — and peak arena falls 380 MiB because Muon holds one momentum buffer where AdamW holds two moments. Adoption gated on #287: the control's LR was never swept (KEEP)
 - `2026-09-17-a-3x-peak-lr-beats-muons-win-over-the-same-control.md` — #287: AdamW peak LR 1e-4 → 3e-4 reaches CE 5.85 in 2.25x fewer tokens on every seed, more than Muon's 2.1x over the same control; #26's KEEP was largely a win over an undertuned baseline
+- `2026-09-17-muon-still-wins-against-a-tuned-adamw.md` — #26 stage 3: Muon reaches CE 5.85 in 1.42x fewer tokens than AdamW at the tuned 3e-4 peak (the 2.1x was against the undertuned 1e-4), at +4.8% wall-clock per step and 380 MiB less arena (KEEP)
 
 ## Entry template
 
