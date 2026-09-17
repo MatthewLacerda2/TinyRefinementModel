@@ -100,7 +100,8 @@ to this control); S vs P is the matched pair, S vs D is the is-it-just-depth che
 
 Toy-scale only. A win here earns the *next* rung (harness-scale LM probes), not a
 production run — that needs the user's go per AUTONOMY. Convergence halting (#39)
-stays blocked until this gate returns a verdict.
+was tried after this gate and killed (closed negative-result; ROADMAP graveyard),
+and its apparatus was removed in #327.
 
 ## Files
 

@@ -25,10 +25,6 @@ import sys
 
 import pytest
 
-# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
-REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents
-                     if (p / "pyproject.toml").exists()))
-
 HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,avg_forget_cost,"
           "diversity_loss,temporal_drift,forget_density,tau,out_entropy,logz_mean,"
           "max_abs_logit,depth_avg,val_ce,arena_peak_mib")
@@ -203,7 +199,7 @@ def test_missing_run_is_an_error_not_an_empty_figure(tmp_path):
 
 # ── the constraint: no model, ever ───────────────────────────────────────────
 
-def test_the_plotter_never_imports_a_model(tmp_path):
+def test_the_plotter_never_imports_a_model(tmp_path, repo_root):
     """The defect this rewrite removes: the old plotter built a whole
     UniversalReasoner to count parameters — the wrong architecture, and a
     hazard on a card that is training. Run it for real in a clean interpreter
@@ -215,8 +211,8 @@ def test_the_plotter_never_imports_a_model(tmp_path):
         "runpy.run_module('instruments.plots', run_name='__main__');"
         "print('MODELS:', [m for m in sys.modules if m.startswith('trm.model')])"
     )
-    env = dict(os.environ, PYTHONPATH=REPO_ROOT, JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
-    proc = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, env=env,
+    env = dict(os.environ, PYTHONPATH=str(repo_root), JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=repo_root, env=env,
                           capture_output=True, text=True, timeout=300)
 
     assert proc.returncode == 0, proc.stderr
@@ -395,3 +391,26 @@ def test_no_vram_panel_where_the_allocator_kept_no_statistics(tmp_path):
 
     assert "vram" not in figures["optimization_health.png"]["panels"]
     assert "vram" in dict(figures["optimization_health.png"]["omitted"])
+
+
+def test_the_arena_limit_is_the_runs_own_when_logged_and_flagged_when_assumed():
+    """#319: the limit was one frozen card's number for every run. A run that logs its
+    own is drawn against it; one that does not gets the RTX 2060 number, marked assumed."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    logged = RunLog("r", [{"step": 5, "arena_limit_mib": 5100.0}, {"step": 10, "arena_limit_mib": 5120.0}], {})
+    assert plots.arena_limit_mib(logged) == (5120.0, True)
+    assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], {})) == (plots.ARENA_LIMIT_MIB, False)
+
+
+def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp_path):
+    """#332 review: on a plain run, a missing column plain does log was reported as
+    'not measured by this architecture'. The reason comes from runlog, shared with report."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    plain = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {"parameters": {"MODEL_ARCH": "plain"}})
+    assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
+    reasoner_only = plots.why_omitted(plain, ["tau"])
+    assert reasoner_only == "not measured by this architecture"

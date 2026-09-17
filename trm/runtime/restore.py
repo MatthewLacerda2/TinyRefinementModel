@@ -9,10 +9,11 @@ import os
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
 from trm.config import LATENT_DIM, MODEL_ARCH, resolve_root
-from trm.data.loaders import TextDataGenerator
-from trm.model.reasoner import UniversalReasoner
+from trm.model import build_model
+from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
+from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
 # reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
@@ -22,8 +23,10 @@ from trm.model.reasoner import UniversalReasoner
 EVAL_BATCH_SIZE = 1
 
 
-def _restore_into(model, checkpoint_path):
-    """Model-only Orbax restore into an already-built model skeleton."""
+def _restore_into(model, checkpoint_path, step=None):
+    """Model-only Orbax restore into an already-built model skeleton, at `step` or,
+    by default, the newest step the manager dir holds. A dir of many steps (a run's
+    milestones) needs the step named, or it silently scores the newest one (#328)."""
     if checkpoint_path is None:
         checkpoint_path, run_id = discover_latest_checkpoint_run()
         if checkpoint_path is None:
@@ -31,13 +34,12 @@ def _restore_into(model, checkpoint_path):
         print(f"🔎 Using latest checkpointed run: {run_id}")
     checkpoint_path = os.path.abspath(checkpoint_path)
 
-    mngr = ocp.CheckpointManager(
-        checkpoint_path,
-        item_names=("model", "optimizer", "monitor_state", "step"),
-    )
-    latest = mngr.latest_step()
+    mngr = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS)
+    latest = mngr.latest_step() if step is None else step
     if latest is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}")
+    if latest not in mngr.all_steps():
+        raise SystemExit(f"No checkpoint at step {latest} under {checkpoint_path}")
     print(f"📖 Restoring model weights from step {latest} ({checkpoint_path})")
     restored = restore_tolerating_legacy(
         lambda model_target: mngr.restore(
@@ -50,42 +52,32 @@ def _restore_into(model, checkpoint_path):
     return model, latest
 
 
-def build_model():
-    """Fresh skeleton matching MODEL_ARCH. The two arches have different param
-    trees, so a restore must build the same arch the checkpoint was trained as
-    (select it at launch, e.g. MODEL_ARCH=refiner)."""
-    if MODEL_ARCH == "plain":
-        from trm.model.plain import PlainTransformer
-        return PlainTransformer(LATENT_DIM, nnx.Rngs(42))
-    if MODEL_ARCH == "refiner":
-        from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(42), batch_size=EVAL_BATCH_SIZE)
+def restore_arch(arch, checkpoint_path=None, *, step=None, dim=None, **overrides):
+    """Model-only restore of `arch` from a checkpoint dir (default: the latest
+    run's), at `step` (default: its newest).
+
+    The skeleton comes from `trm.model.build_model`, the factory the trainer uses, so
+    a restore builds exactly the param tree a run of that arch wrote. The arch must be
+    the one the checkpoint was trained as; for a run, its run_metadata.json records it.
+    `dim` and `overrides` exist so a test can restore a tiny checkpoint. The reasoner
+    is built at EVAL_BATCH_SIZE unless told otherwise; see above."""
+    if arch == "reasoner":
+        overrides = {"batch_size": EVAL_BATCH_SIZE, **overrides}
+    try:
+        model = build_model(arch, LATENT_DIM if dim is None else dim, nnx.Rngs(42), **overrides)
+    except ValueError as err:
+        if "unknown architecture" not in str(err):
+            raise  # a constructor's own complaint, not a bad name
+        raise SystemExit(f"{err}; use plain, refiner or reasoner") from None
+    return _restore_into(model, checkpoint_path, step)
 
 
 def restore_model(checkpoint_path=None):
-    """Model-only restore from a checkpoint dir, defaulting to the latest run's.
-    Builds the skeleton per MODEL_ARCH; use restore_reasoner/restore_refiner to
-    pin an arch explicitly (e.g. eval_yardstick's --arch override)."""
-    return _restore_into(build_model(), checkpoint_path)
+    """Restore as MODEL_ARCH, whatever this process was launched with."""
+    return restore_arch(MODEL_ARCH, checkpoint_path)
 
 
-def restore_reasoner(checkpoint_path=None):
-    """Reasoner restore regardless of MODEL_ARCH, for explicit --arch overrides."""
-    return _restore_into(
-        UniversalReasoner(LATENT_DIM, nnx.Rngs(42), batch_size=EVAL_BATCH_SIZE), checkpoint_path)
-
-
-def restore_refiner(checkpoint_path=None):
-    """Refiner restore into the production wrapper (RefinerForTraining), so the
-    checkpoint's saved 'model' state loads with matching structure. Imported
-    lazily: reasoner-only tools shouldn't pay for the Plan A import."""
-    from trm.model.refiner_lm import RefinerForTraining
-
-    return _restore_into(RefinerForTraining(LATENT_DIM, nnx.Rngs(42)), checkpoint_path)
-
-
-def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=3_000_000):
+def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_SAMPLES):
     """Held-out rows: skip past the data the training run has consumed.
 
     The default skip sits far beyond plausible consumption (an 8k-opt-step run
@@ -101,14 +93,7 @@ def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=3_000_000
         raise SystemExit("DATA_ROOT is not set.")
     source_dir = f"{resolve_root(data_root)}/{source}"
 
-    gen = TextDataGenerator(source_dir)
-    gen.skip_count = skip
-    batches = []
-    while len(batches) < num_rows:
-        row, _ = gen.get_batch(1)
-        if row is None:
-            break
-        batches.append(row)
+    batches = read_heldout_rows(source_dir, num_rows, skip)
     if not batches:
         # "No eval data available" alone sends you looking for a missing corpus.
         # The actual cause is almost always that the default skip -- sized for the

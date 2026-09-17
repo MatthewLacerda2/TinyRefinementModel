@@ -15,7 +15,6 @@ import jax.numpy as jnp
 # test suite (which defaults to CPU while the GPU trains) sets it. Never set
 # it for training.
 COMPUTE_DTYPE = jnp.float32 if os.environ.get("FORCE_F32_COMPUTE") else jnp.float16
-PARAM_DTYPE = jnp.float32
 
 # Persistent compilation cache (#204). Every process used to compile from scratch:
 # each supervisor relaunch, test run, smoke and instrument. It makes nothing
@@ -49,8 +48,6 @@ def resolve_root(path):
 # power of 2, but a clean multiple of 64, and the big VRAM lines (the 50304×dim
 # embedding/LM head, the FFN) don't care. What matters is head_dim — see NUM_HEADS.
 LATENT_DIM = 960
-NUM_BLOCKS = 8
-SHARED_SLOTS = 32
 MAX_SEQ_LEN = 512
 # Padded to a multiple of 128 (tensor-core friendly) above the tokenizer's real
 # n_vocab. With r50k_base (50257) that is 50304; this is the model's single biggest
@@ -93,24 +90,6 @@ if MODEL_ARCH not in _KNOWN_ARCHES:
     raise SystemExit(
         f"MODEL_ARCH={MODEL_ARCH!r} is not a known architecture; "
         f"use one of {', '.join(_KNOWN_ARCHES)} (unset defaults to 'plain')")
-# Refiner time signal (#86): how each refinement pass is told which step it is.
-#   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
-#                  so inference depth is an open dial (finding
-#                  2026-07-18-sinusoidal-time-signal-depth-extrapolates.md:
-#                  parity with the table at trained depths, +0.11 from
-#                  extrapolated loops under length shift). The default — what
-#                  the base run trains.
-#   "table"      — the learned per-step embedding; rows end at MAX_STEPS_LIMIT
-#                  and the signal clamps past them (chance + NaN, same finding).
-#                  Required to RESUME refiner checkpoints from before this flip:
-#                  the two modes have different param trees.
-TIME_SIGNAL = os.environ.get("TIME_SIGNAL", "sinusoidal")
-if TIME_SIGNAL not in ("table", "sinusoidal"):
-    # Same fail-closed contract as MODEL_ARCH (#104): a typo must not silently
-    # train a different model for a whole run.
-    raise SystemExit(
-        f"TIME_SIGNAL={TIME_SIGNAL!r} is not a known time signal; "
-        f"use one of table, sinusoidal (unset defaults to 'sinusoidal')")
 
 # Optimizer selector (#26). Same fail-closed contract as MODEL_ARCH: a typo must
 # not silently train a whole run on the wrong optimizer.
@@ -144,10 +123,6 @@ MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "50"))
 # Default OFF: it changes what the model is, so no stored checkpoint survives it
 # and it must earn its place through a matched ablation before a run adopts it.
 POST_NORM = os.environ.get("POST_NORM", "0") == "1"
-# Plan A: number of causal encoder layers beneath the single shared refine block
-# (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
-# near the reasoner baseline; init prints the actual count for both arches.
-REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 
 # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
 # blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator
@@ -160,6 +135,36 @@ REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
 # a long run OOMs the fallback is 8. Do not raise this by eye.
 PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
 
+# ── Retired architectures ───────────────────────────────────────────────────────
+# Knobs only the refiner and the reasoner read, kept so their checkpoints still load
+# (MODEL_ARCH=refiner / reasoner). None of them shapes the plain model; #292 deletes
+# this block once a plain champion exists. MAX_STEPS_LIMIT is not here: the trainer
+# samples a depth from it for every arch, plain included (#316).
+NUM_BLOCKS = 8     # reasoner
+SHARED_SLOTS = 32  # reasoner
+# Refiner time signal (#86): how each refinement pass is told which step it is.
+#   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
+#                  so inference depth is an open dial (finding
+#                  2026-07-18-sinusoidal-time-signal-depth-extrapolates.md:
+#                  parity with the table at trained depths, +0.11 from
+#                  extrapolated loops under length shift). The default — what
+#                  the base run trains.
+#   "table"      — the learned per-step embedding; rows end at MAX_STEPS_LIMIT
+#                  and the signal clamps past them (chance + NaN, same finding).
+#                  Required to RESUME refiner checkpoints from before this flip:
+#                  the two modes have different param trees.
+TIME_SIGNAL = os.environ.get("TIME_SIGNAL", "sinusoidal")
+if TIME_SIGNAL not in ("table", "sinusoidal"):
+    # Same fail-closed contract as MODEL_ARCH (#104): a typo must not silently
+    # train a different model for a whole run.
+    raise SystemExit(
+        f"TIME_SIGNAL={TIME_SIGNAL!r} is not a known time signal; "
+        f"use one of table, sinusoidal (unset defaults to 'sinusoidal')")
+# Plan A: number of causal encoder layers beneath the single shared refine block
+# (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
+# near the reasoner baseline; init prints the actual count for both arches.
+REFINER_ENCODER_LAYERS = int(os.environ.get("REFINER_ENCODER_LAYERS", "7"))
+
 # Refiner serving depth. The dense 1→8 sweep
 # (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
 # plateau at ~d6 (peak d7; d6–d8 inside seed noise), and pretraining shifts the
@@ -168,6 +173,7 @@ PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
 # tooling defaults here. Training is a separate decision and still samples up to
 # MAX_STEPS_LIMIT (pre-registered with the sweep: "MAX_STEPS_LIMIT=8 stays").
 INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
+# ── end of retired architectures ────────────────────────────────────────────────
 
 # Training
 MAX_STEPS_LIMIT = 8
@@ -205,27 +211,6 @@ ACCUMULATION_STEPS = 128
 # Target tokens consumed per optimizer step: each micro-step scores two
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
-
-# Whether a CE plateau may flip a pretraining run into the SFT chat phase.
-# OFF, and it should stay off for any run whose product is a base model.
-#
-# This killed the #157 base run at opt step 5,055 of 30,518 (2026-08-15). The
-# detector fired, the trainer switched to the chat mixture and dropped the LR to
-# 10%, CE went 3.31 -> 8.57, and recreating the optimizer OOM'd the card. The
-# plateau itself was REAL — held-out val CE was flat at ~4.06 too — but a run at
-# 16% of its budget with the LR still at 9.9e-5 (the cosine has barely started)
-# has not converged; it is sitting in a basin it cannot leave until the anneal
-# brings the LR down. "Stopped improving" and "finished learning" are different
-# claims, and the detector cannot tell them apart.
-#
-# The supervisor already believed this: it greps the log for the flip and kills
-# the run "to protect the pretrain". One component deliberately triggered a
-# transition the other treated as an emergency — a leftover from when pretrain
-# and SFT were one script. The plateau is still detected and still reported; it
-# just no longer gets to end or contaminate a run. Set SFT_ON_PLATEAU=1 for a
-# run that genuinely wants the chat phase, and the supervisor's kill still
-# applies as a backstop.
-SFT_ON_PLATEAU = os.environ.get("SFT_ON_PLATEAU", "0") == "1"
 
 # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
 # and scores them ONE ROW AT A TIME, deliberately ignoring BATCH_SIZE. Sizing or

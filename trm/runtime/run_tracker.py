@@ -21,16 +21,25 @@ from trm.config import (
     TRAIN_TOKEN_BUDGET,
     MODEL_ARCH,
     PLAIN_LAYERS,
+    POST_NORM,
+    REFINER_ENCODER_LAYERS,
+    TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
 )
-from trm.train.schedules import DECAY_STEPS, WARMUP_STEPS
+from trm.runtime.layout import VAL_EVERY_OPT_STEPS
+from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
 
-# The validation-probe cadence the run used. It is declared in trm/train/trainer.py,
-# which imports this module, so it cannot be imported back — the same duplicate-with-a-
-# pointer that trm/runtime/launch.py keeps for CHECKPOINT_EVERY_OPT_STEPS, and
-# tests/core/test_rolling_checkpoint.py holds the two together.
-VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
+# What each architecture's param tree is built from (#317). A resume that changes one
+# of these cannot load its checkpoint, or loads it into a different network whose tree
+# happens to match. Keyed per arch: a knob only another arch reads must not refuse the
+# resume — and PLAIN_LAYERS used to pass unchecked while retired-arch knobs were checked.
+_SHARED_TREE_KEYS = ("MODEL_ARCH", "LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN")
+TREE_KEYS = {
+    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM"),
+    "refiner": (*_SHARED_TREE_KEYS, "REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL", "POST_NORM"),
+    "reasoner": (*_SHARED_TREE_KEYS, "NUM_BLOCKS", "SHARED_SLOTS", "MAX_STEPS_LIMIT"),
+}
 
 class RunTracker:
     def __init__(self, runs_root="runs"):
@@ -169,8 +178,14 @@ class RunTracker:
             # run: the plotter crashed rebuilding a 512-step arm's LR schedule with
             # a 1000-step warmup, and labelled a plain run with the refiner's depth.
             "WARMUP_STEPS": WARMUP_STEPS,
+            "PEAK_LR": PEAK_LR,
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # Tree-shaping knobs the resume check compares (#317); runs recorded
+            # before them skip the comparison.
+            "POST_NORM": POST_NORM,
+            "REFINER_ENCODER_LAYERS": REFINER_ENCODER_LAYERS,
+            "TIME_SIGNAL": TIME_SIGNAL,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,
             "MUON_LR_MULT": MUON_LR_MULT,
         }
@@ -178,40 +193,58 @@ class RunTracker:
     def _check_compatibility(self, metadata_path):
         if not os.path.exists(metadata_path):
             return
-        
+
         try:
             with open(metadata_path, "r") as f:
                 old_meta = json.load(f)
-            
+
             old_params = old_meta.get("parameters", {})
             current_params = self.get_hyperparameters()
-            
-            critical_keys = [
-                "LATENT_DIM", "NUM_BLOCKS", "SHARED_SLOTS", "MAX_SEQ_LEN", 
-                "VOCAB_SIZE", "NUM_HEADS"
-            ]
+
+            # A key the run's metadata predates is skipped, not refused.
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                for k in critical_keys
+                for k in TREE_KEYS[current_params["MODEL_ARCH"]]
                 if k in old_params and old_params[k] != current_params[k]
             ]
-            
+
             if mismatches:
-                print("\n" + "🛑"*20)
-                print("🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:")
-                print("\n".join(mismatches))
-                print("\n💡 Options:")
-                print("  1. Revert your code parameters back to match the run's parameters.")
-                print("  2. Start a brand new training run with: python -m trm.train.start --new-run")
-                print("  3. Point to a different checkpoint folder with: python -m trm.train.start --checkpoint-path <path>")
-                print("🛑"*20 + "\n")
-                sys.exit(1)
+                # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
+                # uncaught one still ends the process with exit code 1 and this text.
+                raise SystemExit("\n".join([
+                    "\n" + "🛑" * 20,
+                    "🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:",
+                    *mismatches,
+                    "\n💡 Options:",
+                    "  1. Revert your code parameters back to match the run's parameters.",
+                    "  2. Start a brand new training run with: python -m trm.train.start --new-run",
+                    "  3. Point to a different checkpoint folder with: "
+                    "python -m trm.train.start --checkpoint-path <path>",
+                    "🛑" * 20 + "\n",
+                ]))
         except SystemExit:
             raise
         except (OSError, json.JSONDecodeError, KeyError) as e:
             # A malformed metadata file must not kill training, but the disabled
             # compatibility check must be visible.
             print(f"⚠️ Could not verify run compatibility from {metadata_path}: {e}")
+
+    def _fresh_metadata(self):
+        """run_metadata.json for a run that has none yet: its code, its parameters,
+        and no sessions."""
+        git_meta = self.get_git_metadata()
+        return {
+            "run_id": self.run_id,
+            "git_commit": git_meta["commit"],
+            "git_branch": git_meta["branch"],
+            "git_dirty": git_meta["dirty"],
+            "parameters": self.get_hyperparameters(),
+            "sections": [],
+        }
+
+    @staticmethod
+    def _new_section(start_timestamp):
+        return {"start_time": start_timestamp, "end_time": None, "duration_seconds": None}
 
     def start_session(self, run_id=None):
         os.makedirs(self.runs_root, exist_ok=True)
@@ -225,23 +258,8 @@ class RunTracker:
             self.run_dir = os.path.join(self.runs_root, self.run_id)
             os.makedirs(self.run_dir, exist_ok=True)
 
-            git_meta = self.get_git_metadata()
-            params = self.get_hyperparameters()
-
-            metadata = {
-                "run_id": self.run_id,
-                "git_commit": git_meta["commit"],
-                "git_branch": git_meta["branch"],
-                "git_dirty": git_meta["dirty"],
-                "parameters": params,
-                "sections": [
-                    {
-                        "start_time": start_timestamp,
-                        "end_time": None,
-                        "duration_seconds": None
-                    }
-                ]
-            }
+            metadata = self._fresh_metadata()
+            metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = 0
             self.save_metadata(metadata)
             self.capture_environment_snapshot(self.run_dir)
@@ -266,35 +284,13 @@ class RunTracker:
                 metadata = None
 
             if metadata is None:
-                git_meta = self.get_git_metadata()
-                params = self.get_hyperparameters()
-                metadata = {
-                    "run_id": self.run_id,
-                    "git_commit": git_meta["commit"],
-                    "git_branch": git_meta["branch"],
-                    "git_dirty": git_meta["dirty"],
-                    "parameters": params,
-                    "sections": []
-                }
+                metadata = self._fresh_metadata()
 
-            metadata["sections"].append({
-                "start_time": start_timestamp,
-                "end_time": None,
-                "duration_seconds": None
-            })
+            metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = len(metadata["sections"]) - 1
             self.save_metadata(metadata)
-            # Snapshot on resume too (#173). This branch used to skip it, which
-            # meant the *correct* way to launch a supervised run — pinning
-            # --checkpoint-path, since --new-run would make a crash-relaunch
-            # start from scratch — produced a run with no env_freeze.txt, no
-            # system_snapshot.txt and no worktree.patch. The run dir still looked
-            # populated (run_metadata.json is written either way), so the loss was
-            # invisible until someone tried to revive the weights and couldn't.
-            #
-            # Re-capturing is also more honest than capturing once: a run resumed
-            # at a different commit, or with different uncommitted edits, would
-            # otherwise describe only its first session.
+            # Snapshot on resume too (#173): each session describes its own commit
+            # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
             self.capture_environment_snapshot(self.run_dir)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 
@@ -306,7 +302,7 @@ class RunTracker:
         metadata_path = os.path.join(self.run_dir, "run_metadata.json")
         if not os.path.exists(metadata_path):
             return
-        
+
         try:
             with open(metadata_path, "r") as f:
                 metadata = json.load(f)

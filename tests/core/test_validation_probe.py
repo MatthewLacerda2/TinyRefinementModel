@@ -15,7 +15,7 @@ def test_trainer_imports():
     from trm.train import validation  # noqa: F401
 
 
-def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkeypatch):
+def test_validation_probe_scores_and_preserves_training_state(reasoner_model, monkeypatch):
     from trm.train import trainer
 
     from trm.train import validation
@@ -26,15 +26,15 @@ def test_validation_probe_scores_and_preserves_training_state(tiny_model, monkey
     monkeypatch.setattr(validation, "VAL_ROWS", 1)
 
     probe = validation.ValidationProbe(trainer.DATA_ROOT)
-    sentinel = jnp.ones_like(tiny_model.hunch_cache[...]) * 0.123
-    tiny_model.hunch_cache[...] = sentinel
+    sentinel = jnp.ones_like(reasoner_model.hunch_cache[...]) * 0.123
+    reasoner_model.hunch_cache[...] = sentinel
 
-    val_ce = probe.run(tiny_model)
+    val_ce = probe.run(reasoner_model)
 
     assert val_ce is not None and np.isfinite(val_ce), f"validation CE not finite: {val_ce}"
     assert 0.0 < val_ce < 20.0, f"validation CE out of any plausible range: {val_ce}"
     np.testing.assert_array_equal(
-        np.asarray(tiny_model.hunch_cache[...]), np.asarray(sentinel),
+        np.asarray(reasoner_model.hunch_cache[...]), np.asarray(sentinel),
         err_msg="validation perturbed the training stream's carried hunch",
     )
 

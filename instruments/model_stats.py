@@ -32,6 +32,8 @@ not an activation total, and the floor is not a prediction of peak VRAM.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from trm.config import (
     LATENT_DIM,
     MAX_SEQ_LEN,
@@ -51,15 +53,32 @@ from trm.config import (
 
 MIB = 1024 ** 2
 
-# Dtype widths in bytes. Parameters are stored f32 (config.PARAM_DTYPE) whatever
+# Dtype widths in bytes. Parameters are stored f32 (NNX's default, see trm/config.py) whatever
 # the compute dtype is; the optimizer's widths are set in trm/train/optimizers.py.
 F32, BF16, F16 = 4, 2, 2
 
-# The shipped configuration, for the one place a measured number can be quoted
-# (see MEASURED_PEAK_GB).
-_MEASURED_PEAK_CONFIG = {"arch": "refiner", "dim": 960, "encoder_layers": 7, "batch": 1}
-MEASURED_PEAK_GB = 5.0
-MEASURED_PEAK_SOURCE = "runs/run_20260813_214725 (#157), nvidia-smi on the 6GB RTX 2060"
+
+class MeasuredPeak(NamedTuple):
+    arch: str
+    config: dict   # resolved-config values that must all match, plus "batch"
+    gb: float
+    source: str    # where the number came from
+    reading: str   # what it measured: "card" (nvidia-smi, the whole card) or "arena" (the allocator's pool only)
+
+
+# Training peaks measured on the card, each for one exact config — the only numbers
+# the report may quote beside the floor. A config not listed has no measured peak,
+# and the report says so rather than quoting a neighbour's (#317).
+_PLAIN_ARENA_PEAKS_MIB = {8: 4112, 9: 4437, 10: 4762}   # trm/config.py, the PLAIN_LAYERS note
+MEASURED_PEAKS = (
+    MeasuredPeak("refiner", {"dim": 960, "encoder_layers": 7, "batch": 1}, 5.0,
+                 "runs/run_20260813_214725 (#157), nvidia-smi on the 6GB RTX 2060", "card"),
+    *(MeasuredPeak("plain", {"dim": 960, "num_heads": 15, "num_layers": layers, "post_norm": False,
+                             "batch": 1}, mib * MIB / 1e9,
+                   f"instruments.vram_headroom_smoke 2026-09-13: {mib} MiB allocator arena peak "
+                   f"under cuda_async (trm/config.py, PLAIN_LAYERS)", "arena")
+      for layers, mib in _PLAIN_ARENA_PEAKS_MIB.items()),
+)
 
 
 def _linear(in_features, out_features, bias=True):
@@ -288,7 +307,7 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
     dtype — except the remat-boundary line, which is a stated lower bound. The
     `TOTAL` entry is a FLOOR: the true peak is larger by the activation and
     allocator terms nothing analytic can pin down (~2.6 GB of the measured
-    ~5.0 GB at the shipped config). It is also the sum of the entries above it,
+    ~5.0 GB at the 4B refiner config). It is also the sum of the entries above it,
     so do not re-sum the dict.
     """
     if mode not in ("train", "infer"):
@@ -321,14 +340,12 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
     return megabytes
 
 
-def measured_peak_applies(arch=MODEL_ARCH, batch=BATCH_SIZE, **overrides):
-    """True when the config asked about is the one MEASURED_PEAK_GB was measured
-    at. Quoting a measured number against a different config would be the same
-    category error this module is trying to stop."""
-    config = _resolve(arch, overrides)
-    return (
-        arch == _MEASURED_PEAK_CONFIG["arch"]
-        and config["dim"] == _MEASURED_PEAK_CONFIG["dim"]
-        and config.get("encoder_layers") == _MEASURED_PEAK_CONFIG["encoder_layers"]
-        and batch == _MEASURED_PEAK_CONFIG["batch"]
-    )
+def measured_peak(arch=MODEL_ARCH, batch=BATCH_SIZE, **overrides):
+    """The MeasuredPeak recorded for exactly this config, or None. Quoting a
+    measured number against a different config would be the same category error
+    this module is trying to stop."""
+    config = {**_resolve(arch, overrides), "batch": batch}
+    for peak in MEASURED_PEAKS:
+        if peak.arch == arch and all(config.get(k) == v for k, v in peak.config.items()):
+            return peak
+    return None

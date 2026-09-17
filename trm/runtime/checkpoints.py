@@ -1,13 +1,17 @@
-import os
 import gc
+import glob
+import os
+import signal
+
 from flax import nnx
 import orbax.checkpoint as ocp
+from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
+from trm.runtime.rewind import refuse_sft_phase_resume
 
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):
         return None
-    import glob
     run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
     if run_dirs:
         return os.path.basename(run_dirs[-1])
@@ -16,17 +20,16 @@ def discover_latest_run(runs_root="runs"):
 def discover_latest_checkpoint_run(runs_root="runs"):
     if not os.path.exists(runs_root):
         return None, None
-    
-    import glob
+
     run_dirs = sorted(glob.glob(os.path.join(runs_root, "run_*")))
-    
+
     for r_dir in reversed(run_dirs):
         chk_dir = os.path.join(r_dir, "checkpoints")
         if os.path.exists(chk_dir):
             try:
                 mngr = ocp.CheckpointManager(
                     chk_dir,
-                    item_names=("model", "optimizer", "monitor_state", "step"),
+                    item_names=CHECKPOINT_ITEMS,
                 )
                 if mngr.latest_step() is not None:
                     run_id = os.path.basename(r_dir)
@@ -37,21 +40,13 @@ def discover_latest_checkpoint_run(runs_root="runs"):
                 print(f"⚠️ Skipping unreadable checkpoint dir {chk_dir}: {e}")
     return None, None
 
-# Sibling subdir of the rolling-latest checkpoints holding the best held-out-CE
-# checkpoints. Kept separate so best-retention never evicts the latest. Named for
-# its criterion (#222): the old `best/` was selected on noisy train CE and went
-# stale on two runs, and a new name keeps those archives from passing for these.
-BEST_SUBDIR = "best_val_ce"
-CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
-
-# Sibling subdir holding milestone checkpoints, which nothing evicts (#187).
+# Milestone checkpoints (MILESTONE_SUBDIR, trm/runtime/layout.py) are never evicted (#187).
 # Retention keeps the newest, and when a run goes bad the newest are the broken
 # ones: #157's SFT flip came within two saves of evicting every clean checkpoint.
 # A milestone every MILESTONE_EVERY_TOKENS is kept regardless of recency — the
 # recovery point when a run goes wrong, and the branch point the registry wants
 # ("fine-tune from the 1B-token checkpoint"), which rolling retention has always
 # deleted by the time a run ends.
-MILESTONE_SUBDIR = "milestones"
 MILESTONE_EVERY_TOKENS = int(os.environ.get("MILESTONE_EVERY_TOKENS", 500_000_000))
 
 
@@ -84,7 +79,7 @@ def _make_best_manager(checkpoint_path):
     return ocp.CheckpointManager(
         os.path.join(checkpoint_path, BEST_SUBDIR),
         item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
 
 
@@ -137,7 +132,7 @@ def wait_for_pending_saves():
         _PENDING.pop().wait_until_finished()
 
 
-def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, wait=True):
+def save_checkpoint(mngr, step, model, optimizer, monitor, run_id, wait=True):
     """Persist the full training state (model + optimizer + monitor + step) under
     `mngr` at `step`. Shared by every manager — they use one save schema.
 
@@ -172,9 +167,7 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, w
                 "best_avg_ce": monitor.best_avg_ce,
                 "best_val_ce": monitor.best_val_ce,
                 "last_improvement_step": monitor.last_improvement_step,
-                "sft_active": sft_active,
-                "sft_start_step": monitor.sft_start_step,
-                "run_id": run_id,  # Save run_id inside checkpoint metadata
+                "run_id": run_id,
                 # Samples actually consumed, counted as they were served rather
                 # than re-derived (#24). Resume rebuilds the data position from
                 # this; computing it as step x BATCH_SIZE would mis-seek exactly
@@ -205,10 +198,7 @@ def exit_cleanly_on_sigterm():
     the run's final checkpoint is still being written. Unwinding lets the trainer
     wait for that write (~16s at the shipping config) inside the grace.
     """
-    import os
-    import signal
-
-    def _raise(signum, frame):
+    def _raise(signum, _frame):
         # Say so in the log. SystemExit prints no traceback, so a TERM'd trainer
         # used to end mid-stream with nothing to distinguish it from a hard kill —
         # three Muon arms of #26 died that way on 2026-09-14 and the cause was
@@ -221,12 +211,11 @@ def exit_cleanly_on_sigterm():
 
 
 def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
-    from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
-    monitor = LossMonitor(patience=PLATEAU_PATIENCE, min_delta=PLATEAU_MIN_DELTA)
+    monitor = LossMonitor()
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
-        options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True),
+        options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
     best_mngr = _make_best_manager(checkpoint_path)
 
@@ -248,9 +237,12 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
 
         nnx.update(model, restored["model"])
         nnx.update(optimizer, restored["optimizer"])
-        
+
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
+        # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
+        # don't. Absent reads as pretraining, and an SFT-phase one is refused.
+        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path)
         monitor.ce_history = m_state.get("ce_history", [])
         monitor.best_ce = m_state.get("best_ce", float("inf"))
         monitor.best_loss = m_state.get("best_loss", float("inf"))
@@ -258,7 +250,6 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         # Absent before #222: the first val probe after resume sets a new best.
         monitor.best_val_ce = m_state.get("best_val_ce", float("inf"))
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
-        monitor.sft_start_step = m_state.get("sft_start_step", None)
         # Checkpoints written before #24 have no samples_seen; every one of them
         # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
         # value, not a guess.
@@ -266,7 +257,7 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
 
         print(f"✅ Resuming from step {start_step} "
               f"({monitor.samples_seen:,} samples consumed)")
-        del restored 
+        del restored
         gc.collect()
     else:
         if force_new_run:

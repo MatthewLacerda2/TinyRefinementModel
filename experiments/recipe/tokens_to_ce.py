@@ -78,11 +78,22 @@ def main(argv=None) -> int:
     ap.add_argument("--target-ce", type=float, required=True)
     ap.add_argument("--opt-steps", type=int, default=512, help="cap; also the LR schedule's horizon")
     ap.add_argument("--warmup", type=int, default=100)
+    ap.add_argument("--peak-lr", type=float, default=None,
+                    help="PEAK_LR: the value the cosine warms up to (#287). The whole schedule "
+                         "scales with it (init = peak/10, end = peak/100), so a sweep moves one "
+                         "variable — the LR scale — not three. Unset leaves the shipped 1e-4.")
+    ap.add_argument("--val-every", type=int, default=16,
+                    help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
+                         "seed inside one probe interval reports the same token count, which is "
+                         "how #26 stage 2 came out with sigma_pooled exactly 0.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
 
     from trm.config import TOKENS_PER_OPT_STEP
-    name = f"run_{args.tag}_{args.optimizer}" + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "") + f"_s{args.seed}"
+    name = (f"run_{args.tag}_{args.optimizer}"
+            + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
+            + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
+            + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
     env = {
@@ -92,12 +103,14 @@ def main(argv=None) -> int:
         "MODEL_SEED": str(args.seed), "DATA_SEED": str(args.seed),
         "TRAIN_TOKEN_BUDGET": str(args.opt_steps * TOKENS_PER_OPT_STEP),
         "WARMUP_STEPS": str(args.warmup),
-        "VAL_EVERY_OPT_STEPS": "16",
+        "VAL_EVERY_OPT_STEPS": str(args.val_every),
         "CHECKPOINT_EVERY_OPT_STEPS": "256",
         "MILESTONE_EVERY_TOKENS": "0",
     }
     if args.lr_mult is not None:
         env["MUON_LR_MULT"] = str(args.lr_mult)
+    if args.peak_lr is not None:
+        env["PEAK_LR"] = repr(args.peak_lr)
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)

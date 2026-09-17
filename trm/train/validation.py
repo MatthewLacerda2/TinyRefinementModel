@@ -1,7 +1,7 @@
 """Held-out validation: the same fixed batches, scored the same deterministic
 way, on demand. Train CE cannot see overfitting or data drift; this curve is
 the one decisions should read. The trainer drives it on its own cadence
-(VAL_EVERY_OPT_STEPS there); everything about *what* a probe measures lives here.
+(VAL_EVERY_OPT_STEPS, trm/runtime/layout.py); everything about *what* a probe measures lives here.
 """
 
 import jax.numpy as jnp
@@ -43,6 +43,28 @@ def _val_ce_sums(model, batch):
     return loss_sums.sum(), counts.sum()
 
 
+def read_heldout_rows(source_dir, rows, skip):
+    """Up to `rows` held-out rows from `source_dir`, after skipping `skip` samples.
+
+    The one held-out row reader: the trainer's probe and every offline tool read
+    through it, so their slices cannot drift apart. It returns fewer rows (possibly
+    none) when the corpus runs out, and each caller says what that means for it.
+
+    One row per batch, independent of BATCH_SIZE (#24): this reproduces the pre-#24
+    read pattern exactly — including where a file boundary lands mid-slice — so a
+    measured val CE stays comparable to every number already recorded. Batching a
+    handful of rows would buy nothing anyway."""
+    gen = TextDataGenerator(source_dir)
+    gen.skip_count = skip
+    batches = []
+    while len(batches) < rows:
+        row, _ = gen.get_batch(1)
+        if row is None:
+            break
+        batches.append(row)
+    return batches
+
+
 class ValidationProbe:
     """Loads VAL_ROWS fixed held-out rows once, then scores them on demand.
     Runs inside the model's `isolated_state`, so whatever the training stream
@@ -54,18 +76,7 @@ class ValidationProbe:
         self._batches = None
 
     def _load(self):
-        gen = TextDataGenerator(f"{self.data_root}/pretrain/fineweb-edu")
-        gen.skip_count = self.skip
-        # One row per batch, independent of BATCH_SIZE (#24): this reproduces the
-        # pre-#24 read pattern exactly — including where a file boundary lands
-        # mid-slice — so the measured val CE stays comparable to every number
-        # already recorded. Batching a 4-row probe would buy nothing anyway.
-        batches = []
-        while len(batches) < self.rows:
-            row, _ = gen.get_batch(1)
-            if row is None:
-                break
-            batches.append(row)
+        batches = read_heldout_rows(f"{self.data_root}/pretrain/fineweb-edu", self.rows, self.skip)
         if not batches:
             print("⚠️ Validation disabled: no held-out data available past the skip range.")
         return batches

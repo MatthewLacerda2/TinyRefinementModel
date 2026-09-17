@@ -486,9 +486,13 @@ def test_the_rule_names_are_the_ones_the_issue_registers(repo):
                             "finding-cites-spec", "run-ended-by-budget"]
 
 
-def test_the_real_specs_all_parse_and_the_mid_run_one_reads_pending():
+def test_every_real_spec_loads_without_crashing():
     """The audit must open every spec the repo has. The verdicts themselves are CI's
-    business (the audit job); this only proves nothing here crashes the loader."""
+    business (the audit job); this only proves nothing here crashes the loader.
+
+    It used to be named for a "pending" check it never made (#325). Pending is pinned
+    on a synthetic spec in test_a_spec_with_no_measured_results_is_pending_not_red;
+    pinning it on a real one would break the day that experiment records results."""
     real = pathlib.Path(audit.REPO)
     rels = audit.all_specs(real)
     assert rels, "no specs found — has the layout moved?"

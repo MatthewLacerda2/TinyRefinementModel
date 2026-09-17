@@ -1,13 +1,9 @@
 """A plain causal transformer — the architecture after depth recurrence was retired.
 
-Plan A looped ONE shared block K times. That mechanism works on sequential
-composition ([[plan-a-depth-recurrence-works]]) and is actively suppressed on
-language: the trained gate routes to 6 of 960 channels on prose, the second refine
-pass costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the activation scale
-does not recover it. Full record in
+Plan A looped ONE shared block K times; why that was retired is
 `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
 
-So this is the same stack with the loop unrolled into distinct layers, and with the
+This is the same stack with the loop unrolled into distinct layers, and with the
 machinery that only existed to serve the loop removed:
 
     gone: the shared refine block and its trip count

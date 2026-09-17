@@ -5,32 +5,25 @@ Pinned here: the derivation math, the acceptance criteria (end step hits
 end_value, half-budget is mid-cosine), the unset-env default that keeps the
 golden run untouched, the loud failure on a degenerate budget, the deliberate
 decision that the λ anneals keep their own absolute horizon, and the recording
-of budget + resolved horizon in run metadata. Env-override cases run in a
-subprocess because config.py reads the environment at import time.
+of budget + resolved horizon in run metadata. Env-override cases are fresh imports
+in one child interpreter (`import_config_under`, tests/conftest.py), because config.py
+reads the environment at import time.
 """
 
-import json
 import os
-import pathlib
-import subprocess
-import sys
 
 import numpy as np
 import pytest
 
 from trm.config import TOKENS_PER_OPT_STEP
+from trm.model.reasoner import LAMBDA_DECAY_STEPS, diversity_lambda_schedule, forget_lambda_schedule
 from trm.train.schedules import (
     DECAY_STEPS,
-    LAMBDA_DECAY_STEPS,
+    PEAK_LR,
     WARMUP_STEPS,
     build_learning_schedule,
-    diversity_lambda_schedule,
-    forget_lambda_schedule,
     resolve_decay_steps,
 )
-
-# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
-REPO = next(p for p in pathlib.Path(__file__).resolve().parents if (p / "pyproject.toml").exists())
 
 LR_PEAK, LR_END = 1e-4, 1e-6
 
@@ -69,6 +62,26 @@ def test_anneal_ends_at_budget_and_half_budget_is_mid_cosine():
     assert np.isclose(float(sched(half)), expected, rtol=1e-3)
 
 
+def test_peak_lr_defaults_to_the_historical_value(monkeypatch):
+    """1e-4 was the shipped peak before it became a knob (#287). The default must
+    still be it, and the whole schedule with it — a run that sets nothing trains
+    exactly as it did, which is what keeps the golden run bit-identical."""
+    assert PEAK_LR == LR_PEAK
+    sched = build_learning_schedule(15_000)
+    assert np.isclose(float(sched(WARMUP_STEPS)), LR_PEAK, rtol=1e-5)
+    assert np.isclose(float(sched(0)), 1e-5, rtol=1e-5)
+    assert np.isclose(float(sched(15_000)), LR_END, rtol=1e-5)
+
+
+def test_the_whole_schedule_scales_with_the_peak():
+    """A sweep of the peak moves one variable, the LR scale: init and end follow
+    it at peak/10 and peak/100, so the shape at every step is identical and only
+    the height differs. Three separate knobs would be three variables."""
+    base, tripled = build_learning_schedule(15_000), build_learning_schedule(15_000, peak_lr=3e-4)
+    for step in (0, WARMUP_STEPS, 5_000, 15_000):
+        assert np.isclose(float(tripled(step)), 3.0 * float(base(step)), rtol=1e-5), step
+
+
 def test_budget_inside_warmup_fails_loud():
     with pytest.raises(ValueError):
         resolve_decay_steps(WARMUP_STEPS * TOKENS_PER_OPT_STEP // 2)
@@ -83,25 +96,17 @@ def test_lambda_schedules_keep_their_own_horizon():
     assert np.isclose(float(diversity_lambda_schedule(LAMBDA_DECAY_STEPS)), 0.1, rtol=1e-6)
 
 
-def _resolved_in_subprocess(env_overrides):
-    env = {**os.environ, **env_overrides}
-    out = subprocess.check_output(
-        [sys.executable, "-c",
-         "import json; from trm import config; from trm.train import schedules; "
-         "print(json.dumps({'budget': config.TRAIN_TOKEN_BUDGET, 'decay': schedules.DECAY_STEPS}))"],
-        env=env, cwd=REPO,
-    )
-    return json.loads(out)
-
-
-def test_env_override_resolves_horizon():
+def test_env_override_resolves_horizon(import_config_under):
     budget = 20_000 * TOKENS_PER_OPT_STEP
-    assert _resolved_in_subprocess({"TRAIN_TOKEN_BUDGET": str(budget)}) == \
-        {"budget": budget, "decay": 20_000}
     # Scientific notation is accepted: 2e9 ≈ the historical 2.0B-token horizon.
-    resolved = _resolved_in_subprocess({"TRAIN_TOKEN_BUDGET": "2e9"})
-    assert resolved == {"budget": 2_000_000_000,
-                        "decay": round(2e9 / TOKENS_PER_OPT_STEP)}
+    exact, scientific = import_config_under(
+        [{"TRAIN_TOKEN_BUDGET": str(budget)}, {"TRAIN_TOKEN_BUDGET": "2e9"}],
+        attrs=("TRAIN_TOKEN_BUDGET", "trm.train.schedules:DECAY_STEPS"))
+    for case in (exact, scientific):
+        assert case["ok"], f"the budget override refused to import: {case.get('error')}"
+    assert exact["values"] == {"TRAIN_TOKEN_BUDGET": budget, "trm.train.schedules:DECAY_STEPS": 20_000}
+    assert scientific["values"] == {"TRAIN_TOKEN_BUDGET": 2_000_000_000,
+                                    "trm.train.schedules:DECAY_STEPS": round(2e9 / TOKENS_PER_OPT_STEP)}
 
 
 def test_horizon_recorded_in_run_metadata():

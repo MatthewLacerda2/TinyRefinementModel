@@ -33,6 +33,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 
+from instruments._common import REPO_ROOT
 from instruments.changed import changed_paths
 from instruments.verdict import (
     KEEP, KILL, Spec, Summary, Verdict, evaluate, load_recorded_results, load_spec,
@@ -45,7 +46,7 @@ from trm.runtime.supervisor import BUDGET_COMPLETE, KILLED_DIVERGENCE, WALLCLOCK
 # (verdict.py's sigma_pooled and means) or a count read straight from the spec.
 REPORTS = {}
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
+REPO = REPO_ROOT
 SPEC_GLOB = "experiments/*/specs/*.toml"
 FINDINGS_DIR = pathlib.Path("docs/findings")
 ROADMAP = pathlib.Path("docs/ROADMAP.md")

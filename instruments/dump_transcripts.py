@@ -39,8 +39,12 @@ Usage — safe to run while training, as long as you leave --device alone:
 
 import argparse
 import datetime
+import json
 import os
-import subprocess
+
+# Module-level names on purpose: select_device and main look them up here, which is
+# also where a test replaces them.
+from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -50,6 +54,13 @@ REPORTS = {}  # writes generated text for reading; no quantities
 # --device is read, which is the whole hazard this module used to carry.
 
 PROMPT_SET_VERSION = 1
+
+# The one line a caller reads to find the transcript a run wrote (#338). Everything else
+# on stdout is for a human and may change; this line is a contract, parsed by
+# `written_transcript` below and by instruments.milestone_report. It is a JSON line in
+# the style of instruments/results.py, under its own prefix: RESULT lines carry numeric
+# measurements for the experiment runner, and a file path is not one.
+WRITTEN_PREFIX = "TRANSCRIPT "
 
 # Frozen. Changing or removing a prompt bumps PROMPT_SET_VERSION; appending does
 # not, because every file records the prompts that actually ran. Prompts 1-4 probe
@@ -71,6 +82,9 @@ PROMPTS = [
 # depth is a runtime dial on this architecture — the same weights serve at any of
 # these, and which one is *best* is an open question this logbook is built to watch.
 DEFAULT_DEPTHS = (1, 2, 4, 8)
+# Architectures that ignore depth. Every rung of a ladder would be the same forward
+# pass and, at one seed, the same completion: they run once (#317).
+DEPTHLESS_ARCHES = frozenset({"plain"})
 
 DEFAULT_SEED = 42
 REPETITION_NGRAM = 4
@@ -99,6 +113,13 @@ def repetition_score(token_ids, n=REPETITION_NGRAM):
         else:
             seen.add(gram)
     return repeats / len(grams)
+
+
+def depths_for(arch, requested=None):
+    """The ladder to run: `requested`, else DEFAULT_DEPTHS — reduced to its first
+    rung for an arch with no depth dial, where more rungs only repeat one completion."""
+    depths = DEFAULT_DEPTHS if requested is None else tuple(requested)
+    return depths[:1] if arch in DEPTHLESS_ARCHES else depths
 
 
 def parse_depths(text):
@@ -177,28 +198,6 @@ def transcript_filename(opt_step, device):
     return f"step_{opt_step:06d}_{device}.md"
 
 
-def git_head():
-    """The commit generating this transcript — distinct from the one that trained
-    the weights, and after a few PRs they are nowhere near each other."""
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def gpu_memory_used_mib():
-    """Used VRAM, or None if the card cannot be queried."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
-        return int(out.stdout.strip().splitlines()[0])
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        return None
-
-
 def select_device(device, force=False):
     """Write the backend choice into the environment before JAX is imported.
 
@@ -222,23 +221,35 @@ def select_device(device, force=False):
     os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 
 
+def prompt_count(value):
+    """`--prompts N`: how many of the standard set to run, from the front."""
+    n = int(value)
+    if not 1 <= n <= len(PROMPTS):
+        raise argparse.ArgumentTypeError(f"must be between 1 and {len(PROMPTS)}, got {n}")
+    return n
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="fixed-prompt transcript logbook")
-    parser.add_argument("--checkpoint-path", default=None,
-                        help="checkpoint dir (default: the latest checkpointed run)")
+    add_checkpoint_argument(parser)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu",
                         help="cpu (default) is safe beside a training run; gpu is the "
                              "canonical series but needs a free card")
     parser.add_argument("--force", action="store_true",
                         help="run on the GPU even if it looks busy")
-    parser.add_argument("--depths", default=",".join(str(d) for d in DEFAULT_DEPTHS),
+    parser.add_argument("--depths", default=None,
                         help=f"depth ladder (default {','.join(str(d) for d in DEFAULT_DEPTHS)}); "
-                             "every prompt runs at every depth")
+                             "every prompt runs at every depth. An arch without a depth dial "
+                             f"({', '.join(sorted(DEPTHLESS_ARCHES))}) runs only the first")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
                         help=f"RNG seed, held constant across depths (default {DEFAULT_SEED})")
     parser.add_argument("--temperature", type=float, default=None,
                         help="default: trm.infer.DEFAULT_TEMPERATURE")
     parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--prompts", type=prompt_count, default=len(PROMPTS),
+                        help=f"run only the first N standard prompts (default: all {len(PROMPTS)}). "
+                             "Always a prefix, so each prompt still compares with the same "
+                             "prompt in a full entry; the frontmatter records N")
     parser.add_argument("--prompt", action="append", default=[],
                         help="extra prompt; recorded but marked non-standard so it "
                              "cannot pollute a comparison")
@@ -247,20 +258,36 @@ def build_arg_parser():
     return parser
 
 
-def main():
-    args = build_arg_parser().parse_args()
-    depths = parse_depths(args.depths)
+def announce_written(path):
+    """Print the contract line naming the transcript file just written (absolute path)."""
+    print(WRITTEN_PREFIX + json.dumps({"path": os.path.abspath(path)}), flush=True)
+
+
+def written_transcript(stdout):
+    """The path from the last contract line in a run's stdout, or None if it wrote none."""
+    paths = [json.loads(line[len(WRITTEN_PREFIX):])["path"]
+             for line in stdout.splitlines() if line.startswith(WRITTEN_PREFIX)]
+    return paths[-1] if paths else None
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+    requested = None if args.depths is None else parse_depths(args.depths)
     select_device(args.device, args.force)
 
     import tiktoken
     from trm.config import ACCUMULATION_STEPS, MODEL_ARCH, TOKENIZER_NAME, TOKENS_PER_OPT_STEP
+    depths = depths_for(MODEL_ARCH, requested)
+    if requested is not None and depths != requested:
+        print(f"ℹ️ MODEL_ARCH={MODEL_ARCH} ignores depth: running depth {depths[0]} only, "
+              f"not {','.join(map(str, requested))}")
     from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     from trm.runtime.restore import restore_model
 
     temperature = DEFAULT_TEMPERATURE if args.temperature is None else args.temperature
-    prompts = list(PROMPTS) + list(args.prompt)
-    standard = len(PROMPTS)
+    prompts = list(PROMPTS[:args.prompts]) + list(args.prompt)
+    standard = args.prompts
 
     run_dir = None
     if args.checkpoint_path is None:
@@ -327,6 +354,9 @@ def main():
 
     fields = {
         "prompt_set_version": PROMPT_SET_VERSION,
+        # How many of PROMPTS (a prefix) this entry ran. Entries written before #336 have
+        # no such key: they always ran the full set, so a missing key means 8.
+        "standard_prompts": standard,
         "step": opt_step,
         "checkpoint_step": ckpt_step,
         "tokens": opt_step * TOKENS_PER_OPT_STEP,
@@ -352,6 +382,7 @@ def main():
     with open(out_path, "w") as handle:
         handle.write(render_document(fields, results, depths))
     print(f"\n✨ {out_path}")
+    announce_written(out_path)
 
 
 def _val_depth():
