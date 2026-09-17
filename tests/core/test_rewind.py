@@ -1,46 +1,119 @@
 """Resuming from an earlier checkpoint is one mechanical act, and a refused save is loud (#188)."""
 
+import ast
 import datetime
 import json
+import pathlib
+import re
 
 import pytest
 
 from trm.runtime import rewind as rw
+from trm.runtime.layout import BEST_SUBDIR
 
 ACCUM = 128
 
 
-def _ckpt(directory, opt_step, sft=False, finalized=True):
+def _ckpt(directory, opt_step, finalized=True):
     step = opt_step * ACCUM - 1
     path = directory / str(step)
-    (path / "monitor_state").mkdir(parents=True)
-    (path / "monitor_state" / "metadata").write_text(json.dumps(
-        {"sft_active": sft, "sft_start_step": 1 if sft else None}))
+    path.mkdir(parents=True)
     if finalized:
         (path / "_CHECKPOINT_METADATA").write_text("{}")
     return path
 
 
-def test_listing_reads_opt_steps_and_phase_from_disk(tmp_path):
-    """The #157 recovery, as a listing: two clean checkpoints and a contaminated one."""
-    for opt, sft in ((4928, False), (4992, False), (5056, True)):
-        _ckpt(tmp_path, opt, sft)
+def test_listing_reads_opt_steps_from_disk(tmp_path):
+    """The #157 recovery, as a listing: finalized checkpoints only, oldest first."""
+    for opt in (4928, 4992, 5056):
+        _ckpt(tmp_path, opt)
     _ckpt(tmp_path, 5120, finalized=False)
     found = rw.checkpoints_in(tmp_path, ACCUM)
-    assert [(c.step, c.opt_step, c.sft_active) for c in found] == [
-        (630783, 4928, False), (638975, 4992, False), (647167, 5056, True)]
+    assert [(c.step, c.opt_step) for c in found] == [(630783, 4928), (638975, 4992), (647167, 5056)]
+
+
+# --- a checkpoint from the retired SFT phase is refused, not resumed (#323) ----
+
+def test_a_pretraining_monitor_state_resumes_with_or_without_the_legacy_phase_fields():
+    """Checkpoints written before #323 carry sft_active/sft_start_step; new ones
+    carry neither. Both read as pretraining."""
+    rw.refuse_sft_phase_resume({"samples_seen": 5}, 638975, "ckpts", ACCUM)
+    rw.refuse_sft_phase_resume({"sft_active": False, "sft_start_step": None}, 638975, "ckpts", ACCUM)
+
+
+def test_an_sft_phase_monitor_state_is_refused_and_names_the_rewind():
+    """A flip at micro-step 647,167 (opt step 5,056). Resuming a checkpoint past
+    it as pretraining would silently change the mixture and the LR, so the loader
+    stops and points at the last clean opt step."""
+    with pytest.raises(SystemExit) as refused:
+        rw.refuse_sft_phase_resume({"sft_active": True, "sft_start_step": 647167},
+                                   655359, "runs/run_X/checkpoints", ACCUM)
+    message = str(refused.value)
+    assert "655359" in message and "647167" in message
+    assert "python -m trm.runtime.rewind runs/run_X/checkpoints --to-opt-step 5056" in message
+
+
+def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
+    """The on-disk check fires on the newest finalized checkpoint and writes
+    nothing: run_metadata.json is byte-for-byte what it was."""
+    run = tmp_path / "run_X"
+    metadata = run / "run_metadata.json"
+    run.mkdir()
+    metadata.write_text('{"sessions": [{"start": "2026-08-15"}]}\n')
+    before = metadata.read_bytes()
+    checkpoints = run / "checkpoints"
+    _ckpt(checkpoints, 4992)
+    newest = _ckpt(checkpoints, 5120)
+    (newest / "monitor_state").mkdir()
+    (newest / "monitor_state" / "metadata").write_text(json.dumps({"sft_start_step": 5056 * ACCUM - 1}))
+    _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
+
+    with pytest.raises(SystemExit, match="--to-opt-step 5056"):
+        rw.refuse_sft_phase_checkpoint_dir(checkpoints, ACCUM)
+    assert metadata.read_bytes() == before
+
+
+def test_a_pretraining_checkpoint_dir_passes_the_launch_check(tmp_path):
+    _ckpt(tmp_path, 4992)
+    rw.refuse_sft_phase_checkpoint_dir(tmp_path, ACCUM)            # no monitor state: left to restore
+    rw.refuse_sft_phase_checkpoint_dir(tmp_path / "absent", ACCUM)  # a fresh run
+
+
+def test_the_trainer_refuses_before_it_starts_a_session():
+    """Read, not imported (start.py pulls in jax): the on-disk check must come
+    before RunTracker.start_session, which appends to run_metadata.json."""
+    source = (pathlib.Path(__file__).parents[2] / "trm" / "train" / "start.py").read_text()
+    lines = {}
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            lines[name] = min(lines.get(name, node.lineno), node.lineno)
+    assert lines["refuse_sft_phase_checkpoint_dir"] < lines["start_session"]
+
+
+def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
+    """The checkpoint saved on the flip's own boundary was written before the flip,
+    so it is clean; the suggested opt step must select it and nothing later."""
+    for opt in (4992, 5056, 5120):
+        _ckpt(tmp_path, opt)
+    flip_micro_step = 5056 * ACCUM - 1
+    with pytest.raises(SystemExit) as refused:
+        rw.refuse_sft_phase_resume({"sft_start_step": flip_micro_step}, 5120 * ACCUM - 1, tmp_path, ACCUM)
+    to_opt_step = int(re.search(r"--to-opt-step (\d+)", str(refused.value)).group(1))
+    chosen = rw.resolve(rw.checkpoints_in(tmp_path, ACCUM), to_opt_step)
+    assert chosen.step == flip_micro_step
 
 
 def test_rewind_sets_aside_newer_checkpoints_in_both_dirs_and_deletes_nothing(tmp_path):
     for opt in (4928, 4992, 5056):
         _ckpt(tmp_path, opt)
-    _ckpt(tmp_path / rw.BEST_SUBDIR, 4928)
-    _ckpt(tmp_path / rw.BEST_SUBDIR, 5056)
+    _ckpt(tmp_path / BEST_SUBDIR, 4928)
+    _ckpt(tmp_path / BEST_SUBDIR, 5056)
 
     chosen, moved = rw.rewind(tmp_path, 5000, ACCUM, now=datetime.datetime(2026, 9, 13))
     assert chosen.opt_step == 4992, "the newest at or below the request"
     assert [c.opt_step for c in rw.checkpoints_in(tmp_path, ACCUM)] == [4928, 4992]
-    assert [c.opt_step for c in rw.checkpoints_in(tmp_path / rw.BEST_SUBDIR, ACCUM)] == [4928]
+    assert [c.opt_step for c in rw.checkpoints_in(tmp_path / BEST_SUBDIR, ACCUM)] == [4928]
     assert len(moved) == 2 and all(p.exists() for p in moved), "set aside, never deleted"
     assert all(rw.SET_ASIDE_PREFIX in str(p) for p in moved)
 
@@ -61,23 +134,19 @@ def test_no_checkpoint_at_or_below_is_an_error_not_a_fallback(tmp_path):
         rw.rewind(tmp_path, 100, ACCUM)
 
 
-def test_the_best_subdir_name_matches_the_trainers():
-    from trm.runtime.checkpoints import BEST_SUBDIR
-    assert rw.BEST_SUBDIR == BEST_SUBDIR
-
-
 def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     """orbax.save() returns False, without a word, for a step below its newest.
     That is how a naive resume-from-earlier would have run for days uncheckpointed."""
     import optax
     import orbax.checkpoint as ocp
     from flax import nnx
-    from trm.runtime.checkpoints import CHECKPOINT_ITEMS, save_checkpoint
+    from trm.runtime.checkpoints import save_checkpoint
+    from trm.runtime.layout import CHECKPOINT_ITEMS, ROLLING_KEEP
     from trm.runtime.monitor import LossMonitor
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=CHECKPOINT_ITEMS,
-                                 options=ocp.CheckpointManagerOptions(max_to_keep=3, create=True))
-    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), False, "run_x")
+                                 options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True))
+    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
-        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), False, "run_x")
+        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), "run_x")

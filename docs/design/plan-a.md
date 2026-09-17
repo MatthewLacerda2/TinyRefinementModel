@@ -46,7 +46,7 @@ is within-window only); the slot-reading decoder cross-attention.
 Until #105 the *trainer* still required all of that, so the adapter had to fake it:
 a zero forget cost and a zero diversity loss for the schedules to multiply, and a
 never-read `hunch_cache` for the loop's bookkeeping to write into. The trainer now
-speaks a neutral contract (`lm_contract.py`) and the fakes are gone — Plan A
+speaks a neutral contract (`trm/model/contract.py`) and the fakes are gone — Plan A
 implements a forward pass and nothing else. What a window means for a model that
 carries state between windows is expressed as `new_document`, a fact about the data;
 Plan A ignores it because it genuinely carries nothing.

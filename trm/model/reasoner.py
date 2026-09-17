@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import jax
 import jax.numpy as jnp
+import optax
 from flax import nnx
 from trm.config import (
     NUM_BLOCKS,
@@ -20,7 +21,34 @@ from trm.model.layers import (
     calculate_slot_stability_loss,
 )
 from trm.model.contract import LMOutput, LanguageModel
-from trm.train.schedules import diversity_lambda_schedule, forget_lambda_schedule
+from trm.train.schedules import WARMUP_STEPS
+
+# The weights of this model's two auxiliary objectives, by opt step. They live here,
+# not in trm/train/schedules.py: no other architecture reports an auxiliary term
+# (#105), so no other code reads them (#317).
+#
+# The λ anneals deliberately do NOT follow DECAY_STEPS (#83): they relax
+# regularization pressure over early training — absolute-step optimizer
+# dynamics, like warmup — not a function of the run's energy budget. On a
+# longer run they sit at their end values from 15k on, which is today's
+# behavior made explicit rather than silently stretched.
+LAMBDA_DECAY_STEPS = 15000
+
+forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0,
+    peak_value=0.05,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
+    end_value=0.001
+)
+
+diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
+    init_value=0.0,
+    peak_value=1.0,
+    warmup_steps=WARMUP_STEPS,
+    decay_steps=LAMBDA_DECAY_STEPS,
+    end_value=0.1
+)
 
 class UniversalReasoner(LanguageModel):
     def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):
@@ -33,7 +61,7 @@ class UniversalReasoner(LanguageModel):
         )
 
         self.seq_norm = nnx.RMSNorm(latent_dim, rngs=rngs, dtype=dtype)
-        
+
         # use_remat=False everywhere: benchmarked 2026-06-10 (instruments.bench_train_step,
         # depth 8) — per-block remat cost 18% step time and saved no measurable VRAM.
         # The reasoning stack's memory is already bounded by the scan-level
@@ -50,7 +78,7 @@ class UniversalReasoner(LanguageModel):
         self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True, use_remat=False)
 
         self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype)
-        
+
         self.time_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.forget_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.time_signal_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
@@ -84,10 +112,10 @@ class UniversalReasoner(LanguageModel):
         pad_mask = tokens != PAD_TOKEN_ID
         pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
         pad_bias = pad_bias[:, None, None, :]
-        
+
         seq_len = tokens.shape[1]
         seq_pos = jnp.arange(seq_len)
-        
+
         z_seq_base = self.embed(tokens)
         z_seq = self.encoder_stack(z_seq_base, mask=pad_bias, q_pos=seq_pos, kv_pos=seq_pos, is_causal=True, training=training)
         return z_seq, pad_mask, seq_pos
@@ -132,10 +160,10 @@ class UniversalReasoner(LanguageModel):
                 r_stack,
                 f_norm, f_head, raw_tau_param,
             ) = nnx.merge(model_graph, current_state)
-            
+
             meta_input = jnp.stack([prev_forget, prev_div], axis=-1)
             meta_signal = m_proj(meta_input)[:, None, :]
-            
+
             shared_ctx = jnp.concatenate([z_seq, curr_shared], axis=1)
 
             stack_input = t_norm(curr_shared) + ts_norm(t_signal[None, None, :]) + meta_signal
@@ -191,10 +219,10 @@ class UniversalReasoner(LanguageModel):
         z_seq, pad_mask, seq_pos = self._encode_sequence(tokens, training=training)
 
         z_shared_base = jnp.tile(self.shared_token[...], (batch_size, 1, 1))
-        
+
         def get_fresh():
             return z_shared_base
-            
+
         def get_carried():
             # The gate may only look at the hunch and the fresh prior. The current
             # window's content must not enter here: these slots feed the decoder at
@@ -204,7 +232,7 @@ class UniversalReasoner(LanguageModel):
             gate_in = jnp.concatenate([self.hunch_norm(current_hunch), self.hunch_norm(z_shared_base)], axis=-1)
             gate = jax.nn.sigmoid(self.hunch_gate(gate_in))
             return gate * current_hunch + (1.0 - gate) * z_shared_base
-        
+
         z_shared = jax.lax.cond(new_document, get_fresh, get_carried)
 
         # Decoder slots use negative positions, which index into the tail of the
@@ -213,7 +241,7 @@ class UniversalReasoner(LanguageModel):
         # windows sits "before" the current sequence.
         past_shared_pos = jnp.arange(-SHARED_SLOTS, 0)
         decoder_kv_pos = jnp.concatenate([seq_pos, past_shared_pos], axis=0)
-        
+
         decoder_pad_mask = jnp.concatenate([pad_mask, jnp.ones((batch_size, SHARED_SLOTS), dtype=jnp.bool_)], axis=1)
         decoder_bias = (decoder_pad_mask.astype(jnp.float32) - 1.0) * 1e9
         decoder_bias = decoder_bias[:, None, None, :]
@@ -234,8 +262,8 @@ class UniversalReasoner(LanguageModel):
         z_seq_out = self.decoder_stack(
             z_seq,
             context=decoder_ctx,
-            mask=decoder_bias, 
-            q_pos=seq_pos, 
+            mask=decoder_bias,
+            q_pos=seq_pos,
             kv_pos=decoder_kv_pos,
             is_causal=True,
             training=training
@@ -261,7 +289,7 @@ class UniversalReasoner(LanguageModel):
 
         total_f_cost = jnp.mean(jnp.sum(all_outputs.forget_val, axis=0))
         total_div_cost = jnp.mean(jnp.sum(all_outputs.step_div, axis=0))
-        
+
         # Average distance the slot state moves between consecutive reasoning steps.
         # Undefined for a 1-step trajectory (no transitions): report 0, not the NaN
         # that jnp.mean over an empty diff produces.
@@ -271,7 +299,7 @@ class UniversalReasoner(LanguageModel):
             temporal_drift = jnp.mean(jnp.sqrt(jnp.sum(jnp.square(diffs), axis=-1) + 1e-8))
         else:
             temporal_drift = jnp.array(0.0)
-        
+
         diag = {
             'temporal_drift': temporal_drift,
             'forget_density': jnp.mean(all_outputs.forget_val),

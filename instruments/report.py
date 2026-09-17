@@ -1,7 +1,7 @@
 """The terminal view of a run: what the model weighs, what it costs, how it is doing.
 
     PYTHONPATH=. python -m instruments.report                 # the latest run
-    PYTHONPATH=. python -m instruments.report --log runs/run_20260813_214725/metrics.csv
+    PYTHONPATH=. python -m instruments.report --log runs/<run>/metrics.csv
     PYTHONPATH=. python -m instruments.report --model-only    # no run needed
 
 Two rules this report follows, both of them reactions to how the previous one
@@ -34,17 +34,16 @@ import os
 # and a second JAX process on it is a real hazard. Set before anything imports jax.
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import argparse   # noqa: E402
-import math       # noqa: E402
+import argparse
+import math
 
-from trm.config import (           # noqa: E402
+from trm.config import (
     ACCUMULATION_STEPS,
     BATCH_SIZE,
     INFERENCE_DEPTH,
     LATENT_DIM,
     MAX_SEQ_LEN,
     MAX_STEPS_LIMIT,
-    MODEL_ARCH,
     NUM_HEADS,
     PLAIN_LAYERS,
     REFINER_ENCODER_LAYERS,
@@ -53,9 +52,9 @@ from trm.config import (           # noqa: E402
     TRAIN_TOKEN_BUDGET,
     VOCAB_SIZE,
 )
-from instruments import model_stats, runlog   # noqa: E402
-from instruments.arch import ARCHES   # noqa: E402
-from instruments.invariants import clean_column, describe, suspect_rows   # noqa: E402
+from instruments import model_stats, runlog
+from instruments.arch import add_arch_argument
+from instruments.invariants import clean_column, describe, suspect_rows
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -143,15 +142,24 @@ def print_vram(arch, batch, train_depth, infer_depth):
     print("  remat'd region, XLA scratch, the f16 casts of f32 weights, and the")
     print("  allocator's own overhead across the ~28 compiled programs random-depth")
     print("  training keeps alive (see the 2026-08-14 BFC fragmentation finding).")
-    if model_stats.measured_peak_applies(arch, batch=batch):
+    peak = model_stats.measured_peak(arch, batch=batch)
+    if peak is None:
+        print("  No measured training peak on record for this config — the floor is all there is.")
+    else:
         floor_mib = model_stats.vram_estimate(
             "train", batch=batch, depth=train_depth, arch=arch)[model_stats.TOTAL_KEY]
         floor_gb = floor_mib * model_stats.MIB / 1e9
-        print(f"  For this exact config the measured training peak is "
-              f"~{model_stats.MEASURED_PEAK_GB:.1f} GB [measured]")
-        print(f"    source: {model_stats.MEASURED_PEAK_SOURCE}")
-        print(f"    so ~{model_stats.MEASURED_PEAK_GB - floor_gb:.1f} GB of the real cost "
-              f"sits in terms this tool does not model.")
+        print(f"  For this exact config the measured training peak is ~{peak.gb:.1f} GB [measured]")
+        print(f"    source: {peak.source}")
+        if peak.reading == "arena":
+            # An allocator reading stops at the pool's edge: the CUDA context and the
+            # driver's compiled-graph buffers sit outside it (#160), so the card holds more.
+            print(f"    so ~{peak.gb - floor_gb:.1f} GB of the arena alone sits in terms this tool "
+                  f"does not model — and the card holds more than the arena (CUDA context, "
+                  f"driver graph buffers), so the real cost is higher still.")
+        else:
+            print(f"    so ~{peak.gb - floor_gb:.1f} GB of the whole card's cost "
+                  f"sits in terms this tool does not model.")
 
 
 # ── Run ──────────────────────────────────────────────────────────────────────
@@ -163,11 +171,8 @@ def _tokens_per_opt_step(log):
     (#24). Scaling an old run's steps by today's constant would silently restate
     how much data it saw.
     """
-    params = log.metadata.get("parameters", {})
-    try:
-        recorded = (int(params["ACCUMULATION_STEPS"]) * int(params["BATCH_SIZE"])
-                    * 2 * int(params["MAX_SEQ_LEN"]))
-    except (KeyError, TypeError, ValueError):
+    recorded = runlog.recorded_tokens_per_opt_step(log.params)
+    if recorded is None:
         return TOKENS_PER_OPT_STEP, True
     return recorded, recorded == TOKENS_PER_OPT_STEP
 
@@ -177,7 +182,7 @@ def _learning_rate(log, step):
     not at whatever TRAIN_TOKEN_BUDGET happens to be set to in this shell."""
     from trm.train.schedules import DECAY_STEPS, build_learning_schedule
 
-    decay_steps = log.metadata.get("parameters", {}).get("DECAY_STEPS") or DECAY_STEPS
+    decay_steps = log.params.get("DECAY_STEPS") or DECAY_STEPS
     try:
         return float(build_learning_schedule(int(decay_steps))(step)), int(decay_steps)
     except (TypeError, ValueError):
@@ -224,7 +229,7 @@ def print_run(log):
 
     print(f"  step {step:,}  ->  {tokens:,} tokens ({tokens / 1e9:.3f}B)   [measured]")
 
-    budget = log.metadata.get("parameters", {}).get("TRAIN_TOKEN_BUDGET") or TRAIN_TOKEN_BUDGET
+    budget = log.params.get("TRAIN_TOKEN_BUDGET") or TRAIN_TOKEN_BUDGET
     wall = log.wall_seconds
     throughput = tokens / wall if wall else None
     if budget:
@@ -289,8 +294,12 @@ _DIAGNOSTICS = (
 
 
 def _print_diagnostics(log):
-    present = [(col, label, tag, note) for col, label, tag, note in _DIAGNOSTICS if log.has(col)]
-    absent = [col for col, *_ in _DIAGNOSTICS if not log.has(col)]
+    # A column the run's own arch cannot fill is not news when absent (#317).
+    arch = log.params.get("MODEL_ARCH")
+    applicable = [row for row in _DIAGNOSTICS if runlog.measured_by(arch, row[0])]
+    present = [(col, label, tag, note) for col, label, tag, note in applicable if log.has(col)]
+    absent = [col for col, *_ in applicable if not log.has(col)]
+    absence = runlog.absence_reason(arch, absent)
     if present:
         print("  diagnostics (last value):")
         for col, label, tag, note in present:
@@ -305,7 +314,7 @@ def _print_diagnostics(log):
             suffix = f" — {note}" if note else ""
             print(f"    {label:<26} {values[-1]:>12.5g}   [{tag}]{suffix}")
     if absent:
-        print(f"  not measured by this architecture: {', '.join(absent)}")
+        print(f"  {absence}: {', '.join(absent)}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -314,8 +323,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--log", default=None,
                         help="metrics.csv or a run dir (default: the latest run under runs/)")
-    parser.add_argument("--arch", default=MODEL_ARCH, choices=ARCHES,
-                        help=f"architecture to size (default: MODEL_ARCH={MODEL_ARCH})")
+    add_arch_argument(parser)
     parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="batch size for the VRAM lines")
     parser.add_argument("--train-depth", type=int, default=MAX_STEPS_LIMIT)
     parser.add_argument("--infer-depth", type=int, default=INFERENCE_DEPTH)

@@ -5,7 +5,7 @@
 
 [experiment]
 id = "026-stage2"
-status = "open"
+status = "recorded"
 title = "Muon vs AdamW at the shipped config: tokens to a fixed held-out CE"
 hypothesis = """
 Muon (orthogonalized momentum on the 2-D weight matrices, AdamW on the embedding,
@@ -36,6 +36,9 @@ The control reached the target on seed 0 at 44.6M, so the cap is not binding
 for it; a seed where the control fails to reach it voids that seed and is
 re-registered rather than averaged in.
 """
+# The run length in millions of tokens: an arm that never reaches the target
+# reports this, and the referee must be able to see that (see floor_note).
+cap = 67.108864
 metric_key = "tokens_to_target_M"
 metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
 matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed); only TRM_OPTIMIZER (+ MUON_LR_MULT) differs"
@@ -88,6 +91,39 @@ require = "all"
 [verdict]
 keep_if = ["muon_needs_fewer_tokens"]
 kill_if = ["muon_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-16. Muon at matrix LR = schedule x 100 reached held-out CE 5.85 at 20.97M
+tokens on every seed; AdamW at 44.56M on every seed. Delta 23.59M against a
+min_delta of 6.7M, and 2.1x on the ratio. The registered prediction (KEEP by a
+wide margin) was right -- the first registered prediction on this repo to be, after
+the four consecutive wrong ones on depth recurrence.
+
+On the +inf sigma the referee prints: sigma is 0.0 in both arms because the metric
+is quantized by the probe interval (validation every 16 opt steps = 2.097M tokens),
+and all three seeds of each arm landed in the same bucket. Read the separation as
+"the gap is 11 probe intervals wide", not as infinite confidence. Seed-to-seed
+spread below 2.1M tokens is invisible to this harness; the gap is an order of
+magnitude above that resolution, which is what makes the call safe.
+
+Wall-clock, the readout a KEEP had to survive: Muon costs +3.0% per opt step
+(23.91s vs 23.21s mean over 515 steps), well under the ~9% Newton-Schulz was
+budgeted at. Time to the target is 63.8 min vs 131.5 min -- 2.06x, so the token
+win is a wall-clock win too. Arena peak is LOWER for Muon: 4058 MiB vs 4438 MiB,
+because Muon keeps one momentum buffer for the 2-D matrices where AdamW keeps two
+moments. That is ~380 MiB of headroom, not a cost. (adamw seed 0 peaked at 5002
+MiB; it predates the telemetry fix in #288 and is not comparable.)
+final_val_ce at the 512-step cap, recorded with no weight: AdamW 5.707/5.700/5.709,
+Muon 4.620/4.614/4.611.
+
+WHAT THIS DOES NOT LICENSE. The control's peak LR is 1e-4 and has never been swept
+(#287), while the treatment's multiplier was tuned by the stage-2a sweep. Rule 4
+says a win over an undertuned baseline is a mirage, so this KEEP means "Muon beats
+the recipe every run so far has used", NOT "Muon beats a tuned AdamW". Adoption in
+the base-run recipe waits on #287. The pre-registered horizon caveat also stands:
+512 opt steps may flatter the faster optimizer, and the gap could narrow over a
+full budget.
+"""
 
 [readouts]
 notes = """
@@ -97,3 +133,8 @@ the tokens metric does not include it, so a KEEP must also survive the wall-
 clock reading before the base run adopts Muon); arena peak per run.
 min_delta = 6.7M tokens is 15% of the control's seed-0 44.6M.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+adamw = [44.5645, 44.5645, 44.5645]
+muon = [20.9715, 20.9715, 20.9715]

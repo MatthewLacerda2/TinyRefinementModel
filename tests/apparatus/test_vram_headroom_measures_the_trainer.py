@@ -30,10 +30,11 @@ def test_the_default_run_crosses_an_optimizer_apply():
     assert parser_defaults == {"ACCUMULATION_STEPS"}, "default must be ACCUMULATION_STEPS + 1"
 
 
-def test_every_sampled_depth_is_compiled_for_looped_arches():
-    """Each depth is its own program, and each compiled graph costs driver memory."""
-    assert set(smoke.depth_schedule("refiner", 2 * MAX_STEPS_LIMIT)) == set(range(1, MAX_STEPS_LIMIT + 1))
-    assert len(set(smoke.depth_schedule("plain", 20))) == 1
+def test_every_sampled_depth_is_compiled():
+    """Each depth is its own program, and each compiled graph costs driver memory —
+    for plain too, which the trainer still hands a sampled static depth (#316)."""
+    assert set(smoke.depth_schedule(2 * MAX_STEPS_LIMIT)) == set(range(1, MAX_STEPS_LIMIT + 1))
+    assert "depth_schedule(args.micro_steps" in SOURCE, "one schedule for every arch, as the trainer runs"
 
 
 def test_the_validation_probe_is_inside_the_measurement():

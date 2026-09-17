@@ -51,7 +51,7 @@ def test_refiner_leading_pad_stays_finite_in_f16():
 
 def test_rotary_attention_additive_mask_stays_finite_in_f16(monkeypatch):
     """#99: the reasoner path's RotaryAttention has the same hazard — its
-    additive float masks carry -1e9 entries (slot masks, model.py constants),
+    additive float masks carry -1e9 entries (slot masks, reasoner.py constants),
     and the pre-fix cast to COMPUTE_DTYPE overflowed them to -inf in f16.
     COMPUTE_DTYPE is read at call time, so patching it forces the production
     f16 path on the CPU lane too; batch element 1 masks every key, giving

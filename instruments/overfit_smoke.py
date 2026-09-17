@@ -27,10 +27,10 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax import nnx
-from dotenv import load_dotenv
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, MODEL_ARCH, NUM_BLOCKS
-from trm.model.reasoner import UniversalReasoner
+from instruments._common import load_env
+from instruments.arch import add_arch_argument, build
+from trm.config import LATENT_DIM, MAX_SEQ_LEN, NUM_BLOCKS
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -41,32 +41,30 @@ REPORTS = {
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "a tiny correctness smoke; inert anyway under cuda_async, and it asserts learning, not memory"}
 
-load_dotenv()
+load_env()
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--depth": "memorizing one batch needs one fixed, cheap depth: a single compile"}
 
 
+# --blocks, spelled the way each architecture's constructor spells its stack depth.
+# batch_size is pinned at 1 for the reasoner, not the training BATCH_SIZE: this smoke
+# feeds a single row and the reasoner's hunch cache asserts on the leading dim. The
+# other two carry no cross-window state and do not take the argument.
+BLOCKS_OVERRIDE = {
+    "plain": lambda blocks: {"num_layers": blocks},
+    "refiner": lambda blocks: {"encoder_layers": blocks},
+    "reasoner": lambda blocks: {"num_blocks": blocks, "batch_size": 1},
+}
+
+
 def _build(args):
-    """The architecture MODEL_ARCH selects — the one a run launched now would train.
-
-    This used to construct UniversalReasoner unconditionally. That is the CONTROL
-    architecture, so the pre-launch gate in CI has never smoked the model actually
-    being trained: the refiner was the live bet for months and never passed through
-    here. Same defect as smoke_refiner_gpu testing f16 overflow on random tokens
-    (#235) — a gate aimed at something other than what ships.
-
-    batch_size is pinned at 1 for the reasoner, not the training BATCH_SIZE: this
-    smoke feeds a single row and the reasoner's hunch cache asserts on the leading
-    dim. The other two carry no cross-window state and do not take the argument.
+    """The architecture --arch names (default MODEL_ARCH, the one a run launched now
+    would train), through the shared selector. It once built the control arch
+    unconditionally; that incident is listed in
+    tests/core/test_instruments_know_their_architecture.py.
     """
-    if args.arch == "plain":
-        from trm.model.plain import PlainTransformer
-        return PlainTransformer(args.dim, nnx.Rngs(0), num_layers=args.blocks)
-    if args.arch == "refiner":
-        from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(args.dim, nnx.Rngs(0), encoder_layers=args.blocks)
-    return UniversalReasoner(args.dim, nnx.Rngs(0), num_blocks=args.blocks, batch_size=1)
+    return build(args.arch, dim=args.dim, seed=0, **BLOCKS_OVERRIDE[args.arch](args.blocks))
 
 
 def main():
@@ -80,9 +78,7 @@ def main():
                         help="model width (shrink for CPU CI; must divide NUM_HEADS)")
     parser.add_argument("--blocks", type=int, default=NUM_BLOCKS,
                         help="number of blocks (shrink for CPU CI; must be even)")
-    parser.add_argument("--arch", default=MODEL_ARCH, choices=("plain", "refiner", "reasoner"),
-                        help="architecture to smoke; defaults to MODEL_ARCH, i.e. whatever "
-                             "a run launched right now would actually train")
+    add_arch_argument(parser)
     args = parser.parse_args()
 
     model = _build(args)
@@ -98,21 +94,19 @@ def main():
         from trm.runtime.restore import load_eval_batches
         batch = load_eval_batches(num_rows=1, skip=0)[0]
 
-    initial_ce = None
-    final_ce = None
+    ces = []
     for step in range(args.steps):
         loss, out, grads, grad_norm = compute_grad_step(
             model, batch, step, depth=args.depth, doc_boundary=False
         )
         apply_grads(optimizer, grads, model)
         ce = float(out.diag["token_loss"])
-        if initial_ce is None:
-            initial_ce = ce
-        final_ce = ce
+        ces.append(ce)
         if step % 20 == 0 or step == args.steps - 1:
             print(f"  step {step:4d} | window-2 CE {ce:.4f} | loss {float(loss):.4f} | grad norm {float(grad_norm):.2f}")
 
     print("-" * 40)
+    initial_ce, final_ce = ces[0], ces[-1]
     threshold = 0.6 * initial_ce
     verdict = "PASS" if final_ce < threshold else "FAIL"
     print(f"{verdict}: CE {initial_ce:.4f} -> {final_ce:.4f} (must drop below {threshold:.4f})")

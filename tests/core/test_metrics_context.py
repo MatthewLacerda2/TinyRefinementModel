@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 
 from trm.runtime.metrics import MetricsLogger
-from trm.train.trainer import PRETRAIN_SOURCES, SFT_SOURCES, mixture_label
+from trm.train.trainer import PRETRAIN_SOURCES, mixture_label
 
 
 def _log_one(tmp_path, **overrides):
@@ -37,6 +37,24 @@ def test_every_declared_column_is_written_when_its_input_exists(tmp_path, monkey
     assert float(rows[0]["act_max"]) == 1.5
 
 
+def test_the_console_line_shows_only_the_diagnostics_the_model_reported(tmp_path, capsys):
+    """A plain model has no tau and no slot drift; `Tau: 0.0000 | Drift: 0.000000`
+    printed a measurement nobody took (#317). The CSV schema is unchanged: those
+    columns stay, empty, for every reader of old and new runs alike."""
+    logger = MetricsLogger(str(tmp_path / "metrics.csv"))
+    plain_diag = ("out_entropy", "logz_mean", "max_abs_logit", "act_max")
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag={k: jnp.array(2.5) for k in plain_diag}), 0.1,
+               seg1_ce=3.0, depth_avg=1.0)
+    line = capsys.readouterr().out
+    assert "Tau" not in line and "Drift" not in line
+    assert "H: 2.500" in line and "logZ: 2.50" in line and "Compute: 0.100s" in line
+
+    logger.log(11, 3.2, 3.3, SimpleNamespace(diag={k: jnp.array(0.5) for k in logger.diag_keys}), 0.1,
+               seg1_ce=3.0, depth_avg=1.0)
+    line = capsys.readouterr().out
+    assert "Tau: 0.5000" in line and "Drift: 0.500000" in line
+
+
 def test_a_row_says_when_it_was_written(tmp_path):
     before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     _, rows = _log_one(tmp_path)
@@ -53,10 +71,8 @@ def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
 
 
 def test_the_mixture_label_covers_every_source_the_mixer_serves():
-    from trm.train.schedules import CURRICULUM_START_WEIGHTS, SFT_MIX_WEIGHTS
+    from trm.train.schedules import CURRICULUM_START_WEIGHTS
     assert len(PRETRAIN_SOURCES) == len(CURRICULUM_START_WEIGHTS)
-    assert len(SFT_SOURCES) == len(SFT_MIX_WEIGHTS)
-    assert SFT_SOURCES[1:] == PRETRAIN_SOURCES, "SFT reuses the pretrain loaders, in order"
 
 
 def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):

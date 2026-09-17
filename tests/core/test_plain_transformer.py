@@ -1,10 +1,7 @@
 """The plain transformer is what remains after depth recurrence was retired.
 
-Plan A looped ONE shared block K times. That works on sequential composition
-([[plan-a-depth-recurrence-works]], unretracted) and is actively suppressed on
-language — the trained gate routes to 6 of 960 channels on prose, the second refine
-pass costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the activation scale
-does not recover it (docs/findings/2026-09-12-...).
+Plan A looped ONE shared block K times; why that was retired is
+docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md.
 
 What these guard is that the removal was a REMOVAL: no loop, no gate, no time
 signal, no depth dial, and `depth` accepted-and-ignored rather than quietly doing
@@ -12,7 +9,6 @@ something. The last one matters most — an architecture that accepted `depth` a
 half-honoured it would be the worst of both.
 """
 
-import jax
 import jax.numpy as jnp
 import pytest
 from flax import nnx
@@ -119,16 +115,13 @@ def test_a_later_token_cannot_change_an_earlier_prediction(toy):
 
 # --- size ---------------------------------------------------------------------
 
-def test_layer_count_is_the_only_depth_knob(toy):
+def test_layer_count_is_the_only_depth_knob(toy, n_params):
     assert len(toy.blocks) == TOY_LAYERS
     deeper = PlainTransformer(
         TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         num_layers=TOY_LAYERS + 2, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
-    def count(m):
-        return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(m, nnx.Param)))
-
-    assert count(deeper) > count(toy), "more layers must mean more parameters"
+    assert n_params(deeper) > n_params(toy), "more layers must mean more parameters"
 
 
 def test_blocks_do_not_share_weights(toy):

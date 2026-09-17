@@ -26,16 +26,32 @@ from instruments import smoke_refiner_gpu as smoke
 TOY_DIM = 32
 TOY_VOCAB = 37
 TOY_PAD = TOY_VOCAB - 1
+TOY_LAYERS = 3
+
+
+def _toy(arch, embed_scale=1.0):
+    """A three-block model of `arch`: plain's whole stack, or the refiner's encoder."""
+    if arch == "plain":
+        from trm.model.plain import PlainTransformer
+        model = PlainTransformer(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+                                 num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+    else:
+        from trm.model.refiner_lm import RefinerForTraining
+        model = RefinerForTraining(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+                                   encoder_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+    embed, _ = smoke.traced_stack(model, arch)
+    embed.embedding[...] = embed.embedding[...] * embed_scale
+    return model
+
+
+@pytest.fixture(scope="module", params=["plain", "refiner"])
+def arch(request):
+    return request.param
 
 
 @pytest.fixture(scope="module")
-def toy():
-    from trm.model.refiner_lm import RefinerForTraining
-
-    return RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
-        encoder_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
-    )
+def toy(arch):
+    return _toy(arch)
 
 
 @pytest.fixture(scope="module")
@@ -44,43 +60,51 @@ def tokens():
     return t.at[0, :8].set(jnp.arange(1, 9, dtype=jnp.int32))
 
 
-def test_headroom_is_reported_per_block_not_just_at_the_end(toy, tokens):
+def test_headroom_is_reported_per_block_not_just_at_the_end(toy, tokens, arch):
     """#235's growth was not gradual — six blocks matched on both corpora and the
-    seventh multiplied by ~794. An end-of-encoder scalar says a run is unsafe; the
-    per-block trace says where to look."""
-    peaks, worst, _ = smoke.encoder_headroom(toy, tokens)
-    assert len(peaks) == 3, "one peak per encoder block"
+    seventh multiplied by ~794. An end-of-stack scalar says a run is unsafe; the
+    per-block trace says where to look. `plain`, the live arch, traces every block."""
+    peaks, worst, _ = smoke.block_headroom(toy, tokens, arch)
+    assert len(peaks) == TOY_LAYERS, "one peak per traced block"
     assert worst == max(peaks)
 
 
-def test_headroom_is_the_fraction_of_f16_left_unused(toy, tokens):
-    peaks, worst, headroom = smoke.encoder_headroom(toy, tokens)
+def test_headroom_is_the_fraction_of_f16_left_unused(toy, tokens, arch):
+    peaks, worst, headroom = smoke.block_headroom(toy, tokens, arch)
     assert headroom == pytest.approx(1.0 - worst / smoke.F16_MAX)
     assert 0.0 < headroom <= 1.0
 
 
-def test_a_healthy_model_has_headroom_to_spare(toy, tokens):
+def test_a_healthy_model_has_headroom_to_spare(toy, tokens, arch):
     """The counter-test. A gate that failed everything would satisfy the test below
     and block every run."""
-    _, _, headroom = smoke.encoder_headroom(toy, tokens)
+    _, _, headroom = smoke.block_headroom(toy, tokens, arch)
     assert headroom >= smoke.MIN_HEADROOM
 
 
-def test_a_model_pushed_toward_the_ceiling_loses_headroom(toy, tokens):
+def test_a_model_pushed_toward_the_ceiling_loses_headroom(toy, tokens, arch):
     """Scaling the embedding drives activations up the way code-shaped input does on
     the real model. The gate must track that, or it measures nothing."""
-    from trm.model.refiner_lm import RefinerForTraining
+    hot = _toy(arch, embed_scale=5000.0)
 
-    hot = RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
-        encoder_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
-    hot.refiner.embed.embedding.value = hot.refiner.embed.embedding.value * 5000.0
-
-    _, calm_worst, calm = smoke.encoder_headroom(toy, tokens)
-    _, hot_worst, hot_hr = smoke.encoder_headroom(hot, tokens)
+    _, calm_worst, calm = smoke.block_headroom(toy, tokens, arch)
+    _, hot_worst, hot_hr = smoke.block_headroom(hot, tokens, arch)
 
     assert hot_worst > calm_worst
     assert hot_hr < calm, "headroom must fall as activations rise"
+
+
+def test_the_smoke_wakes_every_residual_block_it_reads(toy, arch):
+    """Zero-fractions are read only after each zero-init down_proj is woken; a block
+    missing from this list would report structural zeros as f16 underflow."""
+    blocks = smoke.residual_blocks(toy, arch)
+    assert len(blocks) == TOY_LAYERS + (arch == "refiner")
+    assert all(hasattr(b, "down_proj") for b in blocks)
+
+
+def test_an_arch_without_a_trace_is_refused_by_name():
+    with pytest.raises(SystemExit, match="'reasoner'"):
+        smoke.refuse_untraced("reasoner")
 
 
 def test_the_threshold_would_have_caught_the_champion():

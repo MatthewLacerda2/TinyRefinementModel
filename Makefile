@@ -1,8 +1,10 @@
 # The front door (#169): the incantations live here, not in a session's memory.
 #
-#   make lint                    what CI's ruff job runs
-#   make test                    what CI's pytest job runs (core, then apparatus — separately,
-#                                since one process for both has been OOM-killed on this box)
+#   make lint                    what CI's lint job runs: ruff, vulture (dead code), then the
+#                                jaxfree tests, without conftest (#325)
+#   make test                    the whole core and apparatus suites, jaxfree tests included
+#                                (CI splits those into its lint job); core, then apparatus,
+#                                separately, since one process for both has been OOM-killed
 #   make test-affected           only the tests a change can reach; fails open to `make test`
 #   make audit                   the validity audit over the specs a change can reach (#304);
 #                                `make audit ALL=1` sweeps every spec and finding
@@ -19,6 +21,9 @@ PY ?= venv/bin/python
 
 lint:
 	$(PY) -m ruff check .
+	$(PY) -m vulture
+	@files="$$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)"; \
+	test -n "$$files" && $(PY) -m pytest --noconftest -p no:cacheprovider -m jaxfree $$files
 
 test:
 	$(PY) -m pytest tests/core -q

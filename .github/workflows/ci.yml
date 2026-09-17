@@ -13,7 +13,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ["**.md"]
 
-# Three named jobs so each load-bearing check is a separately visible (and
+# Named jobs so each load-bearing check is a separately visible (and
 # separately requireable) status (#45):
 #   pytest (CPU)        — the tiered unit/invariant suite: tests/core (properties
 #                         the model must always have) then tests/apparatus (the
@@ -23,17 +23,20 @@ on:
 #                         quietly is worse than one that fails loudly; the cure
 #                         for accumulation is deletion at tombstone time, not
 #                         skipping (tests/README.md).
-#   golden-run (CPU)    — the opt-in exact-trajectory regression, forced on here
-#                         so silent numeric drift can't go unnoticed (the
-#                         committed golden went stale once already, pre-#50)
+#   golden-run (CPU)    — the opt-in loss-trajectory regression on the shipped
+#                         arch, forced on here. Compared within 10x the measured
+#                         cross-machine noise, so it catches numeric changes of
+#                         a real bug's size, not one-ULP drift (#322)
 #   overfit smoke (CPU) — end-to-end training-path smoke at tiny scale: the
 #                         real grad step must collapse CE on one batch
-#   lint (ruff)         — errors and bugs only, never formatting (see the ruff
+#   lint                — errors and bugs only, never formatting (see the ruff
 #                         config in pyproject.toml). Its job is to catch the
 #                         class of defect that costs a run: an unused import
 #                         masking a rename, a shadowed name, an f-string that
-#                         silently prints nothing. Needs no jax, so it finishes
-#                         in seconds and fails fast ahead of the slow jobs.
+#                         silently prints nothing. Then vulture, for dead code
+#                         ruff cannot see from inside one file: a function, class
+#                         or constant nothing references. Needs no jax, so it
+#                         finishes in seconds and fails fast ahead of the slow jobs.
 #   audit (specs)       — the validity audit over the experiment specs a change
 #                         can reach (#304): floor, seeds, sigma, pre-registration
 #                         order in git, verdict reproducibility, finding cites
@@ -46,7 +49,7 @@ on:
 # be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
   lint:
-    name: lint (ruff)
+    name: lint (ruff + vulture)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
@@ -57,17 +60,38 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install ruff
-        # The pin comes from requirements.txt so there is one version to bump, but
-        # only that line is installed — the rest of the file pulls jax, which this
+      - name: Install ruff and vulture
+        # The pins come from requirements.txt so there is one version to bump, but
+        # only those lines are installed — the rest of the file pulls jax, which this
         # job has no use for. Pinned at all because an unpinned linter turns
         # "upstream shipped a new rule" into a red build on an unrelated PR.
-        run: pip install "$(grep '^ruff==' requirements.txt)"
+        run: pip install "$(grep '^ruff==' requirements.txt)" "$(grep '^vulture==' requirements.txt)" "$(grep '^pytest==' requirements.txt)"
 
       - name: Ruff
         # Rule selection lives in pyproject.toml, so local `ruff check .` and CI
         # are the same check — no flags to keep in sync in two places.
         run: ruff check .
+
+      - name: Dead code (vulture)
+        # Paths, confidence and the few names read by reflection live in
+        # [tool.vulture] in pyproject.toml, so `make lint` is the same check. A
+        # finding means delete it. A name that is used without being referenced —
+        # read by reflection, or a module attribute a checkpoint's param tree still
+        # needs to load — goes in ignore_names with its reason, never a lower bar.
+        run: vulture
+
+      - name: Jax-free lint tests
+        # AST and source lints marked `jaxfree` (#325): they need no jax, numpy or
+        # tests/conftest.py, so they fail here in seconds instead of in the pytest job.
+        # The file list is every test file that mentions `pytest.mark.jaxfree`, in any
+        # form (module pytestmark, a list, a decorator); an empty list is an error
+        # rather than "pytest with no args", which would collect the whole suite. A
+        # marked file that grows a jax import fails here loudly, since this job has no
+        # jax. The pytest job checks this selection against pytest's own (see there).
+        run: |
+          files=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)
+          test -n "$files"
+          pytest --noconftest -p no:cacheprovider -m jaxfree $files
 
       - name: No stray branches
         # A pushed branch with no PR and no commit in a week is work nobody can
@@ -131,11 +155,26 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
+      - name: Every jaxfree test is one the lint job runs
+        # The suites below deselect `-m jaxfree` however a test got the mark; the lint
+        # job selects files by grepping for it. If the two ever disagree, a test runs in
+        # neither job with CI green. This compares pytest's own collection of the mark
+        # with the lint job's file list, and fails on any difference (#342).
+        run: |
+          marked=$(pytest --collect-only -q -o addopts= -m jaxfree tests/core tests/apparatus | grep '::' | sed 's/::.*//' | sort -u)
+          listed=$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests | sort)
+          if [ "$marked" != "$listed" ]; then
+            echo "pytest marks jaxfree in:"; echo "$marked"
+            echo "the lint job collects:"; echo "$listed"
+            exit 1
+          fi
+
       - name: Core suite
-        run: pytest tests/core -q
+        # jaxfree tests run in the lint job instead (#325).
+        run: pytest tests/core -q -m "not jaxfree"
 
       - name: Apparatus suite
-        run: pytest tests/apparatus -q
+        run: pytest tests/apparatus -q -m "not jaxfree"
 
   golden:
     name: golden-run (CPU)
@@ -158,11 +197,16 @@ jobs:
           pip install "jax==0.9.1"
           grep -v '^jax\[cuda12\]' requirements.txt | pip install -r /dev/stdin
 
+      - name: Runner CPU (the golden noise floor is measured per CPU model, #322)
+        # Must never fail the job: arm64 runners have no "model name" field.
+        run: |
+          grep -m1 "model name" /proc/cpuinfo || echo "model name not reported by /proc/cpuinfo"
+
       - name: Golden trajectory + reference numerics + determinism
-        # The exact-loss-trajectory regression (opt-in locally, mandatory here),
-        # plus the two test classes that catch silent numeric drift: the
-        # reference-numerics suite (caught the double-applied attention scaling)
-        # and step determinism (what makes golden comparisons meaningful at all).
+        # The loss-trajectory regression (opt-in locally, mandatory here), plus
+        # the reference-numerics suite (caught the double-applied attention
+        # scaling) and step determinism (same-process repeatability; it says
+        # nothing about identity across machines, which the golden tolerates).
         run: pytest tests/expensive/test_golden_run.py tests/core/test_attention_numerics.py tests/core/test_step_determinism.py -q
 
   smoke:

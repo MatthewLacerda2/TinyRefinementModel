@@ -134,8 +134,7 @@ Not the supervisor by hand: the launcher derives `--stop-step` from the budget (
 checkpoint boundary), pins `--checkpoint-path`, and never passes `--new-run`, which
 every crash relaunch would replay (#169).
 
-It enforces the token budget (the trainer has no hard stop), kills a CE-plateau
-SFT auto-flip that would contaminate a pretrain run, kills a diverging warm
+It enforces the token budget (the trainer has no hard stop), kills a diverging warm
 restart, restarts a wedged one, relaunches after a real crash within a retry
 budget, and heartbeats into a pinned issue. Preflight refuses to launch onto a
 nearly-full disk or a card another run already holds.
@@ -145,7 +144,7 @@ through marker lines in a log, so "did it crash, or did the watchdog stop it?"
 was answered by reading a file the watchdog had not finished writing — and a
 clean finish landing in that window read as a crash and got relaunched. The
 supervisor owns its child, and every decision comes from one pure function whose
-guards are evaluated *before* liveness. `tests/core/test_supervisor.py` states
+guards are evaluated *before* liveness. `tests/core/test_supervisor_decide.py` states
 that original bug as an assertion.
 - **Resumability**: state visible enough that a fresh session knows exactly where
   the loop left off and continues without re-deriving context.

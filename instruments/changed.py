@@ -18,7 +18,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
+from instruments._common import REPO_ROOT as REPO
 
 
 def _git(repo: pathlib.Path, *args: str) -> list[str]:

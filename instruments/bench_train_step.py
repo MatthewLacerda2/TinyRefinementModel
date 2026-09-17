@@ -1,29 +1,26 @@
-"""Micro-step training benchmark (PERFORMANCE_PLAN.md rule zero).
+"""Micro-step training benchmark: measure a step before optimizing it.
 
 Measures steps/sec and peak VRAM for the real compute_grad_step + apply_grads
-path on synthetic data. Two modes:
-  - loop:   mimics the real train loop, pulling loss/grad-norm/diag floats to
-            the host every micro-step (the current per-step sync behavior)
-  - kernel: dispatches all steps and syncs once at the end — the upper bound
-            P1 (fused step, deferred sync) can reach
+path on synthetic data, for the model the trainer builds (MODEL_ARCH). Two modes:
+  - loop:   mimics the real train loop, pulling loss/grad-norm/token-loss floats
+            to the host every micro-step (the trainer's per-step sync)
+  - kernel: dispatches all steps and syncs once at the end — the upper bound a
+            fused step with deferred sync could reach
 
 Allocator env vars must be set by the caller BEFORE this script runs, e.g.:
   XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_ALLOCATOR=platform \
-      venv/bin/python -m instruments.bench_train_step --depth 8
+      venv/bin/python -m instruments.bench_train_step
 """
 
 import argparse
 import os
-import sys
 import time
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, MODEL_ARCH, VOCAB_SIZE
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import compute_grad_step, apply_grads
 
@@ -50,17 +47,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=60, help="timed micro-steps per mode")
     parser.add_argument("--warmup", type=int, default=10, help="untimed steps (includes compile)")
-    parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT, help="reasoning steps (curriculum depth)")
+    parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
+                        help="refinement/reasoning depth; inert for plain, which has no depth dial")
     parser.add_argument("--modes", type=str, default="loop,kernel")
     parser.add_argument("--batch", type=int, default=BATCH_SIZE,
                         help="micro-batch rows (default: config BATCH_SIZE). Sweeping this "
                              "measures how throughput scales with the forward's GEMM shape — "
                              "the 1->2 rung is what stacking the two windows would buy without "
                              "touching the data pipeline, the 2->4 rung is what real batching adds.")
-    parser.add_argument("--no-remat-encdec", action="store_true",
-                        help="disable per-block remat in encoder/decoder stacks (P5 config c)")
-    parser.add_argument("--no-remat-reasoning", action="store_true",
-                        help="disable per-block remat in the reasoning stack (P5 config b)")
     parser.add_argument("--attn-impl", type=str, default=None,
                         help="force jax.nn.dot_product_attention implementation (e.g. cudnn)")
     args = parser.parse_args()
@@ -68,22 +62,16 @@ def main():
     print(f"device: {jax.devices()[0]}")
     print(f"allocator: {os.environ.get('XLA_PYTHON_CLIENT_ALLOCATOR', '(default bfc)')} | "
           f"preallocate: {os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '(default true)')}")
-    print(f"depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | warmup: {args.warmup} | "
-          f"no_remat_encdec: {args.no_remat_encdec} | no_remat_reasoning: {args.no_remat_reasoning} | "
-          f"attn_impl: {args.attn_impl or '(default)'}")
+    print(f"arch: {MODEL_ARCH} | depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | "
+          f"warmup: {args.warmup} | attn_impl: {args.attn_impl or '(default)'}")
 
     if args.attn_impl:
         import functools
         _orig = jax.nn.dot_product_attention
         jax.nn.dot_product_attention = functools.partial(_orig, implementation=args.attn_impl)
 
+    # The trainer's own constructor, so the bench times the model a launch trains.
     model, optimizer = init_model_and_optimizer()
-    # Flip remat flags before the first trace; use_remat is read at call time.
-    if args.no_remat_encdec:
-        model.encoder_stack.use_remat = False
-        model.decoder_stack.use_remat = False
-    if args.no_remat_reasoning:
-        model.reasoning_stack.use_remat = False
 
     rng = np.random.default_rng(0)
     batch = jnp.array(
@@ -100,7 +88,7 @@ def main():
             # The real train loop pulls these to the host every micro-step.
             _ = float(loss)
             _ = float(grad_norm)
-            _ = float(out.diag.get("temporal_drift", 0.0))
+            _ = float(out.diag.get("token_loss", loss))
         return loss
 
     t0 = time.time()
@@ -122,7 +110,7 @@ def main():
         print(
             f"mode={mode:6} : {ms:7.1f} ms/micro-step | {args.steps / dt:6.2f} steps/s | "
             f"{tokens_per_step * args.steps / dt / 1e3:6.1f}k tok/s | "
-            f"opt-step (x128): {ms * 128 / 1000:5.2f}s"
+            f"opt-step (x{ACCUMULATION_STEPS}): {ms * ACCUMULATION_STEPS / 1000:5.2f}s"
         )
     report_memory("post-bench")
 
