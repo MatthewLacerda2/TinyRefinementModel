@@ -32,11 +32,10 @@ Three things around it are what this entry is for:
 
 1. **It survives f16 on Turing.** The published Muon results run in bf16 on hardware
    this repo does not have. Here the matrix LR is 100x the shared schedule in pure f16
-   with dynamic loss scaling, and it trains: no divergence, no NaN, 515 steps. The
-   scaler does visibly work for it — the Muon arms take periodic `Non-finite loss/grad`
-   skips near the end of the run (loss scale backing off 524288 → 131072 and climbing
-   again) where the AdamW arms take none. Muon at x100 rides the edge of the f16
-   exponent range; it does not fall off it, but a longer run should watch that margin.
+   with dynamic loss scaling, and it trains: no divergence, no NaN, 515 steps. Both arms
+   log ~200 `Non-finite loss/grad` skipped micro-steps per run (199–202 AdamW, 201–202
+   Muon) — the scaler's routine upward probing, not a Muon cost. (An earlier draft of
+   this entry said the AdamW arms took none; counting train.log showed otherwise.)
 2. **It is a memory *win*.** Muon keeps one momentum buffer for the 2-D matrices where
    AdamW keeps two moments, so peak arena fell 380 MiB (4438 → 4058) — about 8% of the
    4883 MiB budget on a 6GB card. On this box that is the difference between headroom
