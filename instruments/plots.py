@@ -93,6 +93,16 @@ REPORTS = {
 # pool, so it reads ~5,003 MiB whatever the trainer is actually using.
 ARENA_LIMIT_MIB = 4883.0
 
+# The zero-gradient fraction a reader should measure a run against (#379). Without
+# it the panel autoscales to whatever it has, and on a healthy run that is a 0.0001
+# blip drawn the full height of the panel — read as a crisis, and it was one seed's
+# 1-in-10,000 entries for five logged steps (#364). Both numbers below are measured,
+# not chosen: 0.05 is the bar #82 declared and found two orders of magnitude of
+# headroom against (its dense max was 0.0003), and the three base runs that actually
+# underflowed sat at 0.50-0.75 dense max (run_20260719_042625, run_20260720_012843,
+# run_20260813_214725). So a series far under the bar must LOOK far under it.
+UNDERFLOW_BAR = 0.05
+
 # ── palette ──────────────────────────────────────────────────────────────────
 # Dark surface (it screenshots well), but the steps are the validated dark
 # categorical slots, not "bright on black": slots 1-3 clear the colour-vision
@@ -898,11 +908,21 @@ def _panel_zero_grad(ax, runlog, cfg):
     if window:
         ax.plot(tokens, smooth(values, window), color=AQUA, linewidth=1.4,
                 label=f"{window}-point mean")
+    # The bar, and an axis that keeps the run's own scale next to it: a peak far
+    # below UNDERFLOW_BAR is drawn far below it instead of being stretched to fill
+    # the panel (#379). A run that does reach the bar keeps its own top.
+    peak = max(values) if len(values) else 0.0
+    ax.axhline(UNDERFLOW_BAR, color=ORANGE, linestyle="--", linewidth=1.0,
+               label=f"underflow bar {UNDERFLOW_BAR:.0%} (#82)")
     if len(values) and values.min() > 0:
         _log_y(ax)
+        ax.set_ylim(top=max(UNDERFLOW_BAR, peak) * 2.0)
+    else:
+        ax.set_ylim(0.0, max(UNDERFLOW_BAR, peak) * 1.15)
     ax.set_ylabel("fraction of zero entries")
     ax.set_title("Zero-gradient fraction (worst dense tensor, "
-                 + ("applied gradient)" if applied else "one micro-step)"), loc="left")
+                 + ("applied gradient" if applied else "one micro-step")
+                 + f") — peak {peak:.2%} of entries", loc="left")
     # "best" earns its keep here: the spikes and the floor move around, so the
     # free band between them is not always the same corner.
     _legend(ax, loc="best", fontsize=8)

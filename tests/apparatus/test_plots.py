@@ -414,3 +414,39 @@ def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp
     assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
     reasoner_only = plots.why_omitted(plain, ["tau"])
     assert reasoner_only == "not measured by this architecture"
+
+
+def _zero_grad_panel(tmp_path, peak):
+    """One panel drawn over a run whose zero-gradient fraction peaks at `peak`."""
+    from instruments import plots, runlog
+    import matplotlib
+    matplotlib.use("Agg")
+    rows = [row(step, zero_frac_dense_max=(peak if step == 200 else 0.0))
+            for step in range(5, 401, 5)]
+    csv_path = write_csv(tmp_path, rows, name="run_20990202_000000")
+    fig, ax = matplotlib.pyplot.subplots()
+    log = runlog.load(str(csv_path))
+    plots._panel_zero_grad(ax, log, plots.RunConfig.of(log))
+    return ax, fig
+
+
+def test_a_tiny_zero_grad_peak_is_drawn_against_the_bar_not_stretched(tmp_path):
+    """#379: a 1-in-10,000 blip filled the panel, so it read as a crisis. The
+    axis keeps the underflow bar in view, which is what makes small look small."""
+    import matplotlib
+    from instruments import plots
+    ax, fig = _zero_grad_panel(tmp_path, 0.0001)
+    assert ax.get_ylim()[1] >= plots.UNDERFLOW_BAR, "the bar must stay on the axis"
+    assert "peak 0.01%" in ax.get_title(loc="left")
+    assert any("underflow bar" in text for text in ax.get_legend_handles_labels()[1])
+    matplotlib.pyplot.close(fig)
+
+
+def test_a_run_that_reaches_the_bar_keeps_its_own_top(tmp_path):
+    """The floor is a floor, not a ceiling: the base runs that really underflowed
+    sat at 0.50-0.75, and clamping them to 0.05 would hide the thing it is for."""
+    import matplotlib
+    ax, fig = _zero_grad_panel(tmp_path, 0.6)
+    assert ax.get_ylim()[1] >= 0.6
+    assert "peak 60.00%" in ax.get_title(loc="left")
+    matplotlib.pyplot.close(fig)
