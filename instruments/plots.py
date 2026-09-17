@@ -920,14 +920,14 @@ def _panel_zero_grad(ax, runlog, cfg):
     else:
         ax.set_ylim(0.0, max(UNDERFLOW_BAR, peak) * 1.15)
     ax.set_ylabel("fraction of zero entries")
-    ax.set_title("Zero-gradient fraction (worst dense tensor, "
-                 + ("applied gradient" if applied else "one micro-step")
-                 + f") — peak {peak:.2%} of entries", loc="left")
+    # Short title: the long parenthetical pushed into the next panel's title.
+    ax.set_title(f"Zero-gradient fraction — peak {peak:.2%} of entries", loc="left")
     # "best" earns its keep here: the spikes and the floor move around, so the
     # free band between them is not always the same corner.
     _legend(ax, loc="best", fontsize=8)
-    _note(ax, "the largest zero fraction over the dense parameter tensors at that step. "
-              "Spikes are a live signal of an f16 gradient that underflowed to zero.")
+    _note(ax, "the largest zero fraction over the dense parameter tensors at that step, in "
+              + ("the applied (window-mean) gradient" if applied else "one micro-step's gradient")
+              + ". Spikes are a live signal of an f16 gradient that underflowed to zero.")
 
 
 def _panel_logits(ax, runlog, cfg):

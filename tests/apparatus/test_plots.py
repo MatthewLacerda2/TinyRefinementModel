@@ -437,7 +437,7 @@ def test_a_tiny_zero_grad_peak_is_drawn_against_the_bar_not_stretched(tmp_path):
     from instruments import plots
     ax, fig = _zero_grad_panel(tmp_path, 0.0001)
     assert ax.get_ylim()[1] >= plots.UNDERFLOW_BAR, "the bar must stay on the axis"
-    assert "peak 0.01%" in ax.get_title(loc="left")
+    assert ax.get_title(loc="left") == "Zero-gradient fraction — peak 0.01% of entries"
     assert any("underflow bar" in text for text in ax.get_legend_handles_labels()[1])
     matplotlib.pyplot.close(fig)
 
