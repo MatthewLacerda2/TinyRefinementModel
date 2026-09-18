@@ -1,13 +1,7 @@
 """Metrics with a fixed expectation, used to condemn rows their accumulator broke.
 
-The motivating case (#194): a resume wrote `ce = 1.8746` into metrics.csv, 40%
-below its neighbours. Two explanations, very far apart in consequence — a
-harmless logging artifact, or the data pipeline re-serving text already trained
-on, which is silent in both directions by `split_samples`' own admission. What
-settled it was `depth_avg = 2.7641` on the same row: depth is a mean of uniform
-draws over 1..MAX_STEPS_LIMIT, so that number is not a measurement of anything.
-
-These tests pin the two properties that make the check worth having: it fires on
+The motivating case (#194), and why a fixed-expectation metric settles it, is
+`instruments/invariants.py`'s module docstring. These tests pin the two properties that make the check worth having: it fires on
 the real artifact, and it does not fire on a healthy run.
 """
 
@@ -97,16 +91,31 @@ def test_fractions_must_lie_in_zero_to_one():
     assert invariants.suspect_rows(_log([(10, {"zero_frac_dense_max": 0.5}) ])) == {}
 
 
-def test_the_live_run_has_exactly_the_two_known_artifacts():
-    """Integration against the real file, when it is present. 1,567 rows, two
-    resumes, two artifacts, no false positives — the ratio that makes the check
-    trustworthy rather than noisy."""
-    import pathlib
+def _live_run_suspects(run_dir):
     from instruments.runlog import load
 
-    csv = pathlib.Path("runs/run_20260813_214725/metrics.csv")
-    if not csv.exists():
-        pytest.skip("live run's metrics.csv not present")
-    suspect = invariants.suspect_rows(load(str(csv)))
+    return invariants.suspect_rows(load(str(run_dir)))
+
+
+def test_the_live_run_flags_rows_only_for_known_reasons(champion_run):
+    """Integration against the recorded champion run (tests/apparatus/fixtures, which
+    keeps every suspect row and its neighbours): every flagged row is flagged for
+    depth_avg, the accumulator check.
+
+    #196 measured 2 suspect rows of 1,567, both resume artifacts. The finished run
+    has 32: 24 with depth_avg 8.44-9.20, above the maximum depth of 8, which a resume
+    artifact cannot produce, and 8 below the corridor. That is #355."""
+    suspect = _live_run_suspects(champion_run)
+    assert len(suspect) == 32, "the recorded excerpt must keep every suspect row"
     assert all("depth_avg" in reasons[0] for reasons in suspect.values())
+
+
+@pytest.mark.xfail(strict=True, reason="#355: the finished champion run flags 32 rows "
+                                       "(24 with depth_avg above 8), not the <= 5 this bound expects")
+def test_the_live_run_flags_few_rows(champion_run):
+    """The bound #196 set (2 measured, slack to 5), kept as it was and recorded as a
+    known failure rather than hidden. The run is a recording, so fixing #355's cause
+    will not change these rows; this turns XPASS only if the invariants learn to tell
+    #355's rows apart, and then the bound should be revisited."""
+    suspect = _live_run_suspects(champion_run)
     assert len(suspect) <= 5, f"unexpectedly many suspect rows: {sorted(suspect)}"

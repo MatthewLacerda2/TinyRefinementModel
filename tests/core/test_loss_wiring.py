@@ -57,42 +57,46 @@ def _graded(model, window_aux):
     return {k: float(v) for k, v in model.grade_aux(window_aux, GRADING_STEP).items()}
 
 
-def test_each_reported_aux_term_survives_grading(tiny_model, token_batch):
+# The two tests below take the reasoner, not tiny_model: it is the only arch that
+# reports auxiliary objectives, and on plain both would always skip (#322).
+
+
+def test_each_reported_aux_term_survives_grading(reasoner_model, token_batch):
     """Whatever the arch puts in `aux`, its own grade_aux must carry through to a
     graded term that responds to it — in BOTH windows. This is the forget-cost
     incident's actual shape: a cost computed, reported, and then dropped on the
     floor between the model and the loss."""
-    reported = tiny_model(jnp.asarray(token_batch), depth=2, training=False).aux
+    reported = reasoner_model(jnp.asarray(token_batch), depth=2, training=False).aux
     if not reported:
         pytest.skip("this architecture reports no auxiliary objectives")
 
     ones = {k: jnp.array(1.0) for k in reported}
-    base = _graded(tiny_model, [ones, ones])
+    base = _graded(reasoner_model, [ones, ones])
 
     for key in reported:
         for window in (0, 1):
             bumped = [dict(ones), dict(ones)]
             bumped[window][key] = jnp.array(2.0)
-            after = _graded(tiny_model, bumped)
+            after = _graded(reasoner_model, bumped)
             assert after != base, (
                 f"reported aux term '{key}' does not reach the loss from window {window}"
             )
 
 
-def test_grading_scales_with_the_reported_cost(tiny_model, token_batch):
+def test_grading_scales_with_the_reported_cost(reasoner_model, token_batch):
     """A graded term must be driven by the cost it is named for and nothing else:
     doubling one reported term moves its own graded value and leaves the others
     alone. Catches a schedule wired to the wrong key."""
-    reported = tiny_model(jnp.asarray(token_batch), depth=2, training=False).aux
+    reported = reasoner_model(jnp.asarray(token_batch), depth=2, training=False).aux
     if not reported:
         pytest.skip("this architecture reports no auxiliary objectives")
 
     ones = {k: jnp.array(1.0) for k in reported}
-    base = _graded(tiny_model, [ones, ones])
+    base = _graded(reasoner_model, [ones, ones])
 
     for key in reported:
         bumped = dict(ones, **{key: jnp.array(2.0)})
-        after = _graded(tiny_model, [bumped, ones])
+        after = _graded(reasoner_model, [bumped, ones])
         assert after[key] != base[key], f"'{key}' grading ignores its own reported cost"
         for other in reported:
             if other != key:

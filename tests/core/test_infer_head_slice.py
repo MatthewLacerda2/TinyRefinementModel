@@ -1,32 +1,9 @@
 """Generation projects the tied head over one position, not all of them (#206).
 
-`get_logits_for_token` used to compute logits for every position and then take
-one row:
-
-    all_logits = run_model_inference(...)      # [1, 512, 50304]
-    logits = all_logits[0, token_idx, :]
-
-`token_idx` is traced, so XLA could not dead-code the other 511 rows. At the live
-config that is ~24.7 GMAC and a ~103MB f32 transient **per emitted token** — about
-a fifth of per-token generation compute — spent on rows nobody reads.
-
-The fix slices the pre-head state before the matmul. #206 pre-registered that
-this must be **bit-identical** — "slicing before vs after a matmul is exact, not
-approximate". That turned out to be false, and the difference matters enough to
-write down rather than quietly relax.
-
-Measured here, feeding the *same* pre-head state to both shapes:
-
-    matmul [1, 512, 32] @ [32, 37]  vs  matmul [1, 1, 32] @ [32, 37]
-    bit-identical : False
-    max abs diff  : 2.384e-07
-    max rel diff  : 1.816e-05
-    argmax agrees : True
-
-Float matmul is not shape-invariant: XLA selects a different kernel and reduction
-order for a 512-row operand than for a 1-row one, so the last ulp moves. The
-identity is exact in real arithmetic and inexact in f32, and no amount of correct
-slicing changes that.
+The pre-head state is sliced before the matmul instead of reading one row of the
+full projection. Slicing is exact in real arithmetic but not bit-identical in f32:
+float matmul is not shape-invariant, so the last ulp moves. The cost it removes and
+the measurement are in PR #213 and its comment on #206.
 
 So the gate is: agreement to a tolerance far below anything meaningful (the val-CE
 noise floor is σ≈0.03 nats, ~5 orders of magnitude larger), plus **exact agreement
@@ -34,9 +11,10 @@ on the argmax** — because the only thing generation actually reads out of thes
 numbers is which token wins. A drifting logit that never changes the decision is
 not a behaviour change; a drifting argmax would be.
 
-Both architectures are covered. The refiner is the live bet; the reasoner is the
-control baseline, and a control that quietly disagrees with the live arch about
-what its own head computes is worse than no control.
+The refiner and the reasoner are covered here; the plain model's slice is
+test_the_sliced_row_matches_the_full_projection in test_plain_transformer.py. The
+reasoner is the control baseline, and a control that quietly disagrees about what
+its own head computes is worse than no control.
 """
 
 import jax.numpy as jnp
@@ -134,29 +112,12 @@ def test_the_jitted_sampling_step_reads_the_row_it_asked_for(toy_refiner, padded
 
 
 
-class _InVocabEncoder:
-    """A tokenizer whose ids fit TOY_VOCAB.
-
-    The real `r50k_base` emits ids in the tens of thousands, and `generate_text`
-    pads with the *config* PAD_TOKEN_ID (50256) on top of that. One out-of-range
-    id makes this model return all-NaN logits for the entire window (#233) — so
-    with the real tokenizer this test sampled every token from NaN, and passed
-    only because NaN is deterministic. The #229 guard is what surfaced it.
-    """
-
-    def encode(self, text):
-        return [1 + (ord(c) % (TOY_VOCAB - 2)) for c in text]
-
-    def decode(self, ids):
-        return "".join(chr(97 + (i % 26)) for i in ids)
-
-
-def test_generation_still_produces_a_reproducible_sequence(toy_refiner, monkeypatch):
+def test_generation_still_produces_a_reproducible_sequence(toy_refiner, monkeypatch, in_vocab_encoder):
     """End to end. Seeded, so it also pins that the change did not disturb the
     sampling stream — a shifted RNG would be a silent behaviour change even if
     every individual row were correct."""
     monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
-    enc = _InVocabEncoder()
+    enc = in_vocab_encoder(TOY_VOCAB)  # why real ids break a toy model: tests/conftest.py
 
     def run():
         return infer.generate_text(

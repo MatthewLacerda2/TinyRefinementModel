@@ -15,7 +15,7 @@ The tiers answer one question: **what breaks if I delete this?**
 ## Why `apparatus/` exists
 
 Tests accumulate here faster than anywhere else, and that is not a defect —
-`test_scratchpad_harness.py` is 477 lines because the scratchpad ablations are
+`test_scratchpad_harness.py` is one of the longest files here because the scratchpad ablations are
 only interpretable if the wiring is provably what the write-up claims. The
 problem was never that these get written; it is that nothing said when they
 *stop* being load-bearing. A harness outlives its usefulness the moment its

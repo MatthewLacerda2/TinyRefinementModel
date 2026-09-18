@@ -1,0 +1,36 @@
+{
+  "run_id": "run_287_adamw_lr0.0001_s0",
+  "git_commit": "57df54c8aa55c18f6f7535429391754642f80886",
+  "git_branch": "main",
+  "git_dirty": false,
+  "parameters": {
+    "MODEL_ARCH": "plain",
+    "LATENT_DIM": 960,
+    "NUM_BLOCKS": 8,
+    "SHARED_SLOTS": 32,
+    "MAX_SEQ_LEN": 512,
+    "VOCAB_SIZE": 50304,
+    "MAX_STEPS_LIMIT": 8,
+    "BATCH_SIZE": 1,
+    "ACCUMULATION_STEPS": 128,
+    "PAD_TOKEN_ID": 50256,
+    "NUM_HEADS": 15,
+    "DATA_SEED": 0,
+    "MODEL_SEED": 0,
+    "TRAIN_TOKEN_BUDGET": 67108864,
+    "DECAY_STEPS": 512,
+    "WARMUP_STEPS": 100,
+    "PEAK_LR": 0.0001,
+    "VAL_EVERY_OPT_STEPS": 8,
+    "PLAIN_LAYERS": 9,
+    "TRM_OPTIMIZER": "adamw",
+    "MUON_LR_MULT": 50.0
+  },
+  "sections": [
+    {
+      "start_time": "2026-09-16T13:19:15.980407-03:00",
+      "end_time": "2026-09-16T16:40:15.722552-03:00",
+      "duration_seconds": 12059.74
+    }
+  ]
+}

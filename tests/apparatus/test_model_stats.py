@@ -195,13 +195,24 @@ def test_vram_terms_are_the_dtypes_the_optimizer_actually_uses():
 
 def test_the_floor_stays_under_the_measured_peak():
     """A floor that exceeds the measured peak is not a floor, it is a bug. The
-    live run's measured peak at this config is ~5.0 GB."""
-    floor_gb = (model_stats.vram_estimate("train", batch=1, depth=8, arch="refiner")
-                [model_stats.TOTAL_KEY] * model_stats.MIB / 1e9)
-    assert 0 < floor_gb < model_stats.MEASURED_PEAK_GB
-    assert model_stats.measured_peak_applies("refiner", batch=1)
-    assert not model_stats.measured_peak_applies("reasoner", batch=1)
-    assert not model_stats.measured_peak_applies("refiner", batch=4)
+    4B refiner run's measured peak was ~5.0 GB; the plain stacks' are arena peaks."""
+    for arch, overrides in (("refiner", {"dim": 960, "encoder_layers": 7}),
+                            *(("plain", {"dim": 960, "num_heads": 15, "num_layers": n, "post_norm": False})
+                              for n in (8, 9, 10))):
+        peak = model_stats.measured_peak(arch, batch=1, **overrides)
+        assert peak is not None, (arch, overrides)
+        floor_gb = (model_stats.vram_estimate("train", batch=1, depth=8, arch=arch, **overrides)
+                    [model_stats.TOTAL_KEY] * model_stats.MIB / 1e9)
+        assert 0 < floor_gb < peak.gb, (arch, overrides)
+
+
+def test_a_measured_peak_is_quoted_only_for_its_exact_config():
+    assert model_stats.measured_peak("reasoner", batch=1) is None
+    assert model_stats.measured_peak("refiner", batch=4, dim=960, encoder_layers=7) is None
+    plain = {"dim": 960, "num_heads": 15, "post_norm": False}
+    assert model_stats.measured_peak("plain", batch=1, num_layers=11, **plain) is None
+    assert model_stats.measured_peak("plain", batch=1, num_layers=9, **{**plain, "post_norm": True}) is None
+    assert model_stats.measured_peak("plain", batch=1, num_layers=9, **plain).gb == pytest.approx(4437 * 2**20 / 1e9)
 
 
 def test_vram_rejects_a_mode_it_cannot_estimate():
@@ -265,26 +276,66 @@ def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_n
 def test_the_plain_parameter_count_is_reproduced():
     """136.9M at 8 layers — the count the plain arch's launch banner prints."""
     assert model_stats.total_params("plain", num_layers=8, post_norm=False) == 136_862_144
-    # 9 layers, the default since 2026-09-13 (446 MiB headroom on the RTX 2060).
-    assert model_stats.total_params("plain", num_layers=9, post_norm=False) == 147933312
+    # 9 layers, the default since 2026-09-13 (446 MiB headroom on the RTX 2060). The
+    # count is the formula's; test_plain_formula_matches_the_real_model ties the formula
+    # to the instantiated tree, so this pins the default's size, not a measurement.
+    assert model_stats.total_params("plain", num_layers=9, post_norm=False) == 147_933_312
     from trm.config import PLAIN_LAYERS
     assert PLAIN_LAYERS == 9
 
 
-@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
-def test_the_report_runs_for_every_arch(arch):
-    """The report crashed on the default arch for a week, because its choices and
-    formulas were written when there were two. Every arch instruments.arch knows
-    must produce a report."""
+REPORT_ARCHES = ("plain", "refiner", "reasoner")
+
+# Every arch's report in one child interpreter, each run as `python -m instruments.report`
+# would run it; a run that raises or exits non-zero is recorded, not fatal to the rest.
+_REPORT_CHILD = r"""
+import contextlib, io, json, runpy, sys, traceback
+out = {}
+for arch in sys.argv[1:]:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    sys.argv = ["report", "--model-only", "--arch", arch]
+    code = 0
+    try:
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            runpy.run_module("instruments.report", run_name="__main__", alter_sys=True)
+    except SystemExit as exc:  # argparse and sys.exit("message") land here
+        if isinstance(exc.code, int):
+            code = exc.code
+        elif exc.code is not None:
+            code = 1
+            stderr.write(str(exc.code) + "\n")
+    except BaseException:
+        code = 1
+        stderr.write(traceback.format_exc())
+    out[arch] = {"code": code, "stdout": stdout.getvalue()[-4000:], "stderr": stderr.getvalue()[-4000:]}
+print("REPORTS " + json.dumps(out))
+"""
+
+
+@pytest.fixture(scope="module")
+def reports():
+    import json
     import subprocess
     import sys
+
+    proc = subprocess.run([sys.executable, "-c", _REPORT_CHILD, *REPORT_ARCHES],
+                          capture_output=True, text=True, timeout=600)
+    assert proc.returncode == 0, f"the report child itself failed:\n{proc.stderr[-2000:]}"
+    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("REPORTS ")][-1]
+    return json.loads(line[len("REPORTS "):])
+
+
+@pytest.mark.parametrize("arch", REPORT_ARCHES)
+def test_the_report_runs_for_every_arch(arch, reports):
+    """The report crashed on the default arch for a week, because its choices and
+    formulas were written when there were two. Every arch instruments.arch knows
+    must produce a report. All three run in one child interpreter (#325)."""
     from instruments.arch import ARCHES
 
     assert arch in ARCHES
-    proc = subprocess.run([sys.executable, "-m", "instruments.report", "--model-only", "--arch", arch],
-                          capture_output=True, text=True, timeout=300)
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    assert "total" in proc.stdout
+    run = reports[arch]
+    assert run["code"] == 0, f"stderr:\n{run['stderr'][-2000:]}\nstdout:\n{run['stdout'][-2000:]}"
+    assert "total" in run["stdout"]
 
 
 def test_every_known_arch_is_covered_here():

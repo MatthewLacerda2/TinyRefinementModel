@@ -8,12 +8,12 @@ class TextDataGenerator:
         self.max_seq_len = max_seq_len
         self.directory = directory
         self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
-        
-        self.fs, self.path_prefix = fsspec.core.url_to_fs(directory)
-        
+
+        self.fs, _ = fsspec.core.url_to_fs(directory)
+
         all_files = self.fs.ls(directory)
         self.files = sorted([f for f in all_files if f.endswith('.npy')])
-        
+
         self.current_file_idx = 0
         self.data = None
         self.pointer = 0
@@ -26,10 +26,10 @@ class TextDataGenerator:
             if self.current_file_idx >= len(self.files):
                 self.exhausted = True
                 return False
-            
+
             file_path = self.files[self.current_file_idx]
             print(f"📖 Memory-mapping {file_path} (lazy host-RAM paging)...")
-            
+
             try:
                 # Attempt direct OS-level memory mapping for zero-copy lazy paging
                 self.data = np.load(file_path, mmap_mode='r')
@@ -37,10 +37,10 @@ class TextDataGenerator:
                 # Fallback to fsspec wrapper for remote or virtual file systems
                 with self.fs.open(file_path, 'rb') as f:
                     self.data = np.load(f)
-                
+
             self.pointer = 0
             stride = 2 * self.max_seq_len + 1
-            
+
             if self.skip_count > 0:
                 # Checkpoint recovery: Skip exact number of previously seen tokens
                 tokens_to_skip = self.skip_count * stride
@@ -56,7 +56,7 @@ class TextDataGenerator:
                 random_offset = int(self.rng.integers(0, stride))
                 if random_offset < len(self.data):
                     self.pointer = random_offset
-                    
+
             self.current_file_idx += 1
             self.is_new_file = True
             return True
@@ -67,7 +67,7 @@ class TextDataGenerator:
 
         stride = 2 * self.max_seq_len + 1
         total_tokens = batch_size * stride
-        
+
         if self.data is None or self.pointer + total_tokens > len(self.data):
             if not self._load_next_file():
                 return None, None
@@ -91,7 +91,7 @@ class TextDataGenerator:
                     f"{VOCAB_SIZE}. The model would clamp it to a wrong token rather "
                     f"than crash (#233), so this is the only place it can be caught: "
                     f"the shard is corrupt, or it was written by a different tokenizer.")
-        
+
         # doc_boundary: marks batches that start a new file, i.e. the previous
         # document's carried state is no longer relevant downstream.
         doc_boundary = np.zeros((batch_size,), dtype=bool)

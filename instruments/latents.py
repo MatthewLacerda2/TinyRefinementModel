@@ -1,17 +1,9 @@
 """Capture the refinement trajectory — every latent state the model passes
 through while it thinks (#225).
 
-Depth inertness was found at the *end* of a 10-day run by eyeballing eight
-sampled prompts, because the production model could not hand back a single
-intermediate state: `return_all_states` existed only on the toy `CausalRefiner`,
-and even there it was entangled with `return_all_iters`, which drags the
-`[depth, b, s, vocab]` logit tensor along. States alone were never expensive.
-At the live config a whole trajectory is
-
-    9 states x 1 x 512 x 960 x 2 bytes = 8.8 MB
-
-so this has been affordable the entire time; the coupling is what kept it out of
-reach.
+States alone are cheap: a whole trajectory at dim 960 and seq 512 is
+9 x 512 x 960 x 2 bytes = 8.8 MB. Why the production model could not hand one back
+before, and the depth-inertness it would have caught earlier: #225.
 
 This module is the one API every downstream depth instrument uses (#227's
 readout probe, #228's visualiser). It ships the measurement and makes no claim
@@ -37,6 +29,9 @@ import numpy as np
 from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
+from instruments._common import add_checkpoint_argument, load_env
+
+# ARCH-SPECIFIC: refiner — a trajectory is the refine loop's states, and only the refiner loops (#317).
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -150,23 +145,25 @@ def capture(model, tokens, depth) -> Trajectory:
 
 def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", required=True,
-                    help="checkpoint MANAGER ROOT (the dir holding numeric step dirs), "
-                         "not a step dir")
+    add_checkpoint_argument(ap, required=True, aliases=("--checkpoint",))
     ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT)
     ap.add_argument("--source", default="pretrain/fineweb-edu")
     ap.add_argument("--rows", type=int, default=1)
     args = ap.parse_args(argv)
+    from trm.config import MODEL_ARCH
+    if MODEL_ARCH != "refiner":
+        raise SystemExit(f"instruments.latents reads the refiner's refinement trajectory; "
+                         f"MODEL_ARCH={MODEL_ARCH!r} has no refine loop to capture. "
+                         f"Load a refiner checkpoint with MODEL_ARCH=refiner.")
 
     # DATA_ROOT lives in .env and the held-out loader reads it from the
     # environment. Loading it here rather than making every caller export it
     # by hand, the way trm/infer.py already does.
-    from dotenv import load_dotenv
-    load_dotenv()
+    load_env()
 
     from trm.runtime.restore import load_eval_batches, restore_model
 
-    model, _ = restore_model(args.checkpoint)
+    model, _ = restore_model(args.checkpoint_path)
     # load_eval_batches yields input rows, not (input, target) pairs.
     for i, row in enumerate(load_eval_batches(args.source, num_rows=args.rows)):
         traj = capture(model, jnp.asarray(row[:, :MAX_SEQ_LEN]), args.depth)

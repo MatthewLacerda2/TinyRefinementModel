@@ -46,7 +46,7 @@ class RotaryAttention(nnx.Module):
         q = self.q_proj(x).reshape(b, s, self.num_heads, self.head_dim)
 
         kv_input = context if context is not None else x
-        
+
         s_kv = kv_input.shape[1]
 
         k = self.k_proj(kv_input).reshape(b, s_kv, self.num_groups, self.head_dim)
@@ -211,22 +211,22 @@ def calculate_slot_stability_loss(new_shared, curr_shared, tau):
     steps (specialization), not diversity within a step.
     """
     b, s, d = new_shared.shape
-    
+
     anchor = new_shared / jnp.sqrt(jnp.sum(jnp.square(new_shared), axis=-1, keepdims=True) + 1e-5)
     positive = jax.lax.stop_gradient(
         curr_shared / jnp.sqrt(jnp.sum(jnp.square(curr_shared), axis=-1, keepdims=True) + 1e-5)
     )
-    
+
     pos_logits = jnp.sum(anchor * positive, axis=-1, keepdims=True) / tau
-    
+
     neg_logits = jnp.einsum('bsd,btd->bst', anchor, positive, precision=jax.lax.Precision.HIGHEST) / tau
-    
+
     identity = jnp.eye(s)[None, :, :]
     neg_logits = neg_logits + (identity * -1e9)
     logits = jnp.concatenate([pos_logits, neg_logits], axis=-1)
-    
+
     labels = jnp.zeros((b, s), dtype=jnp.int32)
-    
+
     loss_per_slot = optax.softmax_cross_entropy_with_integer_labels(logits, labels)
-    
+
     return jnp.mean(loss_per_slot, axis=-1)

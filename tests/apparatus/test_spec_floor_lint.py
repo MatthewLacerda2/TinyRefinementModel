@@ -27,6 +27,10 @@ import tomllib
 
 import pytest
 
+# Needs neither jax, numpy nor tests/conftest.py: CI runs it in the seconds-long
+# lint job instead of the jax-heavy pytest job (#325).
+pytestmark = pytest.mark.jaxfree
+
 SPECS = sorted((pathlib.Path(__file__).resolve().parents[2] / "experiments")
                .glob("*/specs/*.toml"))
 
