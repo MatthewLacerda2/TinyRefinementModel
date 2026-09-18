@@ -7,7 +7,7 @@
 
 [experiment]
 id = "287-stage2"
-status = "open"
+status = "recorded"
 title = "Peak LR 6e-4 vs the 3e-4 winner: tokens to a fixed held-out CE"
 hypothesis = """
 #287 stage 1 found peak 3e-4 reaching held-out CE 5.85 in 2.25x fewer tokens than the
@@ -101,6 +101,49 @@ require = "all"
 [verdict]
 keep_if = ["higher_lr_needs_fewer_tokens"]
 kill_if = ["higher_lr_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-18. KEEP on every seed. Peak 6e-4 reached held-out CE 5.85 at
+20.97/22.28/22.28M tokens against 3e-4's 26.21/27.53/27.53M: 1.24x fewer tokens,
+delta 5.24M against the 4.0M bar, +6.9 sigma (sigma ~0.76M, mostly the 1.05M probe
+quantum). No arm diverged; the KILL branch did not fire on any seed.
+
+The registered prediction (INCONCLUSIVE leaning KEEP, with a real chance of KILL)
+was wrong in the timid direction again -- the third prediction in a row on this
+line to underestimate the change. It did get the shape right: the step from 3e-4
+to 6e-4 (1.24x) is much smaller than the step from 1e-4 to 3e-4 (2.25x), which is
+what a curve approaching its optimum looks like. The optimum is now bracketed
+somewhere at or above 6e-4, not below it.
+
+Readouts:
+- final_val_ce at the cap (continuous, no weight): 4.723/4.761/4.751 vs
+  5.093/5.107/5.099, a 0.35-nat gap against a ~0.02-nat seed spread.
+- f16 margin, the thing this arm was registered to watch: non-finite skips
+  194/199/200 vs 201/198/195 and streaks >1 at 3/3/1 vs 1/4/1 -- the loss scaler is
+  doing no more work at 6e-4. max |logit| 22.1/22.7/22.2 vs 21.9/20.7/21.2, also
+  flat. What DID move is max act_max: 68.4/74.1/76.8 against 41.3/40.9/45.2, i.e.
+  the largest activation nearly doubled. That is still ~3 orders of magnitude
+  inside f16's 65,504 ceiling at this horizon, but it is the readout that would
+  decide a 1e-3 arm, and it is the reason a longer run must watch act_max (#368)
+  rather than assume today's margin.
+- clip: the per-micro-step guard fires on 0.00-0.01% of micro-steps on both arms.
+  The global clip bites on 63-66% of logged steps at 6e-4 vs 76-80% at 3e-4 --
+  fewer, not more, because the accumulated gradient shrinks faster.
+- arena peak 4438 MiB on every arm, identical, as expected for one optimizer.
+- wall-clock per opt step reads 26.0/27.9/27.9 s at 6e-4 against 22.9-23.2 s at
+  3e-4. This is NOT an effect of the LR: the arithmetic is identical. These arms
+  ran while finished checkpoints were being copied to the HDD in the background,
+  and the control's did not. Wall-clock is not comparable between these two sets;
+  the token metric is unaffected.
+
+What it means for the recipe. AdamW's peak moves to 6e-4, and #26 stage 3's
+control is now stale: Muon at x33.33 on a 3e-4 schedule read 19.01/19.01/18.35M,
+so against this arm its lead is ~1.16x rather than 1.42x -- and unmeasured, since
+that would be an unmatched comparison across specs. The clean next question is
+Muon on a 6e-4 schedule (MUON_LR_MULT 16.667, matrix peak unchanged at 1e-2)
+against this arm, and it is registered separately rather than read off these two
+tables. A 1e-3 arm is also now eligible on the same terms 6e-4 was.
+"""
 
 [readouts]
 notes = """
@@ -115,3 +158,8 @@ streaks >1 per run (3e-4 and 1e-4 both sat at ~200 routine scaler probes -- a 6e
 that climbs well past that is paying for the LR); max act_max and max |logit| (the f16
 margin, #368); the clip rate; wall-clock and arena peak, expected identical.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+lr3e4 = [26.2144, 27.5251, 27.5251]
+lr6e4 = [20.9715, 22.2822, 22.2822]
