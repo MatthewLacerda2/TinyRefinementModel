@@ -32,6 +32,7 @@ from trm.config import (
     PLAIN_LAYERS,
     POST_NORM,
     VOCAB_SIZE,
+    ZERO_INIT_ATTN_OUT,
 )
 from trm.model.contract import LMOutput, LanguageModel
 from trm.model.refiner import Block
@@ -47,14 +48,14 @@ class PlainTransformer(LanguageModel):
     def __init__(self, latent_dim, rngs, *, vocab_size=VOCAB_SIZE, num_heads=NUM_HEADS,
                  num_layers=PLAIN_LAYERS, max_seq_len=MAX_SEQ_LEN,
                  pad_token_id=PAD_TOKEN_ID, dtype=COMPUTE_DTYPE,
-                 post_norm=POST_NORM):
+                 post_norm=POST_NORM, zero_init_o=ZERO_INIT_ATTN_OUT):
         self.pad_token_id = pad_token_id
         self.latent_dim = latent_dim
         self.dtype = dtype
         self.embed = nnx.Embed(vocab_size, latent_dim, rngs=rngs, dtype=dtype)
         self.blocks = nnx.List([
             Block(latent_dim, num_heads, max_seq_len, rngs, dtype,
-                  post_norm=post_norm)
+                  post_norm=post_norm, zero_init_o=zero_init_o)
             for _ in range(num_layers)
         ])
         self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)

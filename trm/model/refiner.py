@@ -14,6 +14,7 @@ harness tests the thing we'd ship, not a stand-in. See docs/design/plan-a.md.
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.nnx.nn.linear import default_kernel_init
 
 from trm.model.rope import rope_tables, apply_rope
 
@@ -21,7 +22,7 @@ from trm.model.rope import rope_tables, apply_rope
 class CausalAttention(nnx.Module):
     """Multi-head self-attention, RoPE, causal mask folded into an additive bias."""
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32):
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, zero_init_o=False):
         assert dim % num_heads == 0, "dim must divide num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
@@ -29,7 +30,8 @@ class CausalAttention(nnx.Module):
         self.q = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.k = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.v = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
-        self.o = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
+        o_init = jax.nn.initializers.zeros if zero_init_o else default_kernel_init
+        self.o = nnx.Linear(dim, dim, kernel_init=o_init, rngs=rngs, dtype=dtype)
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         cos, sin = rope_tables(max_pos, self.head_dim)
@@ -70,8 +72,8 @@ class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
     def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32,
-                 post_norm=False):
-        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
+                 post_norm=False, zero_init_o=False):
+        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, zero_init_o=zero_init_o)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         # Post-norm on each residual branch (#235). norm1/norm2 bound the branch

@@ -1,0 +1,89 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "361-zero-init-o"
+status = "open"
+title = "Zero-init the attention output projection too, so every block starts as a no-op"
+hypothesis = """
+Block zero-inits the MLP's down_proj but leaves the attention output projection `o` at
+lecun-normal (#361). At init the embedding rows have RMS ~0.03 and the attention branch
+adds RMS ~1, so the token is outnumbered ~30:1 in its own residual before anything is
+learned, and each of the 9 blocks adds another O(1). Zero-initialising `o` as well makes
+the model at init exactly a tied-embedding bigram, and each block's first update decides
+what to add: the principle the down_proj zero-init already states, applied to both
+branches. The switch moves only the `o` kernels; every other weight is drawn the same.
+
+Prediction registered (#361's, kept): faster over the first ~200 opt steps, parity by
+512, so INCONCLUSIVE is the likely verdict on tokens to 5.85 and no KILL. Under Muon the
+first update of a zero matrix is already full-size (the update is orthogonalized, not
+proportional to the weight), which makes a lasting difference less likely still.
+"""
+issue = 361
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init (all but the `o` kernels) and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only ZERO_INIT_ATTN_OUT differs"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad pinned at
+50256 in both arms (#373 is judged separately). Both arms are new runs.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/#359/#357.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "361"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.lecun_o]
+role = "control"
+flags = ["--set", "ZERO_INIT_ATTN_OUT=0"]
+
+[arms.zero_o]
+role = "treatment"
+flags = ["--set", "ZERO_INIT_ATTN_OUT=1"]
+
+# Tokens: LOWER is better, so a win for zero_o is the CONTROL's number being larger.
+[criteria.zero_o_needs_fewer_tokens]
+rule = "beats"
+treatment = "lecun_o"
+control = "zero_o"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.zero_o_needs_more_tokens]
+rule = "loses"
+treatment = "lecun_o"
+control = "zero_o"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["zero_o_needs_fewer_tokens"]
+kill_if = ["zero_o_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: KEEP -> ZERO_INIT_ATTN_OUT
+defaults to on in the recording PR. INCONCLUSIVE -> keep today's init (no evidence to
+change what the model is) and record the early curve on #361. KILL -> keep today's
+init, one graveyard line.
+Readouts, no weight: val CE at the first probes (opt steps 8-200), where the prediction
+says the difference lives; act_max / act_rms per block (#392), which should start lower
+with zero_o; final_val_ce at the cap.
+"""

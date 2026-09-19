@@ -152,6 +152,10 @@ LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "2
 # Default OFF: it changes what the model is, so no stored checkpoint survives it
 # and it must earn its place through a matched ablation before a run adopts it.
 POST_NORM = os.environ.get("POST_NORM", "0") == "1"
+# Zero-init the attention output projection too, not only the MLP's down_proj (#361):
+# every block then starts as a no-op and the stream as the embedding. Off until #361's
+# pair judges it, since it changes the model at init.
+ZERO_INIT_ATTN_OUT = os.environ.get("ZERO_INIT_ATTN_OUT", "0") == "1"
 
 # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
 # blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator
