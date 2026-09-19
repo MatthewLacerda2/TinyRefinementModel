@@ -17,7 +17,7 @@
 
 PY ?= venv/bin/python
 
-.PHONY: lint test test-affected audit gate launch report
+.PHONY: lint test test-affected audit gate launch resume report
 
 lint:
 	$(PY) -m ruff check .
@@ -45,6 +45,9 @@ launch:
 	@test -n "$(BUDGET)" || { echo "no BUDGET, no launch: make launch SPEC=experiments/base/specs/<id>.toml BUDGET=4e9 [ISSUE=157]"; exit 2; }
 	@test -n "$(SPEC)" || { echo "no SPEC, no launch: the base run is pre-registered (#294)"; exit 2; }
 	$(PY) -m trm.runtime.launch --budget $(BUDGET) --spec $(SPEC) $(if $(ISSUE),--issue $(ISSUE),)
+
+resume:
+	$(PY) -m trm.runtime.launch --resume
 
 report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }
