@@ -93,24 +93,27 @@ if MODEL_ARCH not in _KNOWN_ARCHES:
 
 # Optimizer selector (#26). Same fail-closed contract as MODEL_ARCH: a typo must
 # not silently train a whole run on the wrong optimizer.
-#   adamw — the recipe every run so far used (trm/train/optimizers.py).
-#   muon  — orthogonalized momentum for the 2-D weight matrices, AdamW for the
-#           token embedding, norms and biases. The embedding is 2-D but is a lookup
-#           table, not a linear map, so it must NOT be orthogonalized; the partition
-#           lives in optimizers.muon_partition and tests/core/test_muon_partition.py
-#           holds it, because a wrong partition trains happily and silently.
-TRM_OPTIMIZER = os.environ.get("TRM_OPTIMIZER", "adamw")
+#   muon  — THE DEFAULT since 2026-09-19 (#388): orthogonalized momentum for the 2-D
+#           weight matrices, AdamW for the token embedding, norms and biases. It
+#           reaches a fixed held-out CE in 1.32x fewer tokens than AdamW at AdamW's
+#           own best peak (docs/findings/2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md).
+#   adamw — the recipe every run before that used (trm/train/optimizers.py).
+# The embedding is 2-D but is a lookup table, not a linear map, so Muon must NOT
+# orthogonalize it; the partition lives in optimizers.muon_partition and
+# tests/core/test_muon_partition.py holds it, because a wrong partition trains
+# happily and silently.
+TRM_OPTIMIZER = os.environ.get("TRM_OPTIMIZER", "muon")
 if TRM_OPTIMIZER not in ("adamw", "muon"):
     raise SystemExit(
         f"TRM_OPTIMIZER={TRM_OPTIMIZER!r} is not one of adamw, muon — refusing to start "
         f"rather than fall through to a default (#26)."
     )
 # Muon's update has RMS ~1 per element after Newton-Schulz and the sqrt(rows/cols)
-# factor, so it wants a much larger LR than Adam's — the reference recipes sit
-# ~50x above AdamW's. The matrix partition runs the shared schedule times this
-# multiplier; the embedding/norm partition keeps the schedule as is. A sweep
-# knob for the #26 matched pair, not a tuned value.
-MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "50"))
+# factor, so it wants a much larger LR than Adam's. The matrix partition runs the
+# shared schedule times this multiplier; the embedding/norm partition keeps the
+# schedule as is. 16.667 on the 6e-4 peak puts the matrices at 1e-2, the value the
+# #26 sweep chose (x25/x50/x100/x200 on 1e-4) and #382 confirmed at the new peak.
+MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "16.666667"))
 
 # The optimizer's remaining knobs, named so that none is a library default nobody can
 # read (#358): an optax upgrade that moved one would have changed the recipe silently.

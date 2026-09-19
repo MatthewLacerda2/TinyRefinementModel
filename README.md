@@ -87,10 +87,11 @@ tokenizer is `r50k_base`. Exact dimensions and the rest of the constants live in
 
 ## The training recipe
 
-The defaults in `trm/config.py` still train with AdamW at a peak learning rate of 1e-4, the
-value this project started with. The recipe pairs of September 2026 replaced it on paper:
+The defaults in `trm/config.py` train with **Muon at a 6e-4 peak** (its matrix partition at
+1e-2). Until September 2026 they were AdamW at 1e-4, the value this project started with;
+the recipe pairs of that month replaced it:
 AdamW's best peak here is at least 6e-4, and **Muon** (orthogonalized momentum on the
 weight matrices, AdamW on the embedding and norms) beats even that, reaching a fixed
 held-out loss on 1.32x fewer tokens with 380 MiB less memory
 (`docs/findings/2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md`, which links
-the chain of pairs behind it). The next base run trains with Muon.
+the chain of pairs behind it).

@@ -11,12 +11,12 @@ from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TO
 # warming up. A base run leaves it alone.
 WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "1000"))
 
-# The peak the cosine warms up to. 1e-4 was chosen once, at the start of this
-# project, and never compared against anything (#287) — GPT-2-small at a
-# comparable size trained at 6e-4, later reproductions at 2.5e-4. Env-overridable
-# so a matched pair can sweep it; the default is the historical value, so every
-# existing config and the golden run resolve unchanged.
-PEAK_LR = float(os.environ.get("PEAK_LR", "1e-4"))
+# The peak the schedule warms up to. 6e-4 since 2026-09-19 (#388): 1e-4 was chosen once
+# and never compared against anything; #287 measured 3e-4 at 2.25x fewer tokens and
+# 6e-4 at 1.24x fewer again (docs/findings/2026-09-18-the-lr-curve-flattens-6e-4-beats-3e-4-by-1-24x.md).
+# Env-overridable so a matched pair can sweep it. The golden run has its own optimizer
+# and LR, so it does not move with this.
+PEAK_LR = float(os.environ.get("PEAK_LR", "6e-4"))
 
 # The LR anneal's horizon must match the run length (#83). DECAY_STEPS derives
 # from the planned token budget (config.TRAIN_TOKEN_BUDGET); with no budget set

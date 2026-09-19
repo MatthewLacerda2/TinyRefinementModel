@@ -76,10 +76,10 @@ def test_the_matrix_partition_runs_at_the_multiplied_lr():
     assert steps[10.0] > 5 * steps[1.0]
 
 
-def test_the_selector_fails_closed_and_the_default_is_adamw(import_config_under):
+def test_the_selector_fails_closed_and_the_default_is_muon(import_config_under):
     # A fresh import of trm.config, in the shared config child (tests/conftest.py).
     (typo,) = import_config_under([{"TRM_OPTIMIZER": "moun"}])
     assert not typo["ok"], "a typo'd TRM_OPTIMIZER must refuse to start"
     assert "moun" in typo["error"] and "adamw" in typo["error"] and "muon" in typo["error"]
-    assert optimizers.TRM_OPTIMIZER == "adamw" or os.environ.get("TRM_OPTIMIZER") == "muon"
+    assert optimizers.TRM_OPTIMIZER == "muon" or os.environ.get("TRM_OPTIMIZER") == "adamw"
     assert optimizers.inner_optimizer(lambda s: 1e-3, kind="adamw") is not None
