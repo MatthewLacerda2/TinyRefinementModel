@@ -114,3 +114,24 @@ def test_horizon_recorded_in_run_metadata():
     params = RunTracker.get_hyperparameters()
     assert params["DECAY_STEPS"] == DECAY_STEPS
     assert "TRAIN_TOKEN_BUDGET" in params
+
+
+# ── every schedule declares its horizon (#362) ───────────────────────────────
+
+def test_every_schedule_declares_what_its_horizon_scales_with():
+    from trm.train import schedules
+
+    assert set(schedules.SCHEDULE_HORIZONS) == {"warmup", "lr cosine", "mixture ramp"}
+    kinds = {name: kind for name, (kind, _) in schedules.SCHEDULE_HORIZONS.items()}
+    assert kinds == {"warmup": "absolute", "lr cosine": "budget", "mixture ramp": "budget"}
+    assert schedules.SCHEDULE_HORIZONS["lr cosine"][1] == schedules.DECAY_STEPS
+
+
+def test_the_ramp_keeps_the_champions_shape_at_4b_and_scales_down_for_a_pair():
+    """A 4B base run resolves to the 10,000-step ramp it always had; a 512-step pair
+    turns web to code/math over a third of its own length instead of barely starting."""
+    from trm.train.schedules import resolve_curriculum_steps
+
+    assert resolve_curriculum_steps(4_000_000_000, 30518) == 10000
+    assert resolve_curriculum_steps(67_108_864, 512) == 168
+    assert resolve_curriculum_steps(None, 15000) == 10000, "no budget: the historical ramp"

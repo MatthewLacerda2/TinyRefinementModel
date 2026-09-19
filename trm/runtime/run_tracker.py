@@ -37,7 +37,7 @@ from trm.config import (
     MUON_NESTEROV,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
-from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
+from trm.train.schedules import CURRICULUM_STEPS, DECAY_STEPS, PEAK_LR, WARMUP_STEPS
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -181,6 +181,8 @@ class RunTracker:
             # The run's recipe horizon (#83): budget in, resolved anneal out.
             "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
             "DECAY_STEPS": DECAY_STEPS,
+            # The mixture ramp's resolved horizon, budget-relative since #362.
+            "CURRICULUM_STEPS": CURRICULUM_STEPS,
             # Env knobs a reader cannot recover from anything else (#305). Every
             # one of these is read from *this process's* environment at import, so
             # a tool that reads them from its own config describes itself, not the
