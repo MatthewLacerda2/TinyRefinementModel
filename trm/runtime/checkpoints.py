@@ -269,6 +269,12 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
             print("🆕 Force New Run specified, starting from scratch...")
         else:
             print("🆕 No checkpoint found, starting from scratch...")
-        start_step = 1
+        # Micro-steps count from 0, so the trainer's boundary ((step + 1) %
+        # ACCUMULATION_STEPS == 0) falls on the micro-step that completes the
+        # optimizer's window. From 1, every validation, log row and checkpoint of
+        # "opt step N" ran one micro-step early, with N-1 updates applied and 127
+        # gradients waiting in the accumulator (#355; found by
+        # tests/apparatus/test_trainer_end_to_end.py).
+        start_step = 0
 
     return mngr, best_mngr, monitor, start_step

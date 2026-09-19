@@ -47,8 +47,10 @@ def resolve_root(path):
 # moments (#18) — ~5.3GB peak at depth-8/batch-1, ~0.7GB margin; dim1024 OOMs. Not a
 # power of 2, but a clean multiple of 64, and the big VRAM lines (the 50304×dim
 # embedding/LM head, the FFN) don't care. What matters is head_dim — see NUM_HEADS.
-LATENT_DIM = 960
-MAX_SEQ_LEN = 512
+# Env-overridable only so tests/apparatus/test_trainer_end_to_end.py can run the real
+# trainer at toy size on CPU; both shape the param tree, so a resume checks them (#317).
+LATENT_DIM = int(os.environ.get("LATENT_DIM", "960"))
+MAX_SEQ_LEN = int(os.environ.get("MAX_SEQ_LEN", "512"))
 # Padded to a multiple of 128 (tensor-core friendly) above the tokenizer's real
 # n_vocab. With r50k_base (50257) that is 50304; this is the model's single biggest
 # VRAM line (embedding + tied LM head), so the smaller vocab is the headline saving.
@@ -58,7 +60,7 @@ VOCAB_SIZE = 50304
 # (16 heads would give head_dim 60, not a multiple of 8 → XLA pads to 64: you pay
 # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
 # asserts pass (dim%heads==0, head_dim even for RoPE).
-NUM_HEADS = 15
+NUM_HEADS = int(os.environ.get("NUM_HEADS", "15"))
 
 # Architecture selector (env-overridable so a run is chosen at launch, not by a
 # code edit):
