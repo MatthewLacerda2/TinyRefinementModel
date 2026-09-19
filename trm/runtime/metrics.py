@@ -33,6 +33,8 @@ COLUMNS = (
     Column("applied_zero_frac_dense_max", 6),
     # Norm of the window mean the optimizer clips (#180), comparable to CLIP_NORM.
     Column("applied_grad_norm", 4),
+    # 1 when that norm exceeded CLIP_NORM, so the clip, not the LR, sized the step (#358).
+    Column("clip_active", None),
     Column("avg_forget_cost", 4, diag="forget_cost"),
     Column("diversity_loss", 6, diag="diversity_loss"),
     Column("temporal_drift", 6, diag="temporal_drift"),
@@ -137,7 +139,8 @@ class MetricsLogger:
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
-            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None, mix=None):
+            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
+            clip_active=None, mix=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -173,7 +176,8 @@ class MetricsLogger:
                 "step": int(step), "ce": ce, "loss": loss, "seg1_ce": seg1_ce,
                 "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,
                 "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
-                "applied_grad_norm": applied_grad_norm, "depth_avg": depth_avg, "val_ce": val_ce,
+                "applied_grad_norm": applied_grad_norm, "clip_active": clip_active,
+                "depth_avg": depth_avg, "val_ce": val_ce,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "arena_peak_mib": _arena_peak_mib(),

@@ -3,7 +3,7 @@ import os
 import numpy as np
 import optax
 
-from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET
+from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET, WEIGHT_DECAY
 
 # Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
 # phase that does not grow with the run. Env-overridable for one purpose: a
@@ -60,7 +60,7 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
 DECAY_STEPS = resolve_decay_steps(TRAIN_TOKEN_BUDGET)
 learning_schedule = build_learning_schedule(DECAY_STEPS)
 
-weight_decay_schedule = optax.constant_schedule(1e-2)
+weight_decay_schedule = optax.constant_schedule(WEIGHT_DECAY)
 
 
 # ── Data curriculum ──────────────────────────────────────────────────────────
