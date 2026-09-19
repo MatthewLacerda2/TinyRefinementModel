@@ -7,8 +7,9 @@ from trm.config import (
     MAX_SEQ_LEN,
     ACCUMULATION_STEPS,
     PAD_TOKEN_ID,
+    Z_LOSS_WEIGHT,
 )
-from trm.train.losses import chunked_cross_entropy_rows
+from trm.train.losses import CE_CHUNK_SIZE, chunked_cross_entropy_rows
 
 def compute_total_loss(ce1, ce2, graded_aux):
     """Assembles the full training loss: CE on both windows, plus whatever
@@ -59,7 +60,7 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
         hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
         targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
         loss_sums, counts, row_stats = chunked_cross_entropy_rows(
-            hidden, embedding, targets, PAD_TOKEN_ID)
+            hidden, embedding, targets, PAD_TOKEN_ID, CE_CHUNK_SIZE, Z_LOSS_WEIGHT)
         counts = jax.lax.stop_gradient(counts).clip(min=1.0)
         ce1 = loss_sums[:b].sum() / counts[:b].sum()
         ce2 = loss_sums[b:].sum() / counts[b:].sum()

@@ -152,6 +152,10 @@ LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "2
 # Default OFF: it changes what the model is, so no stored checkpoint survives it
 # and it must earn its place through a matched ablation before a run adopts it.
 POST_NORM = os.environ.get("POST_NORM", "0") == "1"
+# PaLM's z-loss weight (#369): adds Z_LOSS_WEIGHT * (log Z)^2 per position to the
+# gradient, which pins the log-partition near 0 (the champion's drifted 11 -> 17). PaLM
+# uses 1e-4. 0 (off) until #369's pair judges it. The CE we report never includes it.
+Z_LOSS_WEIGHT = float(os.environ.get("Z_LOSS_WEIGHT", "0"))
 
 # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
 # blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator

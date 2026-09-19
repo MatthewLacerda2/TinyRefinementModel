@@ -1,0 +1,85 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "369-zloss"
+status = "open"
+title = "PaLM's z-loss (1e-4 * logZ^2) vs none, on the shipped plain recipe"
+hypothesis = """
+The champion's mean log-partition drifted from 11.3 (ln 50304, uniform) to 16-17, with
+max |logit| ~22 (#369). Softmax is shift-invariant, so the CE never sees it, but a
+drifting log Z means the tied head's rows are growing, spending f16 range on nothing.
+PaLM's z-loss adds 1e-4 * (log Z)^2 per position and pins log Z near 0. Settled in the
+literature; the pair's job is to show it costs nothing on our recipe. The benefit is
+read from logz_mean and max_abs_logit, flat instead of drifting.
+
+Prediction registered: parity on tokens to 5.85 and logz_mean falling toward 0 in the
+treatment. No KILL expected.
+"""
+issue = 369
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only Z_LOSS_WEIGHT differs"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad pinned at
+50256 in both arms (#373 is judged separately). Both arms are new runs.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/#359.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "369z"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.no_z]
+role = "control"
+flags = ["--set", "Z_LOSS_WEIGHT=0"]
+
+[arms.z_loss]
+role = "treatment"
+flags = ["--set", "Z_LOSS_WEIGHT=1e-4"]
+
+# Tokens: LOWER is better, so the treatment losing is its number being larger.
+[criteria.z_loss_needs_more_tokens]
+rule = "beats"
+treatment = "z_loss"
+control = "no_z"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.z_loss_costs_nothing]
+rule = "within"
+treatment = "z_loss"
+control = "no_z"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["z_loss_costs_nothing"]
+kill_if = ["z_loss_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: anything but KILL adopts z-loss
+(Z_LOSS_WEIGHT defaults to 1e-4 in the recording PR). That includes a z-loss win beyond
+2 sigma, which a parity criterion reads as INCONCLUSIVE. KILL keeps it off and adds a
+graveyard line.
+Readouts, no weight: logz_mean and max_abs_logit over the run (the mechanism);
+final_val_ce at the cap; act_max per block (#392). The reported CE never includes the
+z term (trm/train/losses.py), so the arms' CE columns compare directly.
+"""

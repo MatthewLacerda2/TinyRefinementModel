@@ -25,6 +25,7 @@ from trm.config import (
     REFINER_ENCODER_LAYERS,
     TIME_SIGNAL,
     TRM_OPTIMIZER,
+    Z_LOSS_WEIGHT,
     MUON_LR_MULT,
     ADAM_B1,
     ADAM_B2,
@@ -206,6 +207,8 @@ class RunTracker:
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # PaLM's z-loss weight (#369); 0 is off.
+            "Z_LOSS_WEIGHT": Z_LOSS_WEIGHT,
             # Tree-shaping knobs the resume check compares (#317); runs recorded
             # before them skip the comparison.
             "POST_NORM": POST_NORM,
