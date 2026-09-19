@@ -128,7 +128,7 @@ class LanguageModel(nnx.Module):
 
         Restoring is a strict structural match, so a checkpoint written before a
         buffer was removed cannot be read by a model that lacks it. Declaring
-        the buffer here lets checkpoint_utils match the on-disk shape and then
+        the buffer here lets trm/runtime/checkpoints.py match the on-disk shape and then
         discard the value — without weakening the check that catches a
         checkpoint genuinely missing weights the model needs.
         """

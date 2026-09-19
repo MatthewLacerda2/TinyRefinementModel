@@ -1,7 +1,8 @@
 """Inference must serve the architecture the run selected.
 
 `trm/infer.py` constructed `UniversalReasoner` unconditionally, while `MODEL_ARCH`
-has defaulted to `refiner` since Plan A became the live bet. The two have
+defaulted to `refiner` while Plan A was the live bet (until 2026-09-12; the default
+is `plain` now). The two have
 different param trees, so serving a refiner checkpoint died on a structure
 mismatch — inference was simply unavailable for the architecture we actually
 train, and nothing said so until you tried it.
