@@ -1,0 +1,92 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "363-mixture"
+status = "open"
+title = "A prose-led end-mix (web/code/math 0.70/0.20/0.10) vs today's (0.35/0.40/0.25)"
+hypothesis = """
+The mixture ramps to 35% web, 40% code, 25% math, while the yardstick is LAMBADA
+(narrative prose) and the held-out probe is fineweb (#363). A model that spends its
+last two thirds 65% on code and math is graded on prose. A prose-led end-mix should
+buy prose CE and cost code/math CE; the number this pair exists to produce is the
+exchange rate between them, for the owner's pick of the base run's end-mix (#363 step 3).
+
+Prediction registered (#363's): fineweb val CE at the cap lower by >= 2 sigma with the
+prose-led mix, and code/math CE higher. My guess at the size: fineweb -0.05 to -0.10
+nats, code +0.10 to +0.20. My recent predictions on this line ran timid, so the prose
+gain may be larger.
+"""
+issue = 363
+
+[protocol]
+floor_note = """
+Both arms train 512 opt steps (67.1M tokens) with the same budget-relative ramp (#362)
+from the same start mix. They diverge from step 1, as the ramp heads to different
+ends, and differ most after it ends a third of the way in. The floor is the seeds' own spread of val CE at the cap (#382's Muon arms: 4.195 / 4.200 /
+4.195, sigma ~0.003).
+"""
+metric_key = "final_val_ce"
+metric = "held-out fineweb val CE at the 512-step cap (lower is better)"
+matched = "same seed => same init and same data seed (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only CURRICULUM_END_WEIGHTS differs (which, by design, changes which rows are read)"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, val every 8 on 64
+rows, pad pinned at 50256. The per-corpus probes (#363 step 1) read codeparrot and
+finemath from each corpus's tail every 128 opt steps; their values at the cap are the
+cost side, recorded as final_val_codeparrot / final_val_finemath.
+Why CE at the cap and not tokens-to-target: early in the ramp the mixes are close,
+so a target reached early measures little of the end-mix. The end of the run is
+where the mixes differ most.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "363"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.today]
+role = "control"
+flags = ["--set", "CURRICULUM_END_WEIGHTS=0.35,0.40,0.25"]
+
+[arms.prose_led]
+role = "treatment"
+flags = ["--set", "CURRICULUM_END_WEIGHTS=0.70,0.20,0.10"]
+
+# CE: LOWER is better, so the prose-led mix winning on prose is the CONTROL's number
+# being larger.
+[criteria.prose_led_wins_prose]
+rule = "beats"
+treatment = "today"
+control = "prose_led"
+sigmas = 2.0
+min_delta = 0.02
+points = ["run"]
+require = "all"
+
+[criteria.prose_led_loses_prose]
+rule = "loses"
+treatment = "today"
+control = "prose_led"
+sigmas = 2.0
+min_delta = 0.02
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["prose_led_wins_prose"]
+kill_if = ["prose_led_loses_prose"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: no default changes on this pair.
+KEEP (prose-led wins fineweb by >= 2 sigma and >= 0.02 nats) or INCONCLUSIVE: the
+recording PR reports the exchange rate (fineweb gain against the codeparrot and finemath
+costs, all at the cap) and hands the pick of the end-mix to the owner (#363 step 3).
+KILL (prose-led LOSES on prose) is a surprise worth a findings entry: code and math
+would then be helping prose at this scale.
+Readouts, no weight: final_val_codeparrot, final_val_finemath (the cost side); tokens to
+5.85; the val curves of all three corpora.
+"""
