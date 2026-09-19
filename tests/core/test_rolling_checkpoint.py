@@ -111,6 +111,8 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
     monitor = LossMonitor()
     monitor.best_ce = 1.23
     monitor.best_val_ce = 3.6474
+    # A real generator state: PCG64's 128-bit ints must survive orbax's JSON (#424).
+    monitor.data_state = {"rng": np.random.default_rng(3).bit_generator.state, "alive": [0, 2]}
 
     chk = str(tmp_path / "checkpoints")
     save_mngr = ocp.CheckpointManager(
@@ -128,6 +130,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
     assert resumed.best_val_ce == 3.6474, (
         "a resume that forgot the held-out best would overwrite best_val_ce/ with "
         "a worse model on its first probe")
+    assert resumed.data_state == monitor.data_state, "the data stream's exact position (#424)"
 
     tokens = jnp.asarray(np.full((1, 16), 5, dtype=np.int32))
     ref = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
