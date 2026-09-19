@@ -4,7 +4,7 @@
 
 CLAUDE.md states the ready-queue as prose precise enough to execute — an issue
 is ready when it is open, not blocked, unclaimed, and its lane is free; types
-lead in the order architecture > tools > optimization > ideas > documentation;
+lead in the order architecture > optimization > tools > ideas > documentation;
 anything that affects another item leads. Run in a session's head, that
 algorithm runs differently depending on what the session happened to read, and
 not at all in a fresh one. Here it runs the same every time.
@@ -35,7 +35,7 @@ from trm.runtime.supervisor import GpuLock, _pid_alive
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
 
-TYPE_ORDER = ("architecture", "tools", "optimization", "ideas", "documentation")
+TYPE_ORDER = ("architecture", "optimization", "tools", "ideas", "documentation")
 UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
 
 # "Blocked by" alone marks a block; followed by issue numbers, it names the blockers.

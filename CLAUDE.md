@@ -245,16 +245,19 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    where a fresh session will find them. (Note the name clash: a change to the *model's*
    architecture — say GQA → multi-head latent attention — is an **`idea`**, not this.
    This label is about the harness/repo, not the network.)
-2. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
-   the model, research and investigate: the harness, instruments, runners, telemetry, CI.
-   Comes second — tools are what let ideas be tested cheaply. Only after both does the
-   work turn to the model itself.
-3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
+2. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
    what the model is**. Same model, fewer resources. (If it changes the model, it's an
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
-   an optimization.) Leads the ideas because it changes what they can be: freed memory
-   decides whether a layer, a batch or a longer window fits (Muon's 380 MiB reopened
-   batch 2, #385), and speed decides how many tokens a base run buys in its days.
+   an optimization.) Second only to the repo's architecture (owner, 2026-09-19): speed
+   and memory make every later run cheaper, so they speed up the research itself, and
+   they change what ideas can be — freed memory decides whether a layer, a batch or a
+   longer window fits (Muon's 380 MiB reopened batch 2, #385), and speed decides how
+   many tokens a base run buys in its days. After architecture, not before it:
+   optimizing code that doesn't read clearly yet is premature.
+3. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
+   the model, research and investigate: the harness, instruments, runners, telemetry, CI.
+   Comes after optimization — tools are what let ideas be tested cheaply. Only after
+   these does the work turn to the model itself.
 4. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
    hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
    tool only when it genuinely makes sense — usually when it's small. The label means
