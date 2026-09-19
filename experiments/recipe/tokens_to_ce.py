@@ -94,6 +94,8 @@ def main(argv=None) -> int:
                     help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
                          "seed inside one probe interval reports the same token count, which is "
                          "how #26 stage 2 came out with sigma_pooled exactly 0.")
+    ap.add_argument("--lr-schedule", choices=("cosine", "wsd"), default=None,
+                    help="LR_SCHEDULE (#386): the cosine, or warmup-stable-decay. Unset: cosine.")
     ap.add_argument("--pad-token-id", type=int, default=None,
                     help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
                          "Unset leaves the historical 50256.")
@@ -105,6 +107,7 @@ def main(argv=None) -> int:
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
             + (f"_pad{args.pad_token_id}" if args.pad_token_id is not None else "")
+            + (f"_{args.lr_schedule}" if args.lr_schedule is not None else "")
             + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
@@ -125,6 +128,8 @@ def main(argv=None) -> int:
         env["PEAK_LR"] = repr(args.peak_lr)
     if args.pad_token_id is not None:
         env["PAD_TOKEN_ID"] = str(args.pad_token_id)
+    if args.lr_schedule is not None:
+        env["LR_SCHEDULE"] = args.lr_schedule
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)

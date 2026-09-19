@@ -38,7 +38,15 @@ from trm.config import (
     LOSS_SCALE_GROWTH_INTERVAL,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
-from trm.train.schedules import CURRICULUM_STEPS, DECAY_STEPS, PEAK_LR, WARMUP_STEPS
+from trm.train.schedules import (
+    CURRICULUM_STEPS,
+    DECAY_STEPS,
+    LR_SCHEDULE,
+    PEAK_LR,
+    WARMUP_STEPS,
+    WSD_DECAY_FRACTION,
+    WSD_DECAY_START,
+)
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -184,6 +192,10 @@ class RunTracker:
             "DECAY_STEPS": DECAY_STEPS,
             # The mixture ramp's resolved horizon, budget-relative since #362.
             "CURRICULUM_STEPS": CURRICULUM_STEPS,
+            # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
+            "LR_SCHEDULE": LR_SCHEDULE,
+            "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,
+            "WSD_DECAY_START": WSD_DECAY_START,
             # Env knobs a reader cannot recover from anything else (#305). Every
             # one of these is read from *this process's* environment at import, so
             # a tool that reads them from its own config describes itself, not the

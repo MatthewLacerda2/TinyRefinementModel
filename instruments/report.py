@@ -180,11 +180,20 @@ def _tokens_per_opt_step(log):
 def _learning_rate(log, step):
     """The LR this run's schedule is at — rebuilt at the horizon the run recorded,
     not at whatever TRAIN_TOKEN_BUDGET happens to be set to in this shell."""
-    from trm.train.schedules import DECAY_STEPS, build_learning_schedule
+    from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS, build_schedule
 
-    decay_steps = log.params.get("DECAY_STEPS") or DECAY_STEPS
+    params = log.params
+    decay_steps = params.get("DECAY_STEPS") or DECAY_STEPS
+    # The run's own warmup, peak and schedule shape (#305, #386); the process's only
+    # for runs that predate recording them, all of which were cosine.
+    shape = {"warmup_steps": int(params.get("WARMUP_STEPS") or WARMUP_STEPS),
+             "peak_lr": float(params.get("PEAK_LR") or PEAK_LR)}
+    kind = params.get("LR_SCHEDULE") or "cosine"
+    if kind == "wsd":
+        shape["decay_fraction"] = float(params.get("WSD_DECAY_FRACTION") or 0.2)
+        shape["decay_start"] = params.get("WSD_DECAY_START")
     try:
-        return float(build_learning_schedule(int(decay_steps))(step)), int(decay_steps)
+        return float(build_schedule(int(decay_steps), kind, **shape)(step)), int(decay_steps)
     except (TypeError, ValueError):
         return None, None
 
