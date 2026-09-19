@@ -57,8 +57,51 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
     )
 
 
+# ── Warmup-Stable-Decay (#386) ────────────────────────────────────────────────
+# The cosine needs the run's length before step 1: it only reaches its low tail (where
+# much of the final gain lands) at the budget, so stopping early leaves an un-annealed
+# model. WSD holds the peak and anneals only at the end, so a decay can be BRANCHED
+# from any checkpoint to read what the model would score if it stopped there. That is
+# the owner's stop rule for the base run as a mechanism (val CE < 3.6 or 10 days).
+#   LR_SCHEDULE          cosine (the historical default) | wsd
+#   WSD_DECAY_FRACTION   the share of the horizon the final decay takes (0.2: SmolLM2's)
+#   WSD_DECAY_START      an explicit opt step to start the decay at, for a branch
+#                        resumed from a checkpoint; unset, the decay starts at
+#                        (1 - WSD_DECAY_FRACTION) x DECAY_STEPS.
+LR_SCHEDULE = os.environ.get("LR_SCHEDULE", "cosine")
+if LR_SCHEDULE not in ("cosine", "wsd"):
+    raise SystemExit(f"LR_SCHEDULE={LR_SCHEDULE!r}: use cosine or wsd (#386)")
+WSD_DECAY_FRACTION = float(os.environ.get("WSD_DECAY_FRACTION", "0.2"))
+_WSD_DECAY_START_ENV = os.environ.get("WSD_DECAY_START")
+WSD_DECAY_START = int(_WSD_DECAY_START_ENV) if _WSD_DECAY_START_ENV else None
+
+
+def build_wsd_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK_LR,
+                       decay_fraction=WSD_DECAY_FRACTION, decay_start=WSD_DECAY_START):
+    """Warmup from peak/10 to the peak, hold it, then decay linearly to peak/100 by
+    `decay_steps`, the same two ends the cosine has, so the pair against it moves
+    only the shape between them."""
+    start = decay_start if decay_start is not None else round((1 - decay_fraction) * decay_steps)
+    if not warmup_steps <= start < decay_steps:
+        raise ValueError(f"WSD decay start {start} must sit between the warmup ({warmup_steps}) "
+                         f"and the horizon ({decay_steps})")
+    return optax.join_schedules(
+        [optax.linear_schedule(peak_lr / 10.0, peak_lr, warmup_steps),
+         optax.constant_schedule(peak_lr),
+         optax.linear_schedule(peak_lr, peak_lr / 100.0, decay_steps - start)],
+        boundaries=[warmup_steps, start])
+
+
+def build_schedule(decay_steps, kind=LR_SCHEDULE, **overrides):
+    """The run's LR schedule by name, at an explicit horizon."""
+    if kind == "wsd":
+        return build_wsd_schedule(decay_steps, **overrides)
+    return build_learning_schedule(decay_steps, **{k: v for k, v in overrides.items()
+                                                   if k in ("warmup_steps", "peak_lr")})
+
+
 DECAY_STEPS = resolve_decay_steps(TRAIN_TOKEN_BUDGET)
-learning_schedule = build_learning_schedule(DECAY_STEPS)
+learning_schedule = build_schedule(DECAY_STEPS)
 
 weight_decay_schedule = optax.constant_schedule(WEIGHT_DECAY)
 
@@ -90,9 +133,13 @@ CURRICULUM_STEPS = resolve_curriculum_steps(TRAIN_TOKEN_BUDGET, DECAY_STEPS)
 # run's token budget. The launch banner prints this; a test holds it complete.
 SCHEDULE_HORIZONS = {
     "warmup": ("absolute", WARMUP_STEPS),
-    "lr cosine": ("budget", DECAY_STEPS),
+    f"lr {LR_SCHEDULE}": ("budget", DECAY_STEPS),
     "mixture ramp": ("budget", CURRICULUM_STEPS),
 }
+if LR_SCHEDULE == "wsd":
+    SCHEDULE_HORIZONS["wsd decay start"] = (
+        "absolute" if WSD_DECAY_START is not None else "budget",
+        WSD_DECAY_START if WSD_DECAY_START is not None else round((1 - WSD_DECAY_FRACTION) * DECAY_STEPS))
 # Endpoints over the (web, code, math) sources, in DataMixer source order.
 CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
 CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]

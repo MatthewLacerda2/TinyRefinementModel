@@ -121,7 +121,7 @@ def test_horizon_recorded_in_run_metadata():
 def test_every_schedule_declares_what_its_horizon_scales_with():
     from trm.train import schedules
 
-    assert set(schedules.SCHEDULE_HORIZONS) == {"warmup", "lr cosine", "mixture ramp"}
+    assert set(schedules.SCHEDULE_HORIZONS) == {"warmup", "lr cosine", "mixture ramp"}, "the default is cosine"
     kinds = {name: kind for name, (kind, _) in schedules.SCHEDULE_HORIZONS.items()}
     assert kinds == {"warmup": "absolute", "lr cosine": "budget", "mixture ramp": "budget"}
     assert schedules.SCHEDULE_HORIZONS["lr cosine"][1] == schedules.DECAY_STEPS
@@ -135,3 +135,39 @@ def test_the_ramp_keeps_the_champions_shape_at_4b_and_scales_down_for_a_pair():
     assert resolve_curriculum_steps(4_000_000_000, 30518) == 10000
     assert resolve_curriculum_steps(67_108_864, 512) == 168
     assert resolve_curriculum_steps(None, 15000) == 10000, "no budget: the historical ramp"
+
+
+# ── warmup-stable-decay (#386) ───────────────────────────────────────────────
+
+def test_wsd_holds_the_peak_then_decays_to_the_cosines_own_end():
+    import pytest
+
+    from trm.train.schedules import build_learning_schedule, build_wsd_schedule
+
+    wsd = build_wsd_schedule(512, warmup_steps=100, peak_lr=6e-4, decay_fraction=0.2)
+    cosine = build_learning_schedule(512, warmup_steps=100, peak_lr=6e-4)
+    assert float(wsd(0)) == pytest.approx(float(cosine(0)), rel=1e-6), "same start"
+    assert float(wsd(512)) == pytest.approx(float(cosine(512)), rel=1e-6), "same end"
+    for step in (100, 300, 409):
+        assert float(wsd(step)) == pytest.approx(6e-4, rel=1e-6), f"the stable phase holds the peak ({step})"
+    assert 6e-4 > float(wsd(461)) > float(wsd(500)), "the last 20% decays"
+
+
+def test_a_branched_decay_starts_where_it_is_told():
+    """A decay branched from checkpoint N (the base run's stop rule) starts at N."""
+    import pytest
+
+    from trm.train.schedules import build_wsd_schedule
+
+    branch = build_wsd_schedule(12_000, warmup_steps=1000, peak_lr=6e-4, decay_start=10_000)
+    assert float(branch(9_999)) == pytest.approx(6e-4, rel=1e-6)
+    assert float(branch(11_000)) < 6e-4
+
+
+def test_a_decay_that_cannot_fit_refuses():
+    import pytest
+
+    from trm.train.schedules import build_wsd_schedule
+
+    with pytest.raises(ValueError, match="between the warmup"):
+        build_wsd_schedule(512, warmup_steps=100, decay_start=50)
