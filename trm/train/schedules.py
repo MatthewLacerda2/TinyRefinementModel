@@ -66,8 +66,33 @@ weight_decay_schedule = optax.constant_schedule(WEIGHT_DECAY)
 # ── Data curriculum ──────────────────────────────────────────────────────────
 # Mixture weights ramp linearly from web-heavy toward a code/math-heavy blend
 # over the first CURRICULUM_STEPS optimizer steps, then hold steady.
+#
+# The ramp scales with the run (#362): a short pair inherits the shape of the run it
+# informs (CLAUDE.md). It ends a third of the way in, the shape the 4B champion
+# trained with (10,000 of 30,518 steps), so a 4B base run resolves to exactly the
+# ramp it always had, while a 512-step pair now sees the same web-to-code/math turn
+# instead of barely leaving 85% web. Warmup stays absolute: it settles the optimizer
+# state, not the recipe. With no budget set, the historical 10,000 steps.
+CURRICULUM_RAMP_FRACTION = 10000 / 30518
+_DEFAULT_CURRICULUM_STEPS = 10000
 
-CURRICULUM_STEPS = 10000.0
+
+def resolve_curriculum_steps(token_budget, decay_steps):
+    if token_budget is None:
+        return _DEFAULT_CURRICULUM_STEPS
+    return max(1, round(CURRICULUM_RAMP_FRACTION * decay_steps))
+
+
+CURRICULUM_STEPS = resolve_curriculum_steps(TRAIN_TOKEN_BUDGET, DECAY_STEPS)
+
+# Every schedule's horizon and what it scales with, in one place (#362): "absolute"
+# is a fixed number of opt steps whatever the run's length; "budget" follows the
+# run's token budget. The launch banner prints this; a test holds it complete.
+SCHEDULE_HORIZONS = {
+    "warmup": ("absolute", WARMUP_STEPS),
+    "lr cosine": ("budget", DECAY_STEPS),
+    "mixture ramp": ("budget", CURRICULUM_STEPS),
+}
 # Endpoints over the (web, code, math) sources, in DataMixer source order.
 CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
 CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]

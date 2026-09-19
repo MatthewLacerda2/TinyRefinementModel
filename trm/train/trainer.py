@@ -48,6 +48,7 @@ from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import (
     CURRICULUM_START_WEIGHTS,
     DECAY_STEPS,
+    SCHEDULE_HORIZONS,
     WARMUP_STEPS,
     get_curriculum_weights,
     get_average_curriculum_weights,
@@ -164,6 +165,9 @@ def init_model_and_optimizer():
     print(f"🗓️ LR horizon: DECAY_STEPS={DECAY_STEPS:,} opt steps "
           f"(warmup {WARMUP_STEPS:,}) ≈ {DECAY_STEPS * TOKENS_PER_OPT_STEP / 1e9:.2f}B "
           f"target tokens ({budget_note})")
+    # Every schedule with its horizon and what it scales with (#362).
+    print("🗓️ Schedules: " + " | ".join(
+        f"{name} {steps:,} opt steps ({kind})" for name, (kind, steps) in SCHEDULE_HORIZONS.items()))
     # The whole optimizer at launch, every knob named (#358).
     muon = (f"muon on the matrices (LR x{MUON_LR_MULT:g}, beta {MUON_BETA:g}, "
             f"{MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
