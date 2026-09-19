@@ -272,7 +272,7 @@ def test_a_short_run_renders_and_names_its_own_schedule(tmp_path):
     assert figures["training_curve.png"]["panels"] == ["ce", "val_ce"]
 
     cfg = plots.RunConfig.of(load(str(a_short_arm(tmp_path / "again"))))
-    assert plots.schedule_line(cfg) == "LR: 100-step warmup to 0.0001, cosine to 512 optimizer steps."
+    assert plots.schedule_line(cfg) == "LR: 100-step warmup to 0.0006, cosine to 512 optimizer steps."
 
 
 def test_a_plain_run_omits_the_depth_panel_and_says_why(tmp_path, capsys):

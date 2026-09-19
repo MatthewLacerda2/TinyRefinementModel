@@ -53,7 +53,9 @@ Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens):
 budget_tokens = 4000000000
 arch = "plain"
 layers = 9
-peak_lr = 1e-4
+optimizer = "muon"
+muon_lr_mult = 16.666667
+peak_lr = 6e-4
 warmup_steps = 1000
 curriculum_end_mix = "web 0.35 / code 0.40 / math 0.25"
 seeds = "MODEL_SEED=42, DATA_SEED=42"
