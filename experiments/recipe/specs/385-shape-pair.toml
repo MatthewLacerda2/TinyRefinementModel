@@ -1,0 +1,89 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "385-shape"
+status = "open"
+title = "8 layers at batch 2 vs 9 layers at batch 1: wall-clock to held-out CE 4.0"
+hypothesis = """
+Muon's 380 MiB and #316's single compiled program made batch 2 fit at 8 layers (the
+2026-09-19 smoke: 382 MiB of arena headroom, on #385). Batch 2 with half the
+accumulation keeps tokens per optimizer step fixed and amortizes the fixed per-micro-step
+cost over two rows; #24 measured +40% tokens/s for that on the bench. Dropping one of nine
+layers costs ~11% of the blocks. The base run is bounded by wall-clock (10 days, the
+owner's rule), so the question is which shape reaches a given quality sooner: 8 layers
+at batch 2 reaches held-out CE 4.0 in at least 10% less wall-clock than 9 layers at
+batch 1.
+
+Prediction registered: KEEP. The throughput gain should be ~25-40% in the real trainer,
+and the lost layer should cost well under that in tokens to CE 4.0 at this size. My
+predictions on this line have been too timid four times running.
+"""
+issue = 385
+
+[protocol]
+floor_note = """
+Minutes from the first logged row (after compile) to the first probe at or below 4.0,
+capped at the run's whole span when never reached (two capped arms tie as INCONCLUSIVE).
+Wall-clock is only comparable on an exclusive card: every run holds the GPU lock, and
+nothing else may use the card or archive checkpoints to the HDD while this pair runs
+(the #287 stage-2 arms read 26-28 s/step instead of 23 because archiving ran beside them).
+"""
+metric_key = "minutes_to_target"
+metric = "wall-clock minutes from the first logged row to the first probe at or below held-out CE 4.0 (lower is better)"
+matched = "same seed => same init and data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe and token budget; the arms differ in PLAIN_LAYERS (9 vs 8) and BATCH_SIZE (1 vs 2, accumulation 128 vs 64), the one shape trade under test"
+notes = """
+The architecture tier (CLAUDE.md): 2,048 opt steps (268M tokens), ~13 h per 9-layer run,
+each under 24 h. The recipe is the default since #388 (Muon x16.667 on a 6e-4 schedule),
+the mixture ramp budget-relative (#362), val every 16 on 64 rows, val_step-aligned (#351).
+Two things change together, by design: this is the trade the owner asked about (one layer
+for a fatter micro-step), not two separate questions.
+min_delta = 45 minutes, ~10% of the ~7.5 h the control is expected to need.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "4.0", "--opt-steps", "2048", "--val-every", "16", "--tag", "385"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.l9b1]
+role = "control"
+flags = ["--layers", "9", "--batch", "1"]
+
+[arms.l8b2]
+role = "treatment"
+flags = ["--layers", "8", "--batch", "2"]
+
+# Minutes: LOWER is better, so the new shape winning is the CONTROL's number being larger.
+[criteria.shallow_batch2_reaches_ce4_sooner]
+rule = "beats"
+treatment = "l9b1"
+control = "l8b2"
+sigmas = 2.0
+min_delta = 45.0
+points = ["run"]
+require = "all"
+
+[criteria.shallow_batch2_reaches_ce4_later]
+rule = "loses"
+treatment = "l9b1"
+control = "l8b2"
+sigmas = 2.0
+min_delta = 45.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["shallow_batch2_reaches_ce4_sooner"]
+kill_if = ["shallow_batch2_reaches_ce4_later"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: KEEP -> the base run trains 8 layers
+at batch 2. KILL -> 9 layers at batch 1. INCONCLUSIVE -> the owner's stated preference,
+8 layers at batch 2 (2026-09-18), since the pair found no reason against it.
+Readouts, no weight: tokens to 4.0 (how much quality the lost layer costs per token);
+final val CE at the cap; tokens/s and s/opt step; arena peak and the f16 margins; the
+per-block act_max and RMS heatmaps (#392), the first real ones.
+"""

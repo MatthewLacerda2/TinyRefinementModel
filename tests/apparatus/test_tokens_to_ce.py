@@ -23,3 +23,18 @@ def test_a_run_that_recorded_val_step_is_read_at_the_probe(tmp_path):
     path.write_text("step,ce,val_ce,val_step\n45,6.3,,\n50,6.2,5.4,48\n55,6.1,,\n")
     tokens_m, final, reached, aligned = tokens_to_target(path, 5.5, cap_steps=64, tokens_per_opt_step=1_000_000)
     assert (tokens_m, final, reached, aligned) == (48.0, 5.4, True, True)
+
+
+def test_minutes_to_target_times_from_the_first_row(tmp_path):
+    """#385: wall-clock from the first logged row (after compile) to the row that
+    first reached the target; the whole span when it never did."""
+    from experiments.recipe.tokens_to_ce import minutes_to_target
+
+    path = tmp_path / "metrics.csv"
+    path.write_text("step,ce,val_ce,wall_clock\n"
+                    "5,7.0,,2026-09-19T10:00:00Z\n"
+                    "10,6.0,5.9,2026-09-19T10:02:00Z\n"
+                    "15,5.8,5.7,2026-09-19T10:04:30Z\n")
+    assert minutes_to_target(path, 5.85, cap_steps=64) == 4.5
+    assert minutes_to_target(path, 4.0, cap_steps=64) == 4.5, "never reached: the whole span"
+    assert minutes_to_target(path, 5.95, cap_steps=64) == 2.0
