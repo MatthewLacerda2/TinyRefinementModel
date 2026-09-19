@@ -234,3 +234,22 @@ def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
     assert default_step == 9, "with no step named, the newest stays the default"
     with pytest.raises(SystemExit, match="step 5"):
         restore_arch("plain", str(tmp_path), step=5, **TINY_PLAIN)
+
+
+def test_an_hf_tokenizer_encodes_without_special_tokens():
+    """score_hf encodes context and " word" separately with the model's own
+    tokenizer; a BOS or EOS added to either would shift every target (#387)."""
+    from instruments.yardstick.score_hf import HFTokenizer
+
+    class Fake:
+        def encode(self, text, add_special_tokens=True):
+            return ([0] if add_special_tokens else []) + [ord(c) for c in text]
+
+    assert HFTokenizer(Fake()).encode(" hi") == [32, 104, 105]
+
+
+def test_the_reference_bar_is_recorded_beside_its_calibration():
+    from instruments.yardstick.yardstick import GPT2_SMALL_REFERENCE, SMOLLM2_135M_REFERENCE
+
+    assert SMOLLM2_135M_REFERENCE["lambada_acc"] > GPT2_SMALL_REFERENCE["lambada_acc"]
+    assert SMOLLM2_135M_REFERENCE["lambada_ppl"] < GPT2_SMALL_REFERENCE["lambada_ppl"]

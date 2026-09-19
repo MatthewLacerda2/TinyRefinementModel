@@ -169,12 +169,14 @@ model, the data, or the scale — both July runs stopped at opt step 1540, which
 (`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
 Read the "drunk" behaviour as what 200M tokens buys, and nothing more: no conclusion
 about this architecture was ever licensed by those runs. At ~138M params the right target is *not* "useful /
-gets the prompt" (unreachable at this scale) — it's **match GPT-2-small on a standard
-yardstick** (LAMBADA last-word accuracy, or held-out perplexity in the known range).
+gets the prompt" (unreachable at this scale) — it's **a modern model our size on a standard
+yardstick**: SmolLM2-135M, LAMBADA last-word accuracy 0.4289 / per-word perplexity 19.26,
+measured by our own instrument (`instruments/yardstick/`). GPT-2-small (0.3256 / 40.06)
+stays only as the instrument's calibration: it reproduces lm-eval-harness exactly.
 Until a *vanilla* model trained to completion hits that floor, no architecture ablation
 is interpretable: if the base is mush, you can't tell whether a change helped or just
 stirred the mush. The full base run is therefore also the validity check on the whole
-pipeline — if a plain model on the full budget *can't* reach GPT-2-small, the bug is in
+pipeline — if a plain model on the full budget lands nowhere near that bar, the bug is in
 the data / LR / tokenizer / eval, and that gets fixed before any clever-architecture work.
 
 ## The model registry & reproducibility
@@ -410,7 +412,7 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), `eval_refiner_transfer.py` (the depth-transfer probe); `experiments/scratchpad/harness.py` |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
+| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: the SmolLM2-135M bar, GPT-2-small as calibration), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs only) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`. `make lint` runs both; run it before pushing, and delete what it finds. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
