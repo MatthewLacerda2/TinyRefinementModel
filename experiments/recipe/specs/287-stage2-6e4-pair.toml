@@ -1,0 +1,165 @@
+# PRE-REGISTERED. Criteria committed before any 6e-4 run; git records the order.
+# The control arm REUSES #287's three peak-3e-4 runs (run_287_adamw_lr0.0003_s{0,1,2}),
+# which finished before this file was written. Same reasoning as #26 stage 3: these
+# criteria compare against numbers that say nothing about the treatment, which has not
+# run. This branch starts from the commit those runs trained at, so the treatment runs
+# the same trainer, loader and probe code.
+
+[experiment]
+id = "287-stage2"
+status = "recorded"
+title = "Peak LR 6e-4 vs the 3e-4 winner: tokens to a fixed held-out CE"
+hypothesis = """
+#287 stage 1 found peak 3e-4 reaching held-out CE 5.85 in 2.25x fewer tokens than the
+1e-4 this repo shipped, with no extra work for the f16 loss scaler. Its readouts
+registered a 6e-4 arm as eligible only if 3e-4 won cleanly and stayed finite, which it
+did. 6e-4 is what GPT-2-small (124M) trained at, so it is the literature's value for
+this size rather than an extrapolation of our own sweep.
+
+At the same config -- plain, dim 960, 9 layers, 148M params, f16, tied embeddings, 512
+opt steps, warmup 100, cosine completing in-run -- peak 6e-4 reaches CE 5.85 in at
+least 15% fewer tokens than 3e-4.
+
+One variable: the LR scale. The whole schedule scales with the peak (init = peak/10,
+end = peak/100), seeds matched.
+
+Prediction registered: INCONCLUSIVE, leaning KEEP by a small margin. The gain from
+1e-4 to 3e-4 was 2.25x; a further 2x on the LR should give much less, because the
+first step was correcting a badly low value and this one is moving inside the range
+models this size actually use. The honest risk at 6e-4 in f16 with no bf16 tensor
+cores is the one 3e-4 did not realise: a higher LR can thrash the dynamic loss scaler
+or destabilise late training, and a KILL here is a real possibility -- 3e-4's arms
+already spend the run with the gradient clip biting on ~76% of logged steps.
+
+Prediction record to date: four depth-recurrence predictions all credited the mechanism
+too much; #287 stage 1's was too timid (predicted ~1.5x, measured 2.25x). This one is
+deliberately placed between those two failure modes, and if it is wrong I'd guess it
+is timid again.
+"""
+issue = 287
+
+[protocol]
+floor_note = """
+The metric is tokens to reach a target, capped at the run length (67.1M): an arm that
+never reaches 5.85 reports the cap, and two arms at the cap tie as INCONCLUSIVE, never
+a win. The control reached the target at steps 200-210 of 512 on every seed, so the cap
+is far from binding for it. A treatment seed that diverges and never reaches the target
+reports the cap and is a KILL signal, not a void seed -- divergence is a result here.
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same probe (64 rows every 8 opt steps), AdamW throughout; only PEAK_LR differs"
+notes = """
+512 opt steps (67.1M tokens), warmup 100, val every 8 opt steps (1.05M tokens per
+probe), EVAL_ROWS 64, 9 layers, f16. val_ce lands on the next logged row after a probe
+(#351), which shifts both arms alike.
+
+Weight decay is LR-coupled (#360), so the 6e-4 arm also gets 2x the control's decay
+(a ~0.3% vs 0.15% weight shrink over 512 steps -- negligible, and standard AdamW).
+
+min_delta = 4.0M tokens is 15% of the control's ~27.1M mean, the same 15% bar as #287
+stage 1 and #26 stages 2 and 3.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "adamw", "--tag", "287"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.lr3e4]
+role = "control"
+flags = ["--peak-lr", "3e-4"]
+
+[arms.lr6e4]
+role = "treatment"
+flags = ["--peak-lr", "6e-4"]
+
+# Tokens: LOWER is better, so a 6e-4 win is the CONTROL's number being larger.
+# (The referee's `beats` means the arm in `treatment` reads HIGHER.)
+[criteria.higher_lr_needs_fewer_tokens]
+rule = "beats"
+treatment = "lr3e4"
+control = "lr6e4"
+sigmas = 2.0
+min_delta = 4.0
+points = ["run"]
+require = "all"
+
+[criteria.higher_lr_needs_more_tokens]
+rule = "loses"
+treatment = "lr3e4"
+control = "lr6e4"
+sigmas = 2.0
+min_delta = 4.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["higher_lr_needs_fewer_tokens"]
+kill_if = ["higher_lr_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-18. KEEP on every seed. Peak 6e-4 reached held-out CE 5.85 at
+20.97/22.28/22.28M tokens against 3e-4's 26.21/27.53/27.53M: 1.24x fewer tokens,
+delta 5.24M against the 4.0M bar, +6.9 sigma (sigma ~0.76M, mostly the 1.05M probe
+quantum). No arm diverged; the KILL branch did not fire on any seed.
+
+The registered prediction (INCONCLUSIVE leaning KEEP, with a real chance of KILL)
+was wrong in the timid direction again -- the third prediction in a row on this
+line to underestimate the change. It did get the shape right: the step from 3e-4
+to 6e-4 (1.24x) is much smaller than the step from 1e-4 to 3e-4 (2.25x), which is
+what a curve approaching its optimum looks like. The optimum is now bracketed
+somewhere at or above 6e-4, not below it.
+
+Readouts:
+- final_val_ce at the cap (continuous, no weight): 4.723/4.761/4.751 vs
+  5.093/5.107/5.099, a 0.35-nat gap against a ~0.02-nat seed spread.
+- f16 margin, the thing this arm was registered to watch: non-finite skips
+  194/199/200 vs 201/198/195 and streaks >1 at 3/3/1 vs 1/4/1 -- the loss scaler is
+  doing no more work at 6e-4. max |logit| 22.1/22.7/22.2 vs 21.9/20.7/21.2, also
+  flat. What DID move is max act_max: 68.4/74.1/76.8 against 41.3/40.9/45.2, i.e.
+  the largest activation nearly doubled. That is still ~3 orders of magnitude
+  inside f16's 65,504 ceiling at this horizon, but it is the readout that would
+  decide a 1e-3 arm, and it is the reason a longer run must watch act_max (#368)
+  rather than assume today's margin.
+- clip: the per-micro-step guard fires on 0.00-0.01% of micro-steps on both arms.
+  The global clip bites on 63-66% of logged steps at 6e-4 vs 76-80% at 3e-4 --
+  fewer, not more, because the accumulated gradient shrinks faster.
+- arena peak 4438 MiB on every arm, identical, as expected for one optimizer.
+- wall-clock per opt step reads 26.0/27.9/27.9 s at 6e-4 against 22.9-23.2 s at
+  3e-4. This is NOT an effect of the LR: the arithmetic is identical. These arms
+  ran while finished checkpoints were being copied to the HDD in the background,
+  and the control's did not. Wall-clock is not comparable between these two sets;
+  the token metric is unaffected.
+
+What it means for the recipe. AdamW's peak moves to 6e-4, and #26 stage 3's
+control is now stale: Muon at x33.33 on a 3e-4 schedule read 19.01/19.01/18.35M,
+so against this arm its lead is ~1.16x rather than 1.42x -- and unmeasured, since
+that would be an unmatched comparison across specs. The clean next question is
+Muon on a 6e-4 schedule (MUON_LR_MULT 16.667, matrix peak unchanged at 1e-2)
+against this arm, and it is registered separately rather than read off these two
+tables. A 1e-3 arm is also now eligible on the same terms 6e-4 was.
+"""
+
+[readouts]
+notes = """
+What each verdict means for the base-run recipe, written before the numbers:
+KEEP  -> 6e-4 is the peak to carry forward, and the next question is whether the
+         optimum is higher still (a 1e-3 arm would need its own spec).
+KILL  -> 3e-4 is at or past the optimum; ship 3e-4 and stop sweeping.
+INCONCLUSIVE -> no 15% difference; ship 3e-4, the lower-risk of two equals, and the
+         stability readouts below decide nothing further.
+Readouts: final_val_ce at the cap (continuous, no weight); non-finite skip counts and
+streaks >1 per run (3e-4 and 1e-4 both sat at ~200 routine scaler probes -- a 6e-4 arm
+that climbs well past that is paying for the LR); max act_max and max |logit| (the f16
+margin, #368); the clip rate; wall-clock and arena peak, expected identical.
+"""
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+lr3e4 = [26.2144, 27.5251, 27.5251]
+lr6e4 = [20.9715, 22.2822, 22.2822]
