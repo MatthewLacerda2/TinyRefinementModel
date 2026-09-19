@@ -61,6 +61,10 @@ COLUMNS = (
     # run records how close it came to its limit, and the fit gate reads it from
     # the probe run's first row.
     Column("arena_peak_mib", None),
+    # The allocator's ceiling, the other half of headroom (#346). It moves with
+    # XLA_PYTHON_CLIENT_MEM_FRACTION and the allocator, so a run records its own
+    # rather than every reader assuming the RTX 2060's 4,883 MiB.
+    Column("arena_limit_mib", None),
 )
 
 
@@ -81,15 +85,23 @@ def _cell(value, places):
     return value if places is None else f"{value:.{places}f}"
 
 
-def _arena_peak_mib():
-    """peak_bytes_in_use in MiB, or empty where the allocator keeps no statistics
+def _allocator_mib(key):
+    """One allocator statistic in MiB, or empty where the allocator keeps none
     (CPU, the platform allocator)."""
     try:
         stats = jax.local_devices()[0].memory_stats() or {}
     except (AttributeError, RuntimeError):
         stats = {}
-    peak = stats.get("peak_bytes_in_use")
-    return f"{peak / 2**20:.0f}" if peak else ""
+    value = stats.get(key)
+    return f"{value / 2**20:.0f}" if value else ""
+
+
+def _arena_peak_mib():
+    return _allocator_mib("peak_bytes_in_use")
+
+
+def _arena_limit_mib():
+    return _allocator_mib("bytes_limit")
 
 
 class MetricsLogger:
@@ -181,6 +193,7 @@ class MetricsLogger:
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "arena_peak_mib": _arena_peak_mib(),
+                "arena_limit_mib": _arena_limit_mib(),
             }
             row = {c.name: _cell(diag_dict.get(c.diag) if c.diag else args[c.name], c.places)
                    for c in COLUMNS}
