@@ -539,6 +539,12 @@ def training_curve(runlog, outdir):
     if len(val_ce):
         ax.plot(val_tokens, val_ce, color=ORANGE, linewidth=1.8, marker="o",
                 markersize=3, label="held-out val CE")
+    # The other corpora's held-out CE (#363), thinner: the cost side of the mixture.
+    for (source, (steps, values)), colour in zip(sorted(runlog.val_by_source().items()),
+                                                 (AQUA, INK_DIM)):
+        src_tokens, src_ce = _clean(steps, values)
+        ax.plot(src_tokens * tokens_per_step, src_ce, color=colour, linewidth=1.2,
+                linestyle="--", marker="o", markersize=2.5, label=f"held-out {source}")
 
     uniform = math.log(cfg.vocab_size)
     if ce.max() > uniform * 0.9:

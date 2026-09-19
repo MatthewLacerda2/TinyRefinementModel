@@ -18,6 +18,10 @@ import os
 # every observed launch OOM landed — instead of waiting 8,192 micro-steps for them.
 VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
 CHECKPOINT_EVERY_OPT_STEPS = int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64))
+# The per-corpus probes (#363) fire on validation steps that are also multiples of
+# this, so their readings share val_step. Rarer than the fineweb probe: each corpus
+# costs one more probe's worth of forward passes.
+VAL_BY_SOURCE_EVERY_OPT_STEPS = int(os.environ.get("VAL_BY_SOURCE_EVERY_OPT_STEPS", 128))
 # A metrics.csv row is written every LOG_REAL_STEPS opt steps. A validation probe's CE
 # is held and written on the first such row at or after the probe, not on the probe's
 # own opt step, so a reader aligning val CE with a checkpoint looks in the window

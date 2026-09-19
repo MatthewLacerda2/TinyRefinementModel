@@ -37,7 +37,7 @@ from trm.config import (
     MUON_NESTEROV,
     LOSS_SCALE_GROWTH_INTERVAL,
 )
-from trm.runtime.layout import VAL_EVERY_OPT_STEPS
+from trm.runtime.layout import VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
 from trm.train.schedules import (
     CURRICULUM_STEPS,
     DECAY_STEPS,
@@ -204,6 +204,7 @@ class RunTracker:
             "WARMUP_STEPS": WARMUP_STEPS,
             "PEAK_LR": PEAK_LR,
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
+            "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
             # Tree-shaping knobs the resume check compares (#317); runs recorded
             # before them skip the comparison.

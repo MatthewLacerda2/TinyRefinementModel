@@ -4,7 +4,11 @@ the one decisions should read. The trainer drives it on its own cadence
 (VAL_EVERY_OPT_STEPS, trm/runtime/layout.py); everything about *what* a probe measures lives here.
 """
 
+import glob
+import os
+
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 from trm.config import EOT_TOKEN_ID, EVAL_ROWS, MAX_SEQ_LEN, PAD_TOKEN_ID
@@ -16,6 +20,13 @@ VAL_FIXED_DEPTH = 4
 # Far past any plausible training consumption (an 8k-opt-step run consumes
 # under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
 VAL_SKIP_SAMPLES = 3_000_000
+# The other corpora the trainer probes (#363), each read from its own tail: the last
+# VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus. The
+# shipped end-mix is 40% code and 25% math, and a probe that reads prose alone cannot
+# see what a mixture change costs them. fineweb keeps its fixed skip above, so every
+# val_ce on record stays comparable.
+VAL_BY_SOURCE = ("codeparrot", "finemath")
+VAL_TAIL_ROWS = 20_000
 
 
 def heldout_targets(targets, pad_token_id):
@@ -74,20 +85,34 @@ def read_heldout_rows(source_dir, rows, skip):
     return batches
 
 
+def corpus_samples(source_dir):
+    """How many samples TextDataGenerator can read from `source_dir`, counted the way
+    its skip counts them (whole strides per file)."""
+    stride = 2 * MAX_SEQ_LEN + 1
+    return sum(np.load(f, mmap_mode="r").shape[0] // stride
+               for f in sorted(glob.glob(os.path.join(source_dir, "*.npy"))))
+
+
 class ValidationProbe:
     """Loads VAL_ROWS fixed held-out rows once, then scores them on demand.
     Runs inside the model's `isolated_state`, so whatever the training stream
-    carries is restored afterwards and validating never perturbs training."""
+    carries is restored afterwards and validating never perturbs training.
 
-    def __init__(self, data_root, rows=VAL_ROWS, skip=VAL_SKIP_SAMPLES):
-        self.data_root = data_root
-        self.rows, self.skip = rows, skip
+    `skip=None` reads the corpus's tail (the last VAL_TAIL_ROWS samples) instead of
+    a fixed offset: the held-out slice for the probes of #363."""
+
+    def __init__(self, data_root, rows=VAL_ROWS, skip=VAL_SKIP_SAMPLES, source="fineweb-edu"):
+        self.source_dir = f"{data_root}/pretrain/{source}"
+        self.rows, self.skip, self.source = rows, skip, source
         self._batches = None
 
     def _load(self):
-        batches = read_heldout_rows(f"{self.data_root}/pretrain/fineweb-edu", self.rows, self.skip)
+        skip = self.skip
+        if skip is None:
+            skip = max(corpus_samples(self.source_dir) - VAL_TAIL_ROWS, 0)
+        batches = read_heldout_rows(self.source_dir, self.rows, skip)
         if not batches:
-            print("⚠️ Validation disabled: no held-out data available past the skip range.")
+            print(f"⚠️ Validation of {self.source} disabled: no held-out data past the skip range.")
         return batches
 
     def run(self, model):

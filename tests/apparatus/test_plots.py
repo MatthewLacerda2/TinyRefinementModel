@@ -433,3 +433,29 @@ def test_a_run_with_blocks_csv_gets_the_two_heatmaps(tmp_path):
     assert maxes.shape == rmses.shape == (80, 3) and steps[0] == 5
     figures = build(csv_path, tmp_path)
     assert "blocks_act_max.png" in figures and "blocks_act_rms.png" in figures
+
+
+def test_the_other_corpora_are_drawn_on_the_ce_chart(tmp_path, monkeypatch):
+    """#363: the per-corpus held-out CE joins the CE chart as its own lines, and a
+    run that logged none draws none."""
+    import matplotlib.axes
+    from instruments import plots
+    from instruments.runlog import load
+
+    run_dir = tmp_path / "run_20260101_000000"
+    run_dir.mkdir()
+    lines = ["step,ce,val_ce,val_step,val_by_source"] + [
+        f"{s},{6 - s / 1000},{6.1 - s / 1000},{s},"
+        + ("codeparrot=2.5;finemath=3.0" if s % 100 == 0 else "") for s in range(5, 401, 5)]
+    (run_dir / "metrics.csv").write_text("\n".join(lines) + "\n")
+
+    labels = []
+    original = matplotlib.axes.Axes.legend
+    def spy(ax, *args, **kwargs):
+        labels.extend(ax.get_legend_handles_labels()[1])
+        return original(ax, *args, **kwargs)
+    monkeypatch.setattr(matplotlib.axes.Axes, "legend", spy)
+
+    (tmp_path / "out").mkdir()
+    plots.training_curve(load(str(run_dir)), str(tmp_path / "out"))
+    assert "held-out codeparrot" in labels and "held-out finemath" in labels

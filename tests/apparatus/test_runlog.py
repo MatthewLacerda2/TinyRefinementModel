@@ -250,3 +250,17 @@ def test_val_readings_sit_at_the_probe_step_when_the_run_recorded_it(tmp_path):
 
     older = write_run(tmp_path / "old", header="step,ce,val_ce", rows=["5,7.0,", "10,6.8,6.9"])
     assert load(older).val_readings() == ([10], [6.9])
+
+
+def test_val_by_source_reads_each_corpus_at_its_probe_step(tmp_path):
+    """#363: `source=ce;...` per row, keyed to val_step; a blank cell is absent and
+    a malformed part is dropped, never guessed."""
+    from instruments.runlog import load
+
+    (tmp_path / "metrics.csv").write_text(
+        "step,val_ce,val_step,val_by_source\n"
+        "5,4.1,4,codeparrot=2.5;finemath=3.0\n"
+        "10,4.0,8,\n"
+        "15,3.9,12,codeparrot=2.4;finemath=oops\n")
+    series = load(str(tmp_path)).val_by_source()
+    assert series == {"codeparrot": ([4, 12], [2.5, 2.4]), "finemath": ([4], [3.0])}

@@ -87,3 +87,23 @@ def test_the_probe_never_asks_for_full_logits():
     from trm.train import validation
     source = inspect.getsource(validation._val_ce_sums)
     assert "training=False" not in source and ".logits" not in source
+
+
+def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatch):
+    """`skip=None` (#363) reads each corpus from its tail: the rows a run reaches only
+    by exhausting that corpus, so they stay held out whatever the mixture does."""
+    from trm.config import MAX_SEQ_LEN
+    from trm.train import validation
+
+    stride = 2 * MAX_SEQ_LEN + 1
+    source = tmp_path / "pretrain" / "finemath"
+    source.mkdir(parents=True)
+    # Two shards of 3 samples each; sample i is filled with the value i.
+    np.save(source / "chunk_0.npy", np.repeat(np.arange(3, dtype=np.int32), stride))
+    np.save(source / "chunk_1.npy", np.repeat(np.arange(3, 6, dtype=np.int32), stride))
+    assert validation.corpus_samples(str(source)) == 6
+
+    monkeypatch.setattr(validation, "VAL_TAIL_ROWS", 2)
+    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, source="finemath")
+    rows = probe._load()
+    assert [int(r[0, 0]) for r in rows] == [4, 5]
