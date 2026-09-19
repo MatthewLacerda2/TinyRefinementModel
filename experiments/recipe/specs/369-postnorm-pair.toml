@@ -1,0 +1,86 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "369-postnorm"
+status = "open"
+title = "POST_NORM (sandwich norm on each branch's output) vs none, on the shipped plain recipe"
+hypothesis = """
+POST_NORM normalizes each residual branch's OUTPUT before it is added back (Gemma 2's
+sandwich norm). It bounds the quantity that reached 64,896 of f16's 65,504 on the
+champion (#235). It was judged once, on the refiner toy, and killed only as a rescue
+for depth recurrence (#238); it has never run on the architecture we ship.
+
+Prediction registered: parity or a small loss at 512 steps (two more norms per block,
+about +2% wall-clock), no KILL. Its reason to exist is the act_max trajectory on a long
+run, and #357's f32 stream may make it redundant.
+"""
+issue = 369
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only POST_NORM differs; the control arm is shared with the other four five-knob pairs (#359 #361 #369 #375), all run from one commit"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad pinned at
+50256 in both arms (#373 is judged separately). Both arms are new runs.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/#359.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "k5"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.control]
+role = "control"
+# Shared by the five pairs of #359/#361/#369/#375: today's model, no knob
+# set, same tag, so each spec after the first reads the recorded runs.
+flags = []
+
+[arms.post_norm]
+role = "treatment"
+flags = ["--set", "POST_NORM=1"]
+
+# Tokens: LOWER is better, so the treatment losing is its number being larger.
+[criteria.post_norm_needs_more_tokens]
+rule = "beats"
+treatment = "post_norm"
+control = "control"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.post_norm_costs_nothing]
+rule = "within"
+treatment = "post_norm"
+control = "control"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["post_norm_costs_nothing"]
+kill_if = ["post_norm_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: POST_NORM is NOT adopted on this
+pair alone. Anything but KILL records it as safe on the shipped recipe, and adoption
+waits for #357's verdict: if the f32 stream is adopted, the f16 overflow POST_NORM
+guards against is out of range, and the norm must earn its place some other way.
+KILL adds a graveyard line: POST_NORM costs tokens on plain.
+Readouts, no weight: act_max / act_rms per block (#392), where the mechanism shows;
+tok/s; final_val_ce at the cap.
+"""

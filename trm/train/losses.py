@@ -108,8 +108,14 @@ def _masked_chunked_rows(hidden, embedding, targets, pad_id, chunk_size):
     return loss_sums, counts, stats
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(3, 4))
-def chunked_cross_entropy_rows(hidden, embedding, targets, pad_id, chunk_size=128):
+# Positions scored per chunk-scan step. #367 measured 512: 10% faster, +274 MB, which
+# failed its bar.
+CE_CHUNK_SIZE = 128
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(3, 4, 5))
+def chunked_cross_entropy_rows(hidden, embedding, targets, pad_id, chunk_size=CE_CHUNK_SIZE,
+                               z_weight=0.0):
     """Per-row masked CE sums through the tied LM head, scored in sequence-axis
     chunks with an explicit, memory-bounded (scan) backward.
 
@@ -126,6 +132,10 @@ def chunked_cross_entropy_rows(hidden, embedding, targets, pad_id, chunk_size=12
         chunk_size: positions scored per scan step. Smaller = lower peak logits, more
                    steps. With the accumulating backward there is no per-chunk gradient
                    penalty, so smaller is strictly leaner.
+        z_weight:  PaLM's z-loss (#369). The backward is the gradient of
+                   ``CE + z_weight * (log Z)^2`` per position, while ``loss_sums`` stays the
+                   plain CE, so every CE on record stays comparable. 0 (the default)
+                   traces no extra op.
 
     Returns:
         ``(loss_sums, counts, stats)``:
@@ -141,7 +151,7 @@ def chunked_cross_entropy_rows(hidden, embedding, targets, pad_id, chunk_size=12
     return _masked_chunked_rows(hidden, embedding, targets, pad_id, chunk_size)
 
 
-def _cce_fwd(hidden, embedding, targets, pad_id, chunk_size):
+def _cce_fwd(hidden, embedding, targets, pad_id, chunk_size, z_weight):
     # Residuals are just the inputs — no logits saved, so the forward stays bounded.
     # targets is integer (non-differentiable) but can't be a nondiff_argnum because it is
     # a tracer; it rides in the residuals and gets a None cotangent in _cce_bwd.
@@ -149,7 +159,7 @@ def _cce_fwd(hidden, embedding, targets, pad_id, chunk_size):
     return out, (hidden, embedding, targets)
 
 
-def _cce_bwd(pad_id, chunk_size, residuals, g):
+def _cce_bwd(pad_id, chunk_size, z_weight, residuals, g):
     hidden, embedding, targets = residuals
     # g mirrors the (loss_sums, counts, stats) output; the counts and stats cotangents
     # are dropped — counts is a denominator-grade measurement, stats are diagnostics,
@@ -170,6 +180,10 @@ def _cce_bwd(pad_id, chunk_size, residuals, g):
         logits = jnp.matmul(h, embed_t, preferred_element_type=jnp.float32)  # [b, c, vocab]
         probs = jax.nn.softmax(logits, axis=-1)
         glog = probs - jax.nn.one_hot(t, vocab, dtype=probs.dtype)
+        if z_weight:
+            # d/dlogits of z * logZ^2 is 2z * logZ * softmax.
+            logz = jax.nn.logsumexp(logits, axis=-1, keepdims=True)
+            glog = glog + (2.0 * z_weight) * logz * probs
         glog = glog * (t != pad_id)[..., None].astype(probs.dtype) * scale   # [b, c, vocab] f32
         # this chunk's grad_hidden: glog @ embedding  ([b,c,vocab]@[vocab,d])
         gh = jnp.matmul(glog.astype(hidden.dtype), embedding.astype(hidden.dtype))
@@ -188,14 +202,14 @@ def _cce_bwd(pad_id, chunk_size, residuals, g):
 chunked_cross_entropy_rows.defvjp(_cce_fwd, _cce_bwd)
 
 
-def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128):
+def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=CE_CHUNK_SIZE, z_weight=0.0):
     """Masked-mean CE over ALL rows — the original scalar API, now a thin wrapper
     over the per-row core. ``loss = Σ_rows sum_i / Σ_rows count_i`` with the stats
     aggregated the same way, so single-window callers (tests, tools) see exactly
     the old semantics. Gradients flow through the per-row sums with the correct
     1/total_count scale — identical to the old global-mean backward."""
     loss_sums, counts, stats = chunked_cross_entropy_rows(
-        hidden, embedding, targets, pad_id, chunk_size)
+        hidden, embedding, targets, pad_id, chunk_size, z_weight)
     counts = jax.lax.stop_gradient(counts)
     denom_rows = counts.clip(min=1.0)
     total = counts.sum().clip(min=1.0)

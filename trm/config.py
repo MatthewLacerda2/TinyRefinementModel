@@ -134,6 +134,10 @@ CLIP_NORM = float(os.environ.get("CLIP_NORM", "1.0"))
 # normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
 MUON_BETA = float(os.environ.get("MUON_BETA", "0.95"))
 MUON_NS_STEPS = int(os.environ.get("MUON_NS_STEPS", "5"))
+# Which Newton-Schulz coefficients (#375): "keller", the 2024 quintic reused at every
+# step, or "polar_express", a minimax-optimal quintic per step
+# (trm/train/polar_express.py). keller until #375's pair judges the change.
+MUON_NS_COEFFS = os.environ.get("MUON_NS_COEFFS", "keller")
 MUON_EPS = float(os.environ.get("MUON_EPS", "1e-8"))
 MUON_NESTEROV = os.environ.get("MUON_NESTEROV", "1") == "1"
 # Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
@@ -152,6 +156,14 @@ LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "2
 # Default OFF: it changes what the model is, so no stored checkpoint survives it
 # and it must earn its place through a matched ablation before a run adopts it.
 POST_NORM = os.environ.get("POST_NORM", "0") == "1"
+# Zero-init the attention output projection too, not only the MLP's down_proj (#361):
+# every block then starts as a no-op and the stream as the embedding. Off until #361's
+# pair judges it, since it changes the model at init.
+ZERO_INIT_ATTN_OUT = os.environ.get("ZERO_INIT_ATTN_OUT", "0") == "1"
+# PaLM's z-loss weight (#369): adds Z_LOSS_WEIGHT * (log Z)^2 per position to the
+# gradient, which pins the log-partition near 0 (the champion's drifted 11 -> 17). PaLM
+# uses 1e-4. 0 (off) until #369's pair judges it. The CE we report never includes it.
+Z_LOSS_WEIGHT = float(os.environ.get("Z_LOSS_WEIGHT", "0"))
 
 # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
 # blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator

@@ -25,6 +25,8 @@ from trm.config import (
     REFINER_ENCODER_LAYERS,
     TIME_SIGNAL,
     TRM_OPTIMIZER,
+    ZERO_INIT_ATTN_OUT,
+    Z_LOSS_WEIGHT,
     MUON_LR_MULT,
     ADAM_B1,
     ADAM_B2,
@@ -32,6 +34,7 @@ from trm.config import (
     WEIGHT_DECAY,
     CLIP_NORM,
     MUON_BETA,
+    MUON_NS_COEFFS,
     MUON_NS_STEPS,
     MUON_EPS,
     MUON_NESTEROV,
@@ -206,6 +209,10 @@ class RunTracker:
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # The attention output's init (#361): same tree, different start.
+            "ZERO_INIT_ATTN_OUT": ZERO_INIT_ATTN_OUT,
+            # PaLM's z-loss weight (#369); 0 is off.
+            "Z_LOSS_WEIGHT": Z_LOSS_WEIGHT,
             # Tree-shaping knobs the resume check compares (#317); runs recorded
             # before them skip the comparison.
             "POST_NORM": POST_NORM,
@@ -221,6 +228,7 @@ class RunTracker:
             "CLIP_NORM": CLIP_NORM,
             "MUON_BETA": MUON_BETA,
             "MUON_NS_STEPS": MUON_NS_STEPS,
+            "MUON_NS_COEFFS": MUON_NS_COEFFS,
             "MUON_EPS": MUON_EPS,
             "MUON_NESTEROV": MUON_NESTEROV,
             "LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL,
