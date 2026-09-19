@@ -1,9 +1,9 @@
 """Production adapter for Plan A (CausalRefiner).
 
-`plan_a_model.CausalRefiner` is kept deliberately pure and config-free so the same
+`trm.model.refiner.CausalRefiner` is kept deliberately pure and config-free so the same
 architecture runs at toy scale in the ablation harness and at real scale here. This
 module is the thin seam that wires it to production config and to the trainer's
-neutral model contract (`lm_contract.LanguageModel`).
+neutral model contract (`trm.model.contract.LanguageModel`).
 
 Plan A is a plain causal LM as far as the training loop is concerned: each window
 is scored independently, there is no state carried between them, and there are no

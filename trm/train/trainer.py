@@ -185,7 +185,7 @@ def init_model_and_optimizer():
         print(f"🚀 Initializing Plan A CausalRefiner "
               f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
     else:
-        print(f"🚀 Initializing Dynamic Latent Reasoner (Dim={LATENT_DIM})...")
+        print(f"🚀 Initializing UniversalReasoner, the control baseline (Dim={LATENT_DIM})...")
     model = build_model(MODEL_ARCH, LATENT_DIM, nnx.Rngs(MODEL_SEED))
 
     print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "

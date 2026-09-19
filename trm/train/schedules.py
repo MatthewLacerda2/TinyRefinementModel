@@ -182,7 +182,7 @@ def get_average_curriculum_weights(loader_step):
 # a fixed curriculum. Because the model never knows how many steps it gets, every
 # step's slot state must be a viable answer — which is what makes extra steps
 # improve the prediction rather than collapse into a copy of step 1. At inference
-# the depth is always MAX_STEPS_LIMIT.
+# the depth is INFERENCE_DEPTH (trm/config.py), the serving default.
 # Only the looping arches draw it, through their `training_depth` hook; the trainer
 # asks the model, and the plain stack has no depth (#316).
 

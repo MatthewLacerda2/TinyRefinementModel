@@ -270,7 +270,7 @@ class UniversalReasoner(LanguageModel):
         )
         # LM head in COMPUTE_DTYPE with f32 accumulation: the f32 x f32 matmul ran
         # without tensor cores and was ~half the model's FLOPs (benchmarked
-        # 2026-06-10, see docs/PERFORMANCE_PLAN.md P3). Inputs are rounded to f16
+        # 2026-06-10, commit aa01518). Inputs are rounded to f16
         # but products accumulate in f32, so logits stay f32 for the softmax.
         normed = self.seq_norm(z_seq_out).astype(COMPUTE_DTYPE)
         if training:
