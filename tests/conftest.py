@@ -86,8 +86,8 @@ def make_tiny_model():
     from instruments.arch import build
     from trm.config import MODEL_ARCH
 
-    def make(seed=0):
-        return build(MODEL_ARCH, dim=TINY_DIM, seed=seed, **TINY_OVERRIDES.get(MODEL_ARCH, {}))
+    def make(seed=0, **extra):
+        return build(MODEL_ARCH, dim=TINY_DIM, seed=seed, **TINY_OVERRIDES.get(MODEL_ARCH, {}), **extra)
     return make
 
 
