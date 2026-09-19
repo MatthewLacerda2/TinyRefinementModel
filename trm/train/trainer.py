@@ -34,6 +34,7 @@ from trm.config import (
     CLIP_NORM,
     MUON_BETA,
     MUON_NS_STEPS,
+    LOSS_SCALE_GROWTH_INTERVAL,
     resolve_root,
 )
 from trm.model import build_model
@@ -256,7 +257,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # the model at opt step 11,140 on 2026-08-18 (#199). Not restored from the
     # checkpoint: S re-finds its ceiling within a few hundred micro-steps, and a
     # stale value would be a worse starting guess than the standard one.
-    loss_scaler = DynamicLossScale()
+    loss_scaler = DynamicLossScale(growth_interval=LOSS_SCALE_GROWTH_INTERVAL)
     print(f"🔍 [LossScale] dynamic f16 loss scaling active, starting at "
           f"{loss_scaler.value:g} (#199)")
     # The clip in the optimizer chain only ever sees the mean of ACCUMULATION_STEPS
@@ -431,6 +432,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     clip_active=clip_active,
                     mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
                     grad_by_source=source_grads.label(),
+                    loss_scale=f"{loss_scaler.value:g}",
+                    skipped_micro_steps=loss_scaler.overflows,
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = latest_val_step = None

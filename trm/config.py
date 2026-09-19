@@ -131,6 +131,10 @@ MUON_BETA = float(os.environ.get("MUON_BETA", "0.95"))
 MUON_NS_STEPS = int(os.environ.get("MUON_NS_STEPS", "5"))
 MUON_EPS = float(os.environ.get("MUON_EPS", "1e-8"))
 MUON_NESTEROV = os.environ.get("MUON_NESTEROV", "1") == "1"
+# Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
+# overflows discards a micro-step: ~200 of 65,536 in a 512-step pair. PyTorch's default
+# is 2,000; #368 asks whether ours should move. Named here, value unchanged.
+LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "256"))
 
 # Normalize each residual BRANCH's output before it is added back ("sandwich" /
 # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
