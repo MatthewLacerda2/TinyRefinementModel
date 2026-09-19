@@ -8,7 +8,7 @@
 
 [experiment]
 id = "382-muon-on-6e4"
-status = "open"
+status = "recorded"
 title = "Muon on the 6e-4 schedule vs AdamW at 6e-4: tokens to a fixed held-out CE"
 hypothesis = """
 This is the third baseline this question has been asked against, and the reason is
@@ -107,6 +107,47 @@ require = "all"
 [verdict]
 keep_if = ["muon_needs_fewer_tokens"]
 kill_if = ["muon_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-18. KEEP on every seed. Muon at x16.667 on the 6e-4 schedule reached
+held-out CE 5.85 at 17.04/15.73/17.04M tokens against AdamW at 6e-4's
+20.97/22.28/22.28M: 1.32x fewer tokens (means 16.60 vs 21.85), delta 5.24M against
+the 3.3M bar, +6.9 sigma. Muon's lead over AdamW, measured against each successively
+better baseline: 2.1x (1e-4), 1.42x (3e-4), 1.32x (6e-4) -- it narrowed as AdamW
+was tuned and stopped narrowing much at the last step, which is the answer #382
+was registered to get.
+
+The registered prediction (KEEP at 1.15-1.20x, from arithmetic across two tables)
+was wrong and timid again: the fourth consecutive miss in that direction on this
+line. Part of why the cross-table estimate was low is visible in the data: Muon on
+the 6e-4 schedule (16.60M mean) is itself faster than Muon on the 3e-4 schedule
+(18.79M) -- giving the AdamW partition the higher LR helped Muon too, which the
+arithmetic held fixed.
+
+Readouts:
+- final_val_ce at the cap: 4.195/4.200/4.195 vs 4.723/4.761/4.751, a 0.55-nat gap.
+- wall-clock: 24.13-24.27 s per opt step. The control's own log (26.0-27.9 s) is
+  inflated by concurrent HDD archiving, so the comparison is against #26 stage 3's
+  clean AdamW numbers on the same code (22.9-23.2 s): Newton-Schulz costs ~+4.8%
+  per step, as it did in stage 3. Time to the target 47-51 min for Muon; at the
+  clean AdamW per-step cost, the control's steps 160-170 take ~61-65 min. The
+  token win survives its wall-clock cost at ~1.25-1.3x.
+- arena peak: 4,058 MiB vs 4,438 -- the same 380 MiB, fourth time measured.
+- f16 margin: non-finite skips 199/199/194 vs 194/199/200 and streaks >1 at 2/2/4
+  vs 3/3/1, the scaler's routine probing on both arms. max |logit| 22.0-23.1 vs
+  22.1-22.7. max act_max 59.1/47.4/59.0 vs 68.4/74.1/76.8: Muon runs COOLER
+  activations than AdamW at this LR, reversing the 3e-4 reading (45 vs 41), and
+  both are ~3 orders of magnitude inside f16's 65,504 at this horizon.
+- clip: per-micro-step guard 0.00-0.01% on both arms; the global clip bites on
+  63-70% of logged steps vs 63-66%.
+
+For the base run, per the decision rule registered before the numbers: KEEP ->
+Muon at x16.667 on a 6e-4 schedule. What this does not license: the horizon is
+67.1M tokens (0.3% of a base run) and a short horizon flatters the faster
+optimizer; the Muon multiplier was tuned at the 1e-4 schedule and never re-swept
+here; the mixture ramp in these 512-step pairs is not the base run's (#362); seeds
+share the data stream (#378); weight decay is LR-coupled (#360).
+"""
 
 [readouts]
 notes = """
@@ -129,3 +170,8 @@ rate; and max act_max against f16's 65,504 ceiling -- at 6e-4 AdamW nearly doubl
 (41-45 -> 68-77) and Muon already ran hotter than AdamW at 3e-4, so this is the
 readout most likely to say something new (#368).
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+adamw = [20.9715, 22.2822, 22.2822]
+muon = [17.0394, 15.7286, 17.0394]
