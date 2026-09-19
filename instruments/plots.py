@@ -716,8 +716,9 @@ def throughput(runlog, outdir):
 
 def _panel_grad_norm(ax, runlog, cfg):
     if runlog.has("applied_grad_norm"):
-        # The norm the clip actually sees (#180): read directly against the line.
-        from trm.train.optimizers import CLIP_NORM
+        # The norm the clip actually sees (#180), read against the run's own clip
+        # (#358): runs before it recorded none, and those all trained at 1.0.
+        CLIP_NORM = cfg.value("CLIP_NORM", 1.0, float)
         tokens, values = series(runlog, "applied_grad_norm", cfg)
         window = smoothing_window(len(values))
         ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)

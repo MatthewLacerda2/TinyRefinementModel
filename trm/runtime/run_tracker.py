@@ -26,6 +26,15 @@ from trm.config import (
     TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    WEIGHT_DECAY,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_NS_STEPS,
+    MUON_EPS,
+    MUON_NESTEROV,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
 from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
@@ -188,6 +197,16 @@ class RunTracker:
             "TIME_SIGNAL": TIME_SIGNAL,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,
             "MUON_LR_MULT": MUON_LR_MULT,
+            # The rest of the optimizer, so a model card can rebuild it (#358).
+            "ADAM_B1": ADAM_B1,
+            "ADAM_B2": ADAM_B2,
+            "ADAM_EPS": ADAM_EPS,
+            "WEIGHT_DECAY": WEIGHT_DECAY,
+            "CLIP_NORM": CLIP_NORM,
+            "MUON_BETA": MUON_BETA,
+            "MUON_NS_STEPS": MUON_NS_STEPS,
+            "MUON_EPS": MUON_EPS,
+            "MUON_NESTEROV": MUON_NESTEROV,
         }
 
     def _check_compatibility(self, metadata_path):

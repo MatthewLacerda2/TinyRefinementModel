@@ -7,14 +7,21 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from trm.config import ACCUMULATION_STEPS, MUON_LR_MULT, TRM_OPTIMIZER
+from trm.config import (
+    ACCUMULATION_STEPS,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_EPS,
+    MUON_LR_MULT,
+    MUON_NESTEROV,
+    MUON_NS_STEPS,
+    TRM_OPTIMIZER,
+)
 from trm.train.accumulate import multi_steps
 from trm.train.schedules import learning_schedule, weight_decay_schedule
-
-
-# The global-norm clip, applied by MultiSteps to the window's MEAN gradient. The
-# trainer logs that same mean's norm against it (#180).
-CLIP_NORM = 1.0
 
 
 def weight_decay_mask(params):
@@ -36,8 +43,12 @@ def muon_partition(params):
 
 
 def _adamw(learning_rate):
+    # Every numeric knob passed by name, none left to optax's defaults (#358).
     return optax.adamw(
         learning_rate=learning_rate,
+        b1=ADAM_B1,
+        b2=ADAM_B2,
+        eps=ADAM_EPS,
         weight_decay=weight_decay_schedule,
         mask=weight_decay_mask,
         # Store Adam's first moment in bf16 (upcast to f32 for the update math).
@@ -65,6 +76,13 @@ def _muon(learning_rate, lr_mult=MUON_LR_MULT):
         {
             "muon": optax.chain(
                 optax.contrib.scale_by_muon(
+                    # The 2024 coefficients, stated rather than defaulted (#375 asks
+                    # whether per-step ones orthogonalize better).
+                    ns_coeffs=(3.4445, -4.775, 2.0315),
+                    ns_steps=MUON_NS_STEPS,
+                    beta=MUON_BETA,
+                    eps=MUON_EPS,
+                    nesterov=MUON_NESTEROV,
                     mu_dtype=jnp.bfloat16,
                     # Every leaf that reaches this partition is a 2-D matrix
                     # (muon_partition says so); optax needs that stated per leaf,
