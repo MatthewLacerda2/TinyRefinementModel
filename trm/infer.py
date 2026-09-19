@@ -180,12 +180,18 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         tokens_list = tokens_list[:MAX_SEQ_LEN]
         valid_len = MAX_SEQ_LEN
 
+    if not quiet:
+        print("🤖 Assistant: ", end="", flush=True)
+
+    if hasattr(model, "prefill"):
+        # KV cache (#153): the prompt once, then one row per token against the
+        # cached keys and values, instead of the whole padded window per token.
+        return _generate_cached(model, enc, tokens_list, rng, max_new_tokens, temperature,
+                                top_k, top_p, quiet)
+
     padded_array = tokens_list + [PAD_TOKEN_ID] * (MAX_SEQ_LEN - valid_len)
     # Initialize tensor ONCE
     input_ids = jnp.array([padded_array], dtype=jnp.int32)
-
-    if not quiet:
-        print("🤖 Assistant: ", end="", flush=True)
 
     for i in range(max_new_tokens):
         if valid_len >= MAX_SEQ_LEN:
@@ -227,6 +233,43 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
     if not quiet:
         print()
     return tokens_list
+
+@nnx.jit
+def _prefill(model, tokens):
+    return model.prefill(tokens)
+
+
+@nnx.jit
+def _decode(model, token, caches, pos):
+    return model.decode_step(token, caches, pos)
+
+
+def _generate_cached(model, enc, tokens_list, rng, max_new_tokens, temperature, top_k, top_p, quiet):
+    """generate_text's loop for a model with a decode cache. Same sampling, same
+    rng discipline, same stop rules; the model is asked for one row per token."""
+    effective_temperature = temperature if temperature > 0.0 else 1.0
+    tokens_list = list(tokens_list)
+    row, caches = _prefill(model, jnp.asarray([tokens_list], dtype=jnp.int32))
+    for i in range(max_new_tokens):
+        valid_len = len(tokens_list)
+        if valid_len >= MAX_SEQ_LEN:
+            break
+        logits = _temperature_truncate(row[0], effective_temperature, top_k, top_p)
+        reject_unsampleable(logits, where=f"token {i}, position {valid_len - 1} (cached)")
+        rng, subkey = jax.random.split(rng)
+        next_token = (int(jax.random.categorical(subkey, logits)) if temperature > 0.0
+                      else int(jnp.argmax(logits)))
+        if next_token == PAD_TOKEN_ID:
+            break
+        tokens_list.append(next_token)
+        if not quiet:
+            print(enc.decode([next_token]), end="", flush=True)
+        row, caches = _decode(model, jnp.asarray([[next_token]], dtype=jnp.int32), caches,
+                              jnp.int32(valid_len))
+    if not quiet:
+        print()
+    return tokens_list
+
 
 def build_arg_parser():
     ap = argparse.ArgumentParser(

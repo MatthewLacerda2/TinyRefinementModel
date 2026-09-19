@@ -35,35 +35,37 @@ class CausalAttention(nnx.Module):
         cos, sin = rope_tables(max_pos, self.head_dim)
         self.cos, self.sin = cos, sin
 
-    def __call__(self, x, pad_bias=None):
+    def kv(self, x, positions):
+        """Rotated, normed K and V for the rows of x at absolute `positions` — the
+        two tensors a decode cache holds (#153)."""
         b, s, d = x.shape
-        q = self.q_norm(self.q(x).reshape(b, s, self.num_heads, self.head_dim))
         k = self.k_norm(self.k(x).reshape(b, s, self.num_heads, self.head_dim))
         v = self.v(x).reshape(b, s, self.num_heads, self.head_dim)
+        k = apply_rope(k, self.cos[positions][:, None, :], self.sin[positions][:, None, :])
+        return k.astype(x.dtype), v
 
-        cos = self.cos[:s, None, :]
-        sin = self.sin[:s, None, :]
-        q = apply_rope(q, cos, sin)
-        k = apply_rope(k, cos, sin)
-
-        # q_norm/k_norm run in f32 for stability, so q/k come out f32 while v is in
-        # the compute dtype. Cast q/k back so all three match (dot_product_attention
-        # requires it) and attention takes the tensor-core path. No-op in f32 (CPU /
-        # toy harness); the real-scale f16 run needs it.
-        q = q.astype(x.dtype)
-        k = k.astype(x.dtype)
-
-        pos = jnp.arange(s)
-        causal = pos[:, None] >= pos[None, :]                   # [s, s], True = allowed
-        bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
-        if pad_bias is not None:
-            bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
+    def attend(self, x, k, v, bias, positions):
+        """Queries from x at `positions` against the given K/V, under `bias`."""
+        b, s, d = x.shape
+        q = self.q_norm(self.q(x).reshape(b, s, self.num_heads, self.head_dim))
+        q = apply_rope(q, self.cos[positions][:, None, :], self.sin[positions][:, None, :]).astype(x.dtype)
         # The bias must stay f32: cast to f16 turns -1e9 into -inf (f16 max
         # ~65504), and a fully-masked row would softmax to NaN (#84).
         # dot_product_attention adds the bias to its f32 logits, so f16 q/k/v
         # keep the tensor-core path.
         out = jax.nn.dot_product_attention(q, k, v, bias=bias)
         return self.o(out.reshape(b, s, d))
+
+    def __call__(self, x, pad_bias=None):
+        b, s, d = x.shape
+        positions = jnp.arange(s)
+        k, v = self.kv(x, positions)
+
+        causal = positions[:, None] >= positions[None, :]       # [s, s], True = allowed
+        bias = jnp.where(causal, 0.0, -1e9)[None, None, :, :]   # [1, 1, s, s]
+        if pad_bias is not None:
+            bias = bias + pad_bias                              # pad_bias [b, 1, 1, s]
+        return self.attend(x, k, v, bias, positions)
 
 
 class Block(nnx.Module):
