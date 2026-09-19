@@ -51,6 +51,10 @@ COLUMNS = (
     Column("act_max", 1, diag="act_max"),
     Column("depth_avg", 4),
     Column("val_ce", 4),
+    # The opt step the probe measured val_ce at (#351). The value is written on the
+    # next logged row, up to LOG_REAL_STEPS - 1 steps later, so the row's own `step`
+    # is not when it was measured.
+    Column("val_step", None),
     # Context a row cannot be read without, and that cannot be backfilled (#186):
     # when it was written — the only clock the run keeps against its progress —
     # and the data mixture its CE was measured on, which the curriculum moves
@@ -140,7 +144,7 @@ class MetricsLogger:
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
             zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
-            clip_active=None, mix=None):
+            clip_active=None, val_step=None, mix=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -177,7 +181,7 @@ class MetricsLogger:
                 "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,
                 "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
                 "applied_grad_norm": applied_grad_norm, "clip_active": clip_active,
-                "depth_avg": depth_avg, "val_ce": val_ce,
+                "depth_avg": depth_avg, "val_ce": val_ce, "val_step": val_step,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "arena_peak_mib": _arena_peak_mib(),

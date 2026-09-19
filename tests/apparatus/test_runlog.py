@@ -237,3 +237,16 @@ def test_a_recorded_run_reads_cleanly(name, recorded_run, monkeypatch):
                 assert value is None or isinstance(value, expected.get(key, float)), (key, value)
     if "wall_clock" in log.fields:
         assert log.has("wall_clock") and log.has("mix") and log.has("arena_peak_mib")
+
+
+def test_val_readings_sit_at_the_probe_step_when_the_run_recorded_it(tmp_path):
+    """#351: a probe's value is logged on the next row, up to four steps late. A run
+    that records val_step is read at the probe; an older one at the row it has."""
+    from instruments.runlog import load
+
+    aligned = write_run(tmp_path / "new", header="step,ce,val_ce,val_step",
+                        rows=["5,7.0,,", "10,6.8,6.9,8", "15,6.6,,", "20,6.5,6.6,16"])
+    assert load(aligned).val_readings() == ([8, 16], [6.9, 6.6])
+
+    older = write_run(tmp_path / "old", header="step,ce,val_ce", rows=["5,7.0,", "10,6.8,6.9"])
+    assert load(older).val_readings() == ([10], [6.9])

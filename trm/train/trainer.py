@@ -246,6 +246,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # Latest held-out CE from the validation probe, carried so the (less frequent)
     # logging block can record it. None until the first probe fires.
     latest_val_ce = None
+    latest_val_step = None
     # Opt step of the last plateau notice, so a persistent plateau reports
     # periodically instead of on every step. Negative so the first one always prints.
     last_plateau_notice = -PLATEAU_NOTICE_EVERY
@@ -348,7 +349,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 if opt_step % VAL_EVERY_OPT_STEPS == 0:
                     val_ce = val_probe.run(model)
                     if val_ce is not None:
-                        latest_val_ce = val_ce
+                        latest_val_ce, latest_val_step = val_ce, opt_step
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
                         # Best checkpoint: selected on held-out CE (#222), in a
                         # sibling dir so best-retention and rolling-latest
@@ -389,6 +390,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=float(accum_depth),
                     val_ce=latest_val_ce,
+                    val_step=latest_val_step,
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
@@ -396,7 +398,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
-                latest_val_ce = None
+                latest_val_ce = latest_val_step = None
 
                 print(
                     f"🧊 [ZeroGrad] dense max: {zero_frac_dense:.4f} | "

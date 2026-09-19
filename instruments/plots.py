@@ -416,7 +416,7 @@ def val_cadence(runlog, cfg):
     of 15, 15, 15, 15, 20, whose median is 15 and whose mean is exactly 16."""
     if cfg.recorded("VAL_EVERY_OPT_STEPS"):
         return cfg.value("VAL_EVERY_OPT_STEPS", None, int), "recorded"
-    steps, _ = runlog.column("val_ce")
+    steps, _ = runlog.val_readings()
     if len(steps) < 2:
         return None, None
     return int(round((steps[-1] - steps[0]) / (len(steps) - 1))), "observed"
@@ -522,7 +522,9 @@ def training_curve(runlog, outdir):
         print(f"training_curve: skipped — CE is {why_omitted(runlog, ['ce'])}.")
         return None
 
-    val_tokens, val_ce = series(runlog, "val_ce", cfg)
+    # Each reading at the step it was measured (#351), not the row it was logged on.
+    val_tokens, val_ce = _clean(*runlog.val_readings())
+    val_tokens = val_tokens * cfg.tokens_per_opt_step
     if not len(val_ce):
         print(f"training_curve: no val CE line — {why_omitted(runlog, ['val_ce'])}.")
     tokens_per_step = cfg.tokens_per_opt_step
