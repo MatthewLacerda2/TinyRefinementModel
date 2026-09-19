@@ -114,5 +114,38 @@ def test_an_architecture_without_a_refine_loop_refuses():
     model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1)
     toks = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32)
 
-    with pytest.raises(NotImplementedError, match="depth-recurrent"):
+    with pytest.raises(NotImplementedError, match="no trajectory to capture"):
         model.capture_trajectory(toks, depth=2)
+
+
+# ── the plain model walks its blocks (#391) ──────────────────────────────────
+
+TOY_LAYERS = 3
+
+
+@pytest.fixture(scope="module")
+def toy_plain():
+    from trm.model.plain import PlainTransformer
+
+    return PlainTransformer(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+                            num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+
+
+def test_the_plain_trajectory_has_one_state_per_block_plus_the_embedding(toy_plain, tokens):
+    states, gates = toy_plain.capture_trajectory(tokens)
+
+    assert states.shape == (TOY_LAYERS + 1, 1, MAX_SEQ_LEN, TOY_DIM)
+    assert states.dtype == jnp.float32
+    assert gates is None, "the plain stack has no gate"
+    assert jnp.array_equal(states[0], toy_plain.embed(tokens).astype(jnp.float32))
+
+
+def test_the_plain_trajectory_ends_where_the_forward_pass_does(toy_plain, tokens):
+    """The same load-bearing property as the refiner's: the last captured state,
+    through the out-norm, is bit-for-bit the hidden state the training forward
+    returns. Anything less and the instrument measures a parallel computation."""
+    states, _ = toy_plain.capture_trajectory(tokens)
+    hidden = toy_plain(tokens, training=True).hidden
+
+    last = states[-1].astype(hidden.dtype)
+    assert jnp.array_equal(toy_plain.out_norm(last), hidden)
