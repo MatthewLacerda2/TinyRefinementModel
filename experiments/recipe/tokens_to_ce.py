@@ -104,6 +104,19 @@ def last_step(metrics_csv: pathlib.Path) -> int:
         return 0
 
 
+def parse_knobs(pairs):
+    """{KNOB: value} from --set KNOB=VALUE, refusing any name trm/config.py does not
+    define: the env var would be read by nothing, and the arm would run as the control."""
+    import trm.config as config
+    knobs = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or not name.isupper() or not hasattr(config, name):
+            raise SystemExit(f"--set {pair!r}: not KNOB=VALUE with KNOB a trm/config.py constant")
+        knobs[name] = value
+    return knobs
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--optimizer", required=True, choices=["adamw", "muon"])
@@ -130,8 +143,13 @@ def main(argv=None) -> int:
     ap.add_argument("--pad-token-id", type=int, default=None,
                     help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
                          "Unset leaves the historical 50256.")
+    ap.add_argument("--set", action="append", default=[], metavar="KNOB=VALUE",
+                    help="any other trm/config.py knob for this arm, e.g. ADAM_B2=0.95 (#359). "
+                         "Repeatable. A name config.py does not define is refused, so a typo "
+                         "cannot run as a silent control.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
+    knobs = parse_knobs(args.set)
 
     from trm.config import TOKENS_PER_OPT_STEP
     name = (f"run_{args.tag}_{args.optimizer}"
@@ -141,6 +159,7 @@ def main(argv=None) -> int:
             + (f"_{args.lr_schedule}" if args.lr_schedule is not None else "")
             + (f"_L{args.layers}" if args.layers is not None else "")
             + (f"_b{args.batch}" if args.batch is not None else "")
+            + "".join(f"_{k.lower()}{v}" for k, v in knobs.items())
             + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
@@ -167,6 +186,7 @@ def main(argv=None) -> int:
         env["BATCH_SIZE"] = str(args.batch)
     if args.layers is not None:
         env["PLAIN_LAYERS"] = str(args.layers)
+    env.update(knobs)
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)
