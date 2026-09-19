@@ -18,6 +18,25 @@ import os
 # every observed launch OOM landed — instead of waiting 8,192 micro-steps for them.
 VAL_EVERY_OPT_STEPS = int(os.environ.get("VAL_EVERY_OPT_STEPS", 64))
 CHECKPOINT_EVERY_OPT_STEPS = int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64))
+# A metrics.csv row is written every LOG_REAL_STEPS opt steps. A validation probe's CE
+# is held and written on the first such row at or after the probe, not on the probe's
+# own opt step, so a reader aligning val CE with a checkpoint looks in the window
+# [probe, probe + LOG_REAL_STEPS). Not recorded in run metadata (#351).
+LOG_REAL_STEPS = 5
+
+# The f16 margins the supervisor watches during a run (#368). Crossing one is an
+# alarm, announced and recorded, never a kill: a margin is a warning of the failure
+# #235 found only after a 10-day run (the champion finished at 65,120 of f16's
+# 65,504), not the failure itself. Whether any of them should stop a run is the
+# owner's call.
+#   act_max past a quarter of f16's ceiling: a block's output is climbing toward it.
+ACT_MAX_ALARM = float(os.environ.get("ACT_MAX_ALARM", 65504 / 4))
+#   the loss scale at or below this: the backward overflows with no scaling left (#199).
+LOSS_SCALE_FLOOR_ALARM = float(os.environ.get("LOSS_SCALE_FLOOR_ALARM", 4))
+#   the applied gradient's zero fraction at the underflow bar (#82's 0.05).
+ZERO_GRAD_ALARM = float(os.environ.get("ZERO_GRAD_ALARM", 0.05))
+#   arena headroom under this: no room left for the next allocation spike.
+VRAM_HEADROOM_ALARM_MIB = float(os.environ.get("VRAM_HEADROOM_ALARM_MIB", 150))
 
 # The items every checkpoint step directory holds, in orbax's item order.
 CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")

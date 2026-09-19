@@ -10,11 +10,8 @@ import numpy as np
 import orbax.checkpoint as ocp
 from flax import nnx
 
-from trm.config import LATENT_DIM
-from trm.model.reasoner import UniversalReasoner
 
-
-def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, token_batch):
+def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, make_tiny_model, token_batch):
     tokens = jnp.asarray(token_batch)
     reference = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
 
@@ -26,7 +23,7 @@ def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, token_ba
     mngr.save(0, args=ocp.args.Composite(model=ocp.args.StandardSave(nnx.state(tiny_model))))
     mngr.wait_until_finished()
 
-    other = UniversalReasoner(LATENT_DIM, nnx.Rngs(1), batch_size=1)
+    other = make_tiny_model(seed=1)
     restored = mngr.restore(
         0, args=ocp.args.Composite(model=ocp.args.StandardRestore(nnx.state(other)))
     )

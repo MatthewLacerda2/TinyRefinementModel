@@ -12,6 +12,11 @@ import queue
 from trm.config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
 from dotenv import load_dotenv
 
+# Shard order (#364, measured by reading the code below, not assumed): each source is
+# streamed with load_dataset(..., streaming=True) and never shuffled, so the chunk
+# files hold documents in the Hugging Face stream order, and the loader reads them
+# sequentially. Consecutive micro-steps from one source are neighbours in that order.
+
 # Load environment variables (such as HF_TOKEN) before datasets loads
 load_dotenv()
 

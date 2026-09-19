@@ -1,8 +1,10 @@
 # The front door (#169): the incantations live here, not in a session's memory.
 #
-#   make lint                    what CI's lint job runs: ruff, then vulture (dead code)
-#   make test                    what CI's pytest job runs (core, then apparatus — separately,
-#                                since one process for both has been OOM-killed on this box)
+#   make lint                    what CI's lint job runs: ruff, vulture (dead code), then the
+#                                jaxfree tests, without conftest (#325)
+#   make test                    the whole core and apparatus suites, jaxfree tests included
+#                                (CI splits those into its lint job); core, then apparatus,
+#                                separately, since one process for both has been OOM-killed
 #   make test-affected           only the tests a change can reach; fails open to `make test`
 #   make audit                   the validity audit over the specs a change can reach (#304);
 #                                `make audit ALL=1` sweeps every spec and finding
@@ -15,11 +17,13 @@
 
 PY ?= venv/bin/python
 
-.PHONY: lint test test-affected audit gate launch report
+.PHONY: lint test test-affected audit gate launch resume report
 
 lint:
 	$(PY) -m ruff check .
 	$(PY) -m vulture
+	@files="$$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)"; \
+	test -n "$$files" && $(PY) -m pytest --noconftest -p no:cacheprovider -m jaxfree $$files
 
 test:
 	$(PY) -m pytest tests/core -q
@@ -41,6 +45,9 @@ launch:
 	@test -n "$(BUDGET)" || { echo "no BUDGET, no launch: make launch SPEC=experiments/base/specs/<id>.toml BUDGET=4e9 [ISSUE=157]"; exit 2; }
 	@test -n "$(SPEC)" || { echo "no SPEC, no launch: the base run is pre-registered (#294)"; exit 2; }
 	$(PY) -m trm.runtime.launch --budget $(BUDGET) --spec $(SPEC) $(if $(ISSUE),--issue $(ISSUE),)
+
+resume:
+	$(PY) -m trm.runtime.launch --resume
 
 report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }

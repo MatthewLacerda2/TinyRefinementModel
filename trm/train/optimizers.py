@@ -1,24 +1,27 @@
-"""The training optimizers: the base pretrain chain and the reduced-LR SFT
-variant it hands over to at the phase switch. Both share the same structure
-(clip -> AdamW with masked weight decay, bf16 first moment, MultiSteps
-accumulation) so the SFT swap changes exactly one thing: the LR schedule.
+"""The training optimizer: clip -> AdamW (or Muon on the matrices) with masked
+weight decay and a bf16 first moment, accumulated over ACCUMULATION_STEPS
+micro-steps.
 """
-
-import gc
 
 import jax
 import jax.numpy as jnp
 import optax
-from flax import nnx
 
-from trm.config import ACCUMULATION_STEPS, MUON_LR_MULT, TRM_OPTIMIZER
+from trm.config import (
+    ACCUMULATION_STEPS,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_EPS,
+    MUON_LR_MULT,
+    MUON_NESTEROV,
+    MUON_NS_STEPS,
+    TRM_OPTIMIZER,
+)
 from trm.train.accumulate import multi_steps
 from trm.train.schedules import learning_schedule, weight_decay_schedule
-
-
-# The global-norm clip, applied by MultiSteps to the window's MEAN gradient. The
-# trainer logs that same mean's norm against it (#180).
-CLIP_NORM = 1.0
 
 
 def weight_decay_mask(params):
@@ -40,8 +43,12 @@ def muon_partition(params):
 
 
 def _adamw(learning_rate):
+    # Every numeric knob passed by name, none left to optax's defaults (#358).
     return optax.adamw(
         learning_rate=learning_rate,
+        b1=ADAM_B1,
+        b2=ADAM_B2,
+        eps=ADAM_EPS,
         weight_decay=weight_decay_schedule,
         mask=weight_decay_mask,
         # Store Adam's first moment in bf16 (upcast to f32 for the update math).
@@ -49,7 +56,9 @@ def _adamw(learning_rate):
         # param (~0.23GB at dim960), which is exactly what lets the dim960 / 138.7M
         # model fit the 6GB card — it OOMs with f32 moments. The variance estimate
         # (nu) stays f32: bf16 is too coarse near zero there. Verified sound by
-        # instruments.bf16_mu_smoke (tracks an f32-mu run to 0.06% of loss).
+        # instruments.bf16_mu_smoke at commit 3859e57 (#37): a RefinerForTraining at
+        # dim 512, 16 heads, 7 encoder layers, f32 compute, tracked an f32-mu run to
+        # 0.06% of loss. Not re-measured at the dim-960 shipping config.
         mu_dtype=jnp.bfloat16,
     )
 
@@ -67,6 +76,13 @@ def _muon(learning_rate, lr_mult=MUON_LR_MULT):
         {
             "muon": optax.chain(
                 optax.contrib.scale_by_muon(
+                    # The 2024 coefficients, stated rather than defaulted (#375 asks
+                    # whether per-step ones orthogonalize better).
+                    ns_coeffs=(3.4445, -4.775, 2.0315),
+                    ns_steps=MUON_NS_STEPS,
+                    beta=MUON_BETA,
+                    eps=MUON_EPS,
+                    nesterov=MUON_NESTEROV,
                     mu_dtype=jnp.bfloat16,
                     # Every leaf that reaches this partition is a 2-D matrix
                     # (muon_partition says so); optax needs that stated per leaf,
@@ -104,22 +120,3 @@ def _make_chain(learning_rate):
 
 optimizer_chain = _make_chain(learning_schedule)
 
-
-def create_sft_optimizer(model, old_state=None):
-    """The SFT-phase optimizer: same chain at 10% LR. Pass `old_state` to
-    preserve momentum across the swap. VRAM note (#30): the mid-training call
-    site (trainer.train_loop) must stage the moments to HOST before calling —
-    building this optimizer allocates fresh full-size mu/nu on the GPU. The
-    startup resume path (start_training) may pass device state: nothing else
-    holds VRAM yet, so the transient double-state is harmless there."""
-    print("📉 Recreating optimizer with LR reduced to 10% for SFT phase...")
-
-    def sft_lr_schedule(step):
-        return learning_schedule(step) * 0.1
-
-    new_opt = nnx.Optimizer(model, _make_chain(sft_lr_schedule), wrt=nnx.Param)
-    if old_state is not None:
-        nnx.update(new_opt, old_state)
-
-    gc.collect()
-    return new_opt

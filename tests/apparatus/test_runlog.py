@@ -213,18 +213,40 @@ def test_auto_discovery_says_so_when_there_is_nothing(tmp_path, monkeypatch):
         runlog.load()
 
 
-def test_the_live_run_reads_cleanly():
-    """Against the real artifact, not a fixture: whatever is in runs/ right now
-    must parse, and its arch-optional columns must come back absent."""
-    try:
-        log = runlog.load()
-    except FileNotFoundError:
-        pytest.skip("no runs/ on this machine")
+@pytest.mark.parametrize("name", ["run_20260813_214725", "run_287_adamw_lr0.0001_s0"])
+def test_a_recorded_run_reads_cleanly(name, recorded_run, monkeypatch):
+    """Against real artifacts, found the way a bare `runlog.load()` finds the latest run:
+    the 4B champion (August format) and a #287 arm (today's format, with wall_clock, mix
+    and arena_peak_mib). Each must parse to the types runlog promises, and the arch-optional
+    columns must come back absent. Excerpts: tests/apparatus/fixtures/README.md."""
+    import datetime
+
+    run = recorded_run(name)
+    monkeypatch.chdir(run.parent.parent)
+    log = runlog.load()
+    assert log.run_id == name
     assert log.fields, "the run's CSV has no header"
-    if not log.metrics:
-        pytest.skip("latest run has no rows yet")
-    assert log.has("ce") and log.last_step > 0
+    assert log.metrics, "the recorded excerpt has rows"
+    assert log.has("ce") and log.has("val_ce") and log.last_step > 0
+    assert not log.has("avg_forget_cost"), "neither refiner nor plain measures the forget cost"
+    expected = {"wall_clock": datetime.datetime, "mix": str}  # runlog's _TEXT_COLUMNS
     for row in log.metrics:
         assert isinstance(row["step"], int)
-        assert all(value is None or isinstance(value, float)
-                   for key, value in row.items() if key != "step")
+        for key, value in row.items():
+            if key != "step":
+                assert value is None or isinstance(value, expected.get(key, float)), (key, value)
+    if "wall_clock" in log.fields:
+        assert log.has("wall_clock") and log.has("mix") and log.has("arena_peak_mib")
+
+
+def test_val_readings_sit_at_the_probe_step_when_the_run_recorded_it(tmp_path):
+    """#351: a probe's value is logged on the next row, up to four steps late. A run
+    that records val_step is read at the probe; an older one at the row it has."""
+    from instruments.runlog import load
+
+    aligned = write_run(tmp_path / "new", header="step,ce,val_ce,val_step",
+                        rows=["5,7.0,,", "10,6.8,6.9,8", "15,6.6,,", "20,6.5,6.6,16"])
+    assert load(aligned).val_readings() == ([8, 16], [6.9, 6.6])
+
+    older = write_run(tmp_path / "old", header="step,ce,val_ce", rows=["5,7.0,", "10,6.8,6.9"])
+    assert load(older).val_readings() == ([10], [6.9])

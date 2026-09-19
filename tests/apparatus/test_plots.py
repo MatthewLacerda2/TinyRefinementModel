@@ -25,10 +25,6 @@ import sys
 
 import pytest
 
-# Marker-anchored, not a fixed parent-hop count (see tests/core/test_seed_config.py).
-REPO_ROOT = str(next(p for p in pathlib.Path(__file__).resolve().parents
-                     if (p / "pyproject.toml").exists()))
-
 HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,avg_forget_cost,"
           "diversity_loss,temporal_drift,forget_density,tau,out_entropy,logz_mean,"
           "max_abs_logit,depth_avg,val_ce,arena_peak_mib")
@@ -86,13 +82,12 @@ def test_reasoner_only_columns_never_get_a_panel(tmp_path):
         assert absent not in drawn
 
 
-def test_blank_column_omits_its_panel_and_says_why(tmp_path):
+def test_blank_column_omits_its_chart_and_says_why(tmp_path, capsys):
     figures = build(a_run(tmp_path, grad_norm_avg=""), tmp_path)
 
-    health = figures["optimization_health.png"]
-    assert "grad_norm" not in health["panels"]
-    assert ("grad_norm", "not measured by this architecture") in health["omitted"]
-    assert health["panels"], "the other diagnostics still have data"
+    assert "grad_norm.png" not in figures
+    assert "grad_norm: omitted — not measured by this architecture" in capsys.readouterr().out
+    assert "logits.png" in figures, "the other diagnostics still have data"
 
 
 def test_literal_zero_column_is_omitted_too(tmp_path, capsys):
@@ -100,11 +95,9 @@ def test_literal_zero_column_is_omitted_too(tmp_path, capsys):
     columns it did not measure, so the column is present and still not data."""
     figures = build(a_run(tmp_path, depth_avg="0.0000"), tmp_path)
 
-    health = figures["optimization_health.png"]
-    assert "depth" not in health["panels"]
-    assert ("depth", "constant 0 throughout — logged, but not a measurement") in health["omitted"]
+    assert "depth.png" not in figures
     # Told, not silently dropped: absence and a flat zero must stay tellable apart.
-    assert "constant 0" in capsys.readouterr().out
+    assert "depth: omitted — constant 0 throughout" in capsys.readouterr().out
 
 
 def test_a_real_flat_signal_is_still_drawn(tmp_path):
@@ -112,15 +105,16 @@ def test_a_real_flat_signal_is_still_drawn(tmp_path):
     measurement (a sampler pinned to depth 4, say), and it gets its panel."""
     figures = build(a_run(tmp_path, depth_avg="4.0000"), tmp_path)
 
-    assert "depth" in figures["optimization_health.png"]["panels"]
+    assert "depth.png" in figures
 
 
-def test_every_diagnostic_panel_appears_for_a_full_log(tmp_path):
+def test_every_chart_is_its_own_image_for_a_full_log(tmp_path):
+    """One chart per image (the board hangs each as its own widget), and only
+    the charts worth a glance: no VRAM, zero-gradient, LR or progress panels."""
     figures = build(a_run(tmp_path), tmp_path)
 
-    assert panels_of(figures, "optimization_health.png") == [
-        "grad_norm", "depth", "vram", "zero_grad", "logits"]
-    assert figures["optimization_health.png"]["omitted"] == []
+    assert sorted(figures) == ["depth.png", "grad_norm.png", "logits.png", "training_curve.png"]
+    assert all(len(figure["panels"]) <= 2 for figure in figures.values())
 
 
 def test_val_ce_is_drawn_only_where_it_exists(tmp_path):
@@ -182,7 +176,7 @@ def test_throughput_needs_the_supervisor_log(tmp_path):
     """metrics.csv has no timestamps at all, so with no heartbeats to sample
     there is no honest throughput figure — and none is written."""
     figures = build(a_run(tmp_path), tmp_path)
-    assert "throughput_progress.png" not in figures
+    assert "throughput.png" not in figures
 
     csv_path = a_run(tmp_path / "with_log", steps=600)
     (csv_path.parent.parent / f"{csv_path.parent.name}.supervisor.log").write_text(
@@ -191,7 +185,7 @@ def test_throughput_needs_the_supervisor_log(tmp_path):
         "2026-01-01 02:00:00 RUNNING: step 600/30518 (ce=6.1)\n")
 
     figures = build(csv_path, tmp_path / "with_log")
-    assert panels_of(figures, "throughput_progress.png") == ["throughput", "progress"]
+    assert panels_of(figures, "throughput.png") == ["throughput"]
 
 
 def test_missing_run_is_an_error_not_an_empty_figure(tmp_path):
@@ -203,7 +197,7 @@ def test_missing_run_is_an_error_not_an_empty_figure(tmp_path):
 
 # ── the constraint: no model, ever ───────────────────────────────────────────
 
-def test_the_plotter_never_imports_a_model(tmp_path):
+def test_the_plotter_never_imports_a_model(tmp_path, repo_root):
     """The defect this rewrite removes: the old plotter built a whole
     UniversalReasoner to count parameters — the wrong architecture, and a
     hazard on a card that is training. Run it for real in a clean interpreter
@@ -215,8 +209,8 @@ def test_the_plotter_never_imports_a_model(tmp_path):
         "runpy.run_module('instruments.plots', run_name='__main__');"
         "print('MODELS:', [m for m in sys.modules if m.startswith('trm.model')])"
     )
-    env = dict(os.environ, PYTHONPATH=REPO_ROOT, JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
-    proc = subprocess.run([sys.executable, "-c", probe], cwd=REPO_ROOT, env=env,
+    env = dict(os.environ, PYTHONPATH=str(repo_root), JAX_PLATFORMS="cpu", FORCE_F32_COMPUTE="1")
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=repo_root, env=env,
                           capture_output=True, text=True, timeout=300)
 
     assert proc.returncode == 0, proc.stderr
@@ -267,38 +261,27 @@ def a_short_arm(tmp_path, name="run_026_muon_m100_s1", **parameters):
     return with_metadata(write_csv(tmp_path, rows, name=name), **recorded)
 
 
-def test_a_short_run_renders_with_its_own_warmup(tmp_path):
-    """The crash (#305): the plotter rebuilt the LR schedule with WARMUP_STEPS
-    from its own environment, so a 512-step horizon minus a 1000-step warmup
-    handed optax decay_steps=-488 and the whole report died."""
-    from trm.train.schedules import WARMUP_STEPS
+def test_a_short_run_renders_and_names_its_own_schedule(tmp_path):
+    """The #305 crash was the plotter rebuilding the LR schedule with its own
+    1000-step warmup against a 512-step horizon. The schedule is a sentence in
+    the note now, read from the run, so the short arm renders and says 100."""
+    from instruments import plots
+    from instruments.runlog import load
 
-    assert WARMUP_STEPS > 512, "this test is only meaningful with the long default warmup"
     figures = build(a_short_arm(tmp_path), tmp_path)
+    assert figures["training_curve.png"]["panels"] == ["ce", "val_ce"]
 
-    assert "lr" in figures["training_curve.png"]["panels"]
-    assert figures["training_curve.png"]["omitted"] == []
-
-
-def test_a_run_that_never_recorded_its_warmup_omits_the_lr_panel(tmp_path, capsys):
-    """The only honest answer for a pre-#305 short run: this process's warmup is
-    a guess, it does not fit, and a guessed anneal is worse than none."""
-    figures = build(a_short_arm(tmp_path, WARMUP_STEPS=None), tmp_path)
-
-    curve = figures["training_curve.png"]
-    assert "lr" not in curve["panels"] and "ce" in curve["panels"]
-    assert "did not record its warmup" in dict(curve["omitted"])["lr"]
-    assert "warmup" in capsys.readouterr().out
+    cfg = plots.RunConfig.of(load(str(a_short_arm(tmp_path / "again"))))
+    assert plots.schedule_line(cfg) == "LR: 100-step warmup to 0.0001, cosine to 512 optimizer steps."
 
 
-def test_a_plain_run_omits_the_depth_panel_and_says_why(tmp_path):
+def test_a_plain_run_omits_the_depth_panel_and_says_why(tmp_path, capsys):
     """PlainTransformer ignores the depth argument, so depth_avg is the sampler's
     dice roll — logged, and not a measurement of this model."""
     figures = build(a_short_arm(tmp_path), tmp_path)
 
-    health = figures["optimization_health.png"]
-    assert "depth" not in health["panels"]
-    assert "ignores the depth argument" in dict(health["omitted"])["depth"]
+    assert "depth.png" not in figures
+    assert "ignores the depth argument" in capsys.readouterr().out
 
 
 def test_a_refiner_run_still_draws_the_depth_panel(tmp_path):
@@ -306,7 +289,7 @@ def test_a_refiner_run_still_draws_the_depth_panel(tmp_path):
     still worth a check there (the 4B champion is one of these)."""
     figures = build(a_short_arm(tmp_path, MODEL_ARCH="refiner", MAX_STEPS_LIMIT=8), tmp_path)
 
-    assert "depth" in figures["optimization_health.png"]["panels"]
+    assert "depth.png" in figures
 
 
 def test_the_subtitle_identifies_a_plain_run_by_arch_layers_and_optimizer(tmp_path):
@@ -367,31 +350,86 @@ def test_a_run_written_before_these_parameters_still_renders(tmp_path):
                              TRAIN_TOKEN_BUDGET=4_000_000_000, DECAY_STEPS=30518)
     figures = build(csv_path, tmp_path)
 
-    assert figures["training_curve.png"]["panels"] == ["ce", "lr"]
-    assert "depth" in figures["optimization_health.png"]["panels"]
+    assert figures["training_curve.png"]["panels"] == ["ce"]
+    assert "depth.png" in figures
 
 
 def test_a_run_with_no_metadata_at_all_still_renders(tmp_path):
     """A hand-assembled run directory, or one from before the tracker."""
     figures = build(a_run(tmp_path), tmp_path)
 
-    assert "training_curve.png" in figures and figures["optimization_health.png"]["panels"]
+    assert "training_curve.png" in figures and "grad_norm.png" in figures
 
 
-def test_the_vram_panel_draws_the_peak_against_the_arena_limit(tmp_path):
-    """arena_peak_mib is in every CSV and was drawn nowhere (#305). It is the
-    number that says whether the next layer fits."""
+def test_the_margins_are_reported_in_words_not_drawn(tmp_path, capsys):
+    """Arena peak and the f16 zero-gradient fraction are margins, not curves: on
+    a healthy run one is flat and the other is a 1e-4 blip that an autoscaled
+    axis draws as a crisis (#379). Each is one line, and neither warns here."""
     from instruments import plots
+    from instruments.runlog import load
 
-    figures = build(a_short_arm(tmp_path, name="run_026_adamw_s2"), tmp_path)
-
-    assert "vram" in figures["optimization_health.png"]["panels"]
+    warnings = plots.margin_report(load(str(a_short_arm(tmp_path, name="run_026_adamw_s2"))))
+    out = capsys.readouterr().out
+    assert warnings == []
+    assert "VRAM: arena peak" in out and "f16 zero-gradient fraction" in out
     assert plots.ARENA_LIMIT_MIB == 4883.0, "the measured cuda_async bytes_limit on this card"
 
 
-def test_no_vram_panel_where_the_allocator_kept_no_statistics(tmp_path):
-    """A CPU run logs an empty cell — the panel is omitted, not drawn at zero."""
-    figures = build(a_run(tmp_path, arena_peak_mib=""), tmp_path)
+def test_a_margin_that_crosses_its_line_is_flagged(tmp_path):
+    """The two failures these margins exist for: a run near the arena ceiling, and
+    gradients underflowing in f16 (the dead base runs sat at 0.50-0.75)."""
+    from instruments import plots
+    from instruments.runlog import load
 
-    assert "vram" not in figures["optimization_health.png"]["panels"]
-    assert "vram" in dict(figures["optimization_health.png"]["omitted"])
+    near = load(str(a_run(tmp_path / "near", arena_peak_mib=4800)))
+    assert any("headroom" in w for w in plots.margin_report(near))
+    underflow = load(str(a_run(tmp_path / "under", zero_frac_dense_max=0.6)))
+    assert any("underflowing" in w for w in plots.margin_report(underflow))
+
+
+def test_no_vram_line_where_the_allocator_kept_no_statistics(tmp_path, capsys):
+    """A CPU run logs an empty cell — the margin is not reported, not reported as zero."""
+    from instruments import plots
+    from instruments.runlog import load
+
+    plots.margin_report(load(str(a_run(tmp_path, arena_peak_mib=""))))
+    assert "VRAM" not in capsys.readouterr().out
+
+
+def test_the_arena_limit_is_the_runs_own_when_logged_and_flagged_when_assumed():
+    """#319: the limit was one frozen card's number for every run. A run that logs its
+    own is drawn against it; one that does not gets the RTX 2060 number, marked assumed."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    logged = RunLog("r", [{"step": 5, "arena_limit_mib": 5100.0}, {"step": 10, "arena_limit_mib": 5120.0}], {})
+    assert plots.arena_limit_mib(logged) == (5120.0, True)
+    assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], {})) == (plots.ARENA_LIMIT_MIB, False)
+
+
+def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp_path):
+    """#332 review: on a plain run, a missing column plain does log was reported as
+    'not measured by this architecture'. The reason comes from runlog, shared with report."""
+    from instruments import plots
+    from instruments.runlog import RunLog
+
+    plain = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {"parameters": {"MODEL_ARCH": "plain"}})
+    assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
+    reasoner_only = plots.why_omitted(plain, ["tau"])
+    assert reasoner_only == "not measured by this architecture"
+
+
+def test_a_run_with_blocks_csv_gets_the_two_heatmaps(tmp_path):
+    """#392: state on y, tokens on x, max and RMS as two images; parsed by runlog."""
+    from instruments.runlog import load
+
+    csv_path = a_run(tmp_path)
+    lines = ["step,block,act_max,act_rms"] + [
+        f"{step},{block},{10.0 * (block + 1) + step / 100:.2f},{0.1 * (block + 1):.4f}"
+        for step in range(5, 401, 5) for block in range(3)]
+    (csv_path.parent / "blocks.csv").write_text("\n".join(lines) + "\n")
+
+    steps, maxes, rmses = load(str(csv_path)).blocks()
+    assert maxes.shape == rmses.shape == (80, 3) and steps[0] == 5
+    figures = build(csv_path, tmp_path)
+    assert "blocks_act_max.png" in figures and "blocks_act_rms.png" in figures

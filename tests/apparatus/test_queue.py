@@ -31,7 +31,7 @@ def test_types_lead_in_claude_md_order():
     q = build_queue([issue(1, "documentation", "cpu"), issue(2, "ideas", "cpu"),
                      issue(3, "optimization", "cpu"), issue(4, "tools", "cpu"),
                      issue(5, "architecture", "cpu")], [], FREE)
-    assert list(ranked(q)) == ["architecture", "tools", "ideas", "optimization", "documentation"]
+    assert list(ranked(q)) == ["architecture", "tools", "optimization", "ideas", "documentation"]
 
 
 def test_an_issue_with_two_types_sits_in_the_higher_one():
@@ -137,3 +137,18 @@ def test_unblockers_still_outrank_the_idle_card_rule():
     issues = [issue(1, "tools", "cpu"), issue(2, "tools", "gpu"),
               issue(3, "tools", "cpu", "blocked", body="Blocked by #1")]
     assert ranked(build_queue(issues, [], FREE))["tools"][0] == 1
+
+
+def test_a_browsers_gpu_process_does_not_hold_the_card():
+    """#389: the board's headless Chromium marked an idle card busy."""
+    from instruments.queue import split_compute_processes
+
+    blocking, other = split_compute_processes([
+        "208451, /usr/lib/chromium/chromium",
+        "226159, /mnt/d_drive/models/.venv-kokoro/bin/python",
+        "1170676, /home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python3.14",
+        "",
+    ])
+    assert blocking == ["226159, /mnt/d_drive/models/.venv-kokoro/bin/python",
+                        "1170676, /home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python3.14"]
+    assert other == ["208451, /usr/lib/chromium/chromium"]

@@ -4,7 +4,7 @@
 
 CLAUDE.md states the ready-queue as prose precise enough to execute — an issue
 is ready when it is open, not blocked, unclaimed, and its lane is free; types
-lead in the order architecture > tools > ideas > optimization > documentation;
+lead in the order architecture > tools > optimization > ideas > documentation;
 anything that affects another item leads. Run in a session's head, that
 algorithm runs differently depending on what the session happened to read, and
 not at all in a fresh one. Here it runs the same every time.
@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import pathlib
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ from trm.runtime.supervisor import GpuLock, _pid_alive
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
 
-TYPE_ORDER = ("architecture", "tools", "ideas", "optimization", "documentation")
+TYPE_ORDER = ("architecture", "tools", "optimization", "ideas", "documentation")
 UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
 
 # "Blocked by" alone marks a block; followed by issue numbers, it names the blockers.
@@ -175,9 +176,29 @@ def card_state() -> Card:
             capture_output=True, text=True, timeout=20, check=True).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return Card(False, f"cannot read nvidia-smi ({exc.__class__.__name__}) — assuming busy")
-    if out:
-        return Card(False, "compute processes on the card: " + "; ".join(out.splitlines()))
+    blocking, other = split_compute_processes(out.splitlines())
+    if blocking:
+        return Card(False, "compute processes on the card: " + "; ".join(blocking))
+    if other:
+        return Card(True, "no lock, no training process (also on the card, not counted: "
+                          + "; ".join(other) + ")")
     return Card(True, "no lock, no compute processes")
+
+
+def split_compute_processes(lines: list[str]) -> tuple[list[str], list[str]]:
+    """(processes that hold the card, the rest), from nvidia-smi's `pid, name` lines.
+
+    Only a Python process can be a training run, a smoke or another model using the
+    card in earnest; a browser's GPU process rasterizing a page is not (#389: the
+    stark-hud board's headless Chromium held ~300 MiB and marked an idle card busy,
+    so the queue stopped putting gpu items first). The others are still listed."""
+    blocking, other = [], []
+    for line in (entry.strip() for entry in lines):
+        if not line:
+            continue
+        name = line.split(",", 1)[-1].strip()
+        (blocking if "python" in pathlib.Path(name).name else other).append(line)
+    return blocking, other
 
 
 STRAY_AFTER_DAYS = 7

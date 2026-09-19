@@ -1,23 +1,18 @@
-"""Capture the refinement trajectory — every latent state the model passes
-through while it thinks (#225).
+"""Capture the latent trajectory — every state a forward pass walks through:
+the refiner's refine loop (#225), or the plain model's blocks (#391).
 
-Depth inertness was found at the *end* of a 10-day run by eyeballing eight
-sampled prompts, because the production model could not hand back a single
-intermediate state: `return_all_states` existed only on the toy `CausalRefiner`,
-and even there it was entangled with `return_all_iters`, which drags the
-`[depth, b, s, vocab]` logit tensor along. States alone were never expensive.
-At the live config a whole trajectory is
-
-    9 states x 1 x 512 x 960 x 2 bytes = 8.8 MB
-
-so this has been affordable the entire time; the coupling is what kept it out of
-reach.
+States alone are cheap: a whole trajectory at dim 960 and seq 512 is
+9 x 512 x 960 x 2 bytes = 8.8 MB. Why the production model could not hand one back
+before, and the depth-inertness it would have caught earlier: #225.
 
 This module is the one API every downstream depth instrument uses (#227's
 readout probe, #228's visualiser). It ships the measurement and makes no claim
 about what the trajectories will show — the readouts below are descriptive.
 
-    python -m instruments.latents --checkpoint runs/<run>/checkpoints --depth 8
+    python -m instruments.latents --checkpoint runs/<run>/checkpoints [--step N]
+
+The plain model ignores `--depth`: its trajectory is its N blocks. The figures
+drawn from these trajectories live in `instruments/trajectory_figures.py`.
 
 **The checkpoint path is the MANAGER ROOT** — the directory that *contains*
 numerically-named step directories — not the step directory itself. Orbax
@@ -37,8 +32,14 @@ import numpy as np
 from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
 
 from instruments import results as result_lines
+from instruments._common import add_checkpoint_argument, load_env
 
-# ARCH-SPECIFIC: refiner — a trajectory is the refine loop's states, and only the refiner loops (#317).
+# A trajectory is whatever stack of states the architecture walks: the refiner's passes,
+# the plain model's blocks. `LanguageModel.capture_trajectory` refuses for any other (#317).
+
+# The architectures that implement LanguageModel.capture_trajectory. Checked before a
+# checkpoint loads, so asking for another is refused in a second, not after a restore.
+TRAJECTORY_ARCHES = ("plain", "refiner")
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -50,8 +51,8 @@ REPORTS = {
 class Trajectory:
     """Every state one forward pass passed through.
 
-    `states` is [depth+1, b, s, dim] in f32 — index 0 is the encoder output,
-    *before* any refinement, which no other return path exposes. Without it
+    `states` is [depth+1, b, s, dim] in f32 — index 0 is the state before the
+    first pass or block, which no other return path exposes. Without it
     there is no first step to measure and the trajectory has no origin.
 
     `gates` is the per-pass mean gate openness [depth], already computed inside
@@ -152,28 +153,26 @@ def capture(model, tokens, depth) -> Trajectory:
 
 def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", required=True,
-                    help="checkpoint MANAGER ROOT (the dir holding numeric step dirs), "
-                         "not a step dir")
+    add_checkpoint_argument(ap, required=True, aliases=("--checkpoint",))
     ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT)
     ap.add_argument("--source", default="pretrain/fineweb-edu")
     ap.add_argument("--rows", type=int, default=1)
+    ap.add_argument("--step", type=int, default=None,
+                    help="checkpoint step to restore (default: the newest the manager holds)")
     args = ap.parse_args(argv)
     from trm.config import MODEL_ARCH
-    if MODEL_ARCH != "refiner":
-        raise SystemExit(f"instruments.latents reads the refiner's refinement trajectory; "
-                         f"MODEL_ARCH={MODEL_ARCH!r} has no refine loop to capture. "
-                         f"Load a refiner checkpoint with MODEL_ARCH=refiner.")
+    if MODEL_ARCH not in TRAJECTORY_ARCHES:
+        raise SystemExit(f"instruments.latents reads a trajectory; MODEL_ARCH={MODEL_ARCH!r} "
+                         f"has none to capture. Use one of {', '.join(TRAJECTORY_ARCHES)}.")
 
     # DATA_ROOT lives in .env and the held-out loader reads it from the
     # environment. Loading it here rather than making every caller export it
     # by hand, the way trm/infer.py already does.
-    from dotenv import load_dotenv
-    load_dotenv()
+    load_env()
 
-    from trm.runtime.restore import load_eval_batches, restore_model
+    from trm.runtime.restore import load_eval_batches, restore_arch
 
-    model, _ = restore_model(args.checkpoint)
+    model, _ = restore_arch(MODEL_ARCH, args.checkpoint_path, step=args.step)
     # load_eval_batches yields input rows, not (input, target) pairs.
     for i, row in enumerate(load_eval_batches(args.source, num_rows=args.rows)):
         traj = capture(model, jnp.asarray(row[:, :MAX_SEQ_LEN]), args.depth)

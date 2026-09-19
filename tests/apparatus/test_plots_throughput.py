@@ -132,6 +132,6 @@ def test_the_figure_says_measured_when_it_is(tmp_path, capsys):
     matplotlib.use("Agg")
     from instruments import plots
     rows = [(5 * i, 150 * i) for i in range(1, 200)]
-    result = plots.throughput_progress(_clocked_run(tmp_path, rows), tmp_path)
+    result = plots.throughput(_clocked_run(tmp_path, rows), tmp_path)
     assert result is not None and result["coverage"] == 1.0
     assert "heartbeat" not in capsys.readouterr().out

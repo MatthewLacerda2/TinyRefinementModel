@@ -39,8 +39,12 @@ Usage — safe to run while training, as long as you leave --device alone:
 
 import argparse
 import datetime
+import json
 import os
-import subprocess
+
+# Module-level names on purpose: select_device and main look them up here, which is
+# also where a test replaces them.
+from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -50,6 +54,13 @@ REPORTS = {}  # writes generated text for reading; no quantities
 # --device is read, which is the whole hazard this module used to carry.
 
 PROMPT_SET_VERSION = 1
+
+# The one line a caller reads to find the transcript a run wrote (#338). Everything else
+# on stdout is for a human and may change; this line is a contract, parsed by
+# `written_transcript` below and by instruments.milestone_report. It is a JSON line in
+# the style of instruments/results.py, under its own prefix: RESULT lines carry numeric
+# measurements for the experiment runner, and a file path is not one.
+WRITTEN_PREFIX = "TRANSCRIPT "
 
 # Frozen. Changing or removing a prompt bumps PROMPT_SET_VERSION; appending does
 # not, because every file records the prompts that actually ran. Prompts 1-4 probe
@@ -187,28 +198,6 @@ def transcript_filename(opt_step, device):
     return f"step_{opt_step:06d}_{device}.md"
 
 
-def git_head():
-    """The commit generating this transcript — distinct from the one that trained
-    the weights, and after a few PRs they are nowhere near each other."""
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or None
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
-def gpu_memory_used_mib():
-    """Used VRAM, or None if the card cannot be queried."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
-        return int(out.stdout.strip().splitlines()[0])
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        return None
-
-
 def select_device(device, force=False):
     """Write the backend choice into the environment before JAX is imported.
 
@@ -242,8 +231,7 @@ def prompt_count(value):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="fixed-prompt transcript logbook")
-    parser.add_argument("--checkpoint-path", default=None,
-                        help="checkpoint dir (default: the latest checkpointed run)")
+    add_checkpoint_argument(parser)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu",
                         help="cpu (default) is safe beside a training run; gpu is the "
                              "canonical series but needs a free card")
@@ -270,8 +258,20 @@ def build_arg_parser():
     return parser
 
 
-def main():
-    args = build_arg_parser().parse_args()
+def announce_written(path):
+    """Print the contract line naming the transcript file just written (absolute path)."""
+    print(WRITTEN_PREFIX + json.dumps({"path": os.path.abspath(path)}), flush=True)
+
+
+def written_transcript(stdout):
+    """The path from the last contract line in a run's stdout, or None if it wrote none."""
+    paths = [json.loads(line[len(WRITTEN_PREFIX):])["path"]
+             for line in stdout.splitlines() if line.startswith(WRITTEN_PREFIX)]
+    return paths[-1] if paths else None
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
     requested = None if args.depths is None else parse_depths(args.depths)
     select_device(args.device, args.force)
 
@@ -354,6 +354,8 @@ def main():
 
     fields = {
         "prompt_set_version": PROMPT_SET_VERSION,
+        # How many of PROMPTS (a prefix) this entry ran. Entries written before #336 have
+        # no such key: they always ran the full set, so a missing key means 8.
         "standard_prompts": standard,
         "step": opt_step,
         "checkpoint_step": ckpt_step,
@@ -380,6 +382,7 @@ def main():
     with open(out_path, "w") as handle:
         handle.write(render_document(fields, results, depths))
     print(f"\n✨ {out_path}")
+    announce_written(out_path)
 
 
 def _val_depth():

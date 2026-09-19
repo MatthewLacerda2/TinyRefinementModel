@@ -20,8 +20,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.5")
 import argparse
 import statistics
 
-from dotenv import load_dotenv
-
+from instruments._common import add_checkpoint_argument, load_env
 from trm.config import EVAL_ROWS, resolve_root
 from trm.runtime.restore import restore_model
 from trm.train.validation import VAL_SKIP_SAMPLES, ValidationProbe
@@ -45,9 +44,9 @@ def slice_offsets(rows, slices, skip=VAL_SKIP_SAMPLES):
 
 
 def main(argv=None):
-    load_dotenv()
+    load_env()
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint-path", default=None, help="Orbax dir (default: latest run)")
+    add_checkpoint_argument(ap)
     ap.add_argument("--rows", type=int, nargs="+", default=[4, EVAL_ROWS], help="probe widths to compare")
     ap.add_argument("--slices", type=int, default=6, help="disjoint slices per width")
     args = ap.parse_args(argv)

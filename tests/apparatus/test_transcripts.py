@@ -8,8 +8,10 @@ step arithmetic — are pinned rather than drifting quietly.
 So these guard the properties that make an old transcript *interpretable*, plus
 the one that stops the tool from killing the run it exists to observe.
 
-Deliberately importable without JAX: everything here is pure Python, so the suite
-stays fast and can run beside a live trainer without competing for memory.
+Importable without JAX, and everything here is pure Python EXCEPT `TestARealRunOfMain`,
+which drives `dump_transcripts.main()` and imports jax through trm.config and trm.infer.
+The rest can run beside a live trainer without competing for memory; deselect that
+class there (`-k "not TestARealRunOfMain"`). CI's pytest job runs all of it.
 """
 
 import pytest
@@ -112,7 +114,9 @@ class TestStepArithmetic:
         assert opt_step_from_checkpoint(1458175, 128) == 11392
 
     def test_the_boundary_does_not_drift(self):
-        assert opt_step_from_checkpoint(1409023, 128) == 11008
+        # The last sample of opt step 11,008 (11,008 x 128 - 1 = 1,409,023): resuming at
+        # n+1 lands exactly on the boundary, so it must not round down to 11,007.
+        assert opt_step_from_checkpoint(11_008 * 128 - 1, 128) == 11_008
 
 
 class TestNearestMetric:
@@ -200,56 +204,99 @@ class TestDeviceSafety:
         select_device("gpu")
 
 
-class TestProvenanceTiming:
-    """`tool_commit` must describe the code that generated the text (#214).
+class TestARealRunOfMain:
+    """main() end to end, with only the model, the tokenizer and the generator stubbed.
 
-    It was read while assembling the frontmatter, after every completion. On a
-    GPU pass that gap is seconds; on the CPU fallback a full entry takes ~1h48m,
-    and the first real entry recorded `5893bd7` for text generated on `e25be42`
-    because #207 and #206 both merged mid-run — #206 changing the inference path.
+    These replace source-string guards (#338 review): a check that `main()`'s text
+    contains `PROMPTS[:args.prompts]` passes for code that never runs it. Here the
+    order of events, the prompts generated, the frontmatter written and the contract
+    line printed are all observed. Imports jax through trm.config and trm.infer, so
+    unlike the rest of this file it runs in CI's pytest job, not beside a trainer.
 
-    The field exists so a future session can tell which code produced a
-    transcript, so being wrong on exactly the long runs is the whole failure.
-
-    Source-order rather than behavioural: exercising the real timing would mean
-    restoring a checkpoint and generating, which is far too heavy for this tier.
-    The repo already inspects source this way in `tests/core/test_infer_arch.py`.
+    `tool_commit` must describe the code that generated the text (#214): it was once
+    read after every completion, and a ~1h48m CPU entry stamped itself with commits
+    that merged mid-run.
     """
 
-    def _main_source(self):
-        from pathlib import Path
+    @staticmethod
+    def _run(tmp_path, monkeypatch, capsys, *argv, run_dir=None):
+        """Run main(). With `run_dir`, the checkpoint is discovered as that run's (so main
+        reads its metrics.csv and run_metadata.json); otherwise --checkpoint-path is passed."""
+        import tiktoken
+        import trm.infer
+        import trm.runtime.checkpoints
+        import trm.runtime.restore
+        from instruments import dump_transcripts as tool
+        from instruments import runlog
 
-        import instruments.dump_transcripts as tool
+        events = []
 
-        source = Path(tool.__file__).read_text()
-        return source.split("def main(")[1].split("\ndef ")[0]
+        class Enc:
+            def encode(self, text):
+                return [len(word) for word in text.split()]
 
-    def test_the_commit_is_read_before_any_generation(self):
-        body = self._main_source()
-        captured = body.index("tool_commit = git_head()")
-        generated = body.index("for depth in depths:")
+            def decode(self, ids):
+                return " ".join("w" * i for i in ids)
 
-        assert captured < generated, (
-            "tool_commit is read after generation starts — a long run will stamp "
-            "itself with whatever merged while it was working")
+        def generate(model, enc, prompt, **kwargs):
+            events.append(("generate", prompt))
+            return enc.encode(prompt) + [3, 4, 5]
 
-    def test_the_frontmatter_uses_the_captured_value(self):
-        """A second `git_head()` call at write time would reintroduce the bug
-        even with the early capture sitting right above it."""
-        body = self._main_source()
-        fields = body.split('"tool_commit":')[1].split(",")[0]
+        monkeypatch.setattr(tiktoken, "get_encoding", lambda name: Enc())
+        monkeypatch.setattr(trm.infer, "generate_text", generate)
+        monkeypatch.setattr(trm.runtime.restore, "restore_model",
+                            lambda path: events.append(("restore", path)) or ("model", 1279))
+        monkeypatch.setattr(tool, "git_head", lambda: events.append(("commit",)) or "abc1234")
+        real_load = runlog.load
+        monkeypatch.setattr(runlog, "load", lambda path: events.append(("run log", path)) or real_load(path))
+        if run_dir is None:
+            located = ["--checkpoint-path", str(tmp_path / "ck")]
+        else:
+            located = []
+            monkeypatch.chdir(run_dir.parents[1])  # main names the run as runs/<run_id>, relative
+            monkeypatch.setattr(trm.runtime.checkpoints, "discover_latest_checkpoint_run",
+                                lambda: (str(run_dir / "checkpoints"), run_dir.name))
+        # select_device writes these; setting them first lets monkeypatch put them back.
+        monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+        monkeypatch.setenv("FORCE_F32_COMPUTE", "1")
+        capsys.readouterr()
+        tool.main([*located, "--out", str(tmp_path / "out"), "--depths", "1", *argv])
+        path = tool.written_transcript(capsys.readouterr().out)
+        return events, path, open(path).read()
 
-        assert "git_head()" not in fields, (
-            "the frontmatter calls git_head() again instead of using the value "
-            "captured before generation")
+    def test_the_commit_and_the_weights_are_read_before_any_generation(self, tmp_path, monkeypatch, capsys):
+        events, _, document = self._run(tmp_path, monkeypatch, capsys)
+        first_generation = next(i for i, e in enumerate(events) if e[0] == "generate")
+        assert events.index(("commit",)) < first_generation
+        assert [i for i, e in enumerate(events) if e[0] == "restore"][0] < first_generation
+        assert document.count("tool_commit: abc1234") == 1 and events.count(("commit",)) == 1, \
+            "the frontmatter uses the value captured before generation, not a second read"
 
-    def test_the_checkpoint_derived_fields_were_never_affected(self):
-        """`model_commit` comes from run_metadata.json and `checkpoint_step` from
-        the restored checkpoint — both read before generation, both already
-        correct. Pinned so a future refactor does not move them the wrong way."""
-        body = self._main_source()
+    def test_the_run_metadata_is_read_before_any_generation(self, tmp_path, monkeypatch, capsys):
+        """`model_commit` and the CE fields come from the run's own files, read once before
+        generation, like the tool commit. Only a discovered run has a run dir to read."""
+        import json
 
-        assert body.index("restore_model(") < body.index("for depth in depths:")
+        run_dir = tmp_path / "runs" / "run_t"
+        run_dir.mkdir(parents=True)
+        (run_dir / "metrics.csv").write_text("step,ce,val_ce\n5,6.1,\n10,5.9,6.2\n")
+        (run_dir / "run_metadata.json").write_text(json.dumps({"git_commit": "fedcba9876543", "git_dirty": False}))
+        events, _, document = self._run(tmp_path, monkeypatch, capsys, run_dir=run_dir)
+
+        first_generation = next(i for i, e in enumerate(events) if e[0] == "generate")
+        (read,) = [i for i, e in enumerate(events) if e[0] == "run log"]
+        assert read < first_generation
+        assert "model_commit: fedcba9" in document
+
+    def test_a_subset_runs_a_prefix_and_the_frontmatter_says_how_many(self, tmp_path, monkeypatch, capsys):
+        events, path, document = self._run(tmp_path, monkeypatch, capsys,
+                                           "--prompts", "2", "--prompt", "an extra prompt")
+        generated = [e[1] for e in events if e[0] == "generate"]
+        from instruments.dump_transcripts import PROMPTS
+        assert generated == [*PROMPTS[:2], "an extra prompt"], "a prefix of the standard set, then extras"
+        assert "standard_prompts: 2" in document
+        assert "non-standard" in document, "the extra prompt is marked as such"
+        assert path.startswith(str(tmp_path)), "the contract line names the file this run wrote"
 
 
 class TestPromptSubset:
@@ -283,15 +330,13 @@ class TestPromptSubset:
         with pytest.raises(SystemExit):
             build_arg_parser().parse_args(["--prompts", bad])
 
-    def test_the_subset_is_a_prefix_and_is_recorded(self):
-        """A prefix keeps each prompt comparable with the same prompt in a full entry,
-        and the frontmatter says how many ran, so a short entry cannot pass for a full one."""
-        body = self._main_source()
-        assert "PROMPTS[:args.prompts]" in body
-        assert '"standard_prompts": standard' in body
 
-    @staticmethod
-    def _main_source():
-        import inspect
-        from instruments import dump_transcripts
-        return inspect.getsource(dump_transcripts.main)
+def test_the_written_line_round_trips_and_ignores_human_output(tmp_path, capsys):
+    """milestone_report finds the transcript through this line, not through the human
+    `✨ <path>` print it used to scan for with the wrong word (#338)."""
+    from instruments.dump_transcripts import announce_written, written_transcript
+
+    announce_written(tmp_path / "step_000184_cpu.md")
+    stdout = "▶ 8 prompts x 1 depths\n\n✨ runs/x/transcripts/step_000184_cpu.md\n" + capsys.readouterr().out
+    assert written_transcript(stdout) == str(tmp_path / "step_000184_cpu.md")
+    assert written_transcript("✨ runs/x/transcripts/step_000184_cpu.md\n") is None

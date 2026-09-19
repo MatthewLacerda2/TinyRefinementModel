@@ -1,6 +1,7 @@
 import csv
 import datetime
 import math
+import posixpath
 from typing import NamedTuple
 import fsspec
 # jax at module level: the module already needs jax.numpy, so a lazy import in
@@ -33,6 +34,12 @@ COLUMNS = (
     Column("applied_zero_frac_dense_max", 6),
     # Norm of the window mean the optimizer clips (#180), comparable to CLIP_NORM.
     Column("applied_grad_norm", 4),
+    # 1 when that norm exceeded CLIP_NORM, so the clip, not the LR, sized the step (#358).
+    Column("clip_active", None),
+    # The f16 loss scale at the row, and the micro-steps skipped as non-finite since
+    # launch (#368): the scaler's state as a column instead of a grep of train.log.
+    Column("loss_scale", None),
+    Column("skipped_micro_steps", None),
     Column("avg_forget_cost", 4, diag="forget_cost"),
     Column("diversity_loss", 6, diag="diversity_loss"),
     Column("temporal_drift", 6, diag="temporal_drift"),
@@ -49,16 +56,27 @@ COLUMNS = (
     Column("act_max", 1, diag="act_max"),
     Column("depth_avg", 4),
     Column("val_ce", 4),
+    # The opt step the probe measured val_ce at (#351). The value is written on the
+    # next logged row, up to LOG_REAL_STEPS - 1 steps later, so the row's own `step`
+    # is not when it was measured.
+    Column("val_step", None),
     # Context a row cannot be read without, and that cannot be backfilled (#186):
     # when it was written — the only clock the run keeps against its progress —
     # and the data mixture its CE was measured on, which the curriculum moves
     # every step.
     Column("wall_clock", None),
     Column("mix", None),
+    # Micro-step gradient norm per data source over the window, as
+    # `source=mean/max/guard-clipped/micro-steps` (#364): which data makes the tail.
+    Column("grad_by_source", None),
     # The allocator's own high-water mark so far (#168): exact, not a poll. Every
     # run records how close it came to its limit, and the fit gate reads it from
     # the probe run's first row.
     Column("arena_peak_mib", None),
+    # The allocator's ceiling, the other half of headroom (#346). It moves with
+    # XLA_PYTHON_CLIENT_MEM_FRACTION and the allocator, so a run records its own
+    # rather than every reader assuming the RTX 2060's 4,883 MiB.
+    Column("arena_limit_mib", None),
 )
 
 
@@ -79,15 +97,35 @@ def _cell(value, places):
     return value if places is None else f"{value:.{places}f}"
 
 
-def _arena_peak_mib():
-    """peak_bytes_in_use in MiB, or empty where the allocator keeps no statistics
+def _allocator_mib(key):
+    """One allocator statistic in MiB, or empty where the allocator keeps none
     (CPU, the platform allocator)."""
     try:
         stats = jax.local_devices()[0].memory_stats() or {}
     except (AttributeError, RuntimeError):
         stats = {}
-    peak = stats.get("peak_bytes_in_use")
-    return f"{peak / 2**20:.0f}" if peak else ""
+    value = stats.get(key)
+    return f"{value / 2**20:.0f}" if value else ""
+
+
+def _arena_peak_mib():
+    return _allocator_mib("peak_bytes_in_use")
+
+
+def _arena_limit_mib():
+    return _allocator_mib("bytes_limit")
+
+
+# The per-block activation readings (#392), beside metrics.csv: long format, one row
+# per (step, state), because the number of states follows PLAIN_LAYERS and a fixed
+# metrics schema cannot. State 0 is the embedding, state k the stream after block k.
+BLOCKS_FILENAME = "blocks.csv"
+BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms")
+
+
+def blocks_file_for(history_file):
+    """blocks.csv beside metrics.csv, for a local path or an fsspec URL alike."""
+    return posixpath.join(posixpath.dirname(history_file), BLOCKS_FILENAME)
 
 
 class MetricsLogger:
@@ -98,12 +136,14 @@ class MetricsLogger:
         # omits those keys, and their columns stay empty instead of being filled
         # with zeros that look like measurements.
         self.diag_keys = [c.diag for c in COLUMNS if c.diag]
+        self.blocks_file = blocks_file_for(history_file)
         self.fields = [c.name for c in COLUMNS]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
         self._warned_nonfinite = set()
         if start_opt_step is not None:
             self._truncate_replayed_rows(start_opt_step)
+            self._truncate_replayed_blocks(start_opt_step)
 
     def _truncate_replayed_rows(self, start_opt_step):
         """On resume, drop rows at/after the restored step. Checkpoints restore to
@@ -130,6 +170,41 @@ class MetricsLogger:
         except (OSError, ValueError, KeyError) as e:
             print(f"⚠️ Could not trim replayed rows from {self.history_file}: {e}")
 
+    def _truncate_replayed_blocks(self, start_opt_step):
+        """The same resume trim for blocks.csv: rows at or after the restored step go."""
+        try:
+            fs, path = fsspec.core.url_to_fs(self.blocks_file)
+            if not fs.exists(path) or fs.size(path) == 0:
+                return
+            with fsspec.open(self.blocks_file, "r", newline="") as f:
+                rows = list(csv.DictReader(f))
+            kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
+            if len(kept) == len(rows):
+                return
+            with fsspec.open(self.blocks_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=BLOCKS_FIELDS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(kept)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"⚠️ Could not trim replayed rows from {self.blocks_file}: {e}")
+
+    def _log_blocks(self, step, diag):
+        """One blocks.csv row per state, when the model reports per-block readings.
+        An architecture that does not (the refiner, the reasoner) writes nothing:
+        absent, never zero (#105)."""
+        if "act_max_blocks" not in diag:
+            return
+        maxes = [float(v) for v in jnp.ravel(diag["act_max_blocks"])]
+        rmses = [float(v) for v in jnp.ravel(diag["act_rms_blocks"])]
+        fs, path = fsspec.core.url_to_fs(self.blocks_file)
+        fresh = not fs.exists(path) or fs.size(path) == 0
+        with fsspec.open(self.blocks_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            if fresh:
+                writer.writerow(BLOCKS_FIELDS)
+            for block, (peak, rms) in enumerate(zip(maxes, rmses)):
+                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}"])
+
     def extract_diags(self, diag, jnp_mean_fn):
         """Reduces the diagnostics this model reported to plain floats. Keys the
         model did not report are absent, not zero."""
@@ -137,7 +212,9 @@ class MetricsLogger:
 
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
-            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None, mix=None):
+            zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
+            clip_active=None, val_step=None, mix=None, grad_by_source=None,
+            loss_scale=None, skipped_micro_steps=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -174,11 +251,16 @@ class MetricsLogger:
                 "step": int(step), "ce": ce, "loss": loss, "seg1_ce": seg1_ce,
                 "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,
                 "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
-                "applied_grad_norm": applied_grad_norm, "depth_avg": depth_avg, "val_ce": val_ce,
+                "applied_grad_norm": applied_grad_norm, "clip_active": clip_active,
+                "loss_scale": loss_scale, "skipped_micro_steps": skipped_micro_steps,
+                "depth_avg": depth_avg, "val_ce": val_ce, "val_step": val_step,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
+                "grad_by_source": grad_by_source or "",
                 "arena_peak_mib": _arena_peak_mib(),
+                "arena_limit_mib": _arena_limit_mib(),
             }
             row = {c.name: _cell(diag_dict.get(c.diag) if c.diag else args[c.name], c.places)
                    for c in COLUMNS}
             writer.writerow(row)
+        self._log_blocks(step, out.diag)

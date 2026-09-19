@@ -1,0 +1,159 @@
+# PRE-REGISTERED. Criteria committed before any Muon run of this spec; git records the order.
+# The control arm REUSES the three peak-3e-4 AdamW runs of #287 (run_287_adamw_lr0.0003_s{0,1,2}),
+# which finished before this file was written. That is safe for the same reason #26 stage 2's
+# reuse of its seed-0 arms was: these criteria compare against those numbers, but the numbers
+# say nothing about the treatment, which has not run. The spec is branched from the commit those
+# runs were trained at (57df54c), so the treatment runs the same trainer, loader and probe code.
+
+[experiment]
+id = "026-stage3"
+status = "recorded"
+title = "Muon vs a tuned AdamW (peak 3e-4): tokens to a fixed held-out CE"
+hypothesis = """
+#26 stage 2 found Muon reaching held-out CE 5.85 in 2.1x fewer tokens than AdamW at
+peak 1e-4. #287 then found AdamW at peak 3e-4 reaching it in 2.25x fewer tokens than
+that same 1e-4 control, so stage 2's KEEP was measured against an undertuned baseline
+(rule 4). The question stage 2 could not answer: against AdamW at its better LR, does
+Muon still reach CE 5.85 in at least 15% fewer tokens?
+
+The two existing results cannot simply be lined up. Stage 2 scored every probe on 4
+held-out rows every 16 opt steps; #287 on 64 rows every 8. The yardstick moved by
+itself: the SAME recipe (AdamW 1e-4, same seeds) read 44.6M tokens on the 4-row probe
+and 60.3-60.9M on the 64-row one. So Muon has to be re-run on #287's probe.
+
+Treatment: Muon with every parameter group at its best-known LR. The matrix LR stays
+at stage 2's tuned 1e-2 peak (the x25/x50/x100/x200 sweep), and the AdamW partition
+(embedding, norms, biases) moves to the 3e-4 peak #287 found. With the shared schedule
+at peak 3e-4, that is MUON_LR_MULT = 100/3: matrix peak 3e-4 x 33.3333 = 1e-2.
+
+Prediction registered: INCONCLUSIVE. Rescaling stage 2's Muon reading by the probe's
+own shift (21.0M x 60.3/44.6) gives ~28M against the tuned control's 26.2-27.5M, i.e.
+no gap. That rescale is a guess, not a measurement: the probe offset is not constant
+along a training curve. The prior pattern cuts both ways. Four depth-recurrence
+predictions credited the mechanism too much, and #287's prediction was too timid about
+a plain LR change. If I am wrong I'd guess it is towards Muon keeping part of its lead,
+since the treatment also gets the higher LR on its AdamW partition.
+"""
+issue = 26
+
+[protocol]
+floor_note = """
+The metric is tokens to reach a target, capped at the run length (67.1M): an arm that
+never reaches 5.85 reports the cap, and two arms at the cap tie as INCONCLUSIVE, never
+a win. The control reached the target at steps 200-210 of 512 on every seed, so the
+cap is far from binding for it.
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit (57df54c), same probe (64 rows every 8 opt steps), same schedule (peak 3e-4); only TRM_OPTIMIZER (+ MUON_LR_MULT) differs"
+notes = """
+512 opt steps (67.1M tokens), warmup 100, cosine completing in-run, val every 8 opt
+steps (1.05M tokens per probe), EVAL_ROWS 64, 9 layers, f16. The runs report val_ce
+on the next logged row after a probe (#351), which shifts both arms alike.
+
+Weight decay is LR-coupled (#360). The treatment's matrix decay is the same as stage
+2's Muon arms (their matrix LR is unchanged); its AdamW partition's decay is the
+control's.
+
+min_delta = 4.0M tokens is 15% of the control's ~26.4M mean, the same 15% bar as
+stages 2 and #287.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--peak-lr", "3e-4", "--tag", "287"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.adamw]
+role = "control"
+flags = ["--optimizer", "adamw"]
+
+[arms.muon]
+role = "treatment"
+flags = ["--optimizer", "muon", "--lr-mult", "33.333333"]
+
+# Tokens: LOWER is better, so a Muon win is the CONTROL's number being larger.
+# (The referee's `beats` means the arm in `treatment` reads HIGHER.)
+[criteria.muon_needs_fewer_tokens]
+rule = "beats"
+treatment = "adamw"
+control = "muon"
+sigmas = 2.0
+min_delta = 4.0
+points = ["run"]
+require = "all"
+
+[criteria.muon_needs_more_tokens]
+rule = "loses"
+treatment = "adamw"
+control = "muon"
+sigmas = 2.0
+min_delta = 4.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["muon_needs_fewer_tokens"]
+kill_if = ["muon_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-17. KEEP on every seed. Muon reached held-out CE 5.85 at 19.01/19.01/18.35M
+tokens against the tuned AdamW control's 26.21/27.53/27.53M: 1.42x fewer tokens,
+delta 8.30M against the 4.0M bar, +13.9 sigma (sigma ~0.6M, mostly the 1.05M probe
+quantum). The registered prediction (INCONCLUSIVE, from rescaling stage 2's reading
+by the probe shift) was WRONG, and wrong in the timid direction -- the same
+direction #287 stage 1's prediction missed in. The rescale that produced it
+(~28M) was off by 9M; a probe offset is not a constant along a training curve, as
+that prediction itself warned.
+
+So Muon's advantage survives fixing the baseline, at a smaller size: 2.1x over
+AdamW at 1e-4 (stage 2), 1.42x over AdamW at its better 3e-4. Both readings are
+real; the first was measured against an undertuned control (rule 4) and only this
+one licenses "Muon beats a tuned AdamW".
+
+Readouts, Muon vs control:
+- final_val_ce at the cap (continuous, no weight): 4.373/4.382/4.379 vs
+  5.093/5.107/5.099 -- a 0.72-nat gap, far outside the 0.01-nat seed spread on
+  either arm.
+- wall-clock: 24.16/24.15/24.22 s per opt step vs 23.21/22.94/23.00, so Newton-
+  Schulz costs +4.8% per step here (stage 2 measured +3.0%). Time to the target
+  57.0/56.9/55.0 min vs 76.4/79.0/79.4: a 1.39x wall-clock win, so the KEEP
+  survives its own cost readout.
+- arena peak: 4058 MiB vs 4438, the same 380 MiB Muon saved in stage 2 -- it holds
+  one momentum buffer for the 2-D matrices where AdamW holds two moments.
+- f16 margin: non-finite skips 201/203/199 vs 201/198/195 and streaks >1 at 2/4/2
+  vs 1/4/1, i.e. the loss scaler's routine probing on both arms, no Muon tax.
+  max act_max 44.8/46.2/45.0 vs 41.3/40.9/45.2 -- Muon runs slightly hotter
+  activations, still two orders of magnitude inside the f16 range.
+
+Limitations. The horizon is 512 opt steps (67.1M tokens), 0.3% of a base run, and
+a short horizon flatters the faster optimizer. Muon's multiplier was tuned (stage
+2a sweep) where AdamW's peak now has two points (#287 stage 1, and 6e-4 pending on
+#287 stage 2) -- if 6e-4 wins, this control moves again and the gap narrows or
+closes. Weight decay is LR-coupled (#360) on both arms. Seeds share the data
+stream (#378), so this sigma is init variance, not data variance.
+"""
+
+[readouts]
+notes = """
+What each verdict would mean for the base run, written before the numbers:
+KEEP  -> Muon earns its place over a tuned AdamW; the base-run recipe question is
+         Muon at x33 on a 3e-4 schedule.
+KILL  -> a tuned AdamW beats Muon; ship AdamW 3e-4.
+INCONCLUSIVE -> no 15% difference either way. Both are candidates, and the tie-breaks
+         are the readouts below (wall-clock, arena peak, f16 margin), not the token
+         count. That is the owner's call.
+Readouts: final_val_ce at the cap (continuous, no weight); wall-clock per step and to
+the target (Newton-Schulz measured +3.0% per step in stage 2); arena peak (Muon read
+380 MiB lower in stage 2); non-finite skip counts and streaks >1 from train.log (both
+optimizers took ~200 routine scaler probes in stage 2 and #287), and max act_max.
+"""
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+adamw = [26.2144, 27.5251, 27.5251]
+muon = [19.0054, 19.0054, 18.3501]

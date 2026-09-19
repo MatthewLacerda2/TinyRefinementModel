@@ -44,12 +44,20 @@ REPORTS = {
 
 
 def tokens_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: int, tokens_per_opt_step: int):
-    """(tokens in millions to first reach target, final val CE, reached)."""
-    final, hit = None, None
+    """(tokens in millions to first reach target, final val CE, reached, probe_aligned).
+
+    Read at the probe's own step (`val_step`, #351) when the run recorded it; older
+    runs only have the logged row's step, which is late by up to LOG_REAL_STEPS - 1
+    opt steps. `probe_aligned` says which, so a pair that mixes the two readings
+    (a reused old control against a new treatment) is visible in its RESULT lines."""
+    final, hit, aligned = None, None, False
     with metrics_csv.open() as f:
         for row in csv.DictReader(f):
             try:
-                step, val = int(row["step"]), row.get("val_ce") or ""
+                val = row.get("val_ce") or ""
+                probe = row.get("val_step") or ""
+                aligned = aligned or bool(probe)
+                step = int(probe) if probe else int(row["step"])
             except (KeyError, ValueError):
                 continue
             if step > cap_steps or not val:
@@ -58,7 +66,7 @@ def tokens_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: int
             if hit is None and final <= target_ce:
                 hit = step
     steps = hit if hit is not None else cap_steps
-    return steps * tokens_per_opt_step / 1e6, final, hit is not None
+    return steps * tokens_per_opt_step / 1e6, final, hit is not None, aligned
 
 
 def last_step(metrics_csv: pathlib.Path) -> int:
@@ -86,6 +94,11 @@ def main(argv=None) -> int:
                     help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
                          "seed inside one probe interval reports the same token count, which is "
                          "how #26 stage 2 came out with sigma_pooled exactly 0.")
+    ap.add_argument("--lr-schedule", choices=("cosine", "wsd"), default=None,
+                    help="LR_SCHEDULE (#386): the cosine, or warmup-stable-decay. Unset: cosine.")
+    ap.add_argument("--pad-token-id", type=int, default=None,
+                    help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
+                         "Unset leaves the historical 50256.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
 
@@ -93,6 +106,8 @@ def main(argv=None) -> int:
     name = (f"run_{args.tag}_{args.optimizer}"
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
+            + (f"_pad{args.pad_token_id}" if args.pad_token_id is not None else "")
+            + (f"_{args.lr_schedule}" if args.lr_schedule is not None else "")
             + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
@@ -111,6 +126,10 @@ def main(argv=None) -> int:
         env["MUON_LR_MULT"] = str(args.lr_mult)
     if args.peak_lr is not None:
         env["PEAK_LR"] = repr(args.peak_lr)
+    if args.pad_token_id is not None:
+        env["PAD_TOKEN_ID"] = str(args.pad_token_id)
+    if args.lr_schedule is not None:
+        env["LR_SCHEDULE"] = args.lr_schedule
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -136,11 +155,12 @@ def main(argv=None) -> int:
     else:
         print(f"{name}: already at the cap, reading the recorded run", flush=True)
 
-    tokens_m, final, reached = tokens_to_target(metrics, args.target_ce, args.opt_steps, TOKENS_PER_OPT_STEP)
+    tokens_m, final, reached, aligned = tokens_to_target(metrics, args.target_ce, args.opt_steps,
+                                                         TOKENS_PER_OPT_STEP)
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
     results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
-                 reached=float(reached))
+                 reached=float(reached), probe_aligned=float(aligned))
     return 0
 
 

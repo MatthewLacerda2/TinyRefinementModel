@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import json
 import pathlib
 import shutil
+import json
 from dataclasses import dataclass
 
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
@@ -40,12 +40,10 @@ class Checkpoint:
     path: pathlib.Path
     step: int                 # orbax's number: the micro-step
     opt_step: int
-    sft_active: bool | None   # None when the monitor state is unreadable
 
     def describe(self) -> str:
-        phase = {True: "SFT", False: "pretrain", None: "phase unknown"}[self.sft_active]
         return f"{self.path.parent.name + '/' if self.path.parent.name in (BEST_SUBDIR, MILESTONE_SUBDIR) else ''}" \
-               f"{self.step:>9}  opt {self.opt_step:>6}  {phase}"
+               f"{self.step:>9}  opt {self.opt_step:>6}"
 
 
 def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Checkpoint]:
@@ -58,13 +56,52 @@ def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Che
         if not (path.is_dir() and path.name.isdigit() and (path / "_CHECKPOINT_METADATA").exists()):
             continue
         step = int(path.name)
-        try:
-            state = json.loads((path / "monitor_state" / "metadata").read_text())
-            sft = bool(state.get("sft_active") or state.get("sft_start_step") is not None)
-        except (OSError, ValueError):
-            sft = None
-        found.append(Checkpoint(path, step, (step + 1) // accumulation_steps, sft))
+        found.append(Checkpoint(path, step, (step + 1) // accumulation_steps))
     return sorted(found, key=lambda c: c.step)
+
+
+def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
+                            accumulation_steps: int | None = None) -> None:
+    """Refuse to resume a checkpoint written inside the retired SFT phase (#323).
+
+    The in-run SFT flip is gone, so the trainer would resume such a checkpoint as
+    pretraining: a different data mixture and 10x the LR, with nothing in the log
+    to say so. Checkpoints from before the removal still carry the phase fields;
+    ones without them (every checkpoint written since) read as pretraining.
+    """
+    sft_start_step = monitor_state.get("sft_start_step")
+    if sft_start_step is None:
+        return
+    if accumulation_steps is None:
+        from trm.config import ACCUMULATION_STEPS
+        accumulation_steps = ACCUMULATION_STEPS
+    # The flip happened on an opt-step boundary, after that boundary's saves, so
+    # every checkpoint at or below this opt step is still pretraining.
+    last_clean_opt_step = (sft_start_step + 1) // accumulation_steps
+    raise SystemExit(
+        f"❌ checkpoint step {step} is in the SFT phase that began at micro-step {sft_start_step} "
+        f"(opt step {last_clean_opt_step}). The in-run SFT flip was removed (#323), so resuming it "
+        f"would silently continue as pretraining on a different mixture and LR. Rewind to the "
+        f"last pretraining checkpoint first:\n"
+        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}\n"
+        f"(Under the supervisor this exit reads as a crash: it is relaunched, then reported "
+        f"GAVE_UP. These lines are the reason.)")
+
+
+def refuse_sft_phase_checkpoint_dir(checkpoint_dir, accumulation_steps: int) -> None:
+    """The same refusal, read from disk before a launch touches anything: no run
+    session appended, no model built, no orbax restore. Reads the newest finalized
+    checkpoint's monitor state — the one a resume would load. An unreadable state
+    is left for the restore to report."""
+    found = checkpoints_in(pathlib.Path(checkpoint_dir), accumulation_steps)
+    if not found:
+        return
+    newest = found[-1]
+    try:
+        state = json.loads((newest.path / "monitor_state" / "metadata").read_text())
+    except (OSError, ValueError):
+        return
+    refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
 
 
 def resolve(checkpoints: list[Checkpoint], to_opt_step: int) -> Checkpoint:
@@ -124,8 +161,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"set aside:    {path}")
     if not moved:
         print("nothing newer to set aside — the next resume already loads this step")
-    elif chosen.sft_active:
-        print("warning: the resume point itself is in the SFT phase")
     return 0
 
 

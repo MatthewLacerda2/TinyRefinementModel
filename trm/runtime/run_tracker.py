@@ -26,9 +26,27 @@ from trm.config import (
     TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    WEIGHT_DECAY,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_NS_STEPS,
+    MUON_EPS,
+    MUON_NESTEROV,
+    LOSS_SCALE_GROWTH_INTERVAL,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
-from trm.train.schedules import DECAY_STEPS, PEAK_LR, WARMUP_STEPS
+from trm.train.schedules import (
+    CURRICULUM_STEPS,
+    DECAY_STEPS,
+    LR_SCHEDULE,
+    PEAK_LR,
+    WARMUP_STEPS,
+    WSD_DECAY_FRACTION,
+    WSD_DECAY_START,
+)
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -172,6 +190,12 @@ class RunTracker:
             # The run's recipe horizon (#83): budget in, resolved anneal out.
             "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
             "DECAY_STEPS": DECAY_STEPS,
+            # The mixture ramp's resolved horizon, budget-relative since #362.
+            "CURRICULUM_STEPS": CURRICULUM_STEPS,
+            # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
+            "LR_SCHEDULE": LR_SCHEDULE,
+            "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,
+            "WSD_DECAY_START": WSD_DECAY_START,
             # Env knobs a reader cannot recover from anything else (#305). Every
             # one of these is read from *this process's* environment at import, so
             # a tool that reads them from its own config describes itself, not the
@@ -188,6 +212,17 @@ class RunTracker:
             "TIME_SIGNAL": TIME_SIGNAL,
             "TRM_OPTIMIZER": TRM_OPTIMIZER,
             "MUON_LR_MULT": MUON_LR_MULT,
+            # The rest of the optimizer, so a model card can rebuild it (#358).
+            "ADAM_B1": ADAM_B1,
+            "ADAM_B2": ADAM_B2,
+            "ADAM_EPS": ADAM_EPS,
+            "WEIGHT_DECAY": WEIGHT_DECAY,
+            "CLIP_NORM": CLIP_NORM,
+            "MUON_BETA": MUON_BETA,
+            "MUON_NS_STEPS": MUON_NS_STEPS,
+            "MUON_EPS": MUON_EPS,
+            "MUON_NESTEROV": MUON_NESTEROV,
+            "LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL,
         }
 
     def _check_compatibility(self, metadata_path):
@@ -289,17 +324,8 @@ class RunTracker:
             metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = len(metadata["sections"]) - 1
             self.save_metadata(metadata)
-            # Snapshot on resume too (#173). This branch used to skip it, which
-            # meant the *correct* way to launch a supervised run — pinning
-            # --checkpoint-path, since --new-run would make a crash-relaunch
-            # start from scratch — produced a run with no env_freeze.txt, no
-            # system_snapshot.txt and no worktree.patch. The run dir still looked
-            # populated (run_metadata.json is written either way), so the loss was
-            # invisible until someone tried to revive the weights and couldn't.
-            #
-            # Re-capturing is also more honest than capturing once: a run resumed
-            # at a different commit, or with different uncommitted edits, would
-            # otherwise describe only its first session.
+            # Snapshot on resume too (#173): each session describes its own commit
+            # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
             self.capture_environment_snapshot(self.run_dir)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 

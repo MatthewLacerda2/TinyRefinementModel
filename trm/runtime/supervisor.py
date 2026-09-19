@@ -44,6 +44,14 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from trm.runtime.layout import (  # standard library only: the supervisor stays jax-free
+    ACT_MAX_ALARM,
+    LOG_REAL_STEPS,
+    LOSS_SCALE_FLOOR_ALARM,
+    VRAM_HEADROOM_ALARM_MIB,
+    ZERO_GRAD_ALARM,
+)
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
 GPU_LOCK = RUNS_DIR / ".gpu.lock"
@@ -56,7 +64,6 @@ RESTART = "RESTART"  # kill a wedged child, then relaunch it
 RUNNING = "RUNNING"
 BUDGET_COMPLETE = "BUDGET_COMPLETE"
 WALLCLOCK_COMPLETE = "WALLCLOCK_COMPLETE"
-KILLED_PLATEAU = "KILLED_PLATEAU"
 KILLED_DIVERGENCE = "KILLED_DIVERGENCE"
 KILLED_OOM = "KILLED_OOM"
 KILLED_DISK = "KILLED_DISK"
@@ -69,8 +76,7 @@ GAVE_UP = "GAVE_UP"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
-DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_PLATEAU, KILLED_DIVERGENCE,
-              KILLED_OOM, KILLED_DISK)
+DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_DIVERGENCE, KILLED_OOM, KILLED_DISK)
 
 
 @dataclass(frozen=True)
@@ -101,7 +107,6 @@ class Observation:
 
     step: int
     ce: float | None
-    plateau_detected: bool
     alive: bool
     elapsed_hours: float = 0.0
     # Whether THIS launch's output contains an out-of-memory failure. Read from
@@ -111,6 +116,9 @@ class Observation:
     # largest checkpoint it has written (None until it has written one).
     free_gb: float | None = None
     checkpoint_gb: float | None = None
+    # The f16 margins the last metrics row crosses (#368), as (kind, sentence). An
+    # alarm, announced when it appears and when it clears; never a kill.
+    margins: tuple = ()
 
 
 @dataclass
@@ -177,19 +185,14 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     landed inside its polling window. There is no timing assumption to tune here;
     a finished run is finished because the numbers say so.
 
-    Plateau outranks everything: the CE-plateau detector flipping a pretrain run
-    into SFT would silently contaminate the very thing the run exists to produce,
-    so it is worth killing a run that is otherwise perfectly healthy.
+    A CE plateau is not a guard: the trainer only reports it. The plateau kill
+    existed to stop the in-run SFT flip, and went with it (#323).
     """
     if obs.step > state.last_step:
         state.last_step = obs.step
         state.stalled_polls = 0
     elif obs.alive:
         state.stalled_polls += 1
-
-    if obs.plateau_detected:
-        return Decision(KILL, KILLED_PLATEAU,
-                        "CE-plateau SFT auto-flip detected; killing to protect the pretrain run")
 
     if obs.ce is not None and math.isfinite(obs.ce) and obs.ce <= limits.max_ce:
         state.entered_band = True
@@ -302,7 +305,7 @@ FIT_GATE_ENV = {
     "VAL_EVERY_OPT_STEPS": "1",
     "CHECKPOINT_EVERY_OPT_STEPS": "1",
 }
-FIT_GATE_LOG_ROWS_OPT_STEPS = 5  # trainer LOG_REAL_STEPS: the first metrics row lands here
+FIT_GATE_LOG_ROWS_OPT_STEPS = LOG_REAL_STEPS  # the first metrics row lands here
 _COMPUTE = re.compile(r"Compute: ([0-9.]+)s")
 
 
@@ -503,11 +506,62 @@ def read_progress(metrics_csv: pathlib.Path) -> tuple[int, float | None]:
     return 0, None
 
 
-# What the trainer prints when the CE-plateau detector actually flips a run into
-# SFT. Only that flip prints this; a plateau that is merely *reported* (the
-# default since SFT_ON_PLATEAU landed) deliberately words itself differently, so
-# reporting a plateau cannot kill the run.
-PLATEAU_MARKER = "CE Plateau Detected"
+def read_last_row(metrics_csv: pathlib.Path) -> dict:
+    """The last complete row of the metrics CSV, {} when there is none yet."""
+    try:
+        with metrics_csv.open() as f:
+            rows = list(csv.DictReader(f))
+    except (OSError, csv.Error):
+        return {}
+    for row in reversed(rows):
+        if (row.get("step") or "").strip():
+            return row
+    return {}
+
+
+def _number(row: dict, key: str) -> float | None:
+    try:
+        value = float(row.get(key) or "")
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def margin_alarms(row: dict) -> tuple:
+    """The f16 margins this metrics row crosses (#368), as (kind, sentence). Pure.
+
+    The failures they warn of were all visible in real time and none was watched:
+    the champion trained itself to 65,120 of f16's 65,504 (#235); its loss scaler sat
+    at 1 while 8,320 micro-steps overflowed anyway (#199). A column a run does not
+    log (older runs, CPU) is simply not checked.
+    """
+    alarms = []
+    act = _number(row, "act_max")
+    if act is not None and act > ACT_MAX_ALARM:
+        alarms.append(("act_max", f"act_max {act:,.0f} > {ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
+    scale = _number(row, "loss_scale")
+    if scale is not None and scale <= LOSS_SCALE_FLOOR_ALARM:
+        alarms.append(("loss_scale", f"loss scale {scale:g} <= {LOSS_SCALE_FLOOR_ALARM:g}: the "
+                                     f"backward overflows with almost no scaling left"))
+    zero = _number(row, "applied_zero_frac_dense_max")
+    if zero is not None and zero >= ZERO_GRAD_ALARM:
+        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {ZERO_GRAD_ALARM:g}: "
+                                    f"gradients underflowing"))
+    peak, limit = _number(row, "arena_peak_mib"), _number(row, "arena_limit_mib")
+    if peak is not None and limit is not None and limit - peak < VRAM_HEADROOM_ALARM_MIB:
+        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {VRAM_HEADROOM_ALARM_MIB:,.0f}"))
+    return tuple(alarms)
+
+
+def margin_changes(raised: dict, now: tuple) -> list:
+    """The announcements for going from the margins `raised` ({kind: sentence}) to
+    `now`: each kind once when it appears, once when it clears, nothing while it
+    persists — a margin held for days must not announce every poll."""
+    current = dict(now)
+    return ([f"⚠ MARGIN: {sentence}" for kind, sentence in now if kind not in raised]
+            + [f"margin cleared: {raised[kind]}" for kind in raised if kind not in current])
+
+
 # JAX/XLA surface out-of-memory differently depending on the allocator: BFC says
 # RESOURCE_EXHAUSTED, cuda_async says CUDA_ERROR_OUT_OF_MEMORY, and the command
 # buffer path says it a third way. Match any of them.
@@ -519,7 +573,7 @@ def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
 
     The offset is the point. The log is opened in append mode, so a relaunch — and
     every resumed run — writes after whatever a previous session left behind. Read
-    from byte 0 and a plateau or an OOM from *hours ago* is still 'detected', and
+    from byte 0 and an OOM from *hours ago* is still 'detected', and
     the supervisor kills a healthy run on the strength of a dead session's output.
     """
     try:
@@ -528,10 +582,6 @@ def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
             return f.read()
     except OSError:
         return ""
-
-
-def plateau_in(text: str) -> bool:
-    return PLATEAU_MARKER in text
 
 
 def oom_in(text: str) -> bool:
@@ -612,10 +662,10 @@ class Supervisor:
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            plateau_detected=plateau_in(text),
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
+            margins=margin_alarms(read_last_row(self.metrics_csv)),
         )
 
     def run(self) -> str:
@@ -625,12 +675,16 @@ class Supervisor:
         started = time.time()
         self.announce(f"{_stamp()} ▶ supervising pid {proc.pid}: {' '.join(self.command)}")
         polls = 0
+        raised = {}  # the margins currently alarming, by kind (#368)
 
         while True:
             time.sleep(self.poll_seconds)
             polls += 1
             obs = self.observe(proc, started)
             decision = decide(obs, self.limits, state)
+            for change in margin_changes(raised, obs.margins):
+                self.announce(f"{_stamp()} {change}")
+            raised = {kind: raised.get(kind, sentence) for kind, sentence in obs.margins}
 
             line = (f"{_stamp()} {decision.outcome}: {decision.reason}"
                     + (f" (ce={obs.ce})" if obs.ce is not None else ""))

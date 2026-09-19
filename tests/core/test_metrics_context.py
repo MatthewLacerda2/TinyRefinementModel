@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 
 from trm.runtime.metrics import MetricsLogger
-from trm.train.trainer import PRETRAIN_SOURCES, SFT_SOURCES, mixture_label
+from trm.train.trainer import PRETRAIN_SOURCES, mixture_label
 
 
 def _log_one(tmp_path, **overrides):
@@ -21,7 +21,8 @@ def _log_one(tmp_path, **overrides):
     logger = MetricsLogger(str(path))
     out = SimpleNamespace(diag={k: jnp.array(1.5) for k in logger.diag_keys})
     kwargs = dict(grad_norm_avg=0.5, seg1_ce=3.0, depth_avg=1.0, val_ce=3.1,
-                  zero_frac_dense_max=0.0, applied_zero_frac_dense_max=0.0, applied_grad_norm=0.7, mix="a=1.000")
+                  zero_frac_dense_max=0.0, applied_zero_frac_dense_max=0.0, applied_grad_norm=0.7, clip_active=0, val_step=8, loss_scale="65536", skipped_micro_steps=3, grad_by_source="fineweb-edu=1.0/2.0/0/5",
+                  mix="a=1.000")
     kwargs.update(overrides)
     logger.log(10, 3.2, 3.3, out, 0.1, **kwargs)
     with open(path, newline="") as f:
@@ -31,6 +32,7 @@ def _log_one(tmp_path, **overrides):
 def test_every_declared_column_is_written_when_its_input_exists(tmp_path, monkeypatch):
     from trm.runtime import metrics
     monkeypatch.setattr(metrics, "_arena_peak_mib", lambda: "4112")  # a device that keeps statistics
+    monkeypatch.setattr(metrics, "_arena_limit_mib", lambda: "4883")
     logger, rows = _log_one(tmp_path)
     empty = [name for name in logger.fields if rows[0][name] == ""]
     assert not empty, f"declared in the header but never written: {empty}"
@@ -79,10 +81,8 @@ def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
 
 
 def test_the_mixture_label_covers_every_source_the_mixer_serves():
-    from trm.train.schedules import CURRICULUM_START_WEIGHTS, SFT_MIX_WEIGHTS
+    from trm.train.schedules import CURRICULUM_START_WEIGHTS
     assert len(PRETRAIN_SOURCES) == len(CURRICULUM_START_WEIGHTS)
-    assert len(SFT_SOURCES) == len(SFT_MIX_WEIGHTS)
-    assert SFT_SOURCES[1:] == PRETRAIN_SOURCES, "SFT reuses the pretrain loaders, in order"
 
 
 def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):
@@ -113,3 +113,48 @@ def test_arena_peak_is_empty_where_the_allocator_keeps_no_statistics(monkeypatch
     assert metrics._arena_peak_mib() == ""
     monkeypatch.setattr(jax, "local_devices", lambda: [Device({"peak_bytes_in_use": 4112 * 2**20})])
     assert metrics._arena_peak_mib() == "4112"
+
+
+def test_a_run_written_before_the_arena_limit_column_resumes_under_the_new_header(tmp_path):
+    """#346 added a column. A resume must rewrite an older CSV to the current header
+    rather than append rows wider than it, and the old rows keep their values."""
+    from trm.runtime.metrics import COLUMNS
+
+    old_fields = [c.name for c in COLUMNS if c.name != "arena_limit_mib"]
+    path = tmp_path / "metrics.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=old_fields)
+        writer.writeheader()
+        for step in (5, 10, 15):
+            writer.writerow({"step": step, "ce": "3.0", "arena_peak_mib": "4400"})
+
+    MetricsLogger(str(path), start_opt_step=15)
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert "arena_limit_mib" in reader.fieldnames
+    assert [r["step"] for r in rows] == ["5", "10"]
+    assert rows[0]["arena_peak_mib"] == "4400" and rows[0]["arena_limit_mib"] == ""
+
+
+def test_per_block_readings_go_to_blocks_csv_one_row_per_state(tmp_path):
+    """#392: a plain model's per-block readings land beside metrics.csv; an arch that
+    reports none writes no file at all (absent, never zero)."""
+    logger = MetricsLogger(str(tmp_path / "metrics.csv"))
+    diag = {"act_max_blocks": jnp.array([1.5, 20.0, 45.0]), "act_rms_blocks": jnp.array([0.02, 0.9, 1.4])}
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
+    logger.log(15, 3.1, 3.2, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
+    with open(tmp_path / "blocks.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [(r["step"], r["block"]) for r in rows[:3]] == [("10", "0"), ("10", "1"), ("10", "2")]
+    assert rows[2]["act_max"] == "45.00" and len(rows) == 6
+
+    MetricsLogger(str(tmp_path / "metrics.csv"), start_opt_step=15)
+    with open(tmp_path / "blocks.csv", newline="") as f:
+        assert {r["step"] for r in csv.DictReader(f)} == {"10"}, "a resume trims replayed steps"
+
+    other = tmp_path / "other"
+    other.mkdir()
+    MetricsLogger(str(other / "metrics.csv")).log(10, 3.2, 3.3, SimpleNamespace(diag={}), 0.1,
+                                                   seg1_ce=3.0, depth_avg=1.0)
+    assert not (other / "blocks.csv").exists()

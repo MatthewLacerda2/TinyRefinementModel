@@ -2,7 +2,8 @@ from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
 
 
 class LossMonitor:
-    """Tracks the held-out best for checkpointing and detects plateaus for phase changes."""
+    """Tracks the held-out best for checkpointing and detects CE plateaus. A plateau is
+    reported, never acted on: the in-run SFT flip it used to trigger was removed (#323)."""
 
     def __init__(self, patience=PLATEAU_PATIENCE, window=4, min_delta=PLATEAU_MIN_DELTA):
         # The plateau bar is config's (#318): these defaults used to be literals,
@@ -20,24 +21,10 @@ class LossMonitor:
         self.best_val_ce = float("inf")
         self.last_improvement_step = 0
         self._plateaued = False
-        # Step at which the SFT phase began; None while still pretraining.
-        self.sft_start_step = None
         # Samples the data pipeline has served (#24). Restored from the
         # checkpoint rather than re-derived from the step count, so a resume
         # seeks correctly even if BATCH_SIZE changed between runs.
         self.samples_seen = 0
-
-    def reset_for_new_phase(self, step):
-        """Forget the previous phase's plateau state so the new phase gets a
-        fresh patience window and fresh bests. The attribute set must stay
-        stable — checkpoint_utils serializes these fields by name."""
-        self.ce_history = []
-        self.best_ce = float("inf")
-        self.best_loss = float("inf")
-        self.best_avg_ce = float("inf")
-        self.best_val_ce = float("inf")
-        self.last_improvement_step = step
-        self._plateaued = False
 
     def push(self, step, ce_loss, total_loss):
         """Record one logging-window observation of TRAIN CE: the raw bests only.

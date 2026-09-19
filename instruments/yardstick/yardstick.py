@@ -54,6 +54,18 @@ GPT2_SMALL_REFERENCE = {
     "source": "calibrated in-repo on HF gpt2 (124M), 2026-07-04; exact match to lm-eval-harness lambada_openai",
 }
 
+# The bar a base run is measured against since 2026-09-19 (#387): a modern model our
+# size. SmolLM2-135M (HuggingFaceTB, ~2T tokens, WSD) scored by THIS instrument through
+# instruments.yardstick.score_hf with its own tokenizer, full 5,153-example set, f32 on
+# the RTX 2060. The same run of score_hf reproduces GPT2_SMALL_REFERENCE exactly (acc
+# 0.3256 / ppl 40.06), which is what licenses the cross-tokenizer reading. GPT-2-small
+# stays only as that calibration.
+SMOLLM2_135M_REFERENCE = {
+    "lambada_acc": 0.4289,
+    "lambada_ppl": 19.26,
+    "source": "scored in-repo on HuggingFaceTB/SmolLM2-135M (base) via score_hf, 2026-09-19",
+}
+
 
 def fetch_lambada(path=LAMBADA_CACHE):
     """Download-and-cache the pinned LAMBADA test set; verify sha256 either way."""

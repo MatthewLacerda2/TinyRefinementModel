@@ -1,13 +1,16 @@
 [project]
 name = "tiny-refinement-model"
 version = "0.1.0"
-description = "Universal Reasoner — a tiny latent-reasoning language model written from scratch in JAX/Flax NNX"
+description = "Tiny Refinement Model — a small language model written from scratch in JAX/Flax NNX"
 requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+markers = [
+    "jaxfree: needs neither jax, numpy nor tests/conftest.py; CI runs it in the lint job (#325)",
+]
 
 [tool.ruff]
 line-length = 120
@@ -32,4 +35,6 @@ ignore_names = [
     "REPORTS", "ENV_DIVERGENCES", "CONFIG_DIVERGENCES",
     # Hooks pytest calls by name.
     "pytest_*",
+    # The module-level mark variable pytest reads by name.
+    "pytestmark",
 ]

@@ -28,17 +28,21 @@ Usage:
 
 import os
 import sys
-import csv
 import json
+import math
 import shutil
 import hashlib
 import argparse
 import subprocess
 
+from instruments import runlog
+from trm.runtime.layout import LOG_REAL_STEPS  # standard library only
+from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # reconstructs a run's world; prints paths and provenance, no quantities
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = str(_REPO_ROOT)
 TM_ROOT = os.path.join(REPO_ROOT, ".timemachine")
 RUNS_ROOT = os.path.join(REPO_ROOT, "runs")
 
@@ -50,11 +54,12 @@ def run_dir(run_id):
 
 
 def load_meta(run_id):
-    path = os.path.join(run_dir(run_id), "run_metadata.json")
-    if not os.path.exists(path):
-        raise SystemExit(f"No run_metadata.json for {run_id} (looked in {path}).")
-    with open(path) as f:
-        return json.load(f)
+    """The run's metadata; a revival cannot proceed without it, so none is a SystemExit."""
+    meta = runlog.read_metadata(run_dir(run_id))
+    if not meta:
+        path = os.path.join(run_dir(run_id), runlog.METADATA_FILENAME)
+        raise SystemExit(f"No readable run_metadata.json for {run_id} (looked in {path}).")
+    return meta
 
 
 def resolve_arch(run_id, meta):
@@ -208,35 +213,84 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
 
 # --- closing the loop: reproduce the metric (#44 DoD) ------------------------
 
-def recorded_val_ce(run_id, step=None):
-    """The run's own held-out val CE (metrics.csv) — the number a faithful revival
-    must reproduce. Held-out CE is what the #17 noise floor is stated in (2σ = 0.06
-    nats), so it is the natural apples-to-apples target.
+def recorded_val_ces(run_id):
+    """{opt step: val CE} the run logged, finite readings only, parsed once through
+    runlog (replayed and torn rows dropped). {} when the run has no metrics.csv."""
+    try:
+        log = runlog.load(run_dir(run_id))
+    except FileNotFoundError:
+        return {}
+    # At the probe's own step when the run recorded it (#351), else the logged row's.
+    return {s: v for s, v in zip(*log.val_readings()) if math.isfinite(v)}
 
-    The yardstick scores whatever checkpoint is on disk, whose step need not be the
-    last *logged* row (val cadence and checkpoint cadence can differ). Pass `step`
-    (from the yardstick's reported checkpoint step) to compare like-for-like; we fall
-    back to the last logged CE only when no row matches."""
-    path = os.path.join(run_dir(run_id), "metrics.csv")
-    if not os.path.exists(path):
-        return None
-    last = matched = None
-    with open(path) as f:
-        for row in csv.DictReader(f):
-            v = row.get("val_ce", "")
-            if v in ("", "nan", None):
-                continue
-            try:
-                last = float(v)
-            except ValueError:
-                continue
-            if step is not None:
-                try:
-                    if int(float(row.get("step", "nan"))) == int(step):
-                        matched = last
-                except ValueError:
-                    pass
-    return matched if matched is not None else last
+
+def checkpoint_opt_step(checkpoint_step, accumulation_steps):
+    """The opt step of an orbax checkpoint. Orbax names a checkpoint by MICRO-step and the
+    trainer resumes at n+1, so opt step = (n + 1) // ACCUMULATION_STEPS, exactly as
+    trm/runtime/rewind.py computes it: run_287's opt step 184 is checkpoint 23551."""
+    return (int(checkpoint_step) + 1) // int(accumulation_steps)
+
+
+def val_ce_for_checkpoint(val_ces, checkpoint_step, accumulation_steps, val_every, log_every=LOG_REAL_STEPS):
+    """(val CE or None, how it was found) for the checkpoint the yardstick scored.
+
+    The run's own held-out val CE is the number a faithful revival must reproduce; it
+    is what the #17 noise floor is stated in (2σ = 0.06 nats). Two offsets stand
+    between a checkpoint and its row in metrics.csv:
+
+    * orbax names the checkpoint by MICRO-step and metrics.csv by opt step (#348), so
+      the checkpoint is converted with the run's RECORDED accumulation, never today's;
+    * the trainer does not write a probe's val CE on the probe's own opt step. It holds
+      the latest probe's value and writes it on the next logging row, every
+      LOG_REAL_STEPS opt steps (#351), so a row holds the LAST probe in (row - 5, row].
+
+    That row is the checkpoint's own probe only when both hold, and both are checked:
+    the checkpoint's opt step N is a probe step (N % VAL_EVERY_OPT_STEPS == 0, from the
+    run's recorded value), and probes are at least LOG_REAL_STEPS apart, so no later
+    probe can overwrite N's value before the row is written. Then the value is on the
+    first val row in [N, N + LOG_REAL_STEPS). On run_287 (probes every 8): checkpoint
+    23551 is opt 184, whose value is on row 185, not the earlier probe's row 180.
+
+    Anything else returns None with the reason: a missing recording, a checkpoint that
+    is not a probe step, probes too close to tell apart (the fit gate probes every
+    step), or no row in the window. LOG_REAL_STEPS is not recorded per run (#351); this
+    uses today's value from trm/runtime/layout.py, which every run so far has used."""
+    if not val_ces:
+        return None, "no val CE in metrics.csv"
+    if not accumulation_steps:
+        return None, (f"run_metadata.json records no ACCUMULATION_STEPS, so checkpoint "
+                      f"{checkpoint_step} cannot be placed on the opt-step axis metrics.csv uses")
+    if not val_every:
+        return None, ("run_metadata.json records no VAL_EVERY_OPT_STEPS, so no val row can be "
+                      "tied to one probe")
+    val_every = int(val_every)
+    opt_step = checkpoint_opt_step(checkpoint_step, accumulation_steps)
+    if opt_step % val_every:
+        return None, (f"checkpoint {checkpoint_step} is opt step {opt_step}, which is not a probe step "
+                      f"(the run probed every {val_every}), so no val CE was measured on these weights")
+    if val_every < log_every:
+        return None, (f"the run probed every {val_every} opt steps, closer than its {log_every}-step "
+                      f"logging, so each row holds only the last of several probes and cannot be "
+                      f"tied to opt step {opt_step}")
+    window = range(opt_step, opt_step + log_every)
+    rows = sorted(s for s in val_ces if s in window)
+    if not rows:
+        return None, (f"checkpoint {checkpoint_step} is opt step {opt_step}, and no val row lies in "
+                      f"[{window.start}, {window.stop}), where its probe's value would be logged")
+    return val_ces[rows[0]], (f"checkpoint {checkpoint_step} is opt step {opt_step}; its probe's value "
+                              f"is logged on row {rows[0]}")
+
+
+def reproduction_verdict(expected, measured, tolerance):
+    """(exit code, verdict text) for a revival. 0: reproduced within the noise floor.
+    1: drifted beyond it. 2: nothing honest to compare against, so it cannot be
+    verified — never 0, or an un-checkable run would read as reproduced."""
+    if expected is None:
+        return 2, "NO recorded metric to compare against — cannot verify (measured value logged above)."
+    delta = abs(measured - expected)
+    if delta <= tolerance:
+        return 0, f"|measured - recorded| {delta:.4f} ≤ {tolerance}: ✅ REPRODUCED (within noise floor)"
+    return 1, f"|measured - recorded| {delta:.4f} > {tolerance}: ❌ DRIFTED — reconstruction is not faithful"
 
 
 def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
@@ -268,7 +322,9 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
             f"path and the historical tools/ path) — that run predates the yardstick "
             f"(#48); the metric loop can't be closed for it.")
 
-    expect = recorded_val_ce(run_id)
+    val_ces = recorded_val_ces(run_id)  # read once; matched below to the step actually scored
+    params = runlog.recorded_params(runlog.read_metadata(run_dir(run_id)))
+    accumulation, val_every = params.get("ACCUMULATION_STEPS"), params.get("VAL_EVERY_OPT_STEPS")
     out_json = os.path.join(TM_ROOT, "eval", f"{run_id}.json")
     os.makedirs(os.path.dirname(out_json), exist_ok=True)
 
@@ -277,14 +333,14 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
     if limit:
         cmd += ["--limit", str(limit)]
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = wt
-    env["MODEL_ARCH"] = arch
-    if cpu:  # CPU XLA can't lower the f16 matmuls; note the fidelity caveat below.
-        env["FORCE_F32_COMPUTE"] = "1"
+    # The revived worktree's code, not this checkout's. CPU XLA can't lower the f16
+    # matmuls, hence FORCE_F32_COMPUTE; note the fidelity caveat below.
+    env = module_env(wt, MODEL_ARCH=arch, **({"FORCE_F32_COMPUTE": "1"} if cpu else {}))
 
     print(f"\nClosing the metric loop for {run_id}:")
-    print(f"  recorded held-out val CE : {expect if expect is not None else '(none in metrics.csv)'}")
+    print(f"  recorded val CE rows     : {len(val_ces)}"
+          + (f" (opt steps {min(val_ces)}..{max(val_ces)}); matched to the scored checkpoint below"
+             if val_ces else " — none in metrics.csv"))
     print(f"  tolerance (2σ, #17)      : ±{tolerance}")
     print(f"  eval command             : (cwd {os.path.relpath(wt, REPO_ROOT)}) "
           + " ".join(os.path.relpath(c, REPO_ROOT) if c.startswith(REPO_ROOT) else c for c in cmd))
@@ -303,23 +359,20 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
         raise SystemExit("Yardstick produced no held-out val CE (DATA_ROOT unset?) "
                          "— cannot compare. See the JSON at " + out_json)
 
-    # Compare against the CE logged for the exact checkpoint step the yardstick scored.
+    # Compare against the CE logged for the checkpoint the yardstick scored.
     step = (row.get("checkpoint") or {}).get("step")
-    expect = recorded_val_ce(run_id, step=step) if step is not None else expect
+    if step is None:
+        expect, chosen = None, "the yardstick reported no checkpoint step"
+    else:
+        expect, chosen = val_ce_for_checkpoint(val_ces, step, accumulation, val_every)
 
     print(f"\n  measured held-out val CE : {measured:.4f}")
-    if expect is None:
-        # A DoD gate that can't find the recorded metric must not exit success —
-        # otherwise an un-checkable run reads as "reproduced". Distinct code 2.
-        print("  verdict: NO recorded metric to compare against — cannot verify "
-              "(measured value logged above).")
-        raise SystemExit(2)
-    delta = abs(measured - expect)
-    ok = delta <= tolerance
-    print(f"  |measured - recorded|    : {delta:.4f}  "
-          f"({'≤' if ok else '>'} {tolerance})")
-    print(f"  VERDICT: {'✅ REPRODUCED (within noise floor)' if ok else '❌ DRIFTED — reconstruction is not faithful'}")
-    return ok
+    print(f"  recorded held-out val CE : {'—' if expect is None else f'{expect:.4f}'}  ({chosen})")
+    # Only a value tied to this checkpoint's own probe reaches the comparison, so
+    # REPRODUCED (exit 0) is never read off another probe's number.
+    code, verdict = reproduction_verdict(expect, measured, tolerance)
+    print(f"  VERDICT: {verdict}")
+    return code
 
 
 # --- forking a lineage -------------------------------------------------------
@@ -434,10 +487,10 @@ def main():
         fork(args.run_id, args.new_name, build_venv=not args.no_venv,
              arch_override=args.arch)
     elif args.cmd == "eval":
-        ok = evaluate(args.run_id, arch_override=args.arch, build_venv=not args.no_venv,
-                      limit=args.limit, tolerance=args.tolerance, cpu=args.cpu,
-                      dry_run=args.dry_run)
-        sys.exit(0 if ok or ok is None else 1)
+        code = evaluate(args.run_id, arch_override=args.arch, build_venv=not args.no_venv,
+                        limit=args.limit, tolerance=args.tolerance, cpu=args.cpu,
+                        dry_run=args.dry_run)
+        sys.exit(0 if code is None else code)  # None: --dry-run, nothing was judged
 
 
 if __name__ == "__main__":

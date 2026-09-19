@@ -7,6 +7,7 @@ from flax import nnx
 import orbax.checkpoint as ocp
 from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
+from trm.runtime.rewind import refuse_sft_phase_resume
 
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):
@@ -131,7 +132,7 @@ def wait_for_pending_saves():
         _PENDING.pop().wait_until_finished()
 
 
-def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, wait=True):
+def save_checkpoint(mngr, step, model, optimizer, monitor, run_id, wait=True):
     """Persist the full training state (model + optimizer + monitor + step) under
     `mngr` at `step`. Shared by every manager — they use one save schema.
 
@@ -166,9 +167,7 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, sft_active, run_id, w
                 "best_avg_ce": monitor.best_avg_ce,
                 "best_val_ce": monitor.best_val_ce,
                 "last_improvement_step": monitor.last_improvement_step,
-                "sft_active": sft_active,
-                "sft_start_step": monitor.sft_start_step,
-                "run_id": run_id,  # Save run_id inside checkpoint metadata
+                "run_id": run_id,
                 # Samples actually consumed, counted as they were served rather
                 # than re-derived (#24). Resume rebuilds the data position from
                 # this; computing it as step x BATCH_SIZE would mis-seek exactly
@@ -241,6 +240,9 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
 
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
+        # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
+        # don't. Absent reads as pretraining, and an SFT-phase one is refused.
+        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path)
         monitor.ce_history = m_state.get("ce_history", [])
         monitor.best_ce = m_state.get("best_ce", float("inf"))
         monitor.best_loss = m_state.get("best_loss", float("inf"))
@@ -248,7 +250,6 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         # Absent before #222: the first val probe after resume sets a new best.
         monitor.best_val_ce = m_state.get("best_val_ce", float("inf"))
         monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
-        monitor.sft_start_step = m_state.get("sft_start_step", None)
         # Checkpoints written before #24 have no samples_seen; every one of them
         # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
         # value, not a guess.

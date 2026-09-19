@@ -1,0 +1,89 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "386-wsd"
+status = "open"
+title = "Warmup-stable-decay vs the cosine: held-out CE at the end of the anneal, same tokens"
+hypothesis = """
+The owner's stop rule for the next base run (val CE < 3.6 or 10 days, whichever first)
+needs a schedule that can stop well at any point, which the cosine cannot: it anneals
+only at the budget it was given before step 1. Warmup-stable-decay holds the peak and
+decays only over the last 20% (SmolLM2's recipe), so a decay can be branched from any
+checkpoint. The condition for using it is that it costs nothing where both can be
+compared: at the same tokens, WSD with its final decay ends at a held-out CE no worse
+than the cosine's.
+
+Prediction registered: parity (the literature, MiniCPM and SmolLM2, finds WSD matches or
+slightly beats cosine at equal tokens). My last four predictions on this line were too
+timid; if this one is wrong I would expect WSD a little ahead, not behind.
+"""
+issue = 386
+
+[protocol]
+floor_note = """
+Both arms train the same 512 opt steps (67.1M tokens) and both anneal to peak/100, so
+the comparison is at the end of each schedule's anneal. The floor is the seeds' own
+spread at the cap (the #382 Muon arms read 4.195 / 4.200 / 4.195, sigma ~0.003).
+"""
+metric_key = "final_val_ce"
+metric = "held-out val CE at the 512-step cap, the end of both anneals (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only LR_SCHEDULE differs"
+notes = """
+Why CE at the cap and not tokens-to-target, which every other recipe pair reads:
+WSD trades mid-run CE (it holds the peak, so it sits higher until its decay) for the CE
+at the end of its decay. Tokens-to-target at any target reached mid-run would punish it
+for the one thing it is built to do. In the base run a WSD model is read at the end of a
+branched decay, so the end of the anneal is the quantity that transfers.
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad 50256
+in both arms (#373 is judged separately). Both arms are new runs.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4", "--tag", "386"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.cosine]
+role = "control"
+flags = ["--lr-schedule", "cosine"]
+
+[arms.wsd]
+role = "treatment"
+flags = ["--lr-schedule", "wsd"]
+
+# CE: LOWER is better, so WSD worse is the treatment's number being larger.
+[criteria.wsd_ends_worse]
+rule = "beats"
+treatment = "wsd"
+control = "cosine"
+sigmas = 2.0
+min_delta = 0.02
+points = ["run"]
+require = "all"
+
+[criteria.wsd_ends_no_worse]
+rule = "within"
+treatment = "wsd"
+control = "cosine"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["wsd_ends_no_worse"]
+kill_if = ["wsd_ends_worse"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: anything but KILL adopts WSD for
+the base run (a WSD lead beyond 2 sigma reads INCONCLUSIVE under a parity criterion, and
+is still adoption). KILL (WSD ends >= 2 sigma and >= 0.02 nats worse) keeps the cosine,
+and the base run's budget must then be fixed before step 1.
+Readouts, no weight: tokens to 5.85 (WSD should be at least as fast early, holding the
+peak longer); the whole val curve of each arm; clip rate and the f16 margins (a longer
+time at the peak LR is where they would move).
+"""

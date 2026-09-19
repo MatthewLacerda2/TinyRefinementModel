@@ -1,162 +1,65 @@
-# Optimization & Scaling Roadmap — Plan A rebuild
+# Roadmap — from a finished plain base run onward
 
-Status: the original run (run_20260611_234058) was stopped at ~3k opt steps after
-the depth curve showed the cross-window hunch inert
-(docs/findings/2026-06-13-cross-window-hunch-inert.md). The architecture is being
-rebuilt around Plan A — causal within-window depth recurrence. Sort rule:
-dependency is the hard constraint (do X before Y when Y needs X, for code or
-validation reasons); then within what's unblocked, lead with what can be done
-CONFIDENTLY — small, well-understood, low-risk changes with nothing to "find
-out" — before the big uncertain piece. Bank the certain wins, save the
-worry-budget for the part that actually needs validating (Plan A).
-
-Goal: prove depth-recurrence earns its compute, THEN spend freed VRAM on scale —
-in that order. Scaling an unproven design is the mistake the stopped run avoided.
-The freed VRAM doesn't expire; it's the reward for proof, not bait before it.
+Status (2026-09-19): depth recurrence is retired
+(`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`) and the live
+model is the **plain transformer** (`MODEL_ARCH=plain`, 9 × 960, ~148M). The recipe it
+trains with was measured this month by real-model matched pairs: AdamW's peak LR moved
+from 1e-4 to 6e-4, and **Muon** beat even that by 1.32x in tokens with 380 MiB less memory
+(`docs/findings/2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md` and the chain it
+links). What this project has never had is a **plain base model trained to completion** —
+the thing every later change is compared against. That run is the next milestone, and
+everything below is ordered around it.
 
 ## How this is tracked
 
-This doc is the **narrative + sequencing rationale** (the why, the order, the proof
-gate). Per-item *state* lives in **GitHub issues** (backed up, history, closeable by
-commits) labelled by lane so parallelism is explicit:
-- **`gpu`** — needs the single RTX 2060; a serial queue, one run at a time. Ablations
-  and smokes are minutes and slot around the big run.
-- **`cpu`** — code, tests, tooling, docs; runs in parallel to any GPU run.
-- **`blocked`** — has an unmet dependency, stated as "Blocked by #N" in the issue body.
+This doc is the **narrative and the order** — the why, the stages, the gates. Per-item
+state lives in **GitHub issues**; the rules that rank them (type tiers, unblockers first,
+the idle card goes to `gpu` items, the base-run gate) live in `CLAUDE.md`, and
+`python -m instruments.queue` computes the ranking. The order of work, per the owner:
+first the repository (readable, lean, guarded by automation, rules that leave Claude no
+ambiguity), then the tools (to code, research, investigate, and log), then the model.
 
-The binding constraint is the one GPU, so "parallel" means **one GPU lane + one CPU
-lane**, not N-wide fan-out. Issue refs are noted per phase below; `gh issue list
---label roadmap` is the live board.
+## Stage 1 — before the base run (the `base-gate` label)
 
-## Phase 0 — the rebuild itself (code/design, can proceed now; no proof gate)
-Done at CURRENT or SMALLER size for fast iteration. None of these are scaling —
-they're the architecture + efficiency baseline we then prove Plan A on. Ordered
-by confidence/ease within the phase: certain small wins first, the experiment last.
+Everything that can be judged now **and only pays if the run has it** lands first
+(`CLAUDE.md`, "Before a base run launches"). `gh issue list --label base-gate` is the
+checklist; it has to be empty, or its leftovers waived by the owner by name. Grouped:
 
-- **known-flaw fixes (do first — small, certain, independent)**: rolling-latest
-  checkpoint (ends the save-on-best-only flaw); validation-probe cadence (fires
-  every 320 not the configured 64 because it sits inside the every-5-steps
-  logging block). Tiny, well-understood, nothing to find out — land them now.
-- **bf16 optimizer-state storage (contained, low-risk)** — #18 (cpu): moments stored
-  bf16, upcast to f32 for the Adam math (~300MB freed). Turing-safe — storage only,
-  tensor cores never see bf16, f16 compute policy untouched. One unknown: optax
-  state-dtype handling.
-- **chunked cross-entropy (contained, known technique)** — #19 (cpu): prerequisite for
-  Phase 2 batching, and frees the seq×vocab logit/softmax activation peak. Do it
-  in the rebuild regardless.
-- **Plan A architecture (the experiment — biggest, uncertain, must-validate)** — DONE,
-  integrated behind `MODEL_ARCH=refiner` (adapter: `trm/model/refiner_lm.py`, whose docstring
-  carries the design; the integration report lives in its PR):
-  loop a shared block causally over the current positions — refine each
-  position's representation N times under a causal mask, decode from the refined
-  state. No learned halting (ACT collapses at small scale). Keep random-depth
-  sampling. **Design doc before any code.** This is the part the worry-budget is
-  reserved for; everything above is landed and stable before we touch it.
+- **Correctness of what the model learns.** Model and trainer bugs whose fix changes the
+  weights — the document separator masked as pad is the big one.
+- **Telemetry.** Every quantity the run should log: per-block activations and residual
+  scale, per-source gradient norms, the f16 margins, the optimizer's own knobs. A log
+  the run did not write cannot be recovered from its checkpoints.
+- **Speed and memory.** Every training-path optimization: freed memory decides the
+  shape (a layer, batch 2, a longer window), speed decides how many tokens the run's
+  days buy.
+- **The recipe.** Adopt the measured recipe as the default; decide the shape (8 layers +
+  batch 2, 9 layers, a 1024 window); decide how the run anneals and stops (WSD, to the
+  owner's rule: val CE < 3.6 or 10 days, whichever first); and check that the winning
+  recipe still wins on the mixture the long run actually ends on (65% code and math),
+  since every recipe pair so far trained on the start of the ramp.
+- **Surviving the week.** The run comes back by itself after a power cut; milestones
+  do not fill the disk.
 
-## Phase 0b — r50k tokenizer — BLOCKED on prefill (user is holding prefill) — #21
-- **r50k_base (~50k, off-the-shelf)**: halves the embedding (51.4M → 25.7M
-  params) — the single biggest VRAM lever. But it requires re-tokenizing ALL
-  prefill data, and prefill is frozen pending the user's plans/questions.
-  Cannot proceed until the user unblocks prefill — and the from-scratch training
-  run is gated on this, since the run needs the re-tokenized data. (Phase 0 code
-  work does not need it.) Custom 32k deferred as a later squeeze.
+Measured on the card as matched pairs, each run under 24h and as many as a question
+needs (the standing permission). The reference model is **SmolLM2-135M** on LAMBADA;
+GPT-2-small's published number only calibrates the yardstick.
 
-## Phase 1 — PROOF GATE (passed; #16 closed) — #16
-- Does looping the causal block N times beat N=1? **Choose the metric with
-  care.** Recurrent-depth / latent-reasoning wins are documented on reasoning
-  and compositional tasks, NOT on raw web-text perplexity — so a flat fineweb CE
-  curve would not by itself mean Plan A failed. Pick a yardstick where multi-step
-  inference actually matters before declaring proof or failure.
-- The verdict is only readable against a known noise floor — #17 (seed-variance)
-  establishes what "no effect" looks like before we trust small CE deltas.
+## Stage 2 — the base run
 
-## Architecture bet — the latent scratchpad (the next "what does depth carry?")
-Plan A asks whether looping depth helps *at all*. This asks the harder follow-on:
-*what should the loop carry?* It is the redesign of the dead slots, built on the
-one lesson the inert hunch taught.
+Launched through `make launch` against `experiments/base/specs/001-plain-base.toml`, once
+the spec names the recipe Stage 1 chose. The owner authorizes it; nothing else about it
+waits on a person. The CPU lane stays busy meanwhile with whatever does not gate it.
 
-**The bypass principle (the lesson from the inert hunch).** Anything the model
-can route around, it will. The v1 slots died of exactly this — a side memory the
-within-window attention never *needed*, so the gradient starved it (forget gate
-collapsed by ~step 750; the documented Recurrent-Memory-Transformer failure
-mode). The fix is NOT to *incentivize* using the memory: a soft bonus on the main
-loss is optional, and the optimizer takes the easier within-window basin every
-time (the gate was rejected twice). A latent memory survives only when it is
-**non-bypassable**, and there are exactly two ways to make it so:
-1. **Architecture** — it is the *only* route to the answer; the prediction cannot
-   be computed without reading it.
-2. **A dedicated supervised target** — the slot is graded on its own loss term,
-   one that cannot be minimized unless the slot carries the right content. A
-   grade, not a bonus — the distinction the hunch blurred and died on.
+## Stage 3 — after the champion
 
-**Core hypothesis — supervised serial latent scratchpad** — #38. Reasoning
-unrolls as a *serial* latent chain: step k's committed state is the *input* to
-step k+1 (feed-the-state-forward, à la Coconut — which proves latent reasoning
-trains at all). The novel turn is **structured decomposition**: not one
-continuous thought but a small ordered set of sub-slots, each written once and
-supervised to carry sub-result k — the latent analogue of "split the question
-into three answers and solve each in turn." Seriality gives the chain an order;
-the per-slot supervised target makes each link non-bypassable (principle #2);
-writing only from earlier steps makes it causal by construction (no future leak —
-the v1 leak that had to be amputated).
+A finished plain model gets a model card and becomes the champion; from then on an idea
+is a short pair against its recipe, or a warm-start from its weights, never another base
+run. First: tombstone the depth line and its apparatus (the refiner and reasoner stay
+selectable only until then); extend the context (train short, then a brief phase at a
+longer window); then the work that needs a capable base — inference speed, SFT, RL.
 
-- **Proof gate (its own, independent of Plan A's).** A decompose-able toy task
-  whose answer genuinely needs N sequential sub-results (e.g. chained modular
-  arithmetic), against two controls: a **parallel-slot** arm (same slots, read
-  all at once, no induced order) and a **depth-only** arm (Plan A recurrence, no
-  scratchpad). Win = the serial supervised scratchpad beats *both*. **Kill-
-  criterion up front:** the write path collapses like the forget gate did, OR no
-  gap versus the parallel-slot control. Runs on the tiny ablation harness
-  (minutes), so it is a cpu-lane bet, not a real-model run.
-- **Parked refinements — gated behind the proof; adding them now confounds it:**
-  - *Convergence halting* — stop refining when the state stops moving (cosine
-    of step k vs k-1 above a threshold). This is the Deep-Equilibrium /
-    fixed-point family and the 2025 recurrent-depth line (Geiping et al.), NOT
-    learned per-token halting (ACT, which is killed below). Not novel as a
-    mechanism; worth it for adaptive compute (fewer steps on easy tokens).
-    **Dead on the write-once scratchpad in both spaces** — raw latents (PR #96)
-    and grade logits (#39, closed negative-result); see the Graveyard for the
-    numbers. The surviving home is the refiner's depth loop, where the state
-    genuinely iterates — that is #140.
-  - *Slot dimensionality / "vagueness"* — a wide continuous slot can hold a soft,
-    under-specified idea (superposition) where a token must commit; the state
-    starts vague and sharpens toward commitment — which is what convergence
-    halting detects. But dimensionality buys *capacity*, not *commitment*: it does
-    not fix bypassability and is no substitute for the supervised target. A knob
-    to sweep once the core works, not a fix on its own.
-
-## Phase 2 — scaling, AFTER proof, one knob at a time (spend the freed VRAM here)
-Bang-for-buck order; do singly so each gain is attributable.
-
-- **model core size** (biggest bang) — #22: bigger models are more sample-efficient
-  per token. Expect LR/warmup/batch re-tuning; the golden run resets.
-- **context window** (expensive) — #23: attention is O(n²) in BOTH compute and
-  activation — 512→1024 ~quadruples attention cost. Do alone, after model size,
-  only if headroom and the task want it.
-- **real batching** (BATCH_SIZE=2, ACCUMULATION=64) — #24: pipeline project, not a
-  config flip — each lane is a persistent document stream needing parallel
-  loaders + per-lane checkpoint/resume. Needs chunked CE (#19) + freed
-  headroom first. Regenerate the golden-run test (data order changes). The
-  batch-size-schedule curriculum folds in here; the seq-len-schedule curriculum
-  folds into the context-window step (#23).
-
-## Phase 2 — efficiency & recipe levers (post-proof, from the #10 triage)
-Optimizer/training-recipe improvements. They are NOT architecture, so introducing
-them mid-proof would have **confounded it** — that is why they were gated behind
-#16. **#16 is closed, so the gate has lifted and these are pickable.** Apply any of
-them to both arms. Ordered certain-small-first:
-- **cautious weight decay** — #25: near-free update mask (sign-agreement); on top of
-  the masked AdamW we already run. Cheapest, try first.
-- **Muon optimizer** — #26: orthogonalized-momentum updates for 2D matrices; strong
-  recent sample-efficiency/wall-clock wins — the lever a single-GPU run wants most.
-  The old "Newton-Schulz likely needs f32" caveat is **resolved**: optax's `mu_dtype`
-  is storage-only (bf16 momentum promotes against our f32 grads, NS runs in f32, the
-  cast back is for storage) — the same trick `optimizers.py` already runs for Adam's
-  first moment. The live hazard is instead the **partition**: optax routes params by
-  `ndim == 2`, which sends our tied `nnx.Embed` table to Muon, and a wrong partition
-  trains happily and silently. Plan, criteria, and sources live on #26.
-
-## Beyond proof + scale — far future
+## Far future
 - **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
   out of sequence — you RL on a base that already has capability to elicit; revisit
   only after pretraining + scaling produce a base worth aligning.
@@ -177,6 +80,13 @@ Killed ideas and closed post-mortems, with reasons, so they stay dead. New
 tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
+
+- **SFT-on-plateau flip** — removed 2026-09-16 (#323), non-novel. The one time it
+  fired, at opt step 5,055 of #157's 30,518, it killed that launch (CE 3.31 → 8.57,
+  then the optimizer rebuild OOM'd); #157 was rewound past it and continued. The product is a base model; a fine-tune warm-starts
+  from a stored champion in its own run. The plateau detector stays, as a report.
+  Apparatus `instruments/sft_switch_smoke.py` and `tests/core/test_sft_autoflip_guard.py`
+  removed with it, and the supervisor's plateau kill that guarded it.
 
 - **Depth recurrence as the live architecture bet** — KILLED 2026-09-12. It works
   on sequential composition (`plan-a-depth-recurrence-works`, unretracted) and is

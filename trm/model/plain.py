@@ -1,13 +1,9 @@
 """A plain causal transformer — the architecture after depth recurrence was retired.
 
-Plan A looped ONE shared block K times. That mechanism works on sequential
-composition ([[plan-a-depth-recurrence-works]]) and is actively suppressed on
-language: the trained gate routes to 6 of 960 channels on prose, the second refine
-pass costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the activation scale
-does not recover it. Full record in
+Plan A looped ONE shared block K times; why that was retired is
 `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
 
-So this is the same stack with the loop unrolled into distinct layers, and with the
+This is the same stack with the loop unrolled into distinct layers, and with the
 machinery that only existed to serve the loop removed:
 
     gone: the shared refine block and its trip count
@@ -63,12 +59,13 @@ class PlainTransformer(LanguageModel):
         ])
         self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, training=False, new_document=True,
-                 logits_at=None):
-        # depth and new_document are contract arguments this architecture does not
-        # use: compute per token is fixed, and no state crosses windows.
-        del depth, new_document
+    def _stream(self, tokens, keep_states=False):
+        """The residual stream through the stack: (final z, act_max per state,
+        residual RMS per state, states).
 
+        One body for both the forward pass and `capture_trajectory`, so what an
+        instrument reads is the computation the model actually runs. `states` is
+        the list [z_0, z_1, ..., z_N] when `keep_states`, else None."""
         # An id outside the table is NOT a local error here: nnx.Embed lowers to
         # jnp.take, whose default mode="fill" returns NaN for an out-of-range index
         # (direct indexing clamps instead, which is why a quick probe suggests
@@ -86,6 +83,7 @@ class PlainTransformer(LanguageModel):
         pad_bias = ((pad_mask.astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
 
         z = self.embed(tokens)
+        states = [z] if keep_states else None
         # Peak |activation| through the stack, carried out on `diag` so it lands in
         # metrics.csv with everything else.
         #
@@ -97,12 +95,40 @@ class PlainTransformer(LanguageModel):
         #
         # One max-reduce per block against a forward pass: unmeasurable. Detached,
         # so it cannot perturb the gradient it is reporting on.
-        act_max = jnp.max(jnp.abs(z.astype(jnp.float32)))
+        #
+        # Kept PER STATE (#392): index 0 is the embedding, index k the stream after
+        # block k, so a hot stream says which block made it hot. Beside the max, the
+        # RMS: max is the f16 overflow risk (one channel is enough), RMS the typical
+        # scale a block's contribution competes against, which is #357's rounding.
+        maxes, rmses = [], []
+
+        def measure(state):
+            state = state.astype(jnp.float32)
+            maxes.append(jnp.max(jnp.abs(state)))
+            rmses.append(jnp.sqrt(jnp.mean(jnp.square(state))))
+
+        measure(z)
         for blk in self.blocks:
             z = blk(z, pad_bias)
-            act_max = jnp.maximum(act_max, jnp.max(jnp.abs(z.astype(jnp.float32))))
+            measure(z)
+            if keep_states:
+                states.append(z)
+        return z, jnp.stack(maxes), jnp.stack(rmses), states
+
+    def __call__(self, tokens, depth=None, training=False, new_document=True,
+                 logits_at=None):
+        # depth and new_document are contract arguments this architecture does not
+        # use: compute per token is fixed, and no state crosses windows.
+        del depth, new_document
+
+        z, act_maxes, act_rmses, _ = self._stream(tokens)
         z = self.out_norm(z)
-        diag = {"act_max": jax.lax.stop_gradient(act_max)}
+        diag = {
+            # The scalar every reader since #235 reads, and the #368 alarm watches.
+            "act_max": jax.lax.stop_gradient(jnp.max(act_maxes)),
+            "act_max_blocks": jax.lax.stop_gradient(act_maxes),
+            "act_rms_blocks": jax.lax.stop_gradient(act_rmses),
+        }
 
         if training:
             # Pre-head states; the loss projects the tied head per chunk (#19) so the
@@ -117,3 +143,16 @@ class PlainTransformer(LanguageModel):
         logits = jnp.matmul(z.astype(self.dtype), embed_t,
                             preferred_element_type=jnp.float32)
         return LMOutput(logits=logits, diag=diag)
+
+    def capture_trajectory(self, tokens, depth=None):
+        """The residual stream after every block, for instruments (#391).
+
+        `[N+1, b, s, dim]` in f32: index 0 is the embedding output, index k the
+        stream after block k, so the last entry is the state the out-norm and the
+        tied head read. Spatial depth where the refiner had recurrent depth, the
+        same object. No gate, so the second value is None; `depth` is ignored as
+        in `__call__`.
+        """
+        del depth
+        *_, states = self._stream(tokens, keep_states=True)
+        return jnp.stack([state.astype(jnp.float32) for state in states]), None

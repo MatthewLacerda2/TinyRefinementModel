@@ -112,6 +112,30 @@ if TRM_OPTIMIZER not in ("adamw", "muon"):
 # knob for the #26 matched pair, not a tuned value.
 MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "50"))
 
+# The optimizer's remaining knobs, named so that none is a library default nobody can
+# read (#358): an optax upgrade that moved one would have changed the recipe silently.
+# Each is what every run so far trained with, so every existing config resolves the same.
+#   ADAM_B2 is the memory of Adam's variance estimate, 1/(1-b2) opt steps: ~1000 at
+#   0.999, ~20 at 0.95 (#359 asks which).
+ADAM_B1 = float(os.environ.get("ADAM_B1", "0.9"))
+ADAM_B2 = float(os.environ.get("ADAM_B2", "0.999"))
+ADAM_EPS = float(os.environ.get("ADAM_EPS", "1e-8"))
+# Decoupled weight decay on the >=2-D params, multiplied by the LR (so coupled to it, #360).
+WEIGHT_DECAY = float(os.environ.get("WEIGHT_DECAY", "1e-2"))
+# The global-norm clip on the accumulation window's MEAN gradient. The trainer logs that
+# norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
+CLIP_NORM = float(os.environ.get("CLIP_NORM", "1.0"))
+# Muon's own (optax.contrib.scale_by_muon): momentum, Newton-Schulz iterations, the
+# normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
+MUON_BETA = float(os.environ.get("MUON_BETA", "0.95"))
+MUON_NS_STEPS = int(os.environ.get("MUON_NS_STEPS", "5"))
+MUON_EPS = float(os.environ.get("MUON_EPS", "1e-8"))
+MUON_NESTEROV = os.environ.get("MUON_NESTEROV", "1") == "1"
+# Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
+# overflows discards a micro-step: ~200 of 65,536 in a 512-step pair. PyTorch's default
+# is 2,000; #368 asks whether ours should move. Named here, value unchanged.
+LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "256"))
+
 # Normalize each residual BRANCH's output before it is added back ("sandwich" /
 # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
 # MLP; nothing bounds what comes out, and on the 4B champion that is measurably a
@@ -214,27 +238,6 @@ ACCUMULATION_STEPS = 128
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
 
-# Whether a CE plateau may flip a pretraining run into the SFT chat phase.
-# OFF, and it should stay off for any run whose product is a base model.
-#
-# This killed the #157 base run at opt step 5,055 of 30,518 (2026-08-15). The
-# detector fired, the trainer switched to the chat mixture and dropped the LR to
-# 10%, CE went 3.31 -> 8.57, and recreating the optimizer OOM'd the card. The
-# plateau itself was REAL — held-out val CE was flat at ~4.06 too — but a run at
-# 16% of its budget with the LR still at 9.9e-5 (the cosine has barely started)
-# has not converged; it is sitting in a basin it cannot leave until the anneal
-# brings the LR down. "Stopped improving" and "finished learning" are different
-# claims, and the detector cannot tell them apart.
-#
-# The supervisor already believed this: it greps the log for the flip and kills
-# the run "to protect the pretrain". One component deliberately triggered a
-# transition the other treated as an emergency — a leftover from when pretrain
-# and SFT were one script. The plateau is still detected and still reported; it
-# just no longer gets to end or contaminate a run. Set SFT_ON_PLATEAU=1 for a
-# run that genuinely wants the chat phase, and the supervisor's kill still
-# applies as a backstop.
-SFT_ON_PLATEAU = os.environ.get("SFT_ON_PLATEAU", "0") == "1"
-
 # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
 # and scores them ONE ROW AT A TIME, deliberately ignoring BATCH_SIZE. Sizing or
 # chunking the eval slice by a training throughput knob would silently redefine
@@ -278,9 +281,18 @@ PLATEAU_PATIENCE = int(os.environ.get("PLATEAU_PATIENCE", "400"))
 # golden run resolve unchanged.
 _TOKEN_BUDGET_ENV = os.environ.get("TRAIN_TOKEN_BUDGET")
 TRAIN_TOKEN_BUDGET = int(float(_TOKEN_BUDGET_ENV)) if _TOKEN_BUDGET_ENV else None
-# Padding reuses the tokenizer's end-of-text id (sequences are eot-separated, so the
-# pad token and the document separator are the same symbol). r50k_base eot = 50256.
-PAD_TOKEN_ID = 50256
+# The document separator prefill writes between documents: r50k_base's end-of-text.
+EOT_TOKEN_ID = 50256
+# The id masked out of attention keys and loss targets. It has always been EOT_TOKEN_ID,
+# and that plumbs the document separator into the pad sink (#373): EOT is never a
+# target (no learned "the document ends here") and never a key (tokens after a boundary
+# attend into the previous document with no marker that one passed). 50257 is the first
+# id past r50k's real vocabulary, inside the padded table and never written by prefill,
+# so as the pad it makes EOT an ordinary token. Env-overridable for the #373 pair,
+# which judges the fix before a base run adopts it; the default is the historical id.
+PAD_TOKEN_ID = int(os.environ.get("PAD_TOKEN_ID", str(EOT_TOKEN_ID)))
+if PAD_TOKEN_ID not in (EOT_TOKEN_ID, 50257):
+    raise SystemExit(f"PAD_TOKEN_ID={PAD_TOKEN_ID}: use {EOT_TOKEN_ID} (historical) or 50257 (#373)")
 
 # Tokenizer — single source of truth. prefill, inference, and the transcript dump
 # all import this name so the encoding can never drift between tokenizing the corpus
@@ -294,8 +306,11 @@ TOKENIZER_NAME = "r50k_base"
 # Seeds — env-overridable per run (#17: the seed-variance noise floor needs
 # same-config runs differing ONLY in seed). Both are recorded in
 # run_metadata.json so every run stays reproducible.
-#   DATA_SEED  — data-pipeline randomness (start-offset augmentation, mixture
-#                draws, per-step depth sampling).
+#   DATA_SEED  — data-pipeline randomness: the start offset into each source
+#                (under 1,025 tokens), the mixture draws, per-step depth sampling.
+#                NOT the document order. Every source is read front to back, so two
+#                seeds see nearly the same documents in the same order, and a pair's
+#                seed spread is init variance, not data variance (#378).
 #   MODEL_SEED — parameter initialization (the nnx.Rngs the trainer builds
 #                the model with).
 DATA_SEED = int(os.environ.get("DATA_SEED", "42"))

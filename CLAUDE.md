@@ -17,6 +17,11 @@ Then tighten it — denser, more compact — but compactness serves readability,
 the finish line. If the clearest version of something isn't the densest, leave it
 clear. Don't end on clever one-liners nobody can debug later.
 
+A comment names the knob and links where the story lives; the story is written once.
+The incident behind a constant belongs in its finding, its PR, or the test that guards
+it — the comment says what the thing is, why this value, and points there. A story
+retold in four files drifts in four directions.
+
 Push back when it's earned:
 - If a feature or addition doesn't move the model's final performance, say so and say
   why it isn't pulling its weight.
@@ -44,7 +49,8 @@ trainer for a few hours per arm-seed. **Run-length tiers for real-model pairs** 
 LR schedule completes in-run, ≥3 seeds, the readout is tokens-to-target, never CE at
 a fixed step): recipe knobs (LR, optimizer, weight decay, mix) ~512 opt steps ≈ 67M
 tokens ≈ 4h per arm-seed; architecture changes ~2,000 opt steps ≈ 260M tokens ≈ 15h
-per arm-seed (owner's call — past 48h with 3 seeds); anything a plain champion can
+per arm-seed (each run under 24h, so Claude's to run — see the standing permission);
+anything a plain champion can
 warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
 means buildable without the card, not preferably measured without it**: the lane
 stays because cloud sessions build tooling while the card trains, but the
@@ -134,6 +140,25 @@ is how the apparatus that produced it gets cleaned up afterwards:
    suite from growing forever: tests aren't retired by judgment calls nobody makes,
    they're retired by the kill they belong to. The finding survives the harness.
 
+**Three rules the build enforces, so nobody has to remember them.** Each has a
+test behind it (or one landing with the issue named); this file keeps only the *why*.
+- **No hidden defaults on the hot path.** Every knob the optimizer or model reads
+  is named in `trm/config.py` and recorded in the run's metadata. Adam's β2 sat at
+  optax's 0.999 for the whole project without appearing anywhere we could read it —
+  a recipe nobody chose, that a library upgrade could change silently (#358).
+- **The dtype policy is about compute, not state.** Matmuls run f16; anything that
+  *accumulates* — the residual stream, the gradient accumulator, an optimizer
+  moment — is f32 unless a line in `config.py` says why not. f16 has 10 mantissa
+  bits: once the residual stream passes ~4k, a block's O(1) contribution rounds to
+  nothing, and the 4B champion sat at 65k with its loss scaler pinned at 1 (#357).
+- **Every schedule declares its horizon** — absolute steps or a fraction of the
+  budget — and the launch banner prints both. The LR cosine scales with the run;
+  the mixture ramp did not, so every 512-step recipe pair trained on ~web-only data
+  while the base run it licensed ended at 65% code and math (#362). Judgment call
+  that stays prose: *a short pair inherits the shape of the run it informs* —
+  warmup is the legitimate exception, since it stabilizes optimizer state, not the
+  recipe.
+
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
 "drunk" (locally fluent, globally lost). That is not "small models can't work"; it's a
@@ -144,12 +169,14 @@ model, the data, or the scale — both July runs stopped at opt step 1540, which
 (`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
 Read the "drunk" behaviour as what 200M tokens buys, and nothing more: no conclusion
 about this architecture was ever licensed by those runs. At ~138M params the right target is *not* "useful /
-gets the prompt" (unreachable at this scale) — it's **match GPT-2-small on a standard
-yardstick** (LAMBADA last-word accuracy, or held-out perplexity in the known range).
+gets the prompt" (unreachable at this scale) — it's **a modern model our size on a standard
+yardstick**: SmolLM2-135M, LAMBADA last-word accuracy 0.4289 / per-word perplexity 19.26,
+measured by our own instrument (`instruments/yardstick/`). GPT-2-small (0.3256 / 40.06)
+stays only as the instrument's calibration: it reproduces lm-eval-harness exactly.
 Until a *vanilla* model trained to completion hits that floor, no architecture ablation
 is interpretable: if the base is mush, you can't tell whether a change helped or just
 stirred the mush. The full base run is therefore also the validity check on the whole
-pipeline — if a plain model on the full budget *can't* reach GPT-2-small, the bug is in
+pipeline — if a plain model on the full budget lands nowhere near that bar, the bug is in
 the data / LR / tokenizer / eval, and that gets fixed before any clever-architecture work.
 
 ## The model registry & reproducibility
@@ -206,18 +233,32 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 1. **`architecture`** — the *repository's* architecture and environment. Comes before
    everything: the first job is an environment Claude can trust and operate
-   programmatically, without surprises. (Note the name clash: a change to the *model's*
+   programmatically, without surprises. In that order: **code that reads clearly and
+   stays lean**, with a structure whose shape is obvious; **automation that keeps it on
+   the rails**, so a regression or a drift fails a test or a gate instead of waiting to
+   be noticed; then **rules that make Claude's work clear and unambiguous**, written down
+   where a fresh session will find them. (Note the name clash: a change to the *model's*
    architecture — say GQA → multi-head latent attention — is an **`idea`**, not this.
    This label is about the harness/repo, not the network.)
-2. **`tools`** — actual code that is *not* LLM research per se: the harness, instruments,
-   runners, CI. Comes second — tools are what let ideas be tested cheaply.
-3. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
-   hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
-   tool only when it genuinely makes sense — usually when it's small.
-4. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
+2. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
+   the model, research and investigate: the harness, instruments, runners, telemetry, CI.
+   Comes second — tools are what let ideas be tested cheaply. Only after both does the
+   work turn to the model itself.
+3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
    what the model is**. Same model, fewer resources. (If it changes the model, it's an
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
-   an optimization.) Can land any time it's ready.
+   an optimization.) Leads the ideas because it changes what they can be: freed memory
+   decides whether a layer, a batch or a longer window fits (Muon's 380 MiB reopened
+   batch 2, #385), and speed decides how many tokens a base run buys in its days.
+4. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
+   hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
+   tool only when it genuinely makes sense — usually when it's small. The label means
+   *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
+   the model with a known method (the document separator masked as pad, #373) is a
+   **`bug`**, even though it changes what the model is; the matched pair still judges
+   it before a base run adopts it, but nobody is wondering whether to do it. Such a bug
+   still carries `ideas` as its *type*, the tier where model and trainer work sits, so
+   the queue can place it; `bug` is what says it is not a question.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
@@ -235,6 +276,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   the env/config knobs that make them hit the changed code), what counts as pass
   against what baseline, and the pre-named fallback if it fails — finishing must need
   only the card, never this conversation's memory. (Template case: PR #98 / #84.)
+- **`base-gate`** — must land before the next base run (the test under "Before a base run
+  launches", below). Orthogonal to type: an optimization, a telemetry tool and a model
+  bug can all carry it.
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
@@ -269,13 +313,32 @@ tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 
-**What Claude may run without asking (owner's standing permission, 2026-09-14).**
-Anything that takes **under 48 hours of card time** end to end: smoke tests, ablations,
-matched pairs, small models, and Claude's own hypotheses about what works or doesn't —
-pre-registered through the referee like everything else, claimed on the issue, and
-recorded per rule 5. The owner still decides anything longer than 48 hours (a base run),
-anything that changes what the shipped model *is* without a verdict behind it, and the
-budget/size of the next base run. Judgment calls of that kind get surfaced, not made.
+**What Claude may run without asking (owner's standing permission, 2026-09-14,
+widened 2026-09-19).** Any **single run under 24 hours of card time**, and **as many of
+them as a question needs**: smoke tests, ablations, matched pairs, sweeps, small models,
+and Claude's own hypotheses about what works or doesn't. The limit is per run, not per
+question: sweeping Muon's multiplier at five values with three seeds is fifteen ~4h
+runs, sixty hours in all, and needs nobody's permission, because no one run of it is
+long. Each is pre-registered through the referee like everything else, claimed on the
+issue, and recorded per rule 5. The owner still decides any single run of 24 hours or
+more (a base run), anything that changes what the shipped model *is* without a verdict
+behind it, and the budget/size of the next base run. Judgment calls of that kind get
+surfaced, not made.
+
+**Before a base run launches: whatever only pays if the run has it.** The test is two
+questions, not a label. *Can it be judged before the run* (does it work, is it worth
+it)? And *does its benefit need the run to have been trained or logged with it*? Both
+yes → it lands before the run starts, because afterwards is too late for these weights.
+That covers anything that makes the run lighter or faster (its days buy more tokens),
+anything that changes what the weights learn (recipe, shape, a model bug like #373),
+and every piece of telemetry (a metrics column, a per-block reading, a margin the
+supervisor watches): a log the run did not write cannot be recovered from its
+checkpoints. What the finished weights can use at any time does not gate the run: a KV
+cache for generation (#153), an eval, a plot of logs that already exist. An issue that
+passes the test but cannot land in time is waived by the owner by name, not skipped
+silently. **The `base-gate` label marks the issues that pass the test**, applied when
+an issue is filed or when the test is re-asked of it; the base run's launch checklist is
+the open `base-gate` list, empty or waived.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
@@ -341,15 +404,15 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 |---|---|
 | **Config (single source of truth)** | `trm/config.py` — every architecture/training constant, the dtype policy, the arch selector |
 | **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
-| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `layers.py`, `attention.py`, `rope.py` |
-| **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` (UniversalReasoner) |
+| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `rope.py`; `trm/model/__init__.py` `build_model(arch, dim, rngs)` is the one factory every entry point builds through |
+| **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` + `layers.py` (UniversalReasoner and its block) |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py` |
-| **Persistence & run state** | `trm/runtime/` — `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `rewind.py` (list a run's checkpoints; resume from an earlier one — `python -m trm.runtime.rewind`), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, plateau/divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
+| **Persistence & run state** | `trm/runtime/` — `layout.py` (stdlib-only: run cadences, checkpoint item names, retention, subdir names), `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `rewind.py` (list a run's checkpoints; resume from an earlier one — `python -m trm.runtime.rewind`), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
-| **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), the `eval_*` depth probes; `experiments/scratchpad/harness.py` |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (the GPT-2-small bar), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
+| **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), `eval_refiner_transfer.py` (the depth-transfer probe); `experiments/scratchpad/harness.py` |
+| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: the SmolLM2-135M bar, GPT-2-small as calibration), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs only) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`. `make lint` runs both; run it before pushing, and delete what it finds. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16

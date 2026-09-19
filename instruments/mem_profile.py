@@ -1,6 +1,6 @@
 """Where does a grad step's VRAM go? — a memory profiler for the recurring OOM problem.
 
-OOMs (the dim960 base run, the SFT phase switch, past dead runs) have been debugged by
+OOMs (the dim960 base run, #157's since-removed SFT phase switch, past dead runs) have been debugged by
 launch-and-watch-it-die roulette. This replaces that with a measurement: build the real
 model + optimizer at the *current config*, compile the real grad step, and report
 
@@ -38,8 +38,8 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
-from flax import nnx
 
+from instruments._common import param_count
 from instruments.arch import add_arch_argument, build
 from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
 
@@ -88,7 +88,7 @@ def main():
     # Shared selector (instruments/arch.py), not a private branch: a private one is
     # how this file kept building the refiner after the default stopped being it.
     model = build(args.arch, dim=LATENT_DIM)
-    n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
+    n_params = param_count(model)
     print(f"arch={args.arch}  dim={LATENT_DIM}  heads={NUM_HEADS}  "
           f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
 
@@ -124,7 +124,9 @@ def main():
             ms = jax.devices()[0].memory_stats()
             print(f"  peak_bytes_in_use: {_gib(ms.get('peak_bytes_in_use', 0))}")
             print(f"  largest_alloc:     {_gib(ms.get('largest_alloc_size', 0))}")
-        except Exception as e:
+        except jax.errors.JaxRuntimeError as e:
+            # XLA's RESOURCE_EXHAUSTED lands here. Anything else is a bug in this
+            # tool or the step, and should surface with its traceback.
             print(f"  step raised (likely OOM): {type(e).__name__}: {str(e)[:160]}")
 
 

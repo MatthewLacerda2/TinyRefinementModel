@@ -12,21 +12,12 @@ traces its encoder (where #235 overflowed) and also sweeps depths 1..MAX_STEPS_L
 through its unrolled refine loop. The reasoner has no trace here and is refused by
 name. The file keeps its historical name because the doctrine and findings cite it.
 
-**Token content is NOT irrelevant, and this file used to say it was.** The overflow
-that eventually mattered (#229 -> #235) is corpus-specific: the encoder's output
-reaches 65,120 on code against 47.7 on prose, with an f16 ceiling of 65,504. Random
-tokens produce prose-like magnitudes, so this smoke ran clean through an entire
-10-day run while the model trained itself to 0.6% of the ceiling.
-
-Two consequences, both fixed here:
-
-- with DATA_ROOT set the smoke reads REAL tokens and prefers **code**, the
-  distribution that actually stresses activations; random tokens stay the fallback so
-  the no-corpus path still works.
-- finiteness is not a sufficient assertion. A model at 99.4% of the ceiling is finite
-  and passes -- the champion passes today. So the smoke now measures peak activation
-  as a fraction of the f16 max and fails below a headroom margin. That is the
-  difference between a gate and a post-mortem.
+With DATA_ROOT set the smoke reads real tokens and prefers **code**, the distribution
+that stresses activations; random tokens are the no-corpus fallback. Beyond non-finite
+values, it fails when peak |activation| exceeds (1 - MIN_HEADROOM) x F16_MAX, i.e. when
+less than MIN_HEADROOM (currently 0.50) of the f16 range is left unused.
+Why both (the overflow is corpus-specific, and finiteness passed a model at 99.4% of
+the ceiling): `tests/apparatus/test_smoke_headroom.py` and #235.
 
 Also reads the underflow instrument (#82) on every grad step: per-group zero-gradient
 fractions. Embedding rows for absent tokens are legitimately zero; the dense groups
@@ -46,6 +37,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
+from instruments._common import F16_MAX, param_count
 from instruments.arch import add_arch_argument, build as arch_build
 from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
@@ -58,8 +50,7 @@ REPORTS = {
 }
 
 
-# f16's largest finite value. The margin is what the smoke demands is left unused.
-F16_MAX = 65504.0
+# The margin is what the smoke demands is left unused of F16_MAX.
 # The champion sits at 0.6% headroom and is one rounding from #229's whole-window
 # NaN. 50% (a factor of two) is the smallest bar that would have caught it while
 # leaving ordinary activation growth alone -- prose runs at 47.7, six orders below.
@@ -128,15 +119,14 @@ def load_batch(rng):
     root = os.environ.get("DATA_ROOT", "")
     if root:
         from trm.config import resolve_root
-        from trm.data.loaders import TextDataGenerator
+        from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
         for source in ("codeparrot", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue
-            gen = TextDataGenerator(path)
-            gen.skip_count = 3_000_000
-            row, _ = gen.get_batch(1)
-            if row is not None:
+            rows = read_heldout_rows(path, 1, VAL_SKIP_SAMPLES)
+            if rows:
+                (row,) = rows
                 print(f"📚 real tokens from {source} (the distribution that stresses f16)")
                 return jnp.asarray(row[:, :2 * MAX_SEQ_LEN + 1].astype(np.int32))
     print("🎲 random tokens — DATA_ROOT unset, so the corpus-specific overflow "
@@ -155,8 +145,7 @@ def main():
 
     refuse_untraced(args.arch)  # before building 138M params for nothing
     model = arch_build(args.arch, dim=LATENT_DIM, seed=42)
-    n = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
-    print(f"📐 {args.arch}: {n / 1e6:.2f}M params")
+    print(f"📐 {args.arch}: {param_count(model) / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as
     # in training — the peak that matters is grad step + resident optimizer state.
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)

@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from instruments import results as result_lines
+from instruments._common import add_checkpoint_argument, load_env
 from trm.config import MAX_SEQ_LEN
 
 # ARCH-SPECIFIC: refiner/reasoner — it compares one model at two depths, and plain has no depth dial (#317).
@@ -169,8 +170,7 @@ def compare(model, corpora, *, treatment_depth, control_depth, pad_token_id):
 
 def _main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--checkpoint", required=True,
-                    help="checkpoint MANAGER ROOT, not a step dir")
+    add_checkpoint_argument(ap, required=True, aliases=("--checkpoint",))
     ap.add_argument("--treatment-depth", type=int, default=8)
     ap.add_argument("--control-depth", type=int, default=1)
     ap.add_argument("--rows", type=int, default=16)
@@ -182,10 +182,11 @@ def _main(argv=None):
                          "only honest source of variation across repeats is which "
                          "documents get scored — that is what a spec's seeds must vary "
                          "here, and it is what its sigma then means.")
-    ap.add_argument("--skip", type=int, default=3_000_000,
-                    help="rows to skip past trained-through data. Smaller corpora "
-                         "need a smaller value (finemath has 19 chunks to the "
-                         "others' 30 and runs out before the default)")
+    ap.add_argument("--skip", type=int, default=None,
+                    help="rows to skip past trained-through data (default: the trainer's "
+                         "VAL_SKIP_SAMPLES). Smaller corpora need a smaller value "
+                         "(finemath has 19 chunks to the others' 30 and runs out before "
+                         "the default)")
     args = ap.parse_args(argv)
     from trm.config import MODEL_ARCH
     if MODEL_ARCH == "plain":
@@ -193,15 +194,15 @@ def _main(argv=None):
                          "ignores depth, so both arms would score the same forward pass. "
                          "Load a looped checkpoint with MODEL_ARCH=refiner or reasoner.")
 
-    from dotenv import load_dotenv
-    load_dotenv()
+    load_env()
     from trm.runtime.restore import load_eval_batches, restore_model
+    from trm.train.validation import VAL_SKIP_SAMPLES
 
-    model, _ = restore_model(args.checkpoint)
+    model, _ = restore_model(args.checkpoint_path)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
     # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
     # cannot overlap even at the largest --rows this is run with.
-    skip = args.skip + args.seed * args.rows * 2
+    skip = (VAL_SKIP_SAMPLES if args.skip is None else args.skip) + args.seed * args.rows * 2
     corpora = {n: load_eval_batches(n, num_rows=args.rows, skip=skip) for n in names}
 
     print(f"paired: depth {args.treatment_depth} (treatment) vs depth "

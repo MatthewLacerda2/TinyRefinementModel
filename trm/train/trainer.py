@@ -3,7 +3,6 @@ their own modules: held-out scoring in validation.py, the optimizer chains in
 optimizers.py, schedules and mixture policies in schedules.py."""
 
 import os
-import gc
 import math
 import time
 import threading
@@ -24,24 +23,33 @@ from trm.config import (
     DATA_SEED,
     MODEL_SEED,
     PLAIN_LAYERS,
-    SFT_ON_PLATEAU,
     TOKENS_PER_OPT_STEP,
     TRAIN_TOKEN_BUDGET,
+    TRM_OPTIMIZER,
+    MUON_LR_MULT,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    WEIGHT_DECAY,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_NS_STEPS,
+    LOSS_SCALE_GROWTH_INTERVAL,
     resolve_root,
 )
 from trm.model import build_model
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
+from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS, VAL_EVERY_OPT_STEPS
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
-from trm.train.optimizers import optimizer_chain, create_sft_optimizer
+from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import (
     CURRICULUM_START_WEIGHTS,
-    SFT_MIX_WEIGHTS,
     DECAY_STEPS,
+    SCHEDULE_HORIZONS,
     WARMUP_STEPS,
     get_curriculum_weights,
     get_average_curriculum_weights,
@@ -52,15 +60,14 @@ from trm.data.loaders import TextDataGenerator, DataMixer
 
 load_dotenv()
 
-LOG_REAL_STEPS = 5
 PREFETCH_SIZE = 128
 
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
 
-# Opt steps between "still plateaued" notices. `monitor.push` keeps returning True
-# for every step until CE improves, so an unthrottled notice would print on every
-# one of them and bury the rest of the log.
+# Opt steps between "still plateaued" notices. `monitor.plateaued` stays True on
+# every logging step until held-out CE improves, so an unthrottled notice would
+# print on every one of them and bury the rest of the log.
 PLATEAU_NOTICE_EVERY = 200
 
 DATA_ROOT = os.environ.get("DATA_ROOT", "")
@@ -72,8 +79,6 @@ if DATA_ROOT:
 # column of metrics.csv, so the recorded mixture cannot name a source other than
 # the one that was served.
 PRETRAIN_SOURCES = ("pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
-SFT_ONLY_SOURCE = "chat/ultrachat"
-SFT_SOURCES = (SFT_ONLY_SOURCE, *PRETRAIN_SOURCES)
 
 
 def mixture_label(sources, weights):
@@ -81,6 +86,32 @@ def mixture_label(sources, weights):
     measured on, readable without today's curriculum constants (#186)."""
     assert len(sources) == len(weights), "a mixture must name every source it weights"
     return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights))
+
+
+class SourceGrads:
+    """Per-source micro-step gradient norms over one logging window (#364).
+
+    The micro-step norms are heavy-tailed (p50 11, p99 603, max 75,331; #201), and
+    nothing said which data produces the tail. Each micro-step is one source's
+    chunk at batch 1, so the norm can be filed under the source it came from. A
+    batch that mixed sources (batch > 1) is filed as `mixed`."""
+
+    def __init__(self, sources):
+        self.names = [src.rsplit("/", 1)[-1] for src in sources]
+        self.reset()
+
+    def reset(self):
+        self.seen = {}
+
+    def add(self, source, norm, clipped):
+        name = "mixed" if source is None else self.names[source]
+        n, total, peak, clips = self.seen.get(name, (0, 0.0, 0.0, 0))
+        self.seen[name] = (n + 1, total + norm, max(peak, norm), clips + int(clipped))
+
+    def label(self):
+        """`fineweb-edu=11.2/603.5/0/534 ...`: mean / max / guard-clipped / micro-steps."""
+        return " ".join(f"{name}={total / n:.1f}/{peak:.1f}/{clips}/{n}"
+                        for name, (n, total, peak, clips) in self.seen.items())
 
 
 def _param_count(model):
@@ -166,11 +197,20 @@ def init_model_and_optimizer():
     print(f"🗓️ LR horizon: DECAY_STEPS={DECAY_STEPS:,} opt steps "
           f"(warmup {WARMUP_STEPS:,}) ≈ {DECAY_STEPS * TOKENS_PER_OPT_STEP / 1e9:.2f}B "
           f"target tokens ({budget_note})")
+    # Every schedule with its horizon and what it scales with (#362).
+    print("🗓️ Schedules: " + " | ".join(
+        f"{name} {steps:,} opt steps ({kind})" for name, (kind, steps) in SCHEDULE_HORIZONS.items()))
+    # The whole optimizer at launch, every knob named (#358).
+    muon = (f"muon on the matrices (LR x{MUON_LR_MULT:g}, beta {MUON_BETA:g}, "
+            f"{MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
+            if TRM_OPTIMIZER == "muon" else "adamw")
+    print(f"🎛️ Optimizer: {muon} | adam b1 {ADAM_B1:g} b2 {ADAM_B2:g} eps {ADAM_EPS:g} | "
+          f"weight decay {WEIGHT_DECAY:g} | clip {CLIP_NORM:g}")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer
 
-def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, samples_seen=None):
+def setup_data_pipeline(start_step, samples_seen=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
     if not DATA_ROOT:
@@ -179,34 +219,16 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, sample
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
-    sft_sources = [TextDataGenerator(f"{DATA_ROOT}/{SFT_ONLY_SOURCE}"), *pretrain_sources]
-    sft_mixer = DataMixer(sft_sources, SFT_MIX_WEIGHTS)
-
     if start_step > 1:
         start_opt_step = start_step // ACCUMULATION_STEPS
         # Prefer the recorded sample count over re-deriving it from micro-steps
         # (#24): only the recorded figure survives a change in BATCH_SIZE between
         # the run that wrote the checkpoint and the one resuming it.
-        if sft_start_step is None or start_step < sft_start_step:
-            avg_weights = get_average_curriculum_weights(start_opt_step)
-            skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
-                     else samples_from_micro_steps(start_step - 1, avg_weights))
-            for gen, skip in zip(pretrain_sources, skips):
-                gen.skip_count = skip
-        else:
-            # 1. Catch up pretrain sources to the point where pretraining ended.
-            # The pretrain/SFT split is still counted in micro-steps: samples_seen
-            # is a single total and does not say where the phase boundary fell.
-            sft_start_opt_step = sft_start_step // ACCUMULATION_STEPS
-            avg_weights = get_average_curriculum_weights(sft_start_opt_step)
-            skips = samples_from_micro_steps(sft_start_step - 1, avg_weights)
-            for gen, skip in zip(pretrain_sources, skips):
-                gen.skip_count = skip
-
-            # 2. Add SFT usage for all blended sources (Chat + Replay)
-            sft_skips = samples_from_micro_steps(start_step - sft_start_step, SFT_MIX_WEIGHTS)
-            for gen, skip in zip(sft_sources, sft_skips):
-                gen.skip_count += skip
+        avg_weights = get_average_curriculum_weights(start_opt_step)
+        skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
+                 else samples_from_micro_steps(start_step - 1, avg_weights))
+        for gen, skip in zip(pretrain_sources, skips):
+            gen.skip_count = skip
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
@@ -214,23 +236,20 @@ def setup_data_pipeline(start_step, sft_phase_event, sft_start_step=None, sample
         loader_step = start_step
         while True:
             loader_opt_step = loader_step // ACCUMULATION_STEPS
-            if not sft_phase_event.is_set():
-                pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
-                res = pretrain_mixer.get_batch(BATCH_SIZE)
-            else:
-                res = sft_mixer.get_batch(BATCH_SIZE)
+            pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
+            res = pretrain_mixer.get_batch(BATCH_SIZE)
 
             if res[0] is None:
-                data_queue.put((None, None))
+                data_queue.put((None, None, None))
                 break
 
-            data_queue.put(res)
+            data_queue.put((*res, pretrain_mixer.last_source))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, sft_phase_event, run_tracker):
+def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
     # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
     # (start_step == 1) appends to any existing CSV untouched.
@@ -243,7 +262,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # the model at opt step 11,140 on 2026-08-18 (#199). Not restored from the
     # checkpoint: S re-finds its ceiling within a few hundred micro-steps, and a
     # stale value would be a worse starting guess than the standard one.
-    loss_scaler = DynamicLossScale()
+    loss_scaler = DynamicLossScale(growth_interval=LOSS_SCALE_GROWTH_INTERVAL)
     print(f"🔍 [LossScale] dynamic f16 loss scaling active, starting at "
           f"{loss_scaler.value:g} (#199)")
     # The clip in the optimizer chain only ever sees the mean of ACCUMULATION_STEPS
@@ -251,22 +270,27 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # EMA re-converges inside its warmup, and a stale estimate would be a worse
     # ceiling than a freshly measured one.
     grad_guard = GradientNormGuard()
+    # How often the optimizer-level clip bit, over the logged opt steps (#358): the
+    # micro-step guard above and this clip are different gates, reported apart.
+    clip_logged, clip_bit = 0, 0
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     window = LogWindow()
+    source_grads = SourceGrads(PRETRAIN_SOURCES)
     milestone_mngr = make_milestone_manager(mngr.directory)
     t_compute = 0.0
     nonfinite_streak = 0
     # Latest held-out CE from the validation probe, carried so the (less frequent)
     # logging block can record it. None until the first probe fires.
     latest_val_ce = None
+    latest_val_step = None
     # Opt step of the last plateau notice, so a persistent plateau reports
     # periodically instead of on every step. Negative so the first one always prints.
     last_plateau_notice = -PLATEAU_NOTICE_EVERY
 
     try:
         while True:
-            batch, doc_boundary = data_queue.get()
+            batch, doc_boundary, source = data_queue.get()
             if batch is None:
                 break
 
@@ -298,6 +322,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             current_loss = float(loss)
             current_grad_norm = float(grad_norm)
             grad_guard.observe(current_grad_norm)
+            if math.isfinite(current_grad_norm):
+                source_grads.add(source, current_grad_norm,
+                                 clipped=ceiling is not None and current_grad_norm > ceiling)
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
                 # Divergence must be loud and must not poison the optimizer state
@@ -321,7 +348,13 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
                         f"(last at step {step})."
                     )
-                step += 1
+                # `step` does NOT advance (#355): the skipped batch is discarded and the
+                # next one takes its place. The optimizer never counts a skipped
+                # micro-step, so advancing here drifted every boundary the trainer keys
+                # on `step` (logging, the probe, checkpoints, the applied-gradient
+                # telemetry) off the optimizer's real windows, by one micro-step per
+                # skip: ~200 in a 512-step pair. Consumed data is counted apart, in
+                # monitor.samples_seen, so a resume still skips the right amount.
                 continue
             nonfinite_streak = 0
             if loss_scaler.record_good_step():
@@ -341,6 +374,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # and cannot be read against CLIP_NORM; this can: above it, the clip, not
                 # the LR schedule, is setting the step size.
                 applied_grad_norm = float(applied_norm)
+                clip_active = int(applied_grad_norm > CLIP_NORM)
+                clip_logged, clip_bit = clip_logged + 1, clip_bit + clip_active
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
@@ -362,14 +397,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 if opt_step % VAL_EVERY_OPT_STEPS == 0:
                     val_ce = val_probe.run(model)
                     if val_ce is not None:
-                        latest_val_ce = val_ce
+                        latest_val_ce, latest_val_step = val_ce, opt_step
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
                         # Best checkpoint: selected on held-out CE (#222), in a
                         # sibling dir so best-retention and rolling-latest
                         # retention never evict each other.
                         if monitor.push_val(val_ce, opt_step):
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
-                                            sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                            run_tracker.run_id, wait=False)
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
@@ -378,11 +413,11 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # The best-CE state is saved on the validation probe, above.
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
-                                    sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                    run_tracker.run_id, wait=False)
                     # Milestones: never evicted by recency (#187), in their own dir.
                     if milestone_due(opt_step, CHECKPOINT_EVERY_OPT_STEPS, TOKENS_PER_OPT_STEP):
                         save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
-                                        sft_phase_event.is_set(), run_tracker.run_id, wait=False)
+                                        run_tracker.run_id, wait=False)
 
             if is_log_step:
                 opt_step = (step + 1) // ACCUMULATION_STEPS
@@ -403,14 +438,18 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
                     depth_avg=None if accum_depth is None else float(accum_depth),
                     val_ce=latest_val_ce,
+                    val_step=latest_val_step,
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
-                    mix=(mixture_label(SFT_SOURCES, SFT_MIX_WEIGHTS) if sft_phase_event.is_set()
-                         else mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step))),
+                    clip_active=clip_active,
+                    mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
+                    grad_by_source=source_grads.label(),
+                    loss_scale=f"{loss_scaler.value:g}",
+                    skipped_micro_steps=loss_scaler.overflows,
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
-                latest_val_ce = None
+                latest_val_ce = latest_val_step = None
 
                 print(
                     f"🧊 [ZeroGrad] dense max: {zero_frac_dense:.4f} | "
@@ -426,78 +465,40 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     f"{grad_guard.observed:,} micro-steps | typical norm "
                     f"{grad_guard.ema:.1f} | ceiling "
                     + ("warming up" if ceiling_now is None else f"{ceiling_now:.1f}")
+                    + f" | opt-level clip bit on {clip_bit / max(clip_logged, 1):.0%} "
+                      f"of {clip_logged:,} logged steps"
                 )
+                print(f"📐 [GradBySource] mean/max/guard-clipped/micro-steps: {source_grads.label()}")
 
                 depth_note = "" if accum_depth is None else f" | Avg Sampled Depth: {accum_depth:.2f}"
-                if not sft_phase_event.is_set():
-                    curr_weights = get_curriculum_weights(opt_step)
-                    print(
-                        f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
-                        f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
-                    )
-                else:
-                    sft_w = " / ".join(f"{w:.2f}" for w in SFT_MIX_WEIGHTS)
-                    print(f"💬 [SFT Phase] Opt Step: {opt_step}{depth_note} | Weights (Chat/Web/Code/Math): {sft_w}")
+                curr_weights = get_curriculum_weights(opt_step)
+                print(
+                    f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
+                    f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
+                )
 
                 # Periodically update session duration to capture active timings
                 run_tracker.update_session_duration()
 
                 monitor.push(opt_step, float(accum_token_loss), float(accum_loss))
-                # Plateau is a property of HELD-OUT CE now (#184), advanced by the
-                # validation probe above on its own cadence; read here where it is acted on.
-                plateaued = monitor.plateaued
-                if plateaued and not sft_phase_event.is_set() and not SFT_ON_PLATEAU:
-                    # Report it and keep pretraining. A plateau is a fact about the
-                    # loss curve; it is not a verdict that the run is done, and at a
-                    # high LR it usually means "cannot descend further yet" rather
-                    # than "converged" (see SFT_ON_PLATEAU in trm/config.py).
-                    #
-                    # The wording matters as much as the behaviour: the supervisor
-                    # greps the log for "CE Plateau Detected" and kills the run on
-                    # sight, so this line must NOT contain that phrase. The phrase
-                    # stays reserved for an actual flip, which keeps the
-                    # supervisor's guard working as a backstop.
-                    if opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
-                        last_plateau_notice = opt_step
-                        print(f"📉 [Plateau] held-out CE flat for >{monitor.patience} opt steps "
-                              f"(best windowed val CE {monitor.best_avg_ce:.4f}). Pretraining "
-                              f"continues — the SFT auto-flip is off (SFT_ON_PLATEAU).")
-                    plateaued = False
-
-                if plateaued:
-                    if sft_phase_event.is_set():
-                        print("🛑 Training halted: No improvement in CE during SFT phase.")
-                        break
-
-                    print("\n" + "🔄"*30)
-                    print("🔄 CE Plateau Detected! Triggering SFT Chat Phase and decaying Learning Rate!")
-                    print("🔄"*30 + "\n")
-                    sft_phase_event.set()
-                    monitor.sft_start_step = step
-
-                    # OOM-critical ordering (#30): pull the optimizer moments to
-                    # host, then free the old optimizer IN THIS SCOPE, before
-                    # nnx.Optimizer eagerly allocates the new full-size mu/nu on
-                    # the GPU — otherwise both states coexist for an instant, a
-                    # ~2x spike that OOM'd the 6GB card. (This block must stay
-                    # inline: a helper's `del` cannot release the loop's local
-                    # reference.) Momentum survives via the host copy.
-                    old_state = jax.device_get(nnx.state(optimizer))
-                    del optimizer
-                    gc.collect()
-                    optimizer = create_sft_optimizer(model, old_state)
-                    del old_state
-                    gc.collect()
-
-                    monitor.reset_for_new_phase(opt_step)
+                # Plateau is a property of HELD-OUT CE (#184), advanced by the
+                # validation probe above on its own cadence. It is a report, never an
+                # action: a flat curve at a high LR usually means "cannot descend
+                # further yet", not "converged" — the in-run SFT flip that treated it
+                # as the latter killed #157 and was removed (#323).
+                if monitor.plateaued and opt_step - last_plateau_notice >= PLATEAU_NOTICE_EVERY:
+                    last_plateau_notice = opt_step
+                    print(f"📉 [Plateau] held-out CE flat for >{monitor.patience} opt steps "
+                          f"(best windowed val CE {monitor.best_avg_ce:.4f}); pretraining continues.")
 
                 window.reset()
+                source_grads.reset()
                 t_compute = 0.0
 
             step += 1
     finally:
         # An asynchronous checkpoint write may still be landing (#218) — a crash, a
-        # budget stop's TERM, or a plateau kill must not cut the last one short.
+        # budget stop's TERM, or a divergence kill must not cut the last one short.
         wait_for_pending_saves()
         # Guarantee run metadata is finalized on exit
         run_tracker.update_session_duration()
