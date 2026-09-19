@@ -32,6 +32,7 @@ def _log_one(tmp_path, **overrides):
 def test_every_declared_column_is_written_when_its_input_exists(tmp_path, monkeypatch):
     from trm.runtime import metrics
     monkeypatch.setattr(metrics, "_arena_peak_mib", lambda: "4112")  # a device that keeps statistics
+    monkeypatch.setattr(metrics, "_arena_limit_mib", lambda: "4883")
     logger, rows = _log_one(tmp_path)
     empty = [name for name in logger.fields if rows[0][name] == ""]
     assert not empty, f"declared in the header but never written: {empty}"
@@ -104,3 +105,25 @@ def test_arena_peak_is_empty_where_the_allocator_keeps_no_statistics(monkeypatch
     assert metrics._arena_peak_mib() == ""
     monkeypatch.setattr(jax, "local_devices", lambda: [Device({"peak_bytes_in_use": 4112 * 2**20})])
     assert metrics._arena_peak_mib() == "4112"
+
+
+def test_a_run_written_before_the_arena_limit_column_resumes_under_the_new_header(tmp_path):
+    """#346 added a column. A resume must rewrite an older CSV to the current header
+    rather than append rows wider than it, and the old rows keep their values."""
+    from trm.runtime.metrics import COLUMNS
+
+    old_fields = [c.name for c in COLUMNS if c.name != "arena_limit_mib"]
+    path = tmp_path / "metrics.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=old_fields)
+        writer.writeheader()
+        for step in (5, 10, 15):
+            writer.writerow({"step": step, "ce": "3.0", "arena_peak_mib": "4400"})
+
+    MetricsLogger(str(path), start_opt_step=15)
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert "arena_limit_mib" in reader.fieldnames
+    assert [r["step"] for r in rows] == ["5", "10"]
+    assert rows[0]["arena_peak_mib"] == "4400" and rows[0]["arena_limit_mib"] == ""
