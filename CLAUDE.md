@@ -254,7 +254,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
    the model with a known method (the document separator masked as pad, #373) is a
    **`bug`**, even though it changes what the model is; the matched pair still judges
-   it before a base run adopts it, but nobody is wondering whether to do it.
+   it before a base run adopts it, but nobody is wondering whether to do it. Such a bug
+   still carries `ideas` as its *type*, the tier where model and trainer work sits, so
+   the queue can place it; `bug` is what says it is not a question.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
@@ -272,6 +274,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   the env/config knobs that make them hit the changed code), what counts as pass
   against what baseline, and the pre-named fallback if it fails — finishing must need
   only the card, never this conversation's memory. (Template case: PR #98 / #84.)
+- **`base-gate`** — must land before the next base run (the test under "Before a base run
+  launches", below). Orthogonal to type: an optimization, a telemetry tool and a model
+  bug can all carry it.
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
@@ -329,7 +334,9 @@ supervisor watches): a log the run did not write cannot be recovered from its
 checkpoints. What the finished weights can use at any time does not gate the run: a KV
 cache for generation (#153), an eval, a plot of logs that already exist. An issue that
 passes the test but cannot land in time is waived by the owner by name, not skipped
-silently.
+silently. **The `base-gate` label marks the issues that pass the test**, applied when
+an issue is filed or when the test is re-asked of it; the base run's launch checklist is
+the open `base-gate` list, empty or waived.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
