@@ -72,8 +72,21 @@ def _parse_wall_clock(raw):
         return None
 
 
+def _parse_by_source(raw):
+    """`source=ce;source=ce` (#363) as {source: ce}, or None for an empty cell. A
+    part that does not parse is dropped, never guessed."""
+    readings = {}
+    for part in (raw or "").split(";"):
+        name, sep, value = part.partition("=")
+        ce = _parse_float(value) if sep else None
+        if name.strip() and ce is not None:
+            readings[name.strip()] = ce
+    return readings or None
+
+
 # Columns that are not numbers. Everything else parses as a float.
-_TEXT_COLUMNS = {"wall_clock": _parse_wall_clock, "mix": lambda raw: (raw or "").strip() or None}
+_TEXT_COLUMNS = {"wall_clock": _parse_wall_clock, "mix": lambda raw: (raw or "").strip() or None,
+                 "val_by_source": _parse_by_source}
 
 
 def _parse_float(raw):
@@ -156,6 +169,23 @@ class RunLog:
             steps.append(int(probe) if probe is not None else row["step"])
             values.append(value)
         return steps, values
+
+    def val_by_source(self):
+        """{source: (probe steps, val CE)} for the per-corpus probes (#363), each at
+        the opt step it was measured at, as `val_readings`. {} for a run that wrote
+        none."""
+        series = {}
+        for row in self.metrics:
+            readings = row.get("val_by_source")
+            if not readings:
+                continue
+            probe = row.get("val_step")
+            step = int(probe) if probe is not None else row["step"]
+            for source, ce in readings.items():
+                steps, values = series.setdefault(source, ([], []))
+                steps.append(step)
+                values.append(ce)
+        return series
 
     def blocks(self):
         """(steps, act_max, act_rms) from the run's blocks.csv (#392): per-state

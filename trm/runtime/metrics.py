@@ -60,6 +60,9 @@ COLUMNS = (
     # next logged row, up to LOG_REAL_STEPS - 1 steps later, so the row's own `step`
     # is not when it was measured.
     Column("val_step", None),
+    # Held-out CE on the other corpora (#363), `source=ce;...`, measured at val_step
+    # every VAL_BY_SOURCE_EVERY_OPT_STEPS. val_ce stays fineweb's.
+    Column("val_by_source", None),
     # Context a row cannot be read without, and that cannot be backfilled (#186):
     # when it was written — the only clock the run keeps against its progress —
     # and the data mixture its CE was measured on, which the curriculum moves
@@ -213,7 +216,7 @@ class MetricsLogger:
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
             zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
-            clip_active=None, val_step=None, mix=None, grad_by_source=None,
+            clip_active=None, val_step=None, val_by_source=None, mix=None, grad_by_source=None,
             loss_scale=None, skipped_micro_steps=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
@@ -257,6 +260,7 @@ class MetricsLogger:
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "grad_by_source": grad_by_source or "",
+                "val_by_source": val_by_source or "",
                 "arena_peak_mib": _arena_peak_mib(),
                 "arena_limit_mib": _arena_limit_mib(),
             }

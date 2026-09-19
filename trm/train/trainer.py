@@ -38,7 +38,8 @@ from trm.config import (
     resolve_root,
 )
 from trm.model import build_model
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS, VAL_EVERY_OPT_STEPS
+from trm.runtime.layout import (CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS,
+                                VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS)
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
                                      wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
@@ -54,7 +55,7 @@ from trm.train.schedules import (
     get_curriculum_weights,
     get_average_curriculum_weights,
 )
-from trm.train.validation import ValidationProbe
+from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
 from trm.runtime.metrics import MetricsLogger
 from trm.data.loaders import TextDataGenerator, DataMixer
 
@@ -256,6 +257,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     start_opt_step = start_step // ACCUMULATION_STEPS if start_step > 1 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
     val_probe = ValidationProbe(DATA_ROOT)
+    source_probes = [ValidationProbe(DATA_ROOT, skip=None, source=s) for s in VAL_BY_SOURCE]
     step = start_step
 
     # f16 gradients underflow to exactly zero without this, which is what destroyed
@@ -284,6 +286,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # logging block can record it. None until the first probe fires.
     latest_val_ce = None
     latest_val_step = None
+    latest_val_by_source = None
     # Opt step of the last plateau notice, so a persistent plateau reports
     # periodically instead of on every step. Negative so the first one always prints.
     last_plateau_notice = -PLATEAU_NOTICE_EVERY
@@ -405,6 +408,13 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         if monitor.push_val(val_ce, opt_step):
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
                                             run_tracker.run_id, wait=False)
+                    # The other corpora (#363), on a rarer cadence of the same steps.
+                    if opt_step % VAL_BY_SOURCE_EVERY_OPT_STEPS == 0:
+                        readings = {p.source: p.run(model) for p in source_probes}
+                        latest_val_by_source = ";".join(
+                            f"{s}={ce:.4f}" for s, ce in readings.items() if ce is not None) or None
+                        if latest_val_by_source:
+                            print(f"🧪 [Validation] Opt Step {opt_step} | by source: {latest_val_by_source}")
 
                 # Rolling-latest: persist the true latest state on its own cadence
                 # so a resume continues from where training actually left off
@@ -439,6 +449,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     depth_avg=None if accum_depth is None else float(accum_depth),
                     val_ce=latest_val_ce,
                     val_step=latest_val_step,
+                    val_by_source=latest_val_by_source,
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
@@ -449,7 +460,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     skipped_micro_steps=loss_scaler.overflows,
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
-                latest_val_ce = latest_val_step = None
+                latest_val_ce = latest_val_step = latest_val_by_source = None
 
                 print(
                     f"🧊 [ZeroGrad] dense max: {zero_frac_dense:.4f} | "
