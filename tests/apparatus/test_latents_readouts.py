@@ -108,11 +108,27 @@ def test_results_are_emitted_one_line_per_pass(capsys):
     assert np.isclose(rows[2]["gate_openness"], 0.3)
 
 
-@pytest.mark.parametrize("arch", ["plain", "reasoner"])
-def test_an_arch_without_a_refine_loop_is_refused_before_anything_loads(monkeypatch, arch):
+def test_an_arch_without_a_trajectory_is_refused_before_anything_loads(monkeypatch):
     import instruments.latents as latents
-    monkeypatch.setattr("trm.config.MODEL_ARCH", arch)
-    monkeypatch.setattr("trm.runtime.restore.restore_model",
+    monkeypatch.setattr("trm.config.MODEL_ARCH", "reasoner")
+    monkeypatch.setattr("trm.runtime.restore.restore_arch",
                         lambda *a, **k: pytest.fail("restored a model it should have refused"))
-    with pytest.raises(SystemExit, match=f"MODEL_ARCH='{arch}'"):
+    with pytest.raises(SystemExit, match="MODEL_ARCH='reasoner'"):
+        latents._main(["--checkpoint", "nowhere"])
+
+
+@pytest.mark.parametrize("arch", ["plain", "refiner"])
+def test_the_arches_with_a_trajectory_get_past_the_guard(monkeypatch, arch):
+    """The plain model walks its blocks (#391), the refiner its passes (#225)."""
+    import instruments.latents as latents
+
+    class Restored(Exception):
+        pass
+
+    def restore(*args, **kwargs):
+        raise Restored
+
+    monkeypatch.setattr("trm.config.MODEL_ARCH", arch)
+    monkeypatch.setattr("trm.runtime.restore.restore_arch", restore)
+    with pytest.raises(Restored):
         latents._main(["--checkpoint", "nowhere"])

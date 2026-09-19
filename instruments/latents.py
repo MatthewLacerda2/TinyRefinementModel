@@ -37,6 +37,10 @@ from instruments._common import add_checkpoint_argument, load_env
 # A trajectory is whatever stack of states the architecture walks: the refiner's passes,
 # the plain model's blocks. `LanguageModel.capture_trajectory` refuses for any other (#317).
 
+# The architectures that implement LanguageModel.capture_trajectory. Checked before a
+# checkpoint loads, so asking for another is refused in a second, not after a restore.
+TRAJECTORY_ARCHES = ("plain", "refiner")
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "trajectory metrics (RESULT)": ("sampled", "geometry of the latent trajectory over the captured rows only"),
@@ -156,13 +160,16 @@ def _main(argv=None):
     ap.add_argument("--step", type=int, default=None,
                     help="checkpoint step to restore (default: the newest the manager holds)")
     args = ap.parse_args(argv)
+    from trm.config import MODEL_ARCH
+    if MODEL_ARCH not in TRAJECTORY_ARCHES:
+        raise SystemExit(f"instruments.latents reads a trajectory; MODEL_ARCH={MODEL_ARCH!r} "
+                         f"has none to capture. Use one of {', '.join(TRAJECTORY_ARCHES)}.")
 
     # DATA_ROOT lives in .env and the held-out loader reads it from the
     # environment. Loading it here rather than making every caller export it
     # by hand, the way trm/infer.py already does.
     load_env()
 
-    from trm.config import MODEL_ARCH
     from trm.runtime.restore import load_eval_batches, restore_arch
 
     model, _ = restore_arch(MODEL_ARCH, args.checkpoint_path, step=args.step)
