@@ -318,13 +318,18 @@ more (a base run), anything that changes what the shipped model *is* without a v
 behind it, and the budget/size of the next base run. Judgment calls of that kind get
 surfaced, not made.
 
-**Before a base run launches, the cheap wins are in.** A base run is days of card time,
-so everything that makes it lighter or faster, and everything that makes it more
-legible, lands first: every open `optimization` issue, and every `tools` issue that adds
-something the run logs (telemetry: a new metrics column, a per-block or per-source
-reading, a margin the supervisor watches). A run that could have been 20% faster, or
-whose failure nobody could have diagnosed from its logs, wasted its days. An issue that
-cannot land in time is waived by the owner by name, not skipped silently.
+**Before a base run launches: whatever only pays if the run has it.** The test is two
+questions, not a label. *Can it be judged before the run* (does it work, is it worth
+it)? And *does its benefit need the run to have been trained or logged with it*? Both
+yes → it lands before the run starts, because afterwards is too late for these weights.
+That covers anything that makes the run lighter or faster (its days buy more tokens),
+anything that changes what the weights learn (recipe, shape, a model bug like #373),
+and every piece of telemetry (a metrics column, a per-block reading, a margin the
+supervisor watches): a log the run did not write cannot be recovered from its
+checkpoints. What the finished weights can use at any time does not gate the run: a KV
+cache for generation (#153), an eval, a plot of logs that already exist. An issue that
+passes the test but cannot land in time is waived by the owner by name, not skipped
+silently.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
