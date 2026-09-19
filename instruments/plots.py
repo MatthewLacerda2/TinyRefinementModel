@@ -1,19 +1,23 @@
-"""Figures for a training run: one showable curve, two diagnostic sheets.
+"""Figures for a training run: one image per chart, nothing on them that a
+glance does not need.
 
     python -m instruments.plots [--log runs/<run>/metrics.csv] [--out DIR]
 
-Three images, split by audience (#179):
+  training_curve.png  the hero — train and held-out val CE against *tokens*,
+                      perplexity on the right.
+  grad_norm.png       the gradient norm against the clip.
+  logits.png          logit health: entropy, log Z, max |logit|.
+  throughput.png      tokens/sec from metrics.csv's wall_clock (#186) — or, for
+                      runs older than that column, sampled from the supervisor's
+                      heartbeats.
+  depth.png           sampled depth, only for the architectures that have one.
 
-  training_curve.png      the hero — CE and held-out val CE against *tokens*,
-                          perplexity on the right, and the LR anneal drawn
-                          across the whole token budget so "how far in are we"
-                          is one glance.
-  throughput_progress.png tokens/sec from metrics.csv's wall_clock (#186) — or,
-                          for runs older than that column, sampled from the
-                          supervisor's heartbeats — progress against the budget, ETA.
-  optimization_health.png gradient norm, arena-peak VRAM, zero-grad fraction,
-                          logit health — plus sampled depth on the architectures
-                          that have one.
+What is deliberately NOT drawn: arena-peak VRAM (a high-water mark, flat by
+construction), the f16 zero-gradient fraction (1e-4 on a healthy run against a
+0.05 bar), the LR schedule (planned before step 1; one line in the curve's
+note), progress against the budget (the board draws it live). The first two
+are margins, not curves, so `margin_report` states them in text on every build
+and flags the one that crosses its line.
 
 Three rules this instrument exists to enforce:
 
@@ -68,12 +72,7 @@ from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
-from trm.train.schedules import (
-    PEAK_LR,
-    WARMUP_STEPS,
-    build_learning_schedule,
-    resolve_decay_steps,
-)
+from trm.train.schedules import PEAK_LR, WARMUP_STEPS, resolve_decay_steps
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -92,6 +91,14 @@ REPORTS = {
 # layers; 4,112 + 771 at 8). nvidia-smi cannot see this: cuda_async holds the whole
 # pool, so it reads ~5,003 MiB whatever the trainer is actually using.
 ARENA_LIMIT_MIB = 4883.0
+
+# The f16 zero-gradient fraction margin_report measures against: the bar
+# docs/findings/2026-07-15-f16-no-loss-scaling-no-dense-underflow.md declared.
+# The base runs that did underflow sat at 0.50-0.75.
+UNDERFLOW_BAR = 0.05
+# Arena headroom below which margin_report warns: the one-layer step at dim 960
+# is ~325 MiB (trm/config.py's layer table), so under that there is no room left.
+VRAM_WARN_MIB = 150.0
 
 # ── palette ──────────────────────────────────────────────────────────────────
 # Dark surface (it screenshots well), but the steps are the validated dark
@@ -388,26 +395,11 @@ def describe(cfg):
     return " · ".join(parts)
 
 
-def lr_schedule(cfg):
-    """(schedule, None), or (None, why the LR panel cannot be drawn).
-
-    Rebuilding the anneal needs the run's warmup, and runs written before #305
-    did not record it. Substituting this process's `WARMUP_STEPS` is what made
-    the plotter *crash* on every short arm: a 512-step horizon minus a 1000-step
-    warmup is a negative cosine, and optax refuses it. So when the warmup we hold
-    does not fit the run's horizon, the panel is omitted with the reason said out
-    loud — the same rule the diagnostic sheets follow for a column nobody
-    measured."""
-    if cfg.warmup_steps < cfg.decay_steps:
-        return build_learning_schedule(cfg.decay_steps, warmup_steps=cfg.warmup_steps,
-                                       peak_lr=cfg.peak_lr), None
-    if cfg.recorded("WARMUP_STEPS"):
-        return None, (f"the run's warmup ({cfg.warmup_steps:,} steps) covers its whole "
-                      f"{cfg.decay_steps:,}-step horizon — there is no anneal to draw")
-    return None, (f"this run did not record its warmup, and this process's "
-                  f"WARMUP_STEPS={WARMUP_STEPS:,} does not fit its {cfg.decay_steps:,}-step "
-                  f"horizon — the schedule cannot be rebuilt, only guessed at "
-                  f"(re-run with WARMUP_STEPS set to the run's own to draw it)")
+def schedule_line(cfg):
+    """The LR schedule in one line: it is planned before step 1, so it does not
+    earn a panel, only a sentence."""
+    return (f"LR: {cfg.warmup_steps:,}-step warmup to {cfg.peak_lr:g}, cosine to "
+            f"{cfg.decay_steps:,} optimizer steps.")
 
 
 def val_cadence(runlog, cfg):
@@ -506,6 +498,23 @@ def _param_count(cfg):
         return None
 
 
+FIGSIZE = (11.0, 5.2)  # one chart per image, letterboxed onto a wide board tile
+
+
+def _run_label(ax, runlog):
+    """Which run this is, small in the top-right corner: out of its folder (a
+    findings entry, the desktop) a chart with no label is a chart of nothing.
+    The run id alone; what the run was is in its metadata, not on every chart."""
+    ax.set_title(str(runlog.run_id), loc="right", fontsize=7.5, fontweight="normal", color=INK_DIM)
+
+
+def _save(fig, outdir, name):
+    path = pathlib.Path(outdir) / name
+    fig.savefig(path)
+    plt.close(fig)
+    return str(path)
+
+
 def training_curve(runlog, outdir):
     cfg = RunConfig.of(runlog)
     tokens, ce = series(runlog, "ce", cfg)
@@ -516,20 +525,10 @@ def training_curve(runlog, outdir):
     val_tokens, val_ce = series(runlog, "val_ce", cfg)
     if not len(val_ce):
         print(f"training_curve: no val CE line — {why_omitted(runlog, ['val_ce'])}.")
-    budget, decay_steps = cfg.budget, cfg.decay_steps
     tokens_per_step = cfg.tokens_per_opt_step
-    horizon = budget if budget else decay_steps * tokens_per_step
     done = tokens[-1]
 
-    # The LR panel is conditional like every other: a schedule we cannot rebuild
-    # is omitted with its reason, never approximated.
-    schedule, no_schedule = lr_schedule(cfg)
-    if no_schedule:
-        print(f"training_curve: no LR panel — {no_schedule}.")
-
-    fig = plt.figure(figsize=(13.5, 8.6 if schedule else 6.6))
-    grid = fig.add_gridspec(2, 1, height_ratios=[3.0, 1.0], hspace=0.55)
-    ax = fig.add_subplot(grid[0] if schedule else grid[:])
+    fig, ax = plt.subplots(figsize=FIGSIZE)
     window = smoothing_window(len(ce))
 
     ax.plot(tokens, ce, color=BLUE, alpha=0.22, linewidth=1.0)
@@ -562,20 +561,8 @@ def training_curve(runlog, outdir):
                     fontsize=9, fontweight="bold", xytext=(6, -2), textcoords="offset points")
 
     _perplexity_axis(ax)
-    _legend(ax, loc="upper right", bbox_to_anchor=(1.0, 0.93))
+    _legend(ax, loc="upper right")
 
-    params = _param_count(cfg)
-    subtitle = describe(cfg)
-    if params:
-        # A count built partly from this process's config is marked as such: a
-        # plain block is ~10.6M params, so an unrecorded layer count moves this
-        # number by more than its own precision.
-        shape_recorded = cfg.recorded("PLAIN_LAYERS" if cfg.arch == "plain" else "MAX_STEPS_LIMIT")
-        subtitle += f" · {'' if shape_recorded else '~'}{params / 1e6:.1f}M params"
-    subtitle += f"  |  {fmt_tokens(done)} tokens"
-    if budget:
-        subtitle += f" of {fmt_tokens(budget)} ({100 * done / budget:.1f}% of budget)"
-    ax.set_title(f"{runlog.run_id} — training curve\n{subtitle}", loc="left", linespacing=1.6)
     cadence, known = val_cadence(runlog, cfg)
     if known == "recorded":
         measured = f"measured every {cadence:,} optimizer steps."
@@ -585,44 +572,16 @@ def training_curve(runlog, outdir):
     else:
         measured = "measured on the run's own cadence."
     _note(ax, "train CE is the second window of each document (more context than the first); "
-              f"val CE is a held-out probe, {measured}")
+              f"val CE is a held-out probe, {measured} {schedule_line(cfg)}")
+    _run_label(ax, runlog)
 
-    # ── LR panel: the whole horizon, so the anneal is visible against progress
-    if schedule:
-        ax_lr = fig.add_subplot(grid[1])
-        sched_steps = np.linspace(0, decay_steps, 400)
-        ax_lr.plot(sched_steps * tokens_per_step, [float(schedule(s)) for s in sched_steps],
-                   color=AQUA, linewidth=1.8)
-        # A finished run can overshoot its horizon by a few steps; keep the marker
-        # inside the panel so its label does not float off the edge.
-        now = min(done, horizon)
-        ax_lr.axvspan(0, now, color=INK, alpha=0.06)
-        ax_lr.axvline(now, color=INK_DIM, linewidth=1.0)
-        ax_lr.annotate(f"now · {fmt_tokens(done)}", (now, 1.0), xycoords=("data", "axes fraction"),
-                       xytext=(-5 if now > 0.85 * horizon else 5, -10), textcoords="offset points",
-                       fontsize=8.5, color=INK, ha="right" if now > 0.85 * horizon else "left")
-        ax_lr.set_yscale("log")
-        ax_lr.set_ylabel("learning rate")
-        ax_lr.set_xlim(0, horizon)
-        _token_axis(ax_lr, "tokens — the full planned budget" if budget
-                    else f"tokens — LR horizon ({decay_steps:,} steps; no budget recorded)")
-        ax_lr.set_title(f"LR schedule over the run's horizon — {cfg.warmup_steps:,}-step warmup, "
-                        f"cosine to {decay_steps:,} (shaded = done)", loc="left")
-
-    path = pathlib.Path(outdir) / "training_curve.png"
-    fig.savefig(path)
-    plt.close(fig)
+    path = _save(fig, outdir, "training_curve.png")
     omitted = [] if len(val_ce) else [("val_ce", why_omitted(runlog, ["val_ce"]))]
-    if no_schedule:
-        omitted.append(("lr", no_schedule))
-    return {
-        "path": str(path),
-        "panels": ["ce"] + (["lr"] if schedule else []) + (["val_ce"] if len(val_ce) else []),
-        "omitted": omitted,
-    }
+    return {"path": path, "panels": ["ce"] + (["val_ce"] if len(val_ce) else []),
+            "omitted": omitted}
 
 
-# ── figure 2: throughput & progress ──────────────────────────────────────────
+# ── throughput ───────────────────────────────────────────────────────────────
 
 # How much longer than the usual beat spacing an interval may be before we stop
 # believing it measures throughput. Heartbeats land on a fixed poll schedule, so
@@ -681,16 +640,14 @@ def clock_samples(runlog, min_spacing_s=THROUGHPUT_SPACING_S):
     return read_heartbeats(runlog), "heartbeats"
 
 
-def throughput_progress(runlog, outdir):
+def throughput(runlog, outdir):
     cfg = RunConfig.of(runlog)
     beats, source = clock_samples(runlog)
     measured = source == "metrics"
-    budget = cfg.budget
     tokens_per_step = cfg.tokens_per_opt_step
-    done_tokens = runlog.last_step * tokens_per_step
 
     if len(beats) < 2:
-        print("throughput_progress: no wall_clock in metrics.csv and fewer than two supervisor "
+        print("throughput: no wall_clock in metrics.csv and fewer than two supervisor "
               "heartbeats — skipped (throughput needs a clock).")
         return None
 
@@ -708,28 +665,25 @@ def throughput_progress(runlog, outdir):
 
     rate, rate_hours, dropped, cadence = usable_intervals(hours, tokens)
     if rate.size == 0:
-        print("throughput_progress: every heartbeat interval spans a logging gap "
+        print("throughput: every heartbeat interval spans a logging gap "
               "— skipped (no interval measures throughput rather than downtime).")
         return None
     recent = float(np.mean(rate[-6:]))
 
-    fig, (ax_rate, ax_prog) = plt.subplots(2, 1, figsize=(12.5, 8.4))
-    fig.subplots_adjust(hspace=0.55)
-
-    ax_rate.plot(rate_hours, rate, color=BLUE, linewidth=1.6, marker="o", markersize=3,
-                 label="tokens/sec (per interval)")
-    ax_rate.axhline(recent, color=ORANGE, linewidth=1.2, linestyle="--",
-                    label=f"recent mean {recent:,.0f} tok/s")
-    ax_rate.set_ylim(0, max(rate.max(), recent) * 1.25)
-    ax_rate.set_ylabel("tokens / second")
-    ax_rate.set_xlabel("hours since the run's first " + ("logged row" if measured else "heartbeat"))
-    title = ("Throughput — measured from metrics.csv wall_clock" if measured
-             else "Throughput — sampled from heartbeats, not measured")
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    ax.plot(rate_hours, rate, color=BLUE, linewidth=1.6, marker="o", markersize=3,
+            label="tokens/sec (per interval)")
+    ax.axhline(recent, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"recent mean {recent:,.0f} tok/s")
+    ax.set_ylim(0, max(rate.max(), recent) * 1.25)
+    ax.set_ylabel("tokens / second")
+    ax.set_xlabel("hours since the run's first " + ("logged row" if measured else "heartbeat"))
+    title = "Throughput" if measured else "Throughput — sampled from heartbeats, not measured"
     if stale:
         title += (f"  ⚠ heartbeats cover only {100 * coverage:.0f}% of the run "
                   f"(to step {last_beat_step:,} of {runlog.last_step:,})")
-    ax_rate.set_title(title, loc="left", **({"color": ORANGE} if stale else {}))
-    _legend(ax_rate, loc="lower right")
+    ax.set_title(title, loc="left", **({"color": ORANGE} if stale else {}))
+    _legend(ax, loc="lower right")
     note = (f"each point is one {'interval between logged rows' if measured else 'supervisor heartbeat interval'} "
             f"(~{cadence:.1f}h apart): "
             f"Δsteps × {tokens_per_step:,} tokens ÷ Δwall-clock. "
@@ -739,71 +693,26 @@ def throughput_progress(runlog, outdir):
                  "ratio measures duty cycle (downtime included), not throughput.")
     if stale:
         note += (f"\n⚠ the supervisor stopped logging at step {last_beat_step:,}; the run reached "
-                 f"{runlog.last_step:,}. Everything after that is UNPLOTTED, not flat — this panel "
+                 f"{runlog.last_step:,}. Everything after that is UNPLOTTED, not flat — this chart "
                  "describes the first part of the run only.")
-    _note(ax_rate, note)
+    _note(ax, note)
+    _run_label(ax, runlog)
 
-    ax_prog.plot(hours, tokens, color=BLUE, linewidth=2.0, label="tokens trained")
-    eta_text = None
-    # No projection off stale heartbeats. The ETA is anchored to times[-1], so a
-    # heartbeat stream that died days ago yields a confidently-wrong finish date
-    # — worse than no date at all.
-    if budget and recent > 0 and done_tokens < budget and not stale:
-        # Against the CSV's position, not the last heartbeat's: the heartbeat is
-        # up to an hour stale, and the hero image counts from the CSV. Two
-        # figures disagreeing about "how far in are we" is worse than an ETA
-        # that is an hour optimistic.
-        remaining_h = (budget - done_tokens) / (recent * 3600.0)
-        finish_h = hours[-1] + remaining_h
-        ax_prog.plot([hours[-1], finish_h], [tokens[-1], budget], color=BLUE,
-                     linewidth=1.4, linestyle="--", alpha=0.6,
-                     label="projection at the recent mean rate")
-        ax_prog.axhline(budget, color=ORANGE, linewidth=1.2)
-        ax_prog.text(finish_h, budget, f"budget {fmt_tokens(budget)} ", color=ORANGE,
-                     fontsize=9, va="bottom", ha="right")
-        eta = times[-1] + datetime.timedelta(hours=remaining_h)
-        eta_text = (f"{100 * done_tokens / budget:.1f}% done · {remaining_h / 24:.1f} days left · "
-                    f"ETA {eta:%Y-%m-%d %H:%M}")
-        ax_prog.set_xlim(0, finish_h * 1.02)
-        ax_prog.set_ylim(0, budget * 1.12)
-    ax_prog.set_ylabel("tokens")
-    ax_prog.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(6))
-    ax_prog.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: fmt_tokens(v)))
-    ax_prog.set_xlabel("hours since the run's first " + ("logged row" if measured else "heartbeat"))
-    ax_prog.set_title("Progress against the token budget"
-                      + (f" — {eta_text}" if eta_text else ""), loc="left")
-    _legend(ax_prog, loc="lower right")
-    prog_note = f"{fmt_tokens(done_tokens)} tokens at optimizer step {runlog.last_step:,}. "
-    if stale:
-        # The curve is drawn from heartbeats and therefore stops early, while this
-        # note quotes metrics.csv. Saying so beats letting the reader assume the
-        # run stalled where the line ends.
-        prog_note += (f"The curve stops at step {last_beat_step:,} because the heartbeats do; "
-                      "the run continued past it. No ETA is drawn — projecting from a dead "
-                      "heartbeat stream gives a confident wrong answer.")
-    else:
-        prog_note += ("The ETA extrapolates the recent mean rate; it is an estimate, and it "
-                      "assumes no crash-relaunch and no throughput drift.")
-    _note(ax_prog, prog_note)
-
-    # Loud on stdout too: whoever regenerates the plots should learn the panel is
+    # Loud on stdout too: whoever regenerates the plots should learn the chart is
     # partial without having to notice orange text inside the image.
     if stale:
-        print(f"⚠ throughput_progress: supervisor heartbeats stop at step {last_beat_step:,} "
-              f"of {runlog.last_step:,} ({100 * coverage:.0f}% of the run) — the throughput panel "
-              "describes only that portion, and no ETA was drawn.")
+        print(f"⚠ throughput: supervisor heartbeats stop at step {last_beat_step:,} "
+              f"of {runlog.last_step:,} ({100 * coverage:.0f}% of the run) — the chart "
+              "describes only that portion.")
     if dropped:
-        print(f"  throughput_progress: dropped {dropped} heartbeat interval(s) spanning a logging "
+        print(f"  throughput: dropped {dropped} heartbeat interval(s) spanning a logging "
               "gap (they measure duty cycle, not throughput).")
 
-    path = pathlib.Path(outdir) / "throughput_progress.png"
-    fig.savefig(path)
-    plt.close(fig)
-    return {"path": str(path), "panels": ["throughput", "progress"],
+    return {"path": _save(fig, outdir, "throughput.png"), "panels": ["throughput"],
             "omitted": [], "coverage": coverage, "dropped_intervals": dropped}
 
 
-# ── figure 3: optimization health ────────────────────────────────────────────
+# ── optimization health: one chart per image ─────────────────────────────────
 
 def _panel_grad_norm(ax, runlog, cfg):
     if runlog.has("applied_grad_norm"):
@@ -852,29 +761,6 @@ def _panel_depth(ax, runlog, cfg):
               "a check that the draw is unbiased — not something the model learns.")
 
 
-def _panel_vram(ax, runlog, cfg):
-    """How close the run came to the allocator's ceiling (#168, #305). Logged on
-    every row and, until now, never drawn — the one number that says whether the
-    next layer or the next batch fits."""
-    tokens, values = series(runlog, "arena_peak_mib", cfg)
-    peak = float(values.max()) if len(values) else 0.0
-    limit, recorded = arena_limit_mib(runlog)
-    ax.plot(tokens, values, color=BLUE, linewidth=1.8, label="arena peak (high-water mark)")
-    ax.axhline(limit, color=ORANGE, linewidth=1.2, linestyle="--",
-               label=f"arena limit {limit:,.0f} MiB" + ("" if recorded else " (assumed)"))
-    ax.set_ylim(0, max(limit, peak) * 1.08)
-    ax.set_ylabel("MiB")
-    ax.set_title(f"VRAM — peak {peak:,.0f} MiB, {limit - peak:,.0f} MiB spare "
-                 f"({peak / limit:.0%} of the arena)", loc="left")
-    _legend(ax, loc="lower right", fontsize=8)
-    _note(ax, "peak_bytes_in_use, read from the allocator itself — not nvidia-smi, which reports "
-              "the whole preallocated cuda_async pool (~5,003 MiB) whatever is in use. It is a "
-              "high-water mark within a session, so it only ever climbs."
-              + ("" if recorded else f" The limit is ASSUMED: this run did not log its own, so the "
-                                     f"line is the {ARENA_LIMIT_MIB:,.0f} MiB measured on the 6GB RTX 2060 "
-                                     f"at MEM_FRACTION 0.85, and is wrong for any other card or fraction."))
-
-
 def arena_limit_mib(runlog):
     """(limit, recorded): the run's own logged `arena_limit_mib` when it has one, else
     the RTX 2060 measurement, flagged as assumed so the panel can say so."""
@@ -882,32 +768,6 @@ def arena_limit_mib(runlog):
     if limits:
         return float(limits[-1]), True
     return ARENA_LIMIT_MIB, False
-
-
-def _panel_zero_grad(ax, runlog, cfg):
-    # The applied (window-mean) gradient when the run recorded it (#191); older runs
-    # only have one micro-step's, which is labelled as such below.
-    applied = runlog.has("applied_zero_frac_dense_max")
-    tokens, values = series(runlog, "applied_zero_frac_dense_max" if applied else "zero_frac_dense_max", cfg)
-    # Dots, not a line: this series is spiky by nature (an occasional micro-step
-    # underflows, most do not), and joining the spikes draws a solid wall that
-    # hides both the floor and how often the spikes happen.
-    ax.plot(tokens, values, color=ORANGE, alpha=0.45, linestyle="none", marker=".",
-            markersize=2.5, label="per logged step")
-    window = smoothing_window(len(values))
-    if window:
-        ax.plot(tokens, smooth(values, window), color=AQUA, linewidth=1.4,
-                label=f"{window}-point mean")
-    if len(values) and values.min() > 0:
-        _log_y(ax)
-    ax.set_ylabel("fraction of zero entries")
-    ax.set_title("Zero-gradient fraction (worst dense tensor, "
-                 + ("applied gradient)" if applied else "one micro-step)"), loc="left")
-    # "best" earns its keep here: the spikes and the floor move around, so the
-    # free band between them is not always the same corner.
-    _legend(ax, loc="best", fontsize=8)
-    _note(ax, "the largest zero fraction over the dense parameter tensors at that step. "
-              "Spikes are a live signal of an f16 gradient that underflowed to zero.")
 
 
 def _panel_logits(ax, runlog, cfg):
@@ -927,20 +787,11 @@ def _panel_logits(ax, runlog, cfg):
               "falling toward 0 with |logit| climbing is the confident-collapse shape to watch for.")
 
 
-HEALTH_PANELS = (
-    ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm),
-    ("depth", ("depth_avg",), _panel_depth),
-    ("vram", ("arena_peak_mib",), _panel_vram),
-    ("zero_grad", ("zero_frac_dense_max",), _panel_zero_grad),
-    ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits),
+HEALTH_CHARTS = (
+    ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm, "grad_norm.png"),
+    ("depth", ("depth_avg",), _panel_depth, "depth.png"),
+    ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits, "logits.png"),
 )
-
-
-# Why a panel's column can be missing for a reason that is not the architecture.
-ABSENT_REASON = {
-    "vram": "not logged by this run — the column arrived with #168, and a CPU run "
-            "has no allocator statistics to report",
-}
 
 
 def not_applicable(key, cfg):
@@ -960,45 +811,56 @@ def not_applicable(key, cfg):
     return None
 
 
-def optimization_health(runlog, outdir):
-    """Every panel here is conditional on its data. A run of an architecture
-    that does not produce one of these quantities simply gets a smaller sheet —
-    never an axis of zeros standing in for a measurement that never happened.
-    What was left out, and why, is said out loud rather than silently dropped."""
+def health_charts(runlog, outdir):
+    """One image per chart, each conditional on its data. A run of an
+    architecture that does not produce one of these quantities simply gets fewer
+    images — never an axis of zeros standing in for a measurement that never
+    happened. What was left out, and why, is said out loud."""
     cfg = RunConfig.of(runlog)
-    drawn, omitted = [], []
-    for key, columns, draw in HEALTH_PANELS:
-        reason = not_applicable(key, cfg) or why_omitted(runlog, columns, ABSENT_REASON.get(key))
-        (omitted.append((key, reason)) if reason else drawn.append((key, draw)))
-
-    for key, reason in omitted:
-        print(f"optimization_health: omitted {key} — {reason}.")
-    if not drawn:
-        print("optimization_health: nothing left to draw — skipped.")
-        return None
-
-    cols = 1 if len(drawn) == 1 else 2
-    rows = math.ceil(len(drawn) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(7.6 * cols, 4.9 * rows), squeeze=False)
-    fig.subplots_adjust(hspace=0.75, wspace=0.28)
-    flat = list(axes.flat)
-
-    for ax, (_, draw) in zip(flat, drawn):
+    written = []
+    for key, columns, draw, name in HEALTH_CHARTS:
+        reason = not_applicable(key, cfg) or why_omitted(runlog, columns)
+        if reason:
+            print(f"{name[:-4]}: omitted — {reason}.")
+            continue
+        fig, ax = plt.subplots(figsize=FIGSIZE)
         draw(ax, runlog, cfg)
         _token_axis(ax)
-    for ax in flat[len(drawn):]:
-        ax.axis("off")
+        _run_label(ax, runlog)
+        written.append({"path": _save(fig, outdir, name), "panels": [key], "omitted": []})
+    return written
 
-    fig.suptitle(f"{runlog.run_id} — optimization health", x=0.09, ha="left",
-                 fontsize=14, fontweight="bold")
-    if omitted:
-        fig.text(0.09, 0.008, "omitted — " + "; ".join(f"{k}: {r}" for k, r in omitted),
-                 fontsize=8, color=INK_DIM)
-    path = pathlib.Path(outdir) / "optimization_health.png"
-    fig.savefig(path)
-    plt.close(fig)
-    return {"path": str(path), "panels": [key for key, _ in drawn],
-            "omitted": omitted}
+
+def margin_report(runlog):
+    """The two margins that are not worth a chart, in words, on every build.
+
+    Arena peak is a high-water mark, flat by construction; the f16 zero-gradient
+    fraction sits near 1e-4 on a healthy run against a 0.05 bar. Drawn, each
+    either says nothing or fills its axis with a blip. So each is one line here,
+    marked ⚠ when it crosses its line. Returns the warnings. This reports at plot
+    time; the live watch during a run is #368's."""
+    warnings = []
+    _, peaks = runlog.column("arena_peak_mib")
+    if peaks:
+        limit, recorded = arena_limit_mib(runlog)
+        peak = max(float(p) for p in peaks)
+        line = (f"VRAM: arena peak {peak:,.0f} of {limit:,.0f} MiB"
+                + ("" if recorded else " (limit assumed)") + f", {limit - peak:,.0f} MiB spare")
+        if limit - peak < VRAM_WARN_MIB:
+            line = "⚠ " + line + f" — under {VRAM_WARN_MIB:.0f} MiB of headroom"
+            warnings.append(line)
+        print("  " + line)
+    column = "applied_zero_frac_dense_max" if runlog.has("applied_zero_frac_dense_max") else "zero_frac_dense_max"
+    _, fracs = runlog.column(column)
+    fracs = [float(f) for f in fracs if f is not None and math.isfinite(float(f))]
+    if fracs:
+        worst = max(fracs)
+        line = f"f16 zero-gradient fraction: max {worst:.2g} of entries (bar {UNDERFLOW_BAR:g})"
+        if worst >= UNDERFLOW_BAR:
+            line = "⚠ " + line + " — gradients are underflowing"
+            warnings.append(line)
+        print("  " + line)
+    return warnings
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -1010,18 +872,17 @@ def build(log=None, outdir="."):
     outdir.mkdir(parents=True, exist_ok=True)
 
     with plt.rc_context(STYLE):
-        figures = [
-            training_curve(runlog, outdir),
-            throughput_progress(runlog, outdir),
-            optimization_health(runlog, outdir),
-        ]
+        figures = [training_curve(runlog, outdir), *health_charts(runlog, outdir),
+                   throughput(runlog, outdir)]
     figures = [f for f in figures if f]
 
-    print(f"run {runlog.run_id}: step {runlog.last_step:,}, {fmt_tokens(runlog.tokens)} tokens")
+    print(f"run {runlog.run_id} ({describe(RunConfig.of(runlog))}): "
+          f"step {runlog.last_step:,}, {fmt_tokens(runlog.tokens)} tokens")
     for figure in figures:
         print(f"  wrote {figure['path']}  [{', '.join(figure['panels'])}]")
     if not figures:
         print("  nothing written — the log has no plottable data yet.")
+    margin_report(runlog)
     return figures
 
 
