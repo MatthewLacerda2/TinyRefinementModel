@@ -104,6 +104,14 @@ def last_step(metrics_csv: pathlib.Path) -> int:
         return 0
 
 
+def final_by_source(run_dir):
+    """{final_val_<corpus>: CE} at the run's last per-corpus probe (#363): the cost
+    side of a mixture pair. Empty for a run that logged none."""
+    from instruments.runlog import load
+    return {f"final_val_{source.replace('-', '_')}": values[-1]
+            for source, (_, values) in load(str(run_dir)).val_by_source().items()}
+
+
 def parse_knobs(pairs):
     """{KNOB: value} from --set KNOB=VALUE, refusing any name trm/config.py does not
     define: the env var would be read by nothing, and the arm would run as the control."""
@@ -219,7 +227,8 @@ def main(argv=None) -> int:
     results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
                  reached=float(reached), probe_aligned=float(aligned),
                  minutes_to_target=minutes if (minutes := minutes_to_target(
-                     metrics, args.target_ce, args.opt_steps)) is not None else float("nan"))
+                     metrics, args.target_ce, args.opt_steps)) is not None else float("nan"),
+                 **final_by_source(run_dir))
     return 0
 
 

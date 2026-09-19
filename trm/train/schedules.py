@@ -3,7 +3,8 @@ import os
 import numpy as np
 import optax
 
-from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET, WEIGHT_DECAY
+from trm.config import (CURRICULUM_END_WEIGHTS, MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP,
+                        TRAIN_TOKEN_BUDGET, WEIGHT_DECAY)
 
 # Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
 # phase that does not grow with the run. Env-overridable for one purpose: a
@@ -141,8 +142,8 @@ if LR_SCHEDULE == "wsd":
         "absolute" if WSD_DECAY_START is not None else "budget",
         WSD_DECAY_START if WSD_DECAY_START is not None else round((1 - WSD_DECAY_FRACTION) * DECAY_STEPS))
 # Endpoints over the (web, code, math) sources, in DataMixer source order.
+# The end-mix is CURRICULUM_END_WEIGHTS in trm/config.py.
 CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
-CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]
 
 def get_curriculum_weights(loader_step):
     step = float(loader_step)

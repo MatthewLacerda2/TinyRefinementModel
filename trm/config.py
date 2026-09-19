@@ -324,5 +324,13 @@ TOKENIZER_NAME = "r50k_base"
 #                seed spread is init variance, not data variance (#378).
 #   MODEL_SEED — parameter initialization (the nnx.Rngs the trainer builds
 #                the model with).
+# Where the data mixture ramps to, over (web, code, math) in DataMixer source order
+# (#363). The ramp itself, its start and its horizon, live in trm/train/schedules.py;
+# the end-mix is the knob the owner negotiates, so it is named here and recorded.
+CURRICULUM_END_WEIGHTS = tuple(float(w) for w in
+                               os.environ.get("CURRICULUM_END_WEIGHTS", "0.35,0.40,0.25").split(","))
+if len(CURRICULUM_END_WEIGHTS) != 3 or abs(sum(CURRICULUM_END_WEIGHTS) - 1) > 1e-6:
+    raise SystemExit(f"CURRICULUM_END_WEIGHTS={CURRICULUM_END_WEIGHTS}: three weights summing to 1")
+
 DATA_SEED = int(os.environ.get("DATA_SEED", "42"))
 MODEL_SEED = int(os.environ.get("MODEL_SEED", "42"))

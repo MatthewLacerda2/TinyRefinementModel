@@ -50,3 +50,16 @@ def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
     for bad in (["ADAM_BETA2=0.95"], ["adam_b2=0.95"], ["ADAM_B2"]):
         with pytest.raises(SystemExit):
             parse_knobs(bad)
+
+
+def test_the_final_per_corpus_ce_is_read_from_the_last_probe(tmp_path):
+    """#363: a mixture pair's cost side, each corpus's held-out CE at its last probe."""
+    from experiments.recipe.tokens_to_ce import final_by_source
+
+    (tmp_path / "metrics.csv").write_text(
+        "step,val_ce,val_step,val_by_source\n"
+        "5,4.1,4,codeparrot=2.5;finemath=3.0\n"
+        "10,4.0,8,codeparrot=2.4;finemath=2.9\n")
+    assert final_by_source(tmp_path) == {"final_val_codeparrot": 2.4, "final_val_finemath": 2.9}
+    (tmp_path / "metrics.csv").write_text("step,val_ce\n5,4.1\n")
+    assert final_by_source(tmp_path) == {}

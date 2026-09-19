@@ -25,6 +25,7 @@ from trm.config import (
     REFINER_ENCODER_LAYERS,
     TIME_SIGNAL,
     TRM_OPTIMIZER,
+    CURRICULUM_END_WEIGHTS,
     MUON_LR_MULT,
     ADAM_B1,
     ADAM_B2,
@@ -192,6 +193,7 @@ class RunTracker:
             "DECAY_STEPS": DECAY_STEPS,
             # The mixture ramp's resolved horizon, budget-relative since #362.
             "CURRICULUM_STEPS": CURRICULUM_STEPS,
+            "CURRICULUM_END_WEIGHTS": list(CURRICULUM_END_WEIGHTS),
             # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
             "LR_SCHEDULE": LR_SCHEDULE,
             "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,
