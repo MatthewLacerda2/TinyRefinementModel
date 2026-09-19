@@ -45,11 +45,9 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
     """The run's LR schedule at an explicit horizon; module-level
     learning_schedule is this at the resolved DECAY_STEPS.
 
-    `warmup_steps` and `peak_lr` are explicit so a *reader* can rebuild the
-    schedule some other run actually trained under (instruments/plots.py): both
-    are env knobs read at import, so the module-level defaults describe this
-    process, and a 512-step arm plotted from a 1000-step-warmup shell has no
-    cosine at all."""
+    `warmup_steps` and `peak_lr` are explicit so a caller can build the schedule
+    some other run trained under: both are env knobs read at import, so the
+    module-level defaults describe this process, not that run."""
     return optax.warmup_cosine_decay_schedule(
         init_value=peak_lr / 10.0,
         peak_value=peak_lr,
