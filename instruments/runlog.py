@@ -138,6 +138,25 @@ class RunLog:
             values.append(value)
         return steps, values
 
+    def val_readings(self):
+        """(probe steps, val CE) — each held-out reading at the opt step it was
+        MEASURED at (#351).
+
+        The trainer writes a probe's value on the next logged row, up to
+        LOG_REAL_STEPS - 1 opt steps after the probe. Runs since #351 record the
+        probe's own step in `val_step`; for older runs the row's step is the only
+        one there is, and it may be late by up to that much.
+        """
+        steps, values = [], []
+        for row in self.metrics:
+            value = row.get("val_ce")
+            if value is None:
+                continue
+            probe = row.get("val_step")
+            steps.append(int(probe) if probe is not None else row["step"])
+            values.append(value)
+        return steps, values
+
     def has(self, name):
         """True iff any row carries a value for this column."""
         return any(row.get(name) is not None for row in self.metrics)
