@@ -88,6 +88,32 @@ def mixture_label(sources, weights):
     return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights))
 
 
+class SourceGrads:
+    """Per-source micro-step gradient norms over one logging window (#364).
+
+    The micro-step norms are heavy-tailed (p50 11, p99 603, max 75,331; #201), and
+    nothing said which data produces the tail. Each micro-step is one source's
+    chunk at batch 1, so the norm can be filed under the source it came from. A
+    batch that mixed sources (batch > 1) is filed as `mixed`."""
+
+    def __init__(self, sources):
+        self.names = [src.rsplit("/", 1)[-1] for src in sources]
+        self.reset()
+
+    def reset(self):
+        self.seen = {}
+
+    def add(self, source, norm, clipped):
+        name = "mixed" if source is None else self.names[source]
+        n, total, peak, clips = self.seen.get(name, (0, 0.0, 0.0, 0))
+        self.seen[name] = (n + 1, total + norm, max(peak, norm), clips + int(clipped))
+
+    def label(self):
+        """`fineweb-edu=11.2/603.5/0/534 ...`: mean / max / guard-clipped / micro-steps."""
+        return " ".join(f"{name}={total / n:.1f}/{peak:.1f}/{clips}/{n}"
+                        for name, (n, total, peak, clips) in self.seen.items())
+
+
 def _param_count(model):
     return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
 
@@ -208,10 +234,10 @@ def setup_data_pipeline(start_step, samples_seen=None):
             res = pretrain_mixer.get_batch(BATCH_SIZE)
 
             if res[0] is None:
-                data_queue.put((None, None))
+                data_queue.put((None, None, None))
                 break
 
-            data_queue.put(res)
+            data_queue.put((*res, pretrain_mixer.last_source))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
@@ -244,6 +270,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     window = LogWindow()
+    source_grads = SourceGrads(PRETRAIN_SOURCES)
     milestone_mngr = make_milestone_manager(mngr.directory)
     t_compute = 0.0
     nonfinite_streak = 0
@@ -257,7 +284,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
     try:
         while True:
-            batch, doc_boundary = data_queue.get()
+            batch, doc_boundary, source = data_queue.get()
             if batch is None:
                 break
 
@@ -287,6 +314,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             current_loss = float(loss)
             current_grad_norm = float(grad_norm)
             grad_guard.observe(current_grad_norm)
+            if math.isfinite(current_grad_norm):
+                source_grads.add(source, current_grad_norm,
+                                 clipped=ceiling is not None and current_grad_norm > ceiling)
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
                 # Divergence must be loud and must not poison the optimizer state
@@ -400,6 +430,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     applied_grad_norm=applied_grad_norm,
                     clip_active=clip_active,
                     mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
+                    grad_by_source=source_grads.label(),
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
                 latest_val_ce = latest_val_step = None
@@ -421,6 +452,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     + f" | opt-level clip bit on {clip_bit / max(clip_logged, 1):.0%} "
                       f"of {clip_logged:,} logged steps"
                 )
+                print(f"📐 [GradBySource] mean/max/guard-clipped/micro-steps: {source_grads.label()}")
 
                 curr_weights = get_curriculum_weights(opt_step)
                 print(
@@ -443,6 +475,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                           f"(best windowed val CE {monitor.best_avg_ce:.4f}); pretraining continues.")
 
                 window.reset()
+                source_grads.reset()
                 t_compute = 0.0
 
             step += 1

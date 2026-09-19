@@ -109,6 +109,9 @@ class DataMixer:
         # Original index of each surviving source, so full-length weight lists
         # supplied via set_weights can be mapped after sources exhaust.
         self._alive = list(range(len(self.sources)))
+        # The original index of the source the last batch came from, or None when
+        # it mixed several (#364: per-source gradient telemetry).
+        self.last_source = None
 
     def set_weights(self, weights):
         """Update mixture weights with a full-length list (one weight per
@@ -125,6 +128,7 @@ class DataMixer:
             counts = self.rng.multinomial(batch_size, self.weights)
             batch_list = []
             exhausted_indices = []
+            drawn_from = []
 
             for i, (source, count) in enumerate(zip(self.sources, counts)):
                 if count > 0:
@@ -133,6 +137,7 @@ class DataMixer:
                         exhausted_indices.append(i)
                     else:
                         batch_list.append(res)
+                        drawn_from.append(self._alive[i])
 
             if exhausted_indices:
                 new_sources, new_weights, new_alive = [], [], []
@@ -150,6 +155,7 @@ class DataMixer:
                 continue
 
             if batch_list:
+                self.last_source = drawn_from[0] if len(drawn_from) == 1 else None
                 batches, masks = zip(*batch_list)
                 return jnp.concatenate(batches, axis=0), jnp.concatenate(masks, axis=0)
         return None, None
