@@ -134,6 +134,10 @@ CLIP_NORM = float(os.environ.get("CLIP_NORM", "1.0"))
 # normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
 MUON_BETA = float(os.environ.get("MUON_BETA", "0.95"))
 MUON_NS_STEPS = int(os.environ.get("MUON_NS_STEPS", "5"))
+# Which Newton-Schulz coefficients (#375): "keller", the 2024 quintic reused at every
+# step, or "polar_express", a minimax-optimal quintic per step
+# (trm/train/polar_express.py). keller until #375's pair judges the change.
+MUON_NS_COEFFS = os.environ.get("MUON_NS_COEFFS", "keller")
 MUON_EPS = float(os.environ.get("MUON_EPS", "1e-8"))
 MUON_NESTEROV = os.environ.get("MUON_NESTEROV", "1") == "1"
 # Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
