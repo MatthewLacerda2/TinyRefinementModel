@@ -38,3 +38,15 @@ def test_minutes_to_target_times_from_the_first_row(tmp_path):
     assert minutes_to_target(path, 5.85, cap_steps=64) == 4.5
     assert minutes_to_target(path, 4.0, cap_steps=64) == 4.5, "never reached: the whole span"
     assert minutes_to_target(path, 5.95, cap_steps=64) == 2.0
+
+
+def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
+    """--set reaches the trainer's env only for a name trm/config.py defines (#359):
+    a typo would otherwise train an arm identical to its control."""
+    import pytest
+    from experiments.recipe.tokens_to_ce import parse_knobs
+
+    assert parse_knobs(["ADAM_B2=0.95", "WEIGHT_DECAY=0.1"]) == {"ADAM_B2": "0.95", "WEIGHT_DECAY": "0.1"}
+    for bad in (["ADAM_BETA2=0.95"], ["adam_b2=0.95"], ["ADAM_B2"]):
+        with pytest.raises(SystemExit):
+            parse_knobs(bad)
