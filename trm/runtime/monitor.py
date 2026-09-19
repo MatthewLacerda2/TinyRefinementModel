@@ -25,6 +25,9 @@ class LossMonitor:
         # checkpoint rather than re-derived from the step count, so a resume
         # seeks correctly even if BATCH_SIZE changed between runs.
         self.samples_seen = 0
+        # The data loader's exact state after the last batch consumed (#424), saved
+        # with every checkpoint so a resume reads the rows the run would have.
+        self.data_state = None
 
     def push(self, step, ce_loss, total_loss):
         """Record one logging-window observation of TRAIN CE: the raw bests only.

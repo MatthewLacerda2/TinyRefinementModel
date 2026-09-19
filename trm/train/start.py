@@ -123,7 +123,8 @@ if __name__ == "__main__":
         model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
-    data_queue = setup_data_pipeline(start_step, samples_seen=monitor.samples_seen or None)
+    data_queue = setup_data_pipeline(start_step, samples_seen=monitor.samples_seen or None,
+                                     data_state=monitor.data_state)
 
     exit_cleanly_on_sigterm()  # so a TERM waits for an in-flight checkpoint write (#218)
     train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)

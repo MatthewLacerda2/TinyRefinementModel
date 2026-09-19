@@ -210,7 +210,7 @@ def init_model_and_optimizer():
 
     return model, optimizer
 
-def setup_data_pipeline(start_step, samples_seen=None):
+def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
     if not DATA_ROOT:
@@ -219,7 +219,16 @@ def setup_data_pipeline(start_step, samples_seen=None):
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
-    if start_step > 1:
+    if start_step > 1 and data_state is not None:
+        # Exact (#424): the reader and mixer state saved with the last batch the
+        # checkpointed run consumed, so the next row is the one it would have read.
+        pretrain_mixer.load_state(data_state)
+        print("📍 Data stream restored exactly from the checkpoint (#424)")
+    elif start_step > 1:
+        # A checkpoint from before #424: the position is estimated, and the stream
+        # after it is not the one the run would have read.
+        print("⚠️ Data position estimated from the sample count: this checkpoint predates "
+              "the saved data state (#424)")
         start_opt_step = start_step // ACCUMULATION_STEPS
         # Prefer the recorded sample count over re-deriving it from micro-steps
         # (#24): only the recorded figure survives a change in BATCH_SIZE between
@@ -240,10 +249,12 @@ def setup_data_pipeline(start_step, samples_seen=None):
             res = pretrain_mixer.get_batch(BATCH_SIZE)
 
             if res[0] is None:
-                data_queue.put((None, None, None))
+                data_queue.put((None, None, None, None))
                 break
 
-            data_queue.put((*res, pretrain_mixer.last_source))
+            # The state AFTER this batch travels with it, so the trainer can save
+            # the one for the last batch it actually consumed, not the prefetched ones.
+            data_queue.put((*res, pretrain_mixer.last_source, pretrain_mixer.state()))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
@@ -290,9 +301,10 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
 
     try:
         while True:
-            batch, doc_boundary, source = data_queue.get()
+            batch, doc_boundary, source, data_state = data_queue.get()
             if batch is None:
                 break
+            monitor.data_state = data_state
 
             # Count consumed samples as they are consumed (#24). Deriving this at
             # save time as step x BATCH_SIZE would be wrong for exactly the run

@@ -174,6 +174,9 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, run_id, wait=True):
                 # the run that needs it — one resumed at a different batch size
                 # than it was trained at, whose history spans both.
                 "samples_seen": monitor.samples_seen,
+                # Where the data stream is, exactly (#424). A fresh dict per batch
+                # that nothing mutates afterwards, so handing it over is safe.
+                "data_state": monitor.data_state,
             }),
             step=ocp.args.JsonSave(step),
         ),
@@ -254,6 +257,8 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
         # value, not a guess.
         monitor.samples_seen = m_state.get("samples_seen", restored["step"])
+        # Absent before #424: the resume then estimates the data position.
+        monitor.data_state = m_state.get("data_state")
 
         print(f"✅ Resuming from step {start_step} "
               f"({monitor.samples_seen:,} samples consumed)")

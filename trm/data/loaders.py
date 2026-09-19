@@ -61,6 +61,26 @@ class TextDataGenerator:
             self.is_new_file = True
             return True
 
+    def state(self):
+        """Where this reader is, exactly (#424): enough for `load_state` to continue
+        with the very next row an uninterrupted reader would serve. JSON-safe."""
+        return {"file_idx": int(self.current_file_idx), "pointer": int(self.pointer),
+                "open": self.data is not None, "is_new_file": self.is_new_file,
+                "exhausted": self.exhausted, "rng": self.rng.bit_generator.state}
+
+    def load_state(self, state):
+        """Continue from a `state()` snapshot. The open file is mapped again; the
+        rng resumes mid-stream, so every later file draws the offset it would have."""
+        self.rng.bit_generator.state = state["rng"]
+        self.current_file_idx, self.pointer = state["file_idx"], state["pointer"]
+        self.is_new_file, self.exhausted = state["is_new_file"], state["exhausted"]
+        self.skip_count = 0
+        self.data = None
+        if state["open"]:
+            path = self.files[self.current_file_idx - 1]
+            print(f"📖 Memory-mapping {path} (resuming at token {self.pointer:,})...")
+            self.data = np.load(path, mmap_mode='r')
+
     def get_batch(self, batch_size):
         if self.exhausted:
             return None, None
@@ -104,6 +124,8 @@ class TextDataGenerator:
 class DataMixer:
     def __init__(self, sources, weights, rng=None):
         self.sources = list(sources)
+        # Every source by its original index, alive or not: what `state()` saves.
+        self._all = list(sources)
         self.weights = list(weights)
         self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
         # Original index of each surviving source, so full-length weight lists
@@ -112,6 +134,23 @@ class DataMixer:
         # The original index of the source the last batch came from, or None when
         # it mixed several (#364: per-source gradient telemetry).
         self.last_source = None
+
+    def state(self):
+        """Every reader's `state()` plus the mixer's own draw stream and which
+        sources are still alive (#424). JSON-safe."""
+        return {"rng": self.rng.bit_generator.state, "alive": list(self._alive),
+                "weights": [float(w) for w in self.weights], "sources": [s.state() for s in self._all]}
+
+    def load_state(self, state):
+        if len(state["sources"]) != len(self._all):
+            raise ValueError(f"data state has {len(state['sources'])} sources, "
+                             f"the mixer {len(self._all)}: a different PRETRAIN_SOURCES")
+        self.rng.bit_generator.state = state["rng"]
+        for source, source_state in zip(self._all, state["sources"]):
+            source.load_state(source_state)
+        self._alive = list(state["alive"])
+        self.sources = [self._all[i] for i in self._alive]
+        self.weights = list(state["weights"])
 
     def set_weights(self, weights):
         """Update mixture weights with a full-length list (one weight per
