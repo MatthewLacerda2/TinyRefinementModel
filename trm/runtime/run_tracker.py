@@ -35,6 +35,7 @@ from trm.config import (
     MUON_NS_STEPS,
     MUON_EPS,
     MUON_NESTEROV,
+    LOSS_SCALE_GROWTH_INTERVAL,
 )
 from trm.runtime.layout import VAL_EVERY_OPT_STEPS
 from trm.train.schedules import CURRICULUM_STEPS, DECAY_STEPS, PEAK_LR, WARMUP_STEPS
@@ -209,6 +210,7 @@ class RunTracker:
             "MUON_NS_STEPS": MUON_NS_STEPS,
             "MUON_EPS": MUON_EPS,
             "MUON_NESTEROV": MUON_NESTEROV,
+            "LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL,
         }
 
     def _check_compatibility(self, metadata_path):

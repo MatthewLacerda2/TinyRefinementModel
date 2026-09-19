@@ -44,7 +44,13 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from trm.runtime.layout import LOG_REAL_STEPS  # standard library only: the supervisor stays jax-free
+from trm.runtime.layout import (  # standard library only: the supervisor stays jax-free
+    ACT_MAX_ALARM,
+    LOG_REAL_STEPS,
+    LOSS_SCALE_FLOOR_ALARM,
+    VRAM_HEADROOM_ALARM_MIB,
+    ZERO_GRAD_ALARM,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
@@ -110,6 +116,9 @@ class Observation:
     # largest checkpoint it has written (None until it has written one).
     free_gb: float | None = None
     checkpoint_gb: float | None = None
+    # The f16 margins the last metrics row crosses (#368), as (kind, sentence). An
+    # alarm, announced when it appears and when it clears; never a kill.
+    margins: tuple = ()
 
 
 @dataclass
@@ -497,6 +506,62 @@ def read_progress(metrics_csv: pathlib.Path) -> tuple[int, float | None]:
     return 0, None
 
 
+def read_last_row(metrics_csv: pathlib.Path) -> dict:
+    """The last complete row of the metrics CSV, {} when there is none yet."""
+    try:
+        with metrics_csv.open() as f:
+            rows = list(csv.DictReader(f))
+    except (OSError, csv.Error):
+        return {}
+    for row in reversed(rows):
+        if (row.get("step") or "").strip():
+            return row
+    return {}
+
+
+def _number(row: dict, key: str) -> float | None:
+    try:
+        value = float(row.get(key) or "")
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def margin_alarms(row: dict) -> tuple:
+    """The f16 margins this metrics row crosses (#368), as (kind, sentence). Pure.
+
+    The failures they warn of were all visible in real time and none was watched:
+    the champion trained itself to 65,120 of f16's 65,504 (#235); its loss scaler sat
+    at 1 while 8,320 micro-steps overflowed anyway (#199). A column a run does not
+    log (older runs, CPU) is simply not checked.
+    """
+    alarms = []
+    act = _number(row, "act_max")
+    if act is not None and act > ACT_MAX_ALARM:
+        alarms.append(("act_max", f"act_max {act:,.0f} > {ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
+    scale = _number(row, "loss_scale")
+    if scale is not None and scale <= LOSS_SCALE_FLOOR_ALARM:
+        alarms.append(("loss_scale", f"loss scale {scale:g} <= {LOSS_SCALE_FLOOR_ALARM:g}: the "
+                                     f"backward overflows with almost no scaling left"))
+    zero = _number(row, "applied_zero_frac_dense_max")
+    if zero is not None and zero >= ZERO_GRAD_ALARM:
+        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {ZERO_GRAD_ALARM:g}: "
+                                    f"gradients underflowing"))
+    peak, limit = _number(row, "arena_peak_mib"), _number(row, "arena_limit_mib")
+    if peak is not None and limit is not None and limit - peak < VRAM_HEADROOM_ALARM_MIB:
+        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {VRAM_HEADROOM_ALARM_MIB:,.0f}"))
+    return tuple(alarms)
+
+
+def margin_changes(raised: dict, now: tuple) -> list:
+    """The announcements for going from the margins `raised` ({kind: sentence}) to
+    `now`: each kind once when it appears, once when it clears, nothing while it
+    persists — a margin held for days must not announce every poll."""
+    current = dict(now)
+    return ([f"⚠ MARGIN: {sentence}" for kind, sentence in now if kind not in raised]
+            + [f"margin cleared: {raised[kind]}" for kind in raised if kind not in current])
+
+
 # JAX/XLA surface out-of-memory differently depending on the allocator: BFC says
 # RESOURCE_EXHAUSTED, cuda_async says CUDA_ERROR_OUT_OF_MEMORY, and the command
 # buffer path says it a third way. Match any of them.
@@ -600,6 +665,7 @@ class Supervisor:
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
+            margins=margin_alarms(read_last_row(self.metrics_csv)),
         )
 
     def run(self) -> str:
@@ -609,12 +675,16 @@ class Supervisor:
         started = time.time()
         self.announce(f"{_stamp()} ▶ supervising pid {proc.pid}: {' '.join(self.command)}")
         polls = 0
+        raised = {}  # the margins currently alarming, by kind (#368)
 
         while True:
             time.sleep(self.poll_seconds)
             polls += 1
             obs = self.observe(proc, started)
             decision = decide(obs, self.limits, state)
+            for change in margin_changes(raised, obs.margins):
+                self.announce(f"{_stamp()} {change}")
+            raised = {kind: raised.get(kind, sentence) for kind, sentence in obs.margins}
 
             line = (f"{_stamp()} {decision.outcome}: {decision.reason}"
                     + (f" (ce={obs.ce})" if obs.ce is not None else ""))

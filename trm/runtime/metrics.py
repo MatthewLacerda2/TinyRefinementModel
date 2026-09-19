@@ -35,6 +35,10 @@ COLUMNS = (
     Column("applied_grad_norm", 4),
     # 1 when that norm exceeded CLIP_NORM, so the clip, not the LR, sized the step (#358).
     Column("clip_active", None),
+    # The f16 loss scale at the row, and the micro-steps skipped as non-finite since
+    # launch (#368): the scaler's state as a column instead of a grep of train.log.
+    Column("loss_scale", None),
+    Column("skipped_micro_steps", None),
     Column("avg_forget_cost", 4, diag="forget_cost"),
     Column("diversity_loss", 6, diag="diversity_loss"),
     Column("temporal_drift", 6, diag="temporal_drift"),
@@ -159,7 +163,8 @@ class MetricsLogger:
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
             zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
-            clip_active=None, val_step=None, mix=None, grad_by_source=None):
+            clip_active=None, val_step=None, mix=None, grad_by_source=None,
+            loss_scale=None, skipped_micro_steps=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -196,6 +201,7 @@ class MetricsLogger:
                 "grad_norm_avg": grad_norm_avg, "zero_frac_dense_max": zero_frac_dense_max,
                 "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
                 "applied_grad_norm": applied_grad_norm, "clip_active": clip_active,
+                "loss_scale": loss_scale, "skipped_micro_steps": skipped_micro_steps,
                 "depth_avg": depth_avg, "val_ce": val_ce, "val_step": val_step,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
