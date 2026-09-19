@@ -417,3 +417,19 @@ def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp
     assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
     reasoner_only = plots.why_omitted(plain, ["tau"])
     assert reasoner_only == "not measured by this architecture"
+
+
+def test_a_run_with_blocks_csv_gets_the_two_heatmaps(tmp_path):
+    """#392: state on y, tokens on x, max and RMS as two images; parsed by runlog."""
+    from instruments.runlog import load
+
+    csv_path = a_run(tmp_path)
+    lines = ["step,block,act_max,act_rms"] + [
+        f"{step},{block},{10.0 * (block + 1) + step / 100:.2f},{0.1 * (block + 1):.4f}"
+        for step in range(5, 401, 5) for block in range(3)]
+    (csv_path.parent / "blocks.csv").write_text("\n".join(lines) + "\n")
+
+    steps, maxes, rmses = load(str(csv_path)).blocks()
+    assert maxes.shape == rmses.shape == (80, 3) and steps[0] == 5
+    figures = build(csv_path, tmp_path)
+    assert "blocks_act_max.png" in figures and "blocks_act_rms.png" in figures

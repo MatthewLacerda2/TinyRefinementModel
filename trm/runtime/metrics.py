@@ -1,6 +1,7 @@
 import csv
 import datetime
 import math
+import posixpath
 from typing import NamedTuple
 import fsspec
 # jax at module level: the module already needs jax.numpy, so a lazy import in
@@ -115,6 +116,18 @@ def _arena_limit_mib():
     return _allocator_mib("bytes_limit")
 
 
+# The per-block activation readings (#392), beside metrics.csv: long format, one row
+# per (step, state), because the number of states follows PLAIN_LAYERS and a fixed
+# metrics schema cannot. State 0 is the embedding, state k the stream after block k.
+BLOCKS_FILENAME = "blocks.csv"
+BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms")
+
+
+def blocks_file_for(history_file):
+    """blocks.csv beside metrics.csv, for a local path or an fsspec URL alike."""
+    return posixpath.join(posixpath.dirname(history_file), BLOCKS_FILENAME)
+
+
 class MetricsLogger:
     def __init__(self, history_file, start_opt_step=None):
         self.history_file = history_file
@@ -123,12 +136,14 @@ class MetricsLogger:
         # omits those keys, and their columns stay empty instead of being filled
         # with zeros that look like measurements.
         self.diag_keys = [c.diag for c in COLUMNS if c.diag]
+        self.blocks_file = blocks_file_for(history_file)
         self.fields = [c.name for c in COLUMNS]
         # Warn once per metric name when a non-finite value shows up, so a broken
         # diagnostic can't silently fill the CSV with NaN.
         self._warned_nonfinite = set()
         if start_opt_step is not None:
             self._truncate_replayed_rows(start_opt_step)
+            self._truncate_replayed_blocks(start_opt_step)
 
     def _truncate_replayed_rows(self, start_opt_step):
         """On resume, drop rows at/after the restored step. Checkpoints restore to
@@ -154,6 +169,41 @@ class MetricsLogger:
                 writer.writerows(kept)
         except (OSError, ValueError, KeyError) as e:
             print(f"⚠️ Could not trim replayed rows from {self.history_file}: {e}")
+
+    def _truncate_replayed_blocks(self, start_opt_step):
+        """The same resume trim for blocks.csv: rows at or after the restored step go."""
+        try:
+            fs, path = fsspec.core.url_to_fs(self.blocks_file)
+            if not fs.exists(path) or fs.size(path) == 0:
+                return
+            with fsspec.open(self.blocks_file, "r", newline="") as f:
+                rows = list(csv.DictReader(f))
+            kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
+            if len(kept) == len(rows):
+                return
+            with fsspec.open(self.blocks_file, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=BLOCKS_FIELDS, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(kept)
+        except (OSError, ValueError, KeyError) as e:
+            print(f"⚠️ Could not trim replayed rows from {self.blocks_file}: {e}")
+
+    def _log_blocks(self, step, diag):
+        """One blocks.csv row per state, when the model reports per-block readings.
+        An architecture that does not (the refiner, the reasoner) writes nothing:
+        absent, never zero (#105)."""
+        if "act_max_blocks" not in diag:
+            return
+        maxes = [float(v) for v in jnp.ravel(diag["act_max_blocks"])]
+        rmses = [float(v) for v in jnp.ravel(diag["act_rms_blocks"])]
+        fs, path = fsspec.core.url_to_fs(self.blocks_file)
+        fresh = not fs.exists(path) or fs.size(path) == 0
+        with fsspec.open(self.blocks_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            if fresh:
+                writer.writerow(BLOCKS_FIELDS)
+            for block, (peak, rms) in enumerate(zip(maxes, rmses)):
+                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}"])
 
     def extract_diags(self, diag, jnp_mean_fn):
         """Reduces the diagnostics this model reported to plain floats. Keys the
@@ -212,3 +262,4 @@ class MetricsLogger:
             row = {c.name: _cell(diag_dict.get(c.diag) if c.diag else args[c.name], c.places)
                    for c in COLUMNS}
             writer.writerow(row)
+        self._log_blocks(step, out.diag)

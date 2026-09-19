@@ -834,6 +834,43 @@ def health_charts(runlog, outdir):
     return written
 
 
+def block_heatmaps(runlog, outdir):
+    """Two images, state on y and tokens on x: the peak |activation| and the RMS of
+    the residual stream after each block (#392). Max is the f16 overflow risk, RMS
+    the scale a block's contribution competes against (#357). Omitted, and said so,
+    when the run wrote no blocks.csv."""
+    readings = runlog.blocks()
+    if readings is None:
+        print("blocks: omitted — this run wrote no blocks.csv (before #392, or an arch "
+              "that does not report per-block readings).")
+        return []
+    from matplotlib.colors import LogNorm
+
+    cfg = RunConfig.of(runlog)
+    steps, maxes, rmses = readings
+    tokens = steps * cfg.tokens_per_opt_step
+    labels = ["emb"] + [str(k) for k in range(1, maxes.shape[1])]
+    written = []
+    for values, name, title, bar in (
+            (maxes, "blocks_act_max.png", "Peak |activation| after each block", "max |z| (log)"),
+            (rmses, "blocks_act_rms.png", "Residual-stream RMS after each block", "RMS of z (log)")):
+        fig, ax = plt.subplots(figsize=FIGSIZE)
+        positive = values[values > 0]
+        norm = LogNorm(vmin=positive.min(), vmax=positive.max()) if positive.size else None
+        mesh = ax.pcolormesh(tokens, np.arange(values.shape[1]), values.T, norm=norm,
+                             cmap="viridis", shading="nearest")
+        fig.colorbar(mesh, ax=ax, pad=0.01).set_label(bar)
+        ax.set_yticks(np.arange(values.shape[1]), labels)
+        ax.set_ylabel("state (embedding, then after block k)")
+        _token_axis(ax)
+        ax.set_title(title, loc="left")
+        _note(ax, "one row per state of the residual stream, read on the logging micro-step. "
+                  "f16's ceiling is 65,504; the #368 alarm watches the peak over all rows.")
+        _run_label(ax, runlog)
+        written.append({"path": _save(fig, outdir, name), "panels": [name[:-4]], "omitted": []})
+    return written
+
+
 def margin_report(runlog):
     """The two margins that are not worth a chart, in words, on every build.
 
@@ -876,7 +913,7 @@ def build(log=None, outdir="."):
 
     with plt.rc_context(STYLE):
         figures = [training_curve(runlog, outdir), *health_charts(runlog, outdir),
-                   throughput(runlog, outdir)]
+                   throughput(runlog, outdir), *block_heatmaps(runlog, outdir)]
     figures = [f for f in figures if f]
 
     print(f"run {runlog.run_id} ({describe(RunConfig.of(runlog))}): "

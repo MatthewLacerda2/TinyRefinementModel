@@ -60,7 +60,8 @@ class PlainTransformer(LanguageModel):
         self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
     def _stream(self, tokens, keep_states=False):
-        """The residual stream through the stack: (final z, act_max, states).
+        """The residual stream through the stack: (final z, act_max per state,
+        residual RMS per state, states).
 
         One body for both the forward pass and `capture_trajectory`, so what an
         instrument reads is the computation the model actually runs. `states` is
@@ -94,13 +95,25 @@ class PlainTransformer(LanguageModel):
         #
         # One max-reduce per block against a forward pass: unmeasurable. Detached,
         # so it cannot perturb the gradient it is reporting on.
-        act_max = jnp.max(jnp.abs(z.astype(jnp.float32)))
+        #
+        # Kept PER STATE (#392): index 0 is the embedding, index k the stream after
+        # block k, so a hot stream says which block made it hot. Beside the max, the
+        # RMS: max is the f16 overflow risk (one channel is enough), RMS the typical
+        # scale a block's contribution competes against, which is #357's rounding.
+        maxes, rmses = [], []
+
+        def measure(state):
+            state = state.astype(jnp.float32)
+            maxes.append(jnp.max(jnp.abs(state)))
+            rmses.append(jnp.sqrt(jnp.mean(jnp.square(state))))
+
+        measure(z)
         for blk in self.blocks:
             z = blk(z, pad_bias)
-            act_max = jnp.maximum(act_max, jnp.max(jnp.abs(z.astype(jnp.float32))))
+            measure(z)
             if keep_states:
                 states.append(z)
-        return z, act_max, states
+        return z, jnp.stack(maxes), jnp.stack(rmses), states
 
     def __call__(self, tokens, depth=None, training=False, new_document=True,
                  logits_at=None):
@@ -108,9 +121,14 @@ class PlainTransformer(LanguageModel):
         # use: compute per token is fixed, and no state crosses windows.
         del depth, new_document
 
-        z, act_max, _ = self._stream(tokens)
+        z, act_maxes, act_rmses, _ = self._stream(tokens)
         z = self.out_norm(z)
-        diag = {"act_max": jax.lax.stop_gradient(act_max)}
+        diag = {
+            # The scalar every reader since #235 reads, and the #368 alarm watches.
+            "act_max": jax.lax.stop_gradient(jnp.max(act_maxes)),
+            "act_max_blocks": jax.lax.stop_gradient(act_maxes),
+            "act_rms_blocks": jax.lax.stop_gradient(act_rmses),
+        }
 
         if training:
             # Pre-head states; the loss projects the tied head per chunk (#19) so the
@@ -136,5 +154,5 @@ class PlainTransformer(LanguageModel):
         in `__call__`.
         """
         del depth
-        _, _, states = self._stream(tokens, keep_states=True)
+        *_, states = self._stream(tokens, keep_states=True)
         return jnp.stack([state.astype(jnp.float32) for state in states]), None
