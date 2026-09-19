@@ -26,7 +26,7 @@ probe interval of each other, 8 opt steps = 1.05M tokens).
 cap = 67.108864
 metric_key = "tokens_to_target_M"
 metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
-matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only Z_LOSS_WEIGHT differs"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only Z_LOSS_WEIGHT differs; the control arm is shared with the other four five-knob pairs (#359 #361 #369 #375), all run from one commit"
 notes = """
 Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
 budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad pinned at
@@ -38,14 +38,16 @@ min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/
 command = ["python", "-m", "experiments.recipe.tokens_to_ce",
            "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
            "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
-           "--pad-token-id", "50256", "--tag", "369z"]
+           "--pad-token-id", "50256", "--tag", "k5"]
 seeds = [0, 1, 2]
 seed_flag = "--seed"
 env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
 
-[arms.no_z]
+[arms.control]
 role = "control"
-flags = ["--set", "Z_LOSS_WEIGHT=0"]
+# Shared by the five pairs of #359/#361/#369/#375: today's model, no knob
+# set, same tag, so each spec after the first reads the recorded runs.
+flags = []
 
 [arms.z_loss]
 role = "treatment"
@@ -55,7 +57,7 @@ flags = ["--set", "Z_LOSS_WEIGHT=1e-4"]
 [criteria.z_loss_needs_more_tokens]
 rule = "beats"
 treatment = "z_loss"
-control = "no_z"
+control = "control"
 sigmas = 2.0
 min_delta = 0.85
 points = ["run"]
@@ -64,7 +66,7 @@ require = "all"
 [criteria.z_loss_costs_nothing]
 rule = "within"
 treatment = "z_loss"
-control = "no_z"
+control = "control"
 sigmas = 2.0
 points = ["run"]
 require = "all"
