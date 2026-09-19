@@ -7,8 +7,9 @@ neutral model contract (`lm_contract.LanguageModel`).
 
 Plan A is a plain causal LM as far as the training loop is concerned: each window
 is scored independently, there is no state carried between them, and there are no
-auxiliary objectives. So it implements `__call__` and nothing else — the contract's
-defaults (no carried state, no graded extras) are already the truth here. Before
+auxiliary objectives. So beyond `__call__` it overrides only `training_depth` (the
+sampled loop depth, #316) and `capture_trajectory` (for instruments) — the contract's
+other defaults (no carried state, no graded extras) are already the truth here. Before
 #105 this same fact had to be expressed as *impersonation*: a zero forget-cost and
 a zero diversity loss for schedules to multiply, a never-read hunch buffer for the
 trainer's bookkeeping to write into, and placeholder zeros for the reasoner's
@@ -34,6 +35,7 @@ from trm.config import (
 )
 from trm.model.contract import LMOutput, LanguageModel
 from trm.model.refiner import CausalRefiner
+from trm.train.schedules import sample_reasoning_depth
 
 
 class RefinerForTraining(LanguageModel):
@@ -57,6 +59,11 @@ class RefinerForTraining(LanguageModel):
             time_signal=time_signal,
             post_norm=post_norm,
         )
+
+    def training_depth(self, micro_step):
+        """Loops of the shared block for this micro-step: uniform in
+        [1, MAX_STEPS_LIMIT], replayed exactly on resume (#316)."""
+        return sample_reasoning_depth(micro_step)
 
     def __call__(self, tokens, depth=INFERENCE_DEPTH, training=False, new_document=True,
                  logits_at=None):

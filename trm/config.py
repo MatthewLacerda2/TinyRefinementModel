@@ -165,10 +165,12 @@ PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
 # ── Retired architectures ───────────────────────────────────────────────────────
 # Knobs only the refiner and the reasoner read, kept so their checkpoints still load
 # (MODEL_ARCH=refiner / reasoner). None of them shapes the plain model; #292 deletes
-# this block once a plain champion exists. MAX_STEPS_LIMIT is not here: the trainer
-# samples a depth from it for every arch, plain included (#316).
+# this block once a plain champion exists.
 NUM_BLOCKS = 8     # reasoner
 SHARED_SLOTS = 32  # reasoner
+# The deepest sampled training depth, for the arches that have one: since #316 the
+# trainer asks the model for its depth, and plain answers None.
+MAX_STEPS_LIMIT = 8
 # Refiner time signal (#86): how each refinement pass is told which step it is.
 #   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
 #                  so inference depth is an open dial (finding
@@ -203,7 +205,6 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 # ── end of retired architectures ────────────────────────────────────────────────
 
 # Training
-MAX_STEPS_LIMIT = 8
 # BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
 # fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
 # ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
@@ -220,7 +221,8 @@ MAX_STEPS_LIMIT = 8
 #   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
 #     cannot instantiate a CUDA command buffer, 28 alive graphs (random-depth
 #     training compiles one program per sampled depth, x the accumulate/apply
-#     branches). Squeezed from both sides on a 6GB card.
+#     branches; since #316 only for the looped arches — plain compiles one).
+#     Squeezed from both sides on a 6GB card.
 # bench_train_step times a grad step; it never ran the trainer, which also holds
 # the validation probe and the checkpoint managers. So the +40% was real for what
 # it measured and irrelevant to what we ship — every run that ever finished, both

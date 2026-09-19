@@ -5,10 +5,11 @@ predictions (or pre-head states for the chunked loss), plus any auxiliary terms
 you want graded.* Every architecture implements this; none of them has to wear
 another architecture's costume.
 
-The four hooks below all default to the stateless, no-extra-objective case, so a
-plain LM implements `__call__` and stops. An architecture that carries state
-between windows, or that has its own regularizers, overrides exactly the hooks
-it needs — and the shared loop stays free of its bookkeeping (#105).
+The hooks below all default to the stateless, fixed-compute, no-extra-objective
+case, so a plain LM implements `__call__` and stops. An architecture that carries
+state between windows, loops to a sampled depth, or has its own regularizers,
+overrides exactly the hooks it needs — and the shared loop stays free of its
+bookkeeping (#105).
 """
 
 from contextlib import contextmanager
@@ -84,6 +85,19 @@ class LanguageModel(nnx.Module):
             f"{type(self).__name__} has no trajectory to capture. This instrument "
             f"requires an architecture that implements it (MODEL_ARCH=plain or refiner)."
         )
+
+    def training_depth(self, micro_step):
+        """The depth to train `micro_step` at, or None for an architecture without
+        a depth dial. Default: None.
+
+        Depth is a property of the architecture, not of the loop (#316). The loop
+        used to sample one for every arch and hand it to the grad step as a static
+        jit argument, so a model that discards depth still compiled one identical
+        program per sampled value (8 on the plain stack). None is one static value:
+        one program. An arch that loops overrides this, and its draw must be a pure
+        function of the micro-step so a resumed run replays the same depths.
+        """
+        return None
 
     def grade_aux(self, window_aux, opt_step):
         """Weight this step's auxiliary terms into named scalars for the loss.

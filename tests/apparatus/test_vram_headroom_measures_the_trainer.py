@@ -30,11 +30,25 @@ def test_the_default_run_crosses_an_optimizer_apply():
     assert parser_defaults == {"ACCUMULATION_STEPS"}, "default must be ACCUMULATION_STEPS + 1"
 
 
-def test_every_sampled_depth_is_compiled():
-    """Each depth is its own program, and each compiled graph costs driver memory —
-    for plain too, which the trainer still hands a sampled static depth (#316)."""
-    assert set(smoke.depth_schedule(2 * MAX_STEPS_LIMIT)) == set(range(1, MAX_STEPS_LIMIT + 1))
-    assert "depth_schedule(args.micro_steps" in SOURCE, "one schedule for every arch, as the trainer runs"
+class _Arch:
+    """Just the contract hook the schedule reads, answered as the arch would."""
+
+    def __init__(self, depth_dial):
+        self.depth_dial = depth_dial
+
+    def training_depth(self, micro_step):
+        return (micro_step % MAX_STEPS_LIMIT) + 1 if self.depth_dial else None
+
+
+def test_every_sampled_depth_is_compiled_for_a_looped_arch():
+    """Each depth is its own program, and each compiled graph costs driver memory."""
+    assert set(smoke.depth_schedule(_Arch(True), 2 * MAX_STEPS_LIMIT)) == set(range(1, MAX_STEPS_LIMIT + 1))
+
+
+def test_an_arch_without_a_depth_dial_compiles_one_program_as_the_trainer_does():
+    """The trainer passes plain its training_depth, None, every step (#316)."""
+    assert set(smoke.depth_schedule(_Arch(False), 20)) == {None}
+    assert "depth_schedule(model, args.micro_steps" in SOURCE, "the schedule asks the model it sizes"
 
 
 def test_the_validation_probe_is_inside_the_measurement():

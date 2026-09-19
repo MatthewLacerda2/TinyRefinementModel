@@ -40,6 +40,18 @@ def test_the_mean_is_over_the_steps_actually_held():
     assert window.means()[3] == 4.0
 
 
+def test_a_quantity_the_arch_does_not_have_means_none_not_zero():
+    """Plain has no depth dial (#316): its depth is None every micro-step, and the
+    window's mean is None — a blank depth_avg cell, never a 0.0 that reads as a draw."""
+    window = LogWindow()
+    for loss in (3.0, 5.0):
+        window.add(loss=loss, token_loss=loss, grad_norm=1.0, depth=None)
+    assert window.means() == (4.0, 4.0, 1.0, None)
+    window.reset()
+    window.add(loss=1.0, token_loss=1.0, grad_norm=1.0, depth=2)
+    assert window.means()[3] == 2.0, "reset forgets the None"
+
+
 def test_the_trainer_logs_through_the_window_not_a_nominal_divisor():
     """The replay above is only evidence if train_loop uses the same object."""
     source = inspect.getsource(trainer.train_loop)

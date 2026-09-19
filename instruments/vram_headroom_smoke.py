@@ -17,9 +17,9 @@ Now, in one fresh process per config:
     sets (tests/apparatus/test_instrument_environment.py holds them together);
   * production's optimizer chain (bf16 first moment, masked weight decay, MultiSteps);
   * ACCUMULATION_STEPS + 1 micro-steps, so the optimizer apply is inside the
-    measurement, cycling every sampled depth so each depth's program is compiled
-    (the plain stack too: the trainer passes it the sampled depth as a static jit
-    argument, #316);
+    measurement, running the depths the trainer would: for a looped arch every
+    sampled depth, so each depth's program is compiled; for the plain stack its one
+    depth-free program (#316);
   * then one validation probe, as the trainer runs on its cadence.
 
 Two numbers, kept apart because they fail differently:
@@ -97,15 +97,15 @@ class CardSampler:
         self._thread.join(timeout=1.0)
 
 
-def depth_schedule(micro_steps, max_depth=MAX_STEPS_LIMIT):
-    """Depths to run, cycling 1..max so every depth program is compiled — the
-    trainer samples them all, and each compiled graph costs driver memory.
+def depth_schedule(model, micro_steps, max_depth=MAX_STEPS_LIMIT):
+    """The depths to run, matching the programs the trainer compiles for `model`.
 
-    For every arch, the plain stack included. It ignores depth, but the trainer
-    still samples one per micro-step and passes it to the grad step as a static jit
-    argument, so a plain run holds one compiled program per depth (#316). This used
-    to compile one program for plain and so measured less than a launch holds. When
-    #316 makes depth an arch property, this follows the trainer."""
+    The trainer asks the model (`training_depth`, #316). An arch without a depth dial
+    answers None every micro-step, so it holds one grad-step program, and so does
+    this. A looped arch samples every depth in 1..max over a run, and each compiled
+    graph costs driver memory, so this cycles through all of them."""
+    if model.training_depth(0) is None:
+        return [None] * micro_steps
     return [(i % max_depth) + 1 for i in range(micro_steps)]
 
 
@@ -144,7 +144,7 @@ def main(argv=None):
     device = jax.local_devices()[0]
 
     with CardSampler() as card:
-        for step, depth in enumerate(depth_schedule(args.micro_steps, args.depth)):
+        for step, depth in enumerate(depth_schedule(model, args.micro_steps, args.depth)):
             loss, _out, grads, _gn = compute_grad_step(model, batch, step, depth, doc_boundary)
             apply_grads(optimizer, grads, model)
         float(loss)

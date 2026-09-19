@@ -21,7 +21,7 @@ from trm.model.layers import (
     calculate_slot_stability_loss,
 )
 from trm.model.contract import LMOutput, LanguageModel
-from trm.train.schedules import WARMUP_STEPS
+from trm.train.schedules import WARMUP_STEPS, sample_reasoning_depth
 
 # The weights of this model's two auxiliary objectives, by opt step. They live here,
 # not in trm/train/schedules.py: no other architecture reports an auxiliary term
@@ -323,6 +323,11 @@ class UniversalReasoner(LanguageModel):
 
     # --- The contract's optional hooks: this architecture's own bookkeeping,
     # which used to live in the shared training loop (#105). ---
+
+    def training_depth(self, micro_step):
+        """Reasoning-scan steps for this micro-step: uniform in [1, MAX_STEPS_LIMIT],
+        replayed exactly on resume (#316)."""
+        return sample_reasoning_depth(micro_step)
 
     def grade_aux(self, window_aux, opt_step):
         """Both regularizers, summed over windows and weighted by their schedules.

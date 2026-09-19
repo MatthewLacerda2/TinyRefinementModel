@@ -57,6 +57,14 @@ def test_the_console_line_shows_only_the_diagnostics_the_model_reported(tmp_path
     assert "Tau: 0.5000" in line and "Drift: 0.500000" in line
 
 
+def test_an_arch_without_a_depth_dial_writes_a_blank_depth(tmp_path, capsys):
+    """#316: plain logs depth_avg=None — an empty cell, like any arch-optional column,
+    and no `Depth:` on the console."""
+    _, rows = _log_one(tmp_path, depth_avg=None)
+    assert rows[0]["depth_avg"] == ""
+    assert "Depth:" not in capsys.readouterr().out
+
+
 def test_a_row_says_when_it_was_written(tmp_path):
     before = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
     _, rows = _log_one(tmp_path)
