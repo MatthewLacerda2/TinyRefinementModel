@@ -40,7 +40,33 @@ REPORTS = {
     "tokens_to_target_M": ("measured", "opt step of the first validation row at or below --target-ce, "
                                        "x TOKENS_PER_OPT_STEP; the cap when never reached"),
     "final_val_ce": ("sampled", "the validation probe's last reading before the cap (EVAL_ROWS held-out rows)"),
+    "minutes_to_target": ("measured", "wall_clock of the row that first reached --target-ce minus that of the "
+                                      "first logged row (compile excluded); the run's whole span when never reached"),
 }
+
+
+def minutes_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: int) -> float | None:
+    """Wall-clock minutes from the first logged row to the row that first read at or
+    below the target (#385: what batch 2 buys is speed, so that pair reads time). The
+    first row is after compile, so both arms are timed from a warm start. The run's
+    whole logged span when the target is never reached; None without wall_clock."""
+    import datetime
+
+    def stamp(row):
+        return datetime.datetime.strptime(row["wall_clock"], "%Y-%m-%dT%H:%M:%SZ")
+
+    first = last = None
+    with metrics_csv.open() as f:
+        for row in csv.DictReader(f):
+            if not row.get("wall_clock") or not (row.get("step") or "").isdigit():
+                continue
+            if int(row["step"]) > cap_steps:
+                break
+            first = first or row
+            last = row
+            if row.get("val_ce") and float(row["val_ce"]) <= target_ce:
+                return (stamp(row) - stamp(first)).total_seconds() / 60
+    return None if first is None else (stamp(last) - stamp(first)).total_seconds() / 60
 
 
 def tokens_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: int, tokens_per_opt_step: int):
@@ -94,6 +120,11 @@ def main(argv=None) -> int:
                     help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
                          "seed inside one probe interval reports the same token count, which is "
                          "how #26 stage 2 came out with sigma_pooled exactly 0.")
+    ap.add_argument("--layers", type=int, default=None,
+                    help="PLAIN_LAYERS for this arm (#385), overriding the spec's env. Unset: the env's.")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="BATCH_SIZE (#385): micro-batch rows; accumulation follows so tokens per "
+                         "opt step stay fixed. Unset: 1.")
     ap.add_argument("--lr-schedule", choices=("cosine", "wsd"), default=None,
                     help="LR_SCHEDULE (#386): the cosine, or warmup-stable-decay. Unset: cosine.")
     ap.add_argument("--pad-token-id", type=int, default=None,
@@ -108,6 +139,8 @@ def main(argv=None) -> int:
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
             + (f"_pad{args.pad_token_id}" if args.pad_token_id is not None else "")
             + (f"_{args.lr_schedule}" if args.lr_schedule is not None else "")
+            + (f"_L{args.layers}" if args.layers is not None else "")
+            + (f"_b{args.batch}" if args.batch is not None else "")
             + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
@@ -130,6 +163,10 @@ def main(argv=None) -> int:
         env["PAD_TOKEN_ID"] = str(args.pad_token_id)
     if args.lr_schedule is not None:
         env["LR_SCHEDULE"] = args.lr_schedule
+    if args.batch is not None:
+        env["BATCH_SIZE"] = str(args.batch)
+    if args.layers is not None:
+        env["PLAIN_LAYERS"] = str(args.layers)
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +197,9 @@ def main(argv=None) -> int:
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
     results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
-                 reached=float(reached), probe_aligned=float(aligned))
+                 reached=float(reached), probe_aligned=float(aligned),
+                 minutes_to_target=minutes if (minutes := minutes_to_target(
+                     metrics, args.target_ce, args.opt_steps)) is not None else float("nan"))
     return 0
 
 

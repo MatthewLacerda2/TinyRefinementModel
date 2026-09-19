@@ -235,8 +235,14 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 #
 # Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
 # and the learning dynamics are all identical either way: same model, same run.
-BATCH_SIZE = 1
-ACCUMULATION_STEPS = 128
+# Env-overridable for the #385 pair (8 layers + batch 2 against 9 + batch 1). Muon's
+# 380 MiB and #316's single program changed the arithmetic above: the 2026-09-19 smoke
+# measured 8 layers at batch 2 with 382 MiB of arena headroom (on #385). The product
+# with ACCUMULATION_STEPS stays 128, so tokens per optimizer step do not move.
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1"))
+if 128 % BATCH_SIZE:
+    raise SystemExit(f"BATCH_SIZE={BATCH_SIZE} must divide 128, so tokens per opt step stay fixed")
+ACCUMULATION_STEPS = 128 // BATCH_SIZE
 # Target tokens consumed per optimizer step: each micro-step scores two
 # MAX_SEQ_LEN prediction windows, ACCUMULATION_STEPS micro-steps make one opt step.
 TOKENS_PER_OPT_STEP = ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
