@@ -231,11 +231,17 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 1. **`architecture`** — the *repository's* architecture and environment. Comes before
    everything: the first job is an environment Claude can trust and operate
-   programmatically, without surprises. (Note the name clash: a change to the *model's*
+   programmatically, without surprises. In that order: **code that reads clearly and
+   stays lean**, with a structure whose shape is obvious; **automation that keeps it on
+   the rails**, so a regression or a drift fails a test or a gate instead of waiting to
+   be noticed; then **rules that make Claude's work clear and unambiguous**, written down
+   where a fresh session will find them. (Note the name clash: a change to the *model's*
    architecture — say GQA → multi-head latent attention — is an **`idea`**, not this.
    This label is about the harness/repo, not the network.)
-2. **`tools`** — actual code that is *not* LLM research per se: the harness, instruments,
-   runners, CI. Comes second — tools are what let ideas be tested cheaply.
+2. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
+   the model, research and investigate: the harness, instruments, runners, telemetry, CI.
+   Comes second — tools are what let ideas be tested cheaply. Only after both does the
+   work turn to the model itself.
 3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
    what the model is**. Same model, fewer resources. (If it changes the model, it's an
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
