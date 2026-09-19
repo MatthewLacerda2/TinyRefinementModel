@@ -23,6 +23,7 @@ from trm.config import (
     PLAIN_LAYERS,
     POST_NORM,
     REFINER_ENCODER_LAYERS,
+    RESIDUAL_DTYPE,
     TIME_SIGNAL,
     TRM_OPTIMIZER,
     MUON_LR_MULT,
@@ -206,6 +207,8 @@ class RunTracker:
             "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
             "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
             "PLAIN_LAYERS": PLAIN_LAYERS,
+            # The residual stream's width (#357): same tree, different numbers.
+            "RESIDUAL_DTYPE": str(RESIDUAL_DTYPE),
             # Tree-shaping knobs the resume check compares (#317); runs recorded
             # before them skip the comparison.
             "POST_NORM": POST_NORM,

@@ -15,6 +15,12 @@ import jax.numpy as jnp
 # test suite (which defaults to CPU while the GPU trains) sets it. Never set
 # it for training.
 COMPUTE_DTYPE = jnp.float32 if os.environ.get("FORCE_F32_COMPUTE") else jnp.float16
+# The residual stream's dtype (#357): the value every block adds into, so an
+# accumulator under the policy in CLAUDE.md, which says f32. It stays f16 until #357's
+# pair judges the change, because it changes the numbers the model computes. In f16 a
+# block's O(1) output rounds to nothing once the stream passes ~4k. Never narrower
+# than COMPUTE_DTYPE, so the f32 test path stays all-f32.
+RESIDUAL_DTYPE = jnp.promote_types(COMPUTE_DTYPE, os.environ.get("RESIDUAL_DTYPE", "float16"))
 
 # Persistent compilation cache (#204). Every process used to compile from scratch:
 # each supervisor relaunch, test run, smoke and instrument. It makes nothing

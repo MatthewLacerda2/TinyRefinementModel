@@ -1,0 +1,93 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "357-f32-residual"
+status = "open"
+title = "The residual stream in f32 vs f16, matmuls f16 in both"
+hypothesis = """
+The residual stream is the accumulator every block adds into, and it runs in f16: 10
+mantissa bits, so once the stream passes ~4k a block's O(1) output rounds to nothing,
+and the 4B champion's stream reached 64,896 of f16's 65,504 (#235, #357). Keeping the
+stream in f32 (the embedding's output, every `x + branch`, the norms' input) while the
+matmuls stay f16 is standard mixed precision, and CLAUDE.md's dtype policy asks for it.
+
+The change's benefit is over a long run, when the stream is hot. At 512 steps the plain
+arms sit at act_max 10-55, where f16 rounds nothing that matters. So this pair's job is
+to show the change costs nothing early. The keep is the stream's margin in the base
+run, read from the act_max / act_rms telemetry (#392).
+
+Prediction registered: parity on tokens to 5.85 (INCONCLUSIVE reads as KEEP here, see
+the readouts), peak arena +10-40 MiB, throughput within 3%. I do not expect a KILL.
+"""
+issue = 357
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only RESIDUAL_DTYPE differs"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad pinned at
+50256 in both arms (#373 is judged separately). Both arms are new runs.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373 and #359.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "357"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.f16_stream]
+role = "control"
+flags = ["--set", "RESIDUAL_DTYPE=float16"]
+
+[arms.f32_stream]
+role = "treatment"
+flags = ["--set", "RESIDUAL_DTYPE=float32"]
+
+# Tokens: LOWER is better, so the f32 stream losing is the treatment's number being larger.
+[criteria.f32_stream_needs_more_tokens]
+rule = "beats"
+treatment = "f32_stream"
+control = "f16_stream"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.f32_stream_costs_nothing]
+rule = "within"
+treatment = "f32_stream"
+control = "f16_stream"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["f32_stream_costs_nothing"]
+kill_if = ["f32_stream_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: anything but KILL adopts the f32
+stream (RESIDUAL_DTYPE defaults to float32 in the recording PR), because the pair is a
+regression guard and the benefit is argued from the dtype policy and #235. That
+includes an f32 win beyond 2 sigma, which a parity criterion reads as INCONCLUSIVE.
+KILL (>= 2 sigma and >= 0.85M more tokens) keeps f16 and is a real, surprising result
+that gets a findings entry.
+Adoption also needs the memory to fit: peak arena (arena_limit_mib and the allocator
+peak in metrics.csv) must leave the 150 MiB alarm margin at the base run's shape
+(#385's winner). If it does not, the recording PR says so and the owner decides.
+Readouts, no weight: final_val_ce at the cap; act_max and act_rms per block (#392);
+tok/s; the loss-scale column and skipped micro-steps.
+"""
