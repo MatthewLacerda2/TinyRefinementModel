@@ -63,7 +63,8 @@ def test_the_trainer_logs_both_and_names_them_apart():
     source = inspect.getsource(trainer.train_loop)
     assert "applied_gradient_stats(optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
     assert "applied_gradient(optimizer, grads)" not in source
-    assert "applied_zero_frac_dense_max=" in source and "zero_frac_dense_max=" in source
+    # That both are LOGGED is observed, not read off the source: a real run's row
+    # carries them (tests/apparatus/test_trainer_end_to_end.py).
     fields = MetricsLogger("/dev/null").fields
     assert "applied_zero_frac_dense_max" in fields and "zero_frac_dense_max" in fields
 
@@ -74,11 +75,10 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
     """grad_norm_avg (~11 on the 4B run, per micro-step) was never comparable to the
     1.0 clip, which acts on the 128-step mean. The trainer now logs that mean's norm."""
     import inspect
-    from trm.train import optimizers, trainer
+    from trm.train import optimizers
 
-    source = inspect.getsource(trainer.train_loop)
-    assert "applied_fracs, applied_norm = applied_gradient_stats(optimizer, grads)" in source
-    assert "applied_grad_norm=applied_grad_norm" in source
+    # The logged column is observed in a real run (tests/apparatus/test_trainer_end_to_end.py);
+    # the clip it is read against is the optimizer's.
     assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
 
 

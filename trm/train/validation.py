@@ -19,7 +19,7 @@ VAL_ROWS = EVAL_ROWS
 VAL_FIXED_DEPTH = 4
 # Far past any plausible training consumption (an 8k-opt-step run consumes
 # under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
-VAL_SKIP_SAMPLES = 3_000_000
+VAL_SKIP_SAMPLES = int(os.environ.get("VAL_SKIP_SAMPLES", "3000000"))
 # The other corpora the trainer probes (#363), each read from its own tail: the last
 # VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus. The
 # shipped end-mix is 40% code and 25% math, and a probe that reads prose alone cannot

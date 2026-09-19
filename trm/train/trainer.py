@@ -220,12 +220,12 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
 
-    if start_step > 1 and data_state is not None:
+    if start_step > 0 and data_state is not None:
         # Exact (#424): the reader and mixer state saved with the last batch the
         # checkpointed run consumed, so the next row is the one it would have read.
         pretrain_mixer.load_state(data_state)
         print("📍 Data stream restored exactly from the checkpoint (#424)")
-    elif start_step > 1:
+    elif start_step > 0:
         # A checkpoint from before #424: the position is estimated, and the stream
         # after it is not the one the run would have read.
         print("⚠️ Data position estimated from the sample count: this checkpoint predates "
@@ -236,6 +236,7 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
         # the run that wrote the checkpoint and the one resuming it.
         avg_weights = get_average_curriculum_weights(start_opt_step)
         skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
+                 # Pre-#24 checkpoints come from runs that counted from 1 (#355).
                  else samples_from_micro_steps(start_step - 1, avg_weights))
         for gen, skip in zip(pretrain_sources, skips):
             gen.skip_count = skip
@@ -264,8 +265,12 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
 def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
     # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
-    # (start_step == 1) appends to any existing CSV untouched.
-    start_opt_step = start_step // ACCUMULATION_STEPS if start_step > 1 else None
+    # (start_step == 0) appends to any existing CSV untouched.
+    # The first opt step this run will log. A checkpoint at micro-step k holds every
+    # opt step up to (k + 1) // ACCUMULATION_STEPS, and its row was logged before
+    # the save, so it stays: trimming from start_step // ACCUMULATION_STEPS dropped
+    # that row on every resume (found by tests/apparatus/test_trainer_end_to_end.py).
+    start_opt_step = start_step // ACCUMULATION_STEPS + 1 if start_step > 0 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
     val_probe = ValidationProbe(DATA_ROOT)
     source_probes = [ValidationProbe(DATA_ROOT, skip=None, source=s) for s in VAL_BY_SOURCE]
