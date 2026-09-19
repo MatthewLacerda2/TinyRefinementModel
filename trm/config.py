@@ -112,6 +112,26 @@ if TRM_OPTIMIZER not in ("adamw", "muon"):
 # knob for the #26 matched pair, not a tuned value.
 MUON_LR_MULT = float(os.environ.get("MUON_LR_MULT", "50"))
 
+# The optimizer's remaining knobs, named so that none is a library default nobody can
+# read (#358): an optax upgrade that moved one would have changed the recipe silently.
+# Each is what every run so far trained with, so every existing config resolves the same.
+#   ADAM_B2 is the memory of Adam's variance estimate, 1/(1-b2) opt steps: ~1000 at
+#   0.999, ~20 at 0.95 (#359 asks which).
+ADAM_B1 = float(os.environ.get("ADAM_B1", "0.9"))
+ADAM_B2 = float(os.environ.get("ADAM_B2", "0.999"))
+ADAM_EPS = float(os.environ.get("ADAM_EPS", "1e-8"))
+# Decoupled weight decay on the >=2-D params, multiplied by the LR (so coupled to it, #360).
+WEIGHT_DECAY = float(os.environ.get("WEIGHT_DECAY", "1e-2"))
+# The global-norm clip on the accumulation window's MEAN gradient. The trainer logs that
+# norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
+CLIP_NORM = float(os.environ.get("CLIP_NORM", "1.0"))
+# Muon's own (optax.contrib.scale_by_muon): momentum, Newton-Schulz iterations, the
+# normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
+MUON_BETA = float(os.environ.get("MUON_BETA", "0.95"))
+MUON_NS_STEPS = int(os.environ.get("MUON_NS_STEPS", "5"))
+MUON_EPS = float(os.environ.get("MUON_EPS", "1e-8"))
+MUON_NESTEROV = os.environ.get("MUON_NESTEROV", "1") == "1"
+
 # Normalize each residual BRANCH's output before it is added back ("sandwich" /
 # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
 # MLP; nothing bounds what comes out, and on the 4B champion that is measurably a

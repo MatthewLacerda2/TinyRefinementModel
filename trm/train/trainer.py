@@ -25,6 +25,15 @@ from trm.config import (
     PLAIN_LAYERS,
     TOKENS_PER_OPT_STEP,
     TRAIN_TOKEN_BUDGET,
+    TRM_OPTIMIZER,
+    MUON_LR_MULT,
+    ADAM_B1,
+    ADAM_B2,
+    ADAM_EPS,
+    WEIGHT_DECAY,
+    CLIP_NORM,
+    MUON_BETA,
+    MUON_NS_STEPS,
     resolve_root,
 )
 from trm.model import build_model
@@ -155,6 +164,12 @@ def init_model_and_optimizer():
     print(f"🗓️ LR horizon: DECAY_STEPS={DECAY_STEPS:,} opt steps "
           f"(warmup {WARMUP_STEPS:,}) ≈ {DECAY_STEPS * TOKENS_PER_OPT_STEP / 1e9:.2f}B "
           f"target tokens ({budget_note})")
+    # The whole optimizer at launch, every knob named (#358).
+    muon = (f"muon on the matrices (LR x{MUON_LR_MULT:g}, beta {MUON_BETA:g}, "
+            f"{MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
+            if TRM_OPTIMIZER == "muon" else "adamw")
+    print(f"🎛️ Optimizer: {muon} | adam b1 {ADAM_B1:g} b2 {ADAM_B2:g} eps {ADAM_EPS:g} | "
+          f"weight decay {WEIGHT_DECAY:g} | clip {CLIP_NORM:g}")
     optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
 
     return model, optimizer
@@ -219,6 +234,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # EMA re-converges inside its warmup, and a stale estimate would be a worse
     # ceiling than a freshly measured one.
     grad_guard = GradientNormGuard()
+    # How often the optimizer-level clip bit, over the logged opt steps (#358): the
+    # micro-step guard above and this clip are different gates, reported apart.
+    clip_logged, clip_bit = 0, 0
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     window = LogWindow()
@@ -307,6 +325,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # and cannot be read against CLIP_NORM; this can: above it, the clip, not
                 # the LR schedule, is setting the step size.
                 applied_grad_norm = float(applied_norm)
+                clip_active = int(applied_grad_norm > CLIP_NORM)
+                clip_logged, clip_bit = clip_logged + 1, clip_bit + clip_active
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
@@ -372,6 +392,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     zero_frac_dense_max=zero_frac_dense_microstep,
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
+                    clip_active=clip_active,
                     mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
                 )
                 # Logged once; clear so it isn't re-attributed to later opt-steps.
@@ -391,6 +412,8 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     f"{grad_guard.observed:,} micro-steps | typical norm "
                     f"{grad_guard.ema:.1f} | ceiling "
                     + ("warming up" if ceiling_now is None else f"{ceiling_now:.1f}")
+                    + f" | opt-level clip bit on {clip_bit / max(clip_logged, 1):.0%} "
+                      f"of {clip_logged:,} logged steps"
                 )
 
                 curr_weights = get_curriculum_weights(opt_step)
