@@ -50,9 +50,12 @@ safe to run, and its layout comes next.
   in the repo root, entry points run as `python -m trm.train.start`, and a test enforces
   both that and the dependency direction between the trees.
 - **Tests** live in `tests/` and run on CPU by default; CI runs them on every push and
-  pull request, alongside `ruff`.
-- **`experiments/depth/ablation_harness.py`** is the proof instrument — it trains the real architecture at
-  tiny scale on toy tasks where depth has to do work.
+  pull request, alongside `ruff` and `vulture` (dead code).
+- **Experiments are pre-registered.** Each one is a spec in `experiments/<line>/specs/*.toml`
+  that fixes the arms, the seeds, and the keep/kill bars before anything runs;
+  `python -m instruments.experiment <spec>` runs it and `instruments/verdict.py` referees it.
+  The real-model workhorse is `experiments/recipe/tokens_to_ce.py`: the shipped config trained
+  for a few hours per seed, scored by how many tokens it takes to reach a fixed held-out loss.
 - **Storage tiers.** The SSD holds live runs and the tokenized corpus under `runs/`; a
   1 TB HDD is the cold archive for finished runs and champion weights.
 
@@ -75,6 +78,19 @@ selectable with `MODEL_ARCH=refiner`, because the 4B-token champion checkpoint u
 A third mode, selected with `MODEL_ARCH=reasoner` (`trm/model/reasoner.py`), is a vanilla
 random-depth transformer kept as a control baseline.
 
+At the default shape it has 9 blocks of width 960 with 15 attention heads, a 512-token
+window, and about 148M parameters.
+
 Everything runs in float16 on the RTX 2060 (Turing has no bfloat16 tensor cores). The
-tokenizer is `r50k_base`. Exact dimensions, depth limits, and the rest of the constants
-live in `trm/config.py`.
+tokenizer is `r50k_base`. Exact dimensions and the rest of the constants live in
+`trm/config.py`.
+
+## The training recipe
+
+The defaults in `trm/config.py` still train with AdamW at a peak learning rate of 1e-4, the
+value this project started with. The recipe pairs of September 2026 replaced it on paper:
+AdamW's best peak here is at least 6e-4, and **Muon** (orthogonalized momentum on the
+weight matrices, AdamW on the embedding and norms) beats even that, reaching a fixed
+held-out loss on 1.32x fewer tokens with 380 MiB less memory
+(`docs/findings/2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md`, which links
+the chain of pairs behind it). The next base run trains with Muon.
