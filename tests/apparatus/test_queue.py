@@ -31,7 +31,7 @@ def test_types_lead_in_claude_md_order():
     q = build_queue([issue(1, "documentation", "cpu"), issue(2, "ideas", "cpu"),
                      issue(3, "optimization", "cpu"), issue(4, "tools", "cpu"),
                      issue(5, "architecture", "cpu")], [], FREE)
-    assert list(ranked(q)) == ["architecture", "tools", "ideas", "optimization", "documentation"]
+    assert list(ranked(q)) == ["architecture", "tools", "optimization", "ideas", "documentation"]
 
 
 def test_an_issue_with_two_types_sits_in_the_higher_one():

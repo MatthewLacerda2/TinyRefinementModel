@@ -49,7 +49,8 @@ trainer for a few hours per arm-seed. **Run-length tiers for real-model pairs** 
 LR schedule completes in-run, ≥3 seeds, the readout is tokens-to-target, never CE at
 a fixed step): recipe knobs (LR, optimizer, weight decay, mix) ~512 opt steps ≈ 67M
 tokens ≈ 4h per arm-seed; architecture changes ~2,000 opt steps ≈ 260M tokens ≈ 15h
-per arm-seed (owner's call — past 48h with 3 seeds); anything a plain champion can
+per arm-seed (each run under 24h, so Claude's to run — see the standing permission);
+anything a plain champion can
 warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
 means buildable without the card, not preferably measured without it**: the lane
 stays because cloud sessions build tooling while the card trains, but the
@@ -235,17 +236,19 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    This label is about the harness/repo, not the network.)
 2. **`tools`** — actual code that is *not* LLM research per se: the harness, instruments,
    runners, CI. Comes second — tools are what let ideas be tested cheaply.
-3. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
+3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
+   what the model is**. Same model, fewer resources. (If it changes the model, it's an
+   `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
+   an optimization.) Leads the ideas because it changes what they can be: freed memory
+   decides whether a layer, a batch or a longer window fits (Muon's 380 MiB reopened
+   batch 2, #385), and speed decides how many tokens a base run buys in its days.
+4. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
    hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
    tool only when it genuinely makes sense — usually when it's small. The label means
    *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
    the model with a known method (the document separator masked as pad, #373) is a
    **`bug`**, even though it changes what the model is; the matched pair still judges
    it before a base run adopts it, but nobody is wondering whether to do it.
-4. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
-   what the model is**. Same model, fewer resources. (If it changes the model, it's an
-   `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
-   an optimization.) Can land any time it's ready.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
@@ -297,13 +300,25 @@ tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 
-**What Claude may run without asking (owner's standing permission, 2026-09-14).**
-Anything that takes **under 48 hours of card time** end to end: smoke tests, ablations,
-matched pairs, small models, and Claude's own hypotheses about what works or doesn't —
-pre-registered through the referee like everything else, claimed on the issue, and
-recorded per rule 5. The owner still decides anything longer than 48 hours (a base run),
-anything that changes what the shipped model *is* without a verdict behind it, and the
-budget/size of the next base run. Judgment calls of that kind get surfaced, not made.
+**What Claude may run without asking (owner's standing permission, 2026-09-14,
+widened 2026-09-19).** Any **single run under 24 hours of card time**, and **as many of
+them as a question needs**: smoke tests, ablations, matched pairs, sweeps, small models,
+and Claude's own hypotheses about what works or doesn't. The limit is per run, not per
+question: sweeping Muon's multiplier at five values with three seeds is fifteen ~4h
+runs, sixty hours in all, and needs nobody's permission, because no one run of it is
+long. Each is pre-registered through the referee like everything else, claimed on the
+issue, and recorded per rule 5. The owner still decides any single run of 24 hours or
+more (a base run), anything that changes what the shipped model *is* without a verdict
+behind it, and the budget/size of the next base run. Judgment calls of that kind get
+surfaced, not made.
+
+**Before a base run launches, the cheap wins are in.** A base run is days of card time,
+so everything that makes it lighter or faster, and everything that makes it more
+legible, lands first: every open `optimization` issue, and every `tools` issue that adds
+something the run logs (telemetry: a new metrics column, a per-block or per-source
+reading, a margin the supervisor watches). A run that could have been 20% faster, or
+whose failure nobody could have diagnosed from its logs, wasted its days. An issue that
+cannot land in time is waived by the owner by name, not skipped silently.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
