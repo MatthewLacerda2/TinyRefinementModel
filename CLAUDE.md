@@ -30,6 +30,11 @@ Push back when it's earned:
   untried** ground. Research means trying what the literature hasn't settled — don't
   suppress a novel idea just because it's unproven. The line is "documented to fail"
   versus "simply not yet tried."
+- The other side of the same line: **what the literature settled *in favour* and we
+  don't have yet is work to do**, not research to re-run (Muon, #26: settled outside,
+  missing here, 2.1× fewer tokens once adopted). Its pair asks how much it gains
+  *here* and that it breaks nothing, not whether it works, and "settled" means settled
+  in the literature's setting: re-ask it when ours differs (Muon made #360 and #366 small).
 
 Align before building. The user must have a clear, defined idea of what he's trying to
 say. If the idea isn't yet clear — to him or to you — **stop**: don't plan, don't
