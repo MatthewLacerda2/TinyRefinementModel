@@ -26,6 +26,7 @@ from trm.config import (
     TIME_SIGNAL,
     TRM_OPTIMIZER,
     ZERO_INIT_ATTN_OUT,
+    Z_LOSS_WEIGHT,
     MUON_LR_MULT,
     ADAM_B1,
     ADAM_B2,
@@ -209,6 +210,8 @@ class RunTracker:
             "PLAIN_LAYERS": PLAIN_LAYERS,
             # The attention output's init (#361): same tree, different start.
             "ZERO_INIT_ATTN_OUT": ZERO_INIT_ATTN_OUT,
+            # PaLM's z-loss weight (#369); 0 is off.
+            "Z_LOSS_WEIGHT": Z_LOSS_WEIGHT,
             # Tree-shaping knobs the resume check compares (#317); runs recorded
             # before them skip the comparison.
             "POST_NORM": POST_NORM,
