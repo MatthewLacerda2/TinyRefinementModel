@@ -1,0 +1,88 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "375-polar-express"
+status = "open"
+title = "Muon's Newton-Schulz: Polar Express per-step coefficients vs the fixed 2024 quintic"
+hypothesis = """
+Muon orthogonalizes its update with 5 Newton-Schulz steps, all using Keller Jordan's
+2024 quintic, which was tuned for speed and leaves singular values spread over ~0.7-1.2.
+Polar Express (Amsel et al. 2025) uses a minimax-optimal quintic per step. The CPU
+check on #375 (numpy f32, optax's normalization, 960x960 / 960x2560 / 2560x960) found
+mean |sigma - 1| after 5 steps at 0.085-0.102 against keller's 0.143-0.312 on gaussian
+and 1/i spectra; on a 1/i^2 spectrum neither table orthogonalizes the tail. So the
+update is measurably closer to orthogonal. Does that reach held-out CE 5.85 in fewer
+tokens, at the same cost per step?
+
+Prediction registered (#375's, kept): INCONCLUSIVE. The effect is plausibly real but
+below this pair's resolution at 512 steps. No KILL expected. My recent predictions on
+this line were too timid (#382, #287), so if this is wrong I expect a win.
+"""
+issue = 375
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only MUON_NS_COEFFS differs"
+notes = """
+Recipe: plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, 5 Newton-Schulz steps in both
+arms, warmup 100, the mixture ramp budget-relative (#362), val every 8 on 64 rows,
+val_step-aligned (#351), pad pinned at 50256 in both arms. Both arms are new runs.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/#359.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--pad-token-id", "50256", "--tag", "375"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.keller]
+role = "control"
+flags = ["--set", "MUON_NS_COEFFS=keller"]
+
+[arms.polar]
+role = "treatment"
+flags = ["--set", "MUON_NS_COEFFS=polar_express"]
+
+# Tokens: LOWER is better, so a win for polar is the CONTROL's number being larger.
+[criteria.polar_needs_fewer_tokens]
+rule = "beats"
+treatment = "keller"
+control = "polar"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.polar_needs_more_tokens]
+rule = "loses"
+treatment = "keller"
+control = "polar"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["polar_needs_fewer_tokens"]
+kill_if = ["polar_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: KEEP -> MUON_NS_COEFFS defaults
+to polar_express in the recording PR. INCONCLUSIVE -> keep keller (the update is more
+orthogonal, but that is not evidence it trains better here) and record the numbers on
+#375; a later, longer pair may revisit it. KILL -> keep keller, one graveyard line.
+Readouts, no weight: tok/s (same number of matmuls, expected identical); final_val_ce
+at the cap; clip rate.
+"""
