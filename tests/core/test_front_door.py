@@ -1,6 +1,5 @@
 """The launch incantation lives in the repo (#169): a budget in, a correct supervised launch out."""
 
-import ast
 import pathlib
 import sys
 
@@ -19,15 +18,6 @@ def test_the_stop_step_is_a_checkpoint_boundary_that_covers_the_budget():
     assert stop == 30_528
     assert stop % launch.CHECKPOINT_EVERY_OPT_STEPS == 0
     assert stop * TOKENS >= 4_000_000_000 > (stop - launch.CHECKPOINT_EVERY_OPT_STEPS) * TOKENS
-
-
-def test_the_checkpoint_cadence_matches_the_trainers():
-    tree = ast.parse((REPO / "trm/train/trainer.py").read_text())
-    node = next(n for n in tree.body if isinstance(n, ast.Assign)
-                and getattr(n.targets[0], "id", None) == "CHECKPOINT_EVERY_OPT_STEPS")
-    # int(os.environ.get("CHECKPOINT_EVERY_OPT_STEPS", 64)): the default is what a launch runs.
-    value = [c.value for c in ast.walk(node.value) if isinstance(c, ast.Constant) and isinstance(c.value, int)][-1]
-    assert value == launch.CHECKPOINT_EVERY_OPT_STEPS
 
 
 def test_the_plan_pins_the_checkpoint_path_and_never_passes_new_run(tmp_path):

@@ -17,13 +17,18 @@ from trm.config import (
     TOKENIZER_NAME,
     resolve_root,
 )
+from trm.model import build_model
 from trm.model.contract import LanguageModel
+from trm.runtime.layout import CHECKPOINT_ITEMS
 
 from dotenv import load_dotenv
 load_dotenv()
 
-CHECKPOINT_DIR = resolve_root(os.environ.get("CHECKPOINT_ROOT", "orbax_checkpoints"))
-HUNCH_REFRESH_EVERY = 4
+# `new_document` is flipped on every Nth generated token. Only the reasoner reads it
+# (it resets its cross-window hunch cache, proven inert — docs/findings/
+# 2026-06-13-cross-window-hunch-inert.md); plain and refiner ignore it. Kept so the
+# reasoner's generation stays what it was.
+REASONER_REFRESH_EVERY = 4
 
 # Sampling default. 0.5 was too cold to see the model: it divides the logits, so it
 # *doubles* every gap, and with max|logit| already ~21 partway through the base run
@@ -33,26 +38,13 @@ HUNCH_REFRESH_EVERY = 4
 DEFAULT_TEMPERATURE = 0.7
 
 
-def build_model(arch=MODEL_ARCH):
-    """The architecture MODEL_ARCH selects — the same choice the trainer makes.
-
-    This used to construct UniversalReasoner unconditionally, while MODEL_ARCH has
-    defaulted to 'refiner' since Plan A became the live bet. The two have different
-    param trees, so serving a refiner checkpoint failed on a structure mismatch and
-    inference was simply unavailable for the architecture we actually train — the
-    same defect the plotter carried (#181), from the same cause: a tool naming one
-    architecture while the run selects another.
+def build_serving_model(arch=MODEL_ARCH):
+    """The architecture MODEL_ARCH selects — the same choice, and the same factory,
+    the trainer uses. The seed is irrelevant: the checkpoint overwrites every weight.
+    Serving once hardcoded one architecture (#185); tests/core/test_infer_arch.py
+    guards the choice.
     """
-    if arch == "plain":
-        from trm.model.plain import PlainTransformer
-        return PlainTransformer(LATENT_DIM, nnx.Rngs(0))
-    if arch == "refiner":
-        # Imported lazily so the baseline path never touches Plan A code, matching
-        # trm/train/trainer.py's init.
-        from trm.model.refiner_lm import RefinerForTraining
-        return RefinerForTraining(LATENT_DIM, nnx.Rngs(0))
-    from trm.model.reasoner import UniversalReasoner
-    return UniversalReasoner(LATENT_DIM, nnx.Rngs(0))
+    return build_model(arch, LATENT_DIM, nnx.Rngs(0))
 
 def run_model_inference(
     model: LanguageModel,
@@ -143,13 +135,13 @@ def reject_unsampleable(logits, *, where):
         )
 
 
-# `refresh` is deliberately NOT static (#207). It flips every HUNCH_REFRESH_EVERY
+# `refresh` is deliberately NOT static (#207). It flips every REASONER_REFRESH_EVERY
 # tokens, so as a jit cache key it built two executables for one computation — two
 # resident programs and two sets of CUDA graphs, which is the driver-memory pressure
 # trm/config.py already blames for squeezing batch-2 from outside the BFC arena.
 #
-# Traced is correct for both architectures rather than only the live one. The
-# refiner ignores the flag outright (Plan A carries no state between windows, so
+# Traced is correct for every architecture, not only the plain one. Plain and the
+# refiner ignore the flag outright (they carry no state between windows, so
 # each window is a standalone causal prediction), and the reasoner reads it only
 # through jax.lax.cond — at reasoner.py:207 and end_step — which takes a traced
 # predicate natively. Nothing in the tree branches on it in Python.
@@ -198,7 +190,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         if valid_len >= MAX_SEQ_LEN:
             break
 
-        new_document = (i % HUNCH_REFRESH_EVERY == 0)
+        new_document = (i % REASONER_REFRESH_EVERY == 0)
 
         # temperature=0 means greedy argmax below; pass 1.0 so the jitted
         # truncation step is a no-op scale rather than a division by zero.
@@ -246,10 +238,12 @@ def build_arg_parser():
     ap.add_argument("--max-new-tokens", type=int, default=256,
                     help="generation length cap (default 256)")
     ap.add_argument("--depth", type=int, default=INFERENCE_DEPTH,
-                    help="refinement loops per forward pass. The dense sweep put the "
-                         f"accuracy plateau at ~6 (default {INFERENCE_DEPTH}); the "
-                         "sinusoidal time signal is defined at any step, so this "
-                         "extrapolates past the trained range")
+                    help="refinement loops per forward pass, for the depth-recurrent "
+                         "arches (refiner, reasoner); the plain model ignores it. The "
+                         f"dense sweep put the refiner's plateau at ~6 (default "
+                         f"{INFERENCE_DEPTH}). The refiner's sinusoidal time signal is "
+                         "defined at any step, so it extrapolates past the trained range; "
+                         "the reasoner's learned time table stops at MAX_STEPS_LIMIT")
     return ap
 
 
@@ -262,23 +256,26 @@ def run_inference(argv=None):
 
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
-    model = build_model()
+    model = build_serving_model()
 
-    active_checkpoint_dir = CHECKPOINT_DIR
-    if os.environ.get("CHECKPOINT_ROOT") is None:
+    # CHECKPOINT_ROOT names a checkpoint dir; without it, the latest checkpointed run
+    # under runs/ is served. There is no third, default path: the old one
+    # (`orbax_checkpoints`) pointed at a directory nothing writes.
+    if os.environ.get("CHECKPOINT_ROOT") is not None:
+        active_checkpoint_dir = resolve_root(os.environ["CHECKPOINT_ROOT"])
+    else:
         from trm.runtime.checkpoints import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()
-        if discovered_path is not None:
-            active_checkpoint_dir = os.path.abspath(discovered_path)
-            print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
-        else:
-            print("❌ Error: No available weights here.")
-            print("Please train the model first using: python -m trm.train.start")
+        if discovered_path is None:
+            print("❌ Error: no checkpointed run under runs/, and CHECKPOINT_ROOT is not set.")
+            print("Train one with `python -m trm.train.start`, or set CHECKPOINT_ROOT to a checkpoint dir.")
             return
+        active_checkpoint_dir = os.path.abspath(discovered_path)
+        print(f"🔎 Auto-discovered latest checkpointed run for inference: {discovered_run_id}")
 
     mngr = ocp.CheckpointManager(
         active_checkpoint_dir,
-        item_names=('model', 'optimizer', 'monitor_state', 'step'),
+        item_names=CHECKPOINT_ITEMS,
     )
 
     latest_step = mngr.latest_step()

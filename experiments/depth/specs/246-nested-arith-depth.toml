@@ -4,7 +4,7 @@
 
 [experiment]
 id = "246"
-status = "open"
+status = "recorded"
 title = "Does recurrence pay on nested evaluation? (build 2 — build 1 failed by design)"
 hypothesis = """
 Every toy task in this repo is a CHAIN. parity, cumsum5 and statetrack all fold left
@@ -152,6 +152,15 @@ require = "all"
 [verdict]
 keep_if = ["recurrence_holds_at_deep_nesting", "beats_chance_at_deep_nesting"]
 kill_if = ["recurrence_loses_where_it_should_win"]
+recorded = "INCONCLUSIVE"
+recorded_note = """
+2026-09-16 (#321). Stored from instruments/verdict.py's reading of the [results]
+below: at nest4/d8 the refiner is within 2σ of vanilla (+0.50σ), but both sit at
+the measured floor, so beats_chance_at_deep_nesting failed (-18.21σ) and no kill
+fired. Matches docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md
+("Verdict INCONCLUSIVE, and the floor criterion is what stopped a shared failure
+reading as parity").
+"""
 
 # A constant arm: chance for a 1-in-7 choice. Declared as a Summary so the
 # beats_chance criterion has something to compare against without a run.

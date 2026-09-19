@@ -32,11 +32,8 @@ ignore it.
 
 import math
 
+from instruments._common import F16_MAX  # the ceiling act_max is measured against
 from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT, VOCAB_SIZE
-
-# f16's largest finite value — the representational ceiling act_max is measured
-# against. Not from config: a property of the dtype, not a knob.
-F16_MAX = 65504.0
 
 # How many standard deviations of the sampling distribution `depth_avg` may sit
 # from its mean before the row is called suspect. The observed artifact was 8.6
@@ -98,13 +95,8 @@ def build_invariants():
         ("seg1_ce", 0.0, math.inf, "cross-entropy is non-negative"),
         ("val_ce", 0.0, math.inf, "cross-entropy is non-negative"),
         ("max_abs_logit", 0.0, math.inf, "it is an absolute value"),
-        # Not a law of arithmetic like the others — a MARGIN. Peak activation has
-        # no mathematical ceiling, but it has a representational one: f16 stops at
-        # 65,504, and the 4B champion finished at 65,120 (0.6% of headroom), which
-        # is what #229's whole-window NaN was. Nothing watched it during the run.
-        # The bound is half the ceiling, so the row goes suspect while there is
-        # still a run left to save rather than after it has already overflowed --
-        # the doctrine is to gate on margin, not on pass/fail.
+        # Not a law of arithmetic like the others — a MARGIN: half the f16 ceiling,
+        # so the row goes suspect while there is still a run to save (#229, #235).
         ("act_max", 0.0, F16_MAX / 2,
          f"peak activation past half of f16's {F16_MAX:,.0f} ceiling leaves under "
          f"2x headroom; the 4B run ended at 65,120 and that is what overflow (#229) "

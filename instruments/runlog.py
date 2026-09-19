@@ -1,14 +1,8 @@
 """Read one training run's recorded metrics — once, and properly.
 
-Every consumer of `runs/<run>/metrics.csv` used to re-parse it inline, and each
-re-parse made the same mistake: a blank cell read as `0.0`. A blank does not
-mean zero. It means this architecture does not measure that quantity (#105) —
-`avg_forget_cost`, `diversity_loss` and `temporal_drift` are empty in every
-refiner run because the refiner has no forget gate and no slots. Reading them
-as zero invents a measurement, and a plotter then draws a confident flat line
-through data that was never collected.
-
-So here: a blank is `None`, `has(name)` says whether a column holds anything at
+A blank cell means this architecture does not measure that quantity (#105), never
+`0.0`; reading it as zero invents a measurement (the cases are pinned in
+tests/apparatus/test_runlog.py). So here: a blank is `None`, `has(name)` says whether a column holds anything at
 all (the test a caller uses to *omit* a panel instead of drawing zeros), and
 `column(name)` hands back only the rows that actually carry a value.
 
@@ -17,11 +11,22 @@ The loader is also the one place that knows the shape of the artifact:
   * **replayed rows** — CSVs written before resume-trimming existed contain
     non-monotonic step ranges (a resume restores to the last *best* step and
     re-logs forward from there). Only the first occurrence of each advancing
-    step is kept.
+    step is kept: for a step logged twice, the FIRST copy (pre-resume) wins and the
+    replayed copy is dropped, along with every row until the step passes the
+    highest one already kept. Readers that parsed the CSV themselves before #319
+    took the last copy instead; no run on disk has such a CSV, but a number read
+    from one would differ.
   * **torn rows** — the last row of a live run can be half-written. A row whose
     `step` does not parse is dropped, not guessed at.
   * **missing metadata** — `run_metadata.json` may not exist (an old run, or a
-    dir assembled by hand). That is `{}`, not a crash.
+    dir assembled by hand), or may be caught mid-rewrite (the tracker rewrites it
+    in place). Both are `{}`, not a crash; a caller that needs it says so.
+
+It is also the one reader of the rest of a run's recorded facts (#319): the
+metadata (`read_metadata`), the recipe's tokens per optimizer step
+(`recorded_tokens_per_opt_step`), which columns an architecture can fill
+(`measured_by`), and which checkpoint steps are on disk (`checkpoint_steps`).
+Each states its failure policy once, here, instead of once per caller.
 
     from instruments.runlog import load
     log = load()                      # newest run under runs/
@@ -36,12 +41,23 @@ import datetime
 import glob
 import json
 import os
+import pathlib
 from dataclasses import dataclass, field
-
-from trm.config import TOKENS_PER_OPT_STEP
 
 METRICS_FILENAME = "metrics.csv"
 METADATA_FILENAME = "run_metadata.json"
+
+# Columns only the reasoner can fill. metrics.csv keeps them for every arch (old runs
+# and every reader depend on the schema), so for a run recorded as another arch their
+# absence is not news (#317).
+REASONER_ONLY_COLUMNS = frozenset({"temporal_drift", "avg_forget_cost", "diversity_loss", "tau"})
+# Every column only some architectures can fill, with the arches that can. `depth_avg`
+# is the sampled depth: a measurement only for an arch with a depth dial. Plain runs
+# before #316 logged a sampled value the model ignored; from #316 on it is blank.
+COLUMN_ARCHES = {
+    **{column: frozenset({"reasoner"}) for column in REASONER_ONLY_COLUMNS},
+    "depth_avg": frozenset({"refiner", "reasoner"}),
+}
 
 # DictReader parks fields beyond the header under this key; naming it keeps a
 # widened row from inventing a column called `None`.
@@ -158,7 +174,13 @@ class RunLog:
         mis-scaled by this; `run_metadata.json` records what the run actually
         used, and report.py cross-checks it.
         """
+        from trm.config import TOKENS_PER_OPT_STEP  # jax-heavy; only this property needs it
         return self.last_step * TOKENS_PER_OPT_STEP
+
+    @property
+    def params(self):
+        """The recipe the run recorded (`run_metadata.json` parameters), {} if none."""
+        return recorded_params(self.metadata)
 
     @property
     def wall_seconds(self):
@@ -185,16 +207,74 @@ def _discover_latest_csv(runs_root="runs"):
     )
 
 
-def _read_metadata(run_dir):
+def read_metadata(run_dir):
+    """A run's `run_metadata.json` as a dict.
+
+    Failure policy: `{}` for a missing, unreadable, or half-written file, never an
+    exception. A run assembled by hand or from before the tracker is still readable
+    without it, and RunTracker rewrites the file in place at session start and end,
+    so a reader running beside training (the milestone scorer) can catch it torn.
+    A caller for which metadata is required checks for `{}` and says so itself."""
     path = os.path.join(run_dir, METADATA_FILENAME)
     try:
         with open(path) as f:
             metadata = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        # A run assembled by hand, or an old one from before the tracker. The
-        # metrics are still perfectly readable without it.
+    except (OSError, ValueError):
         return {}
     return metadata if isinstance(metadata, dict) else {}
+
+
+def recorded_params(metadata):
+    """The metadata's `parameters` block, {} if absent or malformed."""
+    params = (metadata or {}).get("parameters")
+    return params if isinstance(params, dict) else {}
+
+
+def recorded_tokens_per_opt_step(params):
+    """ACCUMULATION_STEPS x BATCH_SIZE x 2 windows x MAX_SEQ_LEN, from the recipe a run
+    recorded, or None when it did not record all three (the caller picks the fallback,
+    and should say it guessed). A run is a recipe, and these knobs have been re-tuned
+    since (#24): scaling an old run's steps by today's constant restates its data."""
+    try:
+        return (int(params["ACCUMULATION_STEPS"]) * int(params["BATCH_SIZE"])
+                * 2 * int(params["MAX_SEQ_LEN"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def measured_by(arch, column):
+    """Can a run of `arch` fill this column with a measurement? An unrecorded arch (None)
+    is given the benefit of the doubt: an old run's missing column may be the reasoner's."""
+    return arch is None or column not in COLUMN_ARCHES or arch in COLUMN_ARCHES[column]
+
+
+NOT_MEASURED = "not measured by this architecture"
+NOT_LOGGED = "not logged by this run"
+
+
+def absence_reason(arch, columns):
+    """Why a run left these columns blank, in the reader's words — shared by report.py
+    and plots.py so the two cannot disagree (#319).
+
+    If the run's recorded arch can fill any of them, the arch is not the reason: the run
+    just did not log them (telemetry off, a column newer than the run). Only when it can
+    fill none, or the run recorded no arch to judge by, is it the architecture."""
+    if arch is not None and any(measured_by(arch, column) for column in columns):
+        return NOT_LOGGED
+    return NOT_MEASURED
+
+
+def checkpoint_steps(checkpoint_dir):
+    """Sorted optimizer-step numbers of the step dirs in one orbax manager dir.
+
+    Failure policy: `[]` for a missing dir. Only all-digit names count, so an
+    orbax tmp dir mid-write (`123.orbax-checkpoint-tmp-…`) is never a step. This
+    reads names, not orbax's finalize marker; a caller that must only see finished
+    saves asks orbax (`CheckpointManager.latest_step`)."""
+    path = pathlib.Path(checkpoint_dir)
+    if not path.is_dir():
+        return []
+    return sorted(int(p.name) for p in path.iterdir() if p.is_dir() and p.name.isdigit())
 
 
 def _read_rows(csv_path):
@@ -250,7 +330,7 @@ def load(path=None):
     return RunLog(
         run_id=os.path.basename(run_dir),
         metrics=rows,
-        metadata=_read_metadata(run_dir),
+        metadata=read_metadata(run_dir),
         fields=fields,
         csv_path=csv_path,
         run_dir=run_dir,

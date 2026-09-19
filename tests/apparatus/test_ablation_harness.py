@@ -22,12 +22,9 @@ def test_memorize_dictionary_is_fixed_across_calls():
             assert lut.setdefault(int(k), int(v)) == int(v), f"key {k} mapped to two values"
 
 
-def test_vanilla_arm_shapes_and_param_scaling():
+def test_vanilla_arm_shapes_and_param_scaling(n_params):
     """The vanilla arm produces logits of the right shape, and its parameters grow
     with depth (distinct blocks) while the refiner's stay flat (shared block)."""
-    def params(m):
-        return sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(m, nnx.Param)))
-
     kw = dict(dim=32, vocab_size=16, num_heads=4, num_encoder_layers=1, max_seq_len=16)
     v2 = VanillaTransformer(**kw, num_blocks=2, rngs=nnx.Rngs(0))
     v4 = VanillaTransformer(**kw, num_blocks=4, rngs=nnx.Rngs(0))
@@ -36,9 +33,9 @@ def test_vanilla_arm_shapes_and_param_scaling():
 
     tokens = jnp.zeros((2, 16), dtype=jnp.int32)
     assert v4(tokens).shape == (2, 16, 16)
-    assert params(v4) > params(v2), "distinct blocks must add parameters with depth"
+    assert n_params(v4) > n_params(v2), "distinct blocks must add parameters with depth"
     # The refiner's block is shared: depth only grows the (tiny) time embedding.
-    assert params(r4) - params(r2) < params(v4) - params(v2)
+    assert n_params(r4) - n_params(r2) < n_params(v4) - n_params(v2)
 
 
 def test_train_one_runs_both_arms_on_memorize():

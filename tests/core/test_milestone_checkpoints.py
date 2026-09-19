@@ -3,12 +3,12 @@ the checkpoint recovery needs (#187)."""
 
 import ast
 import inspect
-import json
 
 import orbax.checkpoint as ocp
 import jax.numpy as jnp
 
-from trm.runtime.checkpoints import MILESTONE_SUBDIR, make_milestone_manager, milestone_due
+from trm.runtime.checkpoints import make_milestone_manager, milestone_due
+from trm.runtime.layout import MILESTONE_SUBDIR
 
 
 def test_one_milestone_per_crossed_multiple_on_the_first_boundary_past_it():
@@ -57,8 +57,7 @@ def test_rewind_sets_milestones_aside_too(tmp_path):
 
     def ckpt(directory, opt):
         path = directory / str(opt * 128 - 1)
-        (path / "monitor_state").mkdir(parents=True)
-        (path / "monitor_state" / "metadata").write_text(json.dumps({"sft_active": False}))
+        path.mkdir(parents=True)
         (path / "_CHECKPOINT_METADATA").write_text("{}")
 
     for opt in (4928, 4992, 5056):
@@ -68,7 +67,6 @@ def test_rewind_sets_milestones_aside_too(tmp_path):
     _, moved = rw.rewind(tmp_path, 4992, 128)
     assert [c.opt_step for c in rw.checkpoints_in(tmp_path / MILESTONE_SUBDIR, 128)] == [3840]
     assert sum(p.parent.name == MILESTONE_SUBDIR for p in moved) == 1 and all(p.exists() for p in moved)
-    assert rw.MILESTONE_SUBDIR == MILESTONE_SUBDIR
 
 
 def test_the_disk_guard_budgets_for_all_three_tiers_writing_at_once():
@@ -76,5 +74,5 @@ def test_the_disk_guard_budgets_for_all_three_tiers_writing_at_once():
     two would let the third write tear."""
     from trm.runtime.supervisor import CHECKPOINTS_PER_WRITE, KILLED_DISK, Limits, Observation, State, decide
     assert CHECKPOINTS_PER_WRITE == 3
-    obs = Observation(step=5000, ce=3.4, plateau_detected=False, alive=True, free_gb=6.0, checkpoint_gb=1.7)
+    obs = Observation(step=5000, ce=3.4, alive=True, free_gb=6.0, checkpoint_gb=1.7)
     assert decide(obs, Limits(stop_step=30_000, disk_margin_gb=1.0), State()).outcome == KILLED_DISK

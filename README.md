@@ -58,17 +58,21 @@ safe to run, and its layout comes next.
 
 ## The model
 
-The model is the **`CausalRefiner`** (`plan_a_model.py`). Tokens are embedded and passed
-through a stack of causal transformer blocks (RoPE positions, RMSNorm on the queries and
-keys, a SwiGLU MLP, pre-norm residuals). A single **shared** block is then looped over
-those representations several times — the *refinement depth* — each pass adding a
-per-step time signal and blending its output into the running state through a gate. The
-loop runs under a causal mask, so position *t* only ever attends to positions ≤ *t* and
-depth refines a prediction without seeing future tokens. The number of refinement steps
-is sampled randomly during training and fixed at inference. A tied LM head reads the
-final state.
+The model is a **plain causal transformer**, `PlainTransformer` (`trm/model/plain.py`).
+Tokens are embedded and passed through a stack of distinct causal transformer blocks
+(RoPE positions, RMSNorm on the queries and keys, a SwiGLU MLP, pre-norm residuals), and
+a tied LM head reads the final state. There is no loop and no depth dial: every token
+gets the same amount of compute.
 
-A second mode, selected with `MODEL_ARCH=reasoner` (`trm/model/reasoner.py`), is a vanilla
+It replaced depth recurrence, which was the bet until September 2026. That design, the
+**`CausalRefiner`** (`trm/model/refiner.py`), looped one shared block over the token
+representations several times under a causal mask, with a per-step time signal and a
+gate. It works on toy tasks that need sequential composition, but on language the trained
+model learned to switch the loop off
+(`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`). It stays
+selectable with `MODEL_ARCH=refiner`, because the 4B-token champion checkpoint uses it.
+
+A third mode, selected with `MODEL_ARCH=reasoner` (`trm/model/reasoner.py`), is a vanilla
 random-depth transformer kept as a control baseline.
 
 Everything runs in float16 on the RTX 2060 (Turing has no bfloat16 tensor cores). The

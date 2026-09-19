@@ -1,11 +1,11 @@
 """Generation must build one executable, not two (#207).
 
 `refresh` was a static jit argument, and `generate_text` flips it every
-`HUNCH_REFRESH_EVERY` tokens. A static argument is part of the compilation cache
+`REASONER_REFRESH_EVERY` tokens. A static argument is part of the compilation cache
 key, so alternating it compiled the sampling step twice — two resident programs
 and two sets of CUDA graphs for one computation.
 
-The flag is inert on the live architecture: `RefinerForTraining.__call__` accepts
+The flag is inert on the refiner (and on plain): `RefinerForTraining.__call__` accepts
 `new_document` and never reads it, because Plan A carries no state between
 windows. On the reasoner it *is* read, but only through `jax.lax.cond`, which
 takes a traced predicate natively. So the fix is to stop making it static rather
@@ -121,7 +121,7 @@ def test_refresh_is_not_a_static_argument():
     signature = source.split("def get_logits_for_token")[0].split("@partial")[-1]
 
     assert "'refresh'" not in signature and '"refresh"' not in signature, (
-        "`refresh` is static again — it flips every HUNCH_REFRESH_EVERY tokens, so "
+        "`refresh` is static again — it flips every REASONER_REFRESH_EVERY tokens, so "
         "as a cache key it doubles the number of compiled programs")
 
 
@@ -140,26 +140,9 @@ def test_the_arguments_that_must_stay_static_did_not_get_swept_up():
 
 
 
-class _InVocabEncoder:
-    """A tokenizer whose ids fit TOY_VOCAB.
-
-    The real `r50k_base` emits ids in the tens of thousands, and `generate_text`
-    pads with the *config* PAD_TOKEN_ID (50256) on top of that. One out-of-range
-    id makes this model return all-NaN logits for the entire window (#233) — so
-    with the real tokenizer this test sampled every token from NaN, and passed
-    only because NaN is deterministic. The #229 guard is what surfaced it.
-    """
-
-    def encode(self, text):
-        return [1 + (ord(c) % (TOY_VOCAB - 2)) for c in text]
-
-    def decode(self, ids):
-        return "".join(chr(97 + (i % 26)) for i in ids)
-
-
-def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens, monkeypatch):
+def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens, monkeypatch, in_vocab_encoder):
     """End to end through `generate_text`, which is where `refresh` actually
-    alternates (every HUNCH_REFRESH_EVERY tokens). The unit tests above use one
+    alternates (every REASONER_REFRESH_EVERY tokens). The unit tests above use one
     call at a time; this is the loop that made the duplicate compile happen, and
     it is also where a traced boolean would surface if anything downstream still
     wanted a concrete one.
@@ -167,12 +150,12 @@ def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens
     Seeded, so it doubles as a determinism check on the generation path.
     """
     monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
-    enc = _InVocabEncoder()
+    enc = in_vocab_encoder(TOY_VOCAB)  # why real ids break a toy model: tests/conftest.py
     del padded_tokens  # generate_text tokenizes its own prompt
 
     def run():
         return infer.generate_text(
-            toy_refiner, enc, "ab", max_new_tokens=2 * infer.HUNCH_REFRESH_EVERY,
+            toy_refiner, enc, "ab", max_new_tokens=2 * infer.REASONER_REFRESH_EVERY,
             temperature=0.7, top_k=TOY_TOP_K, top_p=0.9, depth=TOY_DEPTH,
             seed=42, quiet=True,
         )

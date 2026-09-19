@@ -2,7 +2,7 @@
 
 [experiment]
 id = "287-peak-lr"
-status = "open"
+status = "recorded"
 title = "Peak LR 3e-4 vs the shipped 1e-4: tokens to a fixed held-out CE"
 hypothesis = """
 The peak the cosine warms up to has been 1e-4 since this project started. It was
@@ -109,6 +109,45 @@ require = "all"
 [verdict]
 keep_if = ["higher_lr_needs_fewer_tokens"]
 kill_if = ["higher_lr_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-17. KEEP on every seed: peak 3e-4 reached held-out CE 5.85 at
+26.2/27.5/27.5M tokens against 60.3/60.3/60.9M for 1e-4 -- 2.25x fewer tokens
+(delta 33.4M, far past the 6.7M bar). sigma is ~0.6M, most of it quantization
+(one probe = 8 opt steps = 1.05M tokens; #351 adds a +0-4 step row offset to
+both arms alike).
+
+The registered prediction (KEEP at ~1.5x, real weight on INCONCLUSIVE) was
+wrong in the timid direction: the win is larger than Muon's 2.1x over this
+same control in #26. Rule 4 bites here: #26 measured Muon against an
+undertuned baseline, so its KEEP no longer says Muon beats a tuned AdamW.
+That comparison needs its own matched pair.
+
+The control was near the cap: 1e-4 reached 5.85 only at opt steps 460-465 of
+512, so its number is close to what the 67.1M horizon allows; a longer
+horizon would not shrink the gap below the bar (3e-4 was there at step
+200-210).
+
+Readouts. final_val_ce at the cap (no weight): 5.835/5.838/5.843 vs
+5.093/5.107/5.099 (continuous, and the seed spread is 0.01 nats on both arms).
+Wall-clock to the target 177-178 min vs 76-79 min; whole run 197-199 min on
+both, same per-step cost as expected. Arena peak 4438 MiB on every arm.
+Non-finite skips 200/201/202 vs 201/198/195 per run, with 1-4 streaks longer
+than one -- the dynamic loss scaler's routine upward probing (it doubles
+until an overflow, then halves), identical across arms and identical to #26's
+AdamW arms. The readouts note's claim that AdamW at 1e-4 took no skips in #26
+was wrong: those runs show ~200 as well. 3e-4 did not thrash the scaler.
+
+Confound, stated rather than removed: weight decay is LR-coupled (#360), so
+the 3e-4 arm also got 3x the decay (a 0.15% vs 0.05% shrink over 512 steps,
+negligible, and standard AdamW behaviour).
+
+That 1e-4 is low for this size is settled (GPT-2-small trains at 6e-4); what
+it does to #26's KEEP on this apparatus is not, so it is recorded as novel in
+docs/findings/2026-09-17-a-3x-peak-lr-beats-muons-win-over-the-same-control.md. Per the readouts,
+3e-4 won cleanly and stayed finite, so a 6e-4 arm is now eligible for its own
+spec.
+"""
 
 [readouts]
 notes = """
@@ -126,3 +165,8 @@ min_delta = 6.7M tokens is 15% of the control's 44.6M reading from #26 stage 2.
 A 6e-4 arm is NOT part of this spec: per #287 it is registered separately, only if
 3e-4 wins cleanly and stays finite.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+lr1e4 = [60.2931, 60.2931, 60.9485]
+lr3e4 = [26.2144, 27.5251, 27.5251]

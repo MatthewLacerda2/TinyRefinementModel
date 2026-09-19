@@ -44,6 +44,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from trm.runtime.layout import LOG_REAL_STEPS  # standard library only: the supervisor stays jax-free
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
 GPU_LOCK = RUNS_DIR / ".gpu.lock"
@@ -56,7 +58,6 @@ RESTART = "RESTART"  # kill a wedged child, then relaunch it
 RUNNING = "RUNNING"
 BUDGET_COMPLETE = "BUDGET_COMPLETE"
 WALLCLOCK_COMPLETE = "WALLCLOCK_COMPLETE"
-KILLED_PLATEAU = "KILLED_PLATEAU"
 KILLED_DIVERGENCE = "KILLED_DIVERGENCE"
 KILLED_OOM = "KILLED_OOM"
 KILLED_DISK = "KILLED_DISK"
@@ -69,8 +70,7 @@ GAVE_UP = "GAVE_UP"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
-DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_PLATEAU, KILLED_DIVERGENCE,
-              KILLED_OOM, KILLED_DISK)
+DELIBERATE = (BUDGET_COMPLETE, WALLCLOCK_COMPLETE, KILLED_DIVERGENCE, KILLED_OOM, KILLED_DISK)
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,6 @@ class Observation:
 
     step: int
     ce: float | None
-    plateau_detected: bool
     alive: bool
     elapsed_hours: float = 0.0
     # Whether THIS launch's output contains an out-of-memory failure. Read from
@@ -177,19 +176,14 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     landed inside its polling window. There is no timing assumption to tune here;
     a finished run is finished because the numbers say so.
 
-    Plateau outranks everything: the CE-plateau detector flipping a pretrain run
-    into SFT would silently contaminate the very thing the run exists to produce,
-    so it is worth killing a run that is otherwise perfectly healthy.
+    A CE plateau is not a guard: the trainer only reports it. The plateau kill
+    existed to stop the in-run SFT flip, and went with it (#323).
     """
     if obs.step > state.last_step:
         state.last_step = obs.step
         state.stalled_polls = 0
     elif obs.alive:
         state.stalled_polls += 1
-
-    if obs.plateau_detected:
-        return Decision(KILL, KILLED_PLATEAU,
-                        "CE-plateau SFT auto-flip detected; killing to protect the pretrain run")
 
     if obs.ce is not None and math.isfinite(obs.ce) and obs.ce <= limits.max_ce:
         state.entered_band = True
@@ -302,7 +296,7 @@ FIT_GATE_ENV = {
     "VAL_EVERY_OPT_STEPS": "1",
     "CHECKPOINT_EVERY_OPT_STEPS": "1",
 }
-FIT_GATE_LOG_ROWS_OPT_STEPS = 5  # trainer LOG_REAL_STEPS: the first metrics row lands here
+FIT_GATE_LOG_ROWS_OPT_STEPS = LOG_REAL_STEPS  # the first metrics row lands here
 _COMPUTE = re.compile(r"Compute: ([0-9.]+)s")
 
 
@@ -376,7 +370,7 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
         while True:
             text = read_log_since(log_path)
-            if any(marker in text for marker in OOM_MARKERS):
+            if oom_in(text):
                 return FitResult(False, "out of memory before the first logged row — this config does not fit",
                                  seconds=time.time() - started)
             row = _first_row(run_dir / "metrics.csv")
@@ -503,11 +497,6 @@ def read_progress(metrics_csv: pathlib.Path) -> tuple[int, float | None]:
     return 0, None
 
 
-# What the trainer prints when the CE-plateau detector actually flips a run into
-# SFT. Only that flip prints this; a plateau that is merely *reported* (the
-# default since SFT_ON_PLATEAU landed) deliberately words itself differently, so
-# reporting a plateau cannot kill the run.
-PLATEAU_MARKER = "CE Plateau Detected"
 # JAX/XLA surface out-of-memory differently depending on the allocator: BFC says
 # RESOURCE_EXHAUSTED, cuda_async says CUDA_ERROR_OUT_OF_MEMORY, and the command
 # buffer path says it a third way. Match any of them.
@@ -519,7 +508,7 @@ def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
 
     The offset is the point. The log is opened in append mode, so a relaunch — and
     every resumed run — writes after whatever a previous session left behind. Read
-    from byte 0 and a plateau or an OOM from *hours ago* is still 'detected', and
+    from byte 0 and an OOM from *hours ago* is still 'detected', and
     the supervisor kills a healthy run on the strength of a dead session's output.
     """
     try:
@@ -530,12 +519,7 @@ def read_log_since(log_path: pathlib.Path, offset: int = 0) -> str:
         return ""
 
 
-def plateau_in(log_path: pathlib.Path, offset: int = 0) -> bool:
-    return PLATEAU_MARKER in read_log_since(log_path, offset)
-
-
-def oom_in(log_path: pathlib.Path, offset: int = 0) -> bool:
-    text = read_log_since(log_path, offset)
+def oom_in(text: str) -> bool:
     return any(marker in text for marker in OOM_MARKERS)
 
 
@@ -613,10 +597,9 @@ class Supervisor:
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            plateau_detected=PLATEAU_MARKER in text,
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
-            oom_detected=any(marker in text for marker in OOM_MARKERS),
+            oom_detected=oom_in(text),
         )
 
     def run(self) -> str:
@@ -660,19 +643,27 @@ class Supervisor:
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, never
         two: the card stays the trainer's, and a scorer that outlives this poll
-        is fine — the journal is append-only."""
+        is fine — the journal is append-only.
+
+        The scorer is told the milestone's own dir and step (#328). Left to itself it
+        scored the newest rolling checkpoint, which is not the milestone, and which
+        rolling retention can evict while a slow CPU pass is still restoring it;
+        milestones are the one kind nothing evicts."""
+        from trm.runtime.layout import MILESTONE_SUBDIR  # standard library only
+
         run_dir = self.metrics_csv.parent
-        milestones = run_dir / "checkpoints" / "milestones"
+        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
         if not milestones.is_dir():
             return
         for marker in sorted(milestones.glob("*/_CHECKPOINT_METADATA")):
             step = marker.parent.name
-            if step in self._scored:
+            if not step.isdigit() or step in self._scored:  # an orbax tmp dir is not a milestone
                 continue
             self._scored.add(step)
             self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU")
             self._scorers.append(subprocess.Popen(
                 [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                 "--checkpoint-dir", str(milestones), "--step", step,
                  "--limit", str(self.milestone_limit), "--cpu"],
                 cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))

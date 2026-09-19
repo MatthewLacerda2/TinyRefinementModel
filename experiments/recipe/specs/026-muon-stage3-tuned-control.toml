@@ -7,7 +7,7 @@
 
 [experiment]
 id = "026-stage3"
-status = "open"
+status = "recorded"
 title = "Muon vs a tuned AdamW (peak 3e-4): tokens to a fixed held-out CE"
 hypothesis = """
 #26 stage 2 found Muon reaching held-out CE 5.85 in 2.1x fewer tokens than AdamW at
@@ -99,6 +99,44 @@ require = "all"
 [verdict]
 keep_if = ["muon_needs_fewer_tokens"]
 kill_if = ["muon_needs_more_tokens"]
+recorded = "KEEP"
+recorded_note = """
+2026-09-17. KEEP on every seed. Muon reached held-out CE 5.85 at 19.01/19.01/18.35M
+tokens against the tuned AdamW control's 26.21/27.53/27.53M: 1.42x fewer tokens,
+delta 8.30M against the 4.0M bar, +13.9 sigma (sigma ~0.6M, mostly the 1.05M probe
+quantum). The registered prediction (INCONCLUSIVE, from rescaling stage 2's reading
+by the probe shift) was WRONG, and wrong in the timid direction -- the same
+direction #287 stage 1's prediction missed in. The rescale that produced it
+(~28M) was off by 9M; a probe offset is not a constant along a training curve, as
+that prediction itself warned.
+
+So Muon's advantage survives fixing the baseline, at a smaller size: 2.1x over
+AdamW at 1e-4 (stage 2), 1.42x over AdamW at its better 3e-4. Both readings are
+real; the first was measured against an undertuned control (rule 4) and only this
+one licenses "Muon beats a tuned AdamW".
+
+Readouts, Muon vs control:
+- final_val_ce at the cap (continuous, no weight): 4.373/4.382/4.379 vs
+  5.093/5.107/5.099 -- a 0.72-nat gap, far outside the 0.01-nat seed spread on
+  either arm.
+- wall-clock: 24.16/24.15/24.22 s per opt step vs 23.21/22.94/23.00, so Newton-
+  Schulz costs +4.8% per step here (stage 2 measured +3.0%). Time to the target
+  57.0/56.9/55.0 min vs 76.4/79.0/79.4: a 1.39x wall-clock win, so the KEEP
+  survives its own cost readout.
+- arena peak: 4058 MiB vs 4438, the same 380 MiB Muon saved in stage 2 -- it holds
+  one momentum buffer for the 2-D matrices where AdamW holds two moments.
+- f16 margin: non-finite skips 201/203/199 vs 201/198/195 and streaks >1 at 2/4/2
+  vs 1/4/1, i.e. the loss scaler's routine probing on both arms, no Muon tax.
+  max act_max 44.8/46.2/45.0 vs 41.3/40.9/45.2 -- Muon runs slightly hotter
+  activations, still two orders of magnitude inside the f16 range.
+
+Limitations. The horizon is 512 opt steps (67.1M tokens), 0.3% of a base run, and
+a short horizon flatters the faster optimizer. Muon's multiplier was tuned (stage
+2a sweep) where AdamW's peak now has two points (#287 stage 1, and 6e-4 pending on
+#287 stage 2) -- if 6e-4 wins, this control moves again and the gap narrows or
+closes. Weight decay is LR-coupled (#360) on both arms. Seeds share the data
+stream (#378), so this sigma is init variance, not data variance.
+"""
 
 [readouts]
 notes = """
@@ -114,3 +152,8 @@ the target (Newton-Schulz measured +3.0% per step in stage 2); arena peak (Muon 
 380 MiB lower in stage 2); non-finite skip counts and streaks >1 from train.log (both
 optimizers took ~200 routine scaler probes in stage 2 and #287), and max act_max.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+adamw = [26.2144, 27.5251, 27.5251]
+muon = [19.0054, 19.0054, 18.3501]

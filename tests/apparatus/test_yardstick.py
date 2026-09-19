@@ -137,3 +137,100 @@ def test_tiny_refiner_through_the_runner_adapter():
     assert 0.0 <= runs[0]["lambada_acc"] <= 1.0
     assert np.isfinite(runs[0]["lambada_ppl"]) and runs[0]["lambada_ppl"] > 1.0
     assert runs[0]["num_examples"] == 3
+
+
+TINY_PLAIN = dict(dim=32, num_heads=2, num_layers=1, max_seq_len=64)
+
+
+@pytest.mark.parametrize("arch_flag", [[], ["--arch", "plain"]], ids=["default-arch", "explicit-plain"])
+def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch, arch_flag):
+    """#313: `plain` is the default architecture, and the runner could not restore it —
+    `--arch` offered only reasoner/refiner and the restore map raised KeyError on the
+    default. So the base run's milestone and completion scoring died on the live arch.
+
+    Drives main() end to end on a tiny plain checkpoint: the real arch flag, the real
+    restore (only the skeleton's size is shrunk), the real scorer and model-card row.
+    LAMBADA itself is a two-line local file and the tokenizer a fake, so it runs offline."""
+    import json
+    import types
+
+    import jax
+    import optax
+    import orbax.checkpoint as ocp
+    from flax import nnx
+
+    from instruments.arch import build
+    from instruments.yardstick import eval_yardstick
+    from trm.config import MODEL_ARCH
+    from trm.runtime import checkpoints as ck
+    from trm.runtime.monitor import LossMonitor
+    from trm.runtime.restore import restore_arch
+
+    if not arch_flag and MODEL_ARCH != "plain":
+        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {MODEL_ARCH}")
+
+    saved = build("plain", **TINY_PLAIN)
+    mngr = ocp.CheckpointManager(str(tmp_path / "checkpoints"), item_names=ck.CHECKPOINT_ITEMS,
+                                 options=ocp.CheckpointManagerOptions(create=True))
+    ck.save_checkpoint(mngr, 7, saved, nnx.Optimizer(saved, optax.adam(1e-3), wrt=nnx.Param),
+                       LossMonitor(), "run_tiny")
+
+    restored = {}
+
+    def tiny_restore(arch, checkpoint_path, step=None):
+        restored["arch"] = arch
+        restored["model"], step = restore_arch(arch, checkpoint_path, step=step, **TINY_PLAIN)
+        return restored["model"], step
+
+    monkeypatch.setattr(eval_yardstick, "restore_arch", tiny_restore)
+    monkeypatch.setattr(eval_yardstick, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: FakeEnc()))
+    data = tmp_path / "lambada.jsonl"
+    data.write_text('{"text": "1 2 3 4"}\n{"text": "5 6 7 8 9"}\n')
+    out = tmp_path / "row.json"
+
+    eval_yardstick.main(["--checkpoint-path", str(tmp_path / "checkpoints"), "--data-path", str(data),
+                         "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out), *arch_flag])
+
+    assert restored["arch"] == "plain"
+    saved_leaves = jax.tree_util.tree_leaves(nnx.state(saved))
+    restored_leaves = jax.tree_util.tree_leaves(nnx.state(restored["model"]))
+    assert len(saved_leaves) == len(restored_leaves), "a restore that drops leaves must not pass"
+    assert all(np.array_equal(a, b) for a, b in zip(saved_leaves, restored_leaves)), \
+        "the checkpoint's weights, not the skeleton's own initialization"
+    row = json.loads(out.read_text())
+    assert row["arch"] == "plain" and row["checkpoint"]["step"] == 7
+    assert row["lambada"]["num_examples"] == 2 and 0.0 <= row["lambada"]["lambada_acc"] <= 1.0
+
+
+def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
+    """#328: a milestones dir holds every milestone, and restore used to take the newest
+    step of whatever dir it was given. Scoring milestone M must load exactly M."""
+    import jax
+    import optax
+    import orbax.checkpoint as ocp
+    from flax import nnx
+
+    from instruments.arch import build
+    from trm.runtime import checkpoints as ck
+    from trm.runtime.monitor import LossMonitor
+    from trm.runtime.restore import restore_arch
+
+    mngr = ocp.CheckpointManager(str(tmp_path), item_names=ck.CHECKPOINT_ITEMS,
+                                 options=ocp.CheckpointManagerOptions(max_to_keep=None, create=True))
+    older, newer = build("plain", seed=1, **TINY_PLAIN), build("plain", seed=2, **TINY_PLAIN)
+    for step, model in ((3, older), (9, newer)):
+        ck.save_checkpoint(mngr, step, model, nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param),
+                           LossMonitor(), "run_tiny")
+
+    def leaves(model):
+        return jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
+
+    at_3, step = restore_arch("plain", str(tmp_path), step=3, **TINY_PLAIN)
+    assert len(leaves(older)) == len(leaves(at_3))
+    assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3)))
+    assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3))), \
+        "the two saved models must differ, or this test cannot tell the steps apart"
+    _, default_step = restore_arch("plain", str(tmp_path), **TINY_PLAIN)
+    assert default_step == 9, "with no step named, the newest stays the default"
+    with pytest.raises(SystemExit, match="step 5"):
+        restore_arch("plain", str(tmp_path), step=5, **TINY_PLAIN)
