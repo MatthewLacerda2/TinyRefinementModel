@@ -94,6 +94,9 @@ def main(argv=None) -> int:
                     help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
                          "seed inside one probe interval reports the same token count, which is "
                          "how #26 stage 2 came out with sigma_pooled exactly 0.")
+    ap.add_argument("--pad-token-id", type=int, default=None,
+                    help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
+                         "Unset leaves the historical 50256.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
 
@@ -101,6 +104,7 @@ def main(argv=None) -> int:
     name = (f"run_{args.tag}_{args.optimizer}"
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
+            + (f"_pad{args.pad_token_id}" if args.pad_token_id is not None else "")
             + f"_s{args.seed}")
     run_dir = REPO / "runs" / name
     metrics = run_dir / "metrics.csv"
@@ -119,6 +123,8 @@ def main(argv=None) -> int:
         env["MUON_LR_MULT"] = str(args.lr_mult)
     if args.peak_lr is not None:
         env["PEAK_LR"] = repr(args.peak_lr)
+    if args.pad_token_id is not None:
+        env["PAD_TOKEN_ID"] = str(args.pad_token_id)
 
     if last_step(metrics) < args.opt_steps:
         run_dir.mkdir(parents=True, exist_ok=True)

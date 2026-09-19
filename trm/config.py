@@ -279,9 +279,18 @@ PLATEAU_PATIENCE = int(os.environ.get("PLATEAU_PATIENCE", "400"))
 # golden run resolve unchanged.
 _TOKEN_BUDGET_ENV = os.environ.get("TRAIN_TOKEN_BUDGET")
 TRAIN_TOKEN_BUDGET = int(float(_TOKEN_BUDGET_ENV)) if _TOKEN_BUDGET_ENV else None
-# Padding reuses the tokenizer's end-of-text id (sequences are eot-separated, so the
-# pad token and the document separator are the same symbol). r50k_base eot = 50256.
-PAD_TOKEN_ID = 50256
+# The document separator prefill writes between documents: r50k_base's end-of-text.
+EOT_TOKEN_ID = 50256
+# The id masked out of attention keys and loss targets. It has always been EOT_TOKEN_ID,
+# and that plumbs the document separator into the pad sink (#373): EOT is never a
+# target (no learned "the document ends here") and never a key (tokens after a boundary
+# attend into the previous document with no marker that one passed). 50257 is the first
+# id past r50k's real vocabulary, inside the padded table and never written by prefill,
+# so as the pad it makes EOT an ordinary token. Env-overridable for the #373 pair,
+# which judges the fix before a base run adopts it; the default is the historical id.
+PAD_TOKEN_ID = int(os.environ.get("PAD_TOKEN_ID", str(EOT_TOKEN_ID)))
+if PAD_TOKEN_ID not in (EOT_TOKEN_ID, 50257):
+    raise SystemExit(f"PAD_TOKEN_ID={PAD_TOKEN_ID}: use {EOT_TOKEN_ID} (historical) or 50257 (#373)")
 
 # Tokenizer — single source of truth. prefill, inference, and the transcript dump
 # all import this name so the encoding can never drift between tokenizing the corpus

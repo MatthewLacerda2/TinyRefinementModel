@@ -1,0 +1,95 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "373-eot"
+status = "open"
+title = "The document separator as a real token (pad 50257) vs masked as pad (50256)"
+hypothesis = """
+The pad has always been r50k's end-of-text (50256), so every document separator prefill
+writes was masked as pad: never a loss target, never an attention key (#373). Moving the
+pad to 50257 (the first id past the real vocabulary, never written by prefill) makes EOT
+an ordinary token: the model learns where documents end and can see that a boundary
+passed. On the shipped recipe (plain, 9 x 960, Muon x16.667 on a 6e-4 schedule, f16),
+that reaches held-out CE 5.85 in fewer tokens, because roughly every other 1,025-token
+window straddles a boundary and today those positions attend into the previous document
+blind.
+
+This is a bug fix the owner approved (2026-09-16); the pair is here because it changes
+what the weights learn, so it is judged before a base run adopts it.
+
+Prediction registered: small KEEP, 3-10% fewer tokens, with INCONCLUSIVE likely at this
+length and no KILL. My last four predictions on this line were all too timid (#287 twice,
+#26 stage 3, #382), so if this is wrong I expect the effect to be larger, not absent.
+"""
+issue = 373
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap, and two capped arms tie as INCONCLUSIVE. The held-out probe scores the SAME
+positions in both arms: it never scores EOT whatever the pad is (heldout_targets in
+trm/train/validation.py), so the metric compares like with like and every val CE on
+record stays comparable.
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only PAD_TOKEN_ID differs"
+notes = """
+512 opt steps (67.1M tokens), warmup 100, the mixture ramp budget-relative (#362), val
+every 8 opt steps on 64 rows, val_step-aligned (#351). Both arms are new runs: no arm
+from before #362 is reused, since those trained on a different mixture. The control is
+the historical pad; the treatment adds only --pad-token-id 50257.
+min_delta = 0.85M tokens is 5% of the ~17M the recipe needed in #382; the effect this
+fix is expected to have is smaller than the 15% bar recipe changes use.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4", "--tag", "373"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64", PLAIN_LAYERS = "9" }
+
+[arms.pad_eot]
+role = "control"
+flags = []
+
+[arms.pad_new]
+role = "treatment"
+flags = ["--pad-token-id", "50257"]
+
+# Tokens: LOWER is better, so a win for the fix is the CONTROL's number being larger.
+[criteria.eot_as_token_needs_fewer_tokens]
+rule = "beats"
+treatment = "pad_eot"
+control = "pad_new"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.eot_as_token_needs_more_tokens]
+rule = "loses"
+treatment = "pad_eot"
+control = "pad_new"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["eot_as_token_needs_fewer_tokens"]
+kill_if = ["eot_as_token_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: KEEP or INCONCLUSIVE -> adopt the
+fix (a bug fix need not win, only not lose): PAD_TOKEN_ID defaults to 50257 in the PR
+that records it. KILL -> keep 50256 and tombstone why GPT-2's convention does not
+transfer here.
+Readouts, no weight: final_val_ce at the cap; train CE (it now includes EOT targets in
+the treatment, so it is NOT comparable between arms); the per-source gradient norms
+(#364); wall-clock and arena peak, expected identical.
+"""

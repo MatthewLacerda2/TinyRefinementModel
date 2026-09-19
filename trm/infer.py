@@ -13,6 +13,7 @@ from trm.config import (
     LATENT_DIM,
     MAX_SEQ_LEN,
     MODEL_ARCH,
+    EOT_TOKEN_ID,
     PAD_TOKEN_ID,
     TOKENIZER_NAME,
     resolve_root,
@@ -211,7 +212,9 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         else:
             next_token = int(jnp.argmax(logits))
 
-        if next_token == PAD_TOKEN_ID:
+        # The end of a document (#373): with EOT a real token the model can predict it,
+        # and a pad was never a target, so either one ends the generation.
+        if next_token in (EOT_TOKEN_ID, PAD_TOKEN_ID):
             break
 
         tokens_list.append(next_token)
