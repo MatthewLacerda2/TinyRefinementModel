@@ -341,7 +341,13 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
                         f"(last at step {step})."
                     )
-                step += 1
+                # `step` does NOT advance (#355): the skipped batch is discarded and the
+                # next one takes its place. The optimizer never counts a skipped
+                # micro-step, so advancing here drifted every boundary the trainer keys
+                # on `step` (logging, the probe, checkpoints, the applied-gradient
+                # telemetry) off the optimizer's real windows, by one micro-step per
+                # skip: ~200 in a 512-step pair. Consumed data is counted apart, in
+                # monitor.samples_seen, so a resume still skips the right amount.
                 continue
             nonfinite_streak = 0
             if loss_scaler.record_good_step():
