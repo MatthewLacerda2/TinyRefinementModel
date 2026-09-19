@@ -9,7 +9,7 @@ import threading
 import queue
 
 import jax
-import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 from dotenv import load_dotenv
 
@@ -334,13 +334,15 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             # about to be measured against.
             ceiling = grad_guard.threshold
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,
-                loss_scale=jnp.float32(loss_scaler.value),
-                clip_norm=jnp.float32(jnp.inf if ceiling is None else ceiling),
+                model, batch, np.int32(step), depth, doc_boundary=doc_boundary,
+                loss_scale=np.float32(loss_scaler.value),
+                clip_norm=np.float32(np.inf if ceiling is None else ceiling),
             )
 
-            current_loss = float(loss)
-            current_grad_norm = float(grad_norm)
+            # One blocking read for both scalars, not two (#411). The host arguments
+            # above are numpy so they ride in the jitted call's own transfer instead
+            # of each dispatching a device array first.
+            current_loss, current_grad_norm = map(float, jax.device_get((loss, grad_norm)))
             grad_guard.observe(current_grad_norm)
             if math.isfinite(current_grad_norm):
                 source_grads.add(source, current_grad_norm,

@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 import fsspec
 from trm.config import MAX_SEQ_LEN, DATA_SEED, VOCAB_SIZE
 
@@ -119,7 +118,11 @@ class TextDataGenerator:
             doc_boundary[:] = True
             self.is_new_file = False
 
-        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
+        # numpy, not jnp (#411): this runs on the prefetch thread, and a JAX op there
+        # (dispatch, a host-to-device copy) competes with the training thread for the
+        # GIL every micro-step. np.array, not astype: it copies out of the memmap here,
+        # so the shard's page faults are paid on this thread, not the training one.
+        return np.array(batch.reshape(batch_size, stride), dtype=np.int32), doc_boundary
 
 class DataMixer:
     def __init__(self, sources, weights, rng=None):
@@ -196,5 +199,5 @@ class DataMixer:
             if batch_list:
                 self.last_source = drawn_from[0] if len(drawn_from) == 1 else None
                 batches, masks = zip(*batch_list)
-                return jnp.concatenate(batches, axis=0), jnp.concatenate(masks, axis=0)
+                return np.concatenate(batches, axis=0), np.concatenate(masks, axis=0)
         return None, None
