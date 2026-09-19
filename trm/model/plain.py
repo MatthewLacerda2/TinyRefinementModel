@@ -59,12 +59,12 @@ class PlainTransformer(LanguageModel):
         ])
         self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
-    def __call__(self, tokens, depth=None, training=False, new_document=True,
-                 logits_at=None):
-        # depth and new_document are contract arguments this architecture does not
-        # use: compute per token is fixed, and no state crosses windows.
-        del depth, new_document
+    def _stream(self, tokens, keep_states=False):
+        """The residual stream through the stack: (final z, act_max, states).
 
+        One body for both the forward pass and `capture_trajectory`, so what an
+        instrument reads is the computation the model actually runs. `states` is
+        the list [z_0, z_1, ..., z_N] when `keep_states`, else None."""
         # An id outside the table is NOT a local error here: nnx.Embed lowers to
         # jnp.take, whose default mode="fill" returns NaN for an out-of-range index
         # (direct indexing clamps instead, which is why a quick probe suggests
@@ -82,6 +82,7 @@ class PlainTransformer(LanguageModel):
         pad_bias = ((pad_mask.astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
 
         z = self.embed(tokens)
+        states = [z] if keep_states else None
         # Peak |activation| through the stack, carried out on `diag` so it lands in
         # metrics.csv with everything else.
         #
@@ -97,6 +98,17 @@ class PlainTransformer(LanguageModel):
         for blk in self.blocks:
             z = blk(z, pad_bias)
             act_max = jnp.maximum(act_max, jnp.max(jnp.abs(z.astype(jnp.float32))))
+            if keep_states:
+                states.append(z)
+        return z, act_max, states
+
+    def __call__(self, tokens, depth=None, training=False, new_document=True,
+                 logits_at=None):
+        # depth and new_document are contract arguments this architecture does not
+        # use: compute per token is fixed, and no state crosses windows.
+        del depth, new_document
+
+        z, act_max, _ = self._stream(tokens)
         z = self.out_norm(z)
         diag = {"act_max": jax.lax.stop_gradient(act_max)}
 
@@ -113,3 +125,16 @@ class PlainTransformer(LanguageModel):
         logits = jnp.matmul(z.astype(self.dtype), embed_t,
                             preferred_element_type=jnp.float32)
         return LMOutput(logits=logits, diag=diag)
+
+    def capture_trajectory(self, tokens, depth=None):
+        """The residual stream after every block, for instruments (#391).
+
+        `[N+1, b, s, dim]` in f32: index 0 is the embedding output, index k the
+        stream after block k, so the last entry is the state the out-norm and the
+        tied head read. Spatial depth where the refiner had recurrent depth, the
+        same object. No gate, so the second value is None; `depth` is ignored as
+        in `__call__`.
+        """
+        del depth
+        _, _, states = self._stream(tokens, keep_states=True)
+        return jnp.stack([state.astype(jnp.float32) for state in states]), None
