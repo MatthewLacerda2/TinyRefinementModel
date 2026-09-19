@@ -157,6 +157,35 @@ class RunLog:
             values.append(value)
         return steps, values
 
+    def blocks(self):
+        """(steps, act_max, act_rms) from the run's blocks.csv (#392): per-state
+        readings as [T] steps and two [T, S] arrays, S = embedding + one per block.
+        None when the run wrote none (an older run, or an arch that does not report
+        them). A torn last step with fewer states than the rest is dropped."""
+        import numpy as np
+
+        path = os.path.join(self.run_dir, "blocks.csv")
+        try:
+            with open(path, newline="") as f:
+                rows = list(csv.DictReader(f))
+        except OSError:
+            return None
+        by_step = {}
+        for row in rows:
+            try:
+                step, block = int(row["step"]), int(row["block"])
+                peak, rms = float(row["act_max"]), float(row["act_rms"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            by_step.setdefault(step, {})[block] = (peak, rms)
+        if not by_step:
+            return None
+        states = max(len(v) for v in by_step.values())
+        steps = sorted(s for s, v in by_step.items() if len(v) == states)
+        maxes = np.array([[by_step[s][b][0] for b in range(states)] for s in steps])
+        rmses = np.array([[by_step[s][b][1] for b in range(states)] for s in steps])
+        return np.array(steps), maxes, rmses
+
     def has(self, name):
         """True iff any row carries a value for this column."""
         return any(row.get(name) is not None for row in self.metrics)

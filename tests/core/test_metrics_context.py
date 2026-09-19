@@ -127,3 +127,26 @@ def test_a_run_written_before_the_arena_limit_column_resumes_under_the_new_heade
     assert "arena_limit_mib" in reader.fieldnames
     assert [r["step"] for r in rows] == ["5", "10"]
     assert rows[0]["arena_peak_mib"] == "4400" and rows[0]["arena_limit_mib"] == ""
+
+
+def test_per_block_readings_go_to_blocks_csv_one_row_per_state(tmp_path):
+    """#392: a plain model's per-block readings land beside metrics.csv; an arch that
+    reports none writes no file at all (absent, never zero)."""
+    logger = MetricsLogger(str(tmp_path / "metrics.csv"))
+    diag = {"act_max_blocks": jnp.array([1.5, 20.0, 45.0]), "act_rms_blocks": jnp.array([0.02, 0.9, 1.4])}
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
+    logger.log(15, 3.1, 3.2, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
+    with open(tmp_path / "blocks.csv", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [(r["step"], r["block"]) for r in rows[:3]] == [("10", "0"), ("10", "1"), ("10", "2")]
+    assert rows[2]["act_max"] == "45.00" and len(rows) == 6
+
+    MetricsLogger(str(tmp_path / "metrics.csv"), start_opt_step=15)
+    with open(tmp_path / "blocks.csv", newline="") as f:
+        assert {r["step"] for r in csv.DictReader(f)} == {"10"}, "a resume trims replayed steps"
+
+    other = tmp_path / "other"
+    other.mkdir()
+    MetricsLogger(str(other / "metrics.csv")).log(10, 3.2, 3.3, SimpleNamespace(diag={}), 0.1,
+                                                   seg1_ce=3.0, depth_avg=1.0)
+    assert not (other / "blocks.csv").exists()

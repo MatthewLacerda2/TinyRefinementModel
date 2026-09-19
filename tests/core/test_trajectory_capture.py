@@ -149,3 +149,20 @@ def test_the_plain_trajectory_ends_where_the_forward_pass_does(toy_plain, tokens
 
     last = states[-1].astype(hidden.dtype)
     assert jnp.array_equal(toy_plain.out_norm(last), hidden)
+
+
+def test_the_per_block_readings_are_the_trajectorys_own(toy_plain, tokens):
+    """#392: act_max per state and residual RMS per state, read off the forward pass,
+    match the captured states one by one, and the scalar every reader since #235
+    uses is still exactly their max."""
+    import numpy as np
+
+    diag = toy_plain(tokens, training=True).diag
+    states, _ = toy_plain.capture_trajectory(tokens)
+    states = np.asarray(states)
+
+    assert diag["act_max_blocks"].shape == (TOY_LAYERS + 1,)
+    assert float(diag["act_max"]) == float(jnp.max(diag["act_max_blocks"]))
+    for k in range(TOY_LAYERS + 1):
+        assert np.isclose(float(diag["act_max_blocks"][k]), np.abs(states[k]).max())
+        assert np.isclose(float(diag["act_rms_blocks"][k]), np.sqrt(np.mean(np.square(states[k]))), rtol=1e-5)
