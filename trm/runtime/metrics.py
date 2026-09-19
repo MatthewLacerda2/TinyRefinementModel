@@ -61,6 +61,9 @@ COLUMNS = (
     # every step.
     Column("wall_clock", None),
     Column("mix", None),
+    # Micro-step gradient norm per data source over the window, as
+    # `source=mean/max/guard-clipped/micro-steps` (#364): which data makes the tail.
+    Column("grad_by_source", None),
     # The allocator's own high-water mark so far (#168): exact, not a poll. Every
     # run records how close it came to its limit, and the fit gate reads it from
     # the probe run's first row.
@@ -156,7 +159,7 @@ class MetricsLogger:
     def log(self, step, ce, loss, out, compute_time,
             grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
             zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
-            clip_active=None, val_step=None, mix=None):
+            clip_active=None, val_step=None, mix=None, grad_by_source=None):
         """Logs training metrics to console and CSV based on the routing specification."""
         diag_dict = self.extract_diags(out.diag, jnp.mean)
 
@@ -196,6 +199,7 @@ class MetricsLogger:
                 "depth_avg": depth_avg, "val_ce": val_ce, "val_step": val_step,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
+                "grad_by_source": grad_by_source or "",
                 "arena_peak_mib": _arena_peak_mib(),
                 "arena_limit_mib": _arena_limit_mib(),
             }
