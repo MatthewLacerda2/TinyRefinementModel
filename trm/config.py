@@ -295,8 +295,11 @@ TOKENIZER_NAME = "r50k_base"
 # Seeds — env-overridable per run (#17: the seed-variance noise floor needs
 # same-config runs differing ONLY in seed). Both are recorded in
 # run_metadata.json so every run stays reproducible.
-#   DATA_SEED  — data-pipeline randomness (start-offset augmentation, mixture
-#                draws, per-step depth sampling).
+#   DATA_SEED  — data-pipeline randomness: the start offset into each source
+#                (under 1,025 tokens), the mixture draws, per-step depth sampling.
+#                NOT the document order. Every source is read front to back, so two
+#                seeds see nearly the same documents in the same order, and a pair's
+#                seed spread is init variance, not data variance (#378).
 #   MODEL_SEED — parameter initialization (the nnx.Rngs the trainer builds
 #                the model with).
 DATA_SEED = int(os.environ.get("DATA_SEED", "42"))

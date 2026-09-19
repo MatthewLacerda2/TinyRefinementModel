@@ -45,6 +45,14 @@ seeds would let a 3% difference clear 2σ (#26).
 
 ## The conventions it pins
 
+**What a seed varies, on the real model.** A seed sets `MODEL_SEED` and `DATA_SEED`
+together. `DATA_SEED` moves each source's start offset by under 1,025 tokens and the
+mixture draws; it does **not** reorder documents, since every source is read front to
+back (#378). So σ on a `tokens_to_ce` pair is **init variance**, not data variance: a
+lower bound on the real noise, and a delta that clears 2σ here is not thereby shown to
+clear it across data orders. A gradient event at the same opt step in every seed of
+every arm (#364) is what shared data looks like.
+
 **σ is the sample sigma** (`statistics.stdev`, ddof=1) and
 **σ_pooled = √((σ_t² + σ_c²) / 2)**. Not a new choice — the one every finding
 already used. `tests/apparatus/test_verdict.py` proves it by recomputing their
