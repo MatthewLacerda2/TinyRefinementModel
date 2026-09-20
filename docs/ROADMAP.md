@@ -82,6 +82,15 @@ longer window); then the work that needs a capable base — inference speed, SFT
   (#38) uses. Bonus = dead; grade = allowed.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
+- **Long-context / serving attention work — MLA, Kimi Delta Attention (gated linear
+  attention), LatentMoE**: not killed, *scale-conditional*. Each pays only where
+  sequence length dominates compute or KV-cache bytes are the constraint. At
+  MAX_SEQ_LEN 512 attention is ~8% of block FLOPs (#291, which killed chunked
+  attention for exactly this reason), generation has no KV cache to shrink yet
+  (#153), and MoE at 138M dense params on 6 GB is not a trade that exists. Revisit
+  if the context widens (#435) or the champion is ever served. **NoPE**, from the
+  same Kimi K3 list, is scale-free and is filed as an idea (#444) rather than
+  ruled out here.
 
 ## Graveyard
 Killed ideas and closed post-mortems, with reasons, so they stay dead. New
