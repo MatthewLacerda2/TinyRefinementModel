@@ -111,7 +111,7 @@ def test_an_architecture_without_a_refine_loop_refuses():
     pointed at a model that has no depth to begin with."""
     from trm.model.reasoner import UniversalReasoner
 
-    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1)
+    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1, batch_size=1)
     toks = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32)
 
     with pytest.raises(NotImplementedError, match="no trajectory to capture"):

@@ -154,15 +154,21 @@ LOSS_SCALE_GROWTH_INTERVAL = int(os.environ.get("LOSS_SCALE_GROWTH_INTERVAL", "2
 POST_NORM = os.environ.get("POST_NORM", "0") == "1"
 
 # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
-# blocks + one refine pass). Raised to 9 on 2026-09-13 from the exact allocator
-# numbers (instruments/vram_headroom_smoke, cuda_async, dim 960, batch 1):
-#   8 layers  4112 MiB arena peak, 771 MiB headroom   (147.9M params at 9)
-#   9 layers  4437 MiB,             446 MiB headroom   <- this
-#   10 layers 4762 MiB,             121 MiB headroom   (too thin)
-# The only config proven over a 10-day run had 834 MiB spare, so 9 is untested
-# at length: the supervisor's fit gate (#168) runs the real trainer first, and if
-# a long run OOMs the fallback is 8. Do not raise this by eye.
-PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "9"))
+# blocks + one refine pass). It was 9 between 2026-09-13 and 2026-09-20, on the
+# allocator numbers for batch 1 (8 layers left 771 MiB of arena headroom, 9 left
+# 446, 10 left 121).
+#
+# Back to 8 for the base run (#385, owner 2026-09-20): the depth pays for itself
+# only if the card cannot spend the memory better, and it can. Measured on the real
+# trainer, 40 opt steps each with checkpoints every 16 and the validation probe
+# running (instruments/bench_train_step never ran either, which is why #24's batch-2
+# win was real and irrelevant):
+#   9 layers, batch 1   4,424 tok/s   arena peak 4058 MiB, 825 MiB headroom
+#   8 layers, batch 2   6,149 tok/s   arena peak 4502 MiB, 381 MiB headroom  <- this
+# +39% throughput, which is 531M tokens a day against 382M. The ninth layer costs
+# more than a day of every four. The fallback if a long run OOMs is 8 layers at
+# batch 1, which is both cheaper in memory than what shipped before and faster.
+PLAIN_LAYERS = int(os.environ.get("PLAIN_LAYERS", "8"))
 
 # ── Retired architectures ───────────────────────────────────────────────────────
 # Knobs only the refiner and the reasoner read, kept so their checkpoints still load
@@ -214,34 +220,29 @@ INFERENCE_DEPTH = int(os.environ.get("INFERENCE_DEPTH", "6"))
 # instruments.bench_train_step: +43% at depth 4 (5.0k -> 7.2k tok/s) and +40% at
 # depth 8 (4.2k -> 5.9k), and flipped this pair to 2/64.
 #
-# BATCH_SIZE STAYS 1 — batch 2 does not fit the real trainer. It OOMs on its
-# first optimizer step at dim960/depth8, 2026-08-13. Re-measured for the plain
-# stack on 2026-09-13 with the exact allocator numbers: batch 2 leaves 45 MiB of
-# headroom at 8 layers and -371 MiB at 9, so the +43% lever stays dead at dim 960.
-#   XLA_PYTHON_CLIENT_MEM_FRACTION=0.85 -> RESOURCE_EXHAUSTED, 626MiB short inside
-#     the BFC arena (5222MB), with a fragmented free list
-#   ...=0.95 (5837MB arena)             -> the OOM moves OUT of the arena: the driver
-#     cannot instantiate a CUDA command buffer, 28 alive graphs (random-depth
-#     training compiles one program per sampled depth, x the accumulate/apply
-#     branches; since #316 only for the looped arches — plain compiles one).
-#     Squeezed from both sides on a 6GB card.
-# bench_train_step times a grad step; it never ran the trainer, which also holds
-# the validation probe and the checkpoint managers. So the +40% was real for what
-# it measured and irrelevant to what we ship — every run that ever finished, both
-# July dim-960 base runs included, used 1/128 (see runs/*/run_metadata.json).
-# Don't re-flip this pair from a bench number alone: land it only after a real
-# trainer launch survives an optimizer apply. Note instruments.vram_headroom_smoke
-# will NOT catch it — it defaults to --batch 1, samples nvidia-smi under the
-# `platform` allocator rather than the trainer's preallocated BFC arena, and
-# reported batch 2 as *cheaper* than batch 1 here, which cannot be true.
+# BATCH_SIZE IS 2 since 2026-09-20, at 8 layers. It was 1 for as long as the stack
+# was 9 layers deep, and for good reason: batch 2 OOMed the real trainer on its first
+# optimizer step at dim960/depth8 in 2026-08-13, and the 2026-09-13 re-measurement
+# found 45 MiB of headroom at 8 layers and -371 at 9 — the lever was dead at dim 960.
+# Muon's 380 MiB (#388) and #316's single compiled program changed that arithmetic.
 #
-# Because TOKENS_PER_OPT_STEP is unchanged, the LR schedule, the token budget,
-# and the learning dynamics are all identical either way: same model, same run.
-# Env-overridable for the #385 pair (8 layers + batch 2 against 9 + batch 1). Muon's
-# 380 MiB and #316's single program changed the arithmetic above: the 2026-09-19 smoke
-# measured 8 layers at batch 2 with 382 MiB of arena headroom (on #385). The product
-# with ACCUMULATION_STEPS stays 128, so tokens per optimizer step do not move.
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1"))
+# What flipped it is a real trainer launch, which is what the old note here demanded
+# and what a bench number could never give: 40 opt steps at 8 layers and batch 2,
+# checkpoints every 16 steps, validation probe running, 6,149 tok/s against 4,424 for
+# 9 layers at batch 1, arena peak 4502 of 4883 MiB (381 MiB headroom, matching the
+# #385 smoke's 382). Note that instruments.vram_headroom_smoke still will NOT catch a
+# regression here: it defaults to --batch 1 and samples nvidia-smi under the
+# `platform` allocator rather than the trainer's preallocated arena.
+#
+# 381 MiB is thinner than the 834 MiB the only completed 10-day run had, so this is
+# the knob the supervisor's fit gate (#168) is for; if a long run OOMs, drop to
+# batch 1 at 8 layers rather than adding the layer back.
+#
+# The product with ACCUMULATION_STEPS stays 128, so tokens per optimizer step, the LR
+# schedule, the token budget and the learning dynamics are identical either way: same
+# model, same run, fewer and fatter micro-steps amortizing the flat ~69ms optimizer +
+# global-norm clip over 138.7M params (#24).
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "2"))
 if 128 % BATCH_SIZE:
     raise SystemExit(f"BATCH_SIZE={BATCH_SIZE} must divide 128, so tokens per opt step stay fixed")
 ACCUMULATION_STEPS = 128 // BATCH_SIZE

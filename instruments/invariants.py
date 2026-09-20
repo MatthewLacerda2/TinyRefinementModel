@@ -43,8 +43,8 @@ from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT, VOCAB_SIZE
 DEPTH_SIGMA_TOLERANCE = 5.0
 
 
-def depth_expectation():
-    """(mean, sigma) of `depth_avg` for the current config.
+def depth_expectation(accumulation_steps=ACCUMULATION_STEPS):
+    """(mean, sigma) of `depth_avg` for a run at `accumulation_steps`.
 
     Depth is uniform over the integers 1..K per micro-step, so mean = (K+1)/2 and
     variance = (K^2 - 1)/12. One logged row averages N = ACCUMULATION_STEPS of
@@ -52,33 +52,36 @@ def depth_expectation():
 
     Derived rather than hardcoded so the check follows the config: change
     MAX_STEPS_LIMIT or ACCUMULATION_STEPS and the corridor moves with it, instead
-    of silently becoming wrong.
+    of silently becoming wrong. A RECORDED run brings its own value (suspect_rows
+    reads it from the run's metadata): the shipped constant moved from 128 to 64
+    when batch 2 landed (#385), and judging an old run by today's constant would
+    narrow its corridor and flag healthy rows.
     """
     k = MAX_STEPS_LIMIT
     mean = (k + 1) / 2
-    sigma = math.sqrt((k * k - 1) / 12 / ACCUMULATION_STEPS)
+    sigma = math.sqrt((k * k - 1) / 12 / accumulation_steps)
     return mean, sigma
 
 
-def _depth_bounds():
-    mean, sigma = depth_expectation()
+def _depth_bounds(accumulation_steps=ACCUMULATION_STEPS):
+    mean, sigma = depth_expectation(accumulation_steps)
     spread = DEPTH_SIGMA_TOLERANCE * sigma
     # Never wider than the support: a mean of draws in [1, K] cannot leave [1, K]
     # however loose the sigma corridor gets on a small ACCUMULATION_STEPS.
     return max(1.0, mean - spread), min(float(MAX_STEPS_LIMIT), mean + spread)
 
 
-def build_invariants():
+def build_invariants(accumulation_steps=ACCUMULATION_STEPS):
     """(column, low, high, why) for every quantity with a known-correct range.
 
     Built on call rather than at import so a test can vary the config and get
-    matching bounds.
+    matching bounds, and so a recorded run can be judged at its own accumulation.
     """
-    depth_low, depth_high = _depth_bounds()
-    mean, sigma = depth_expectation()
+    depth_low, depth_high = _depth_bounds(accumulation_steps)
+    mean, sigma = depth_expectation(accumulation_steps)
     return (
         ("depth_avg", depth_low, depth_high,
-         f"mean of {ACCUMULATION_STEPS} uniform draws over 1..{MAX_STEPS_LIMIT}: "
+         f"mean of {accumulation_steps} uniform draws over 1..{MAX_STEPS_LIMIT}: "
          f"{mean:.2f} +/- {sigma:.3f}, so {DEPTH_SIGMA_TOLERANCE:.0f} sigma is "
          f"[{depth_low:.2f}, {depth_high:.2f}]"),
         ("zero_frac_dense_max", 0.0, 1.0, "it is a fraction"),
@@ -124,14 +127,24 @@ def row_violations(row, invariants=None):
     return broken
 
 
-def suspect_rows(log):
+def suspect_rows(log, accumulation_steps=None):
     """{step: [reasons]} for every row that breaks an invariant.
 
     The step is the key because the verdict applies to the whole row: the
     accumulator that produced the impossible value produced the rest of the row
     too, so nothing on it can be trusted.
+
+    The depth corridor is built at the RUN's accumulation steps, taken from its own
+    recorded recipe and falling back to the shipped constant for a run that recorded
+    none. A run is a recipe (#24): the constant is 64 since batch 2 (#385), and
+    judging a run trained at 128 by 64 would narrow its corridor under it.
     """
-    invariants = build_invariants()
+    if accumulation_steps is None:
+        try:
+            accumulation_steps = int(log.params.get("ACCUMULATION_STEPS", ACCUMULATION_STEPS))
+        except (AttributeError, TypeError, ValueError):
+            accumulation_steps = ACCUMULATION_STEPS
+    invariants = build_invariants(accumulation_steps)
     suspect = {}
     for row in log.metrics:
         broken = row_violations(row, invariants)

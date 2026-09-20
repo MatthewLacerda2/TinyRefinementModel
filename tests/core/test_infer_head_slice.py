@@ -133,7 +133,7 @@ def test_the_control_baseline_agrees_with_itself_too():
     it does not get to skip the correctness gate just because it is not live."""
     from trm.model.reasoner import UniversalReasoner
 
-    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1)
+    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1, batch_size=1)
     tokens = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32).at[0, :4].set(
         jnp.array(PROMPT, dtype=jnp.int32))
 
