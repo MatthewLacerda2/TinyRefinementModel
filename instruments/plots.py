@@ -7,6 +7,7 @@ glance does not need.
                       perplexity on the right.
   grad_norm.png       the gradient norm against the clip.
   logits.png          logit health: entropy, log Z, max |logit|.
+  act_max.png         peak |activation| against the f16 ceiling it must not reach.
   throughput.png      tokens/sec from metrics.csv's wall_clock (#186) — or, for
                       runs older than that column, sampled from the supervisor's
                       heartbeats.
@@ -66,12 +67,13 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 
-from instruments._common import REPO_ROOT
+from instruments._common import F16_MAX, REPO_ROOT
 from instruments.runlog import absence_reason, load, recorded_tokens_per_opt_step
 from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
+from trm.runtime.layout import ACT_MAX_ALARM
 from trm.train.schedules import PEAK_LR, WARMUP_STEPS, resolve_decay_steps
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -790,8 +792,42 @@ def _panel_logits(ax, runlog, cfg):
               "falling toward 0 with |logit| climbing is the confident-collapse shape to watch for.")
 
 
+def _panel_act_max(ax, runlog, cfg):
+    """Peak |activation| in the residual stream, against the two lines it can cross.
+
+    A margin like `margin_report`'s two, and drawn rather than stated for the one
+    reason they are not: it is not flat. It climbs through training, so the slope is
+    the reading and the final number alone is the post-mortem — the 4B champion
+    finished at 65,120 of 65,504 and nobody knew until two weeks after the run ended
+    (#235). #368 watches this live; this is the same number after the fact.
+
+    Three series, which is the palette's limit: the trace, the supervisor's alarm,
+    and the dtype's ceiling.
+    """
+    tokens, values = series(runlog, "act_max", cfg)
+    ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
+    ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=BLUE,
+            linewidth=1.8, label="max |z|")
+    ax.axhline(ACT_MAX_ALARM, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"alarm at {ACT_MAX_ALARM:,.0f}")
+    ax.axhline(F16_MAX, color=AQUA, linewidth=1.2, linestyle="--",
+               label=f"f16 ceiling {F16_MAX:,.0f}")
+    _log_y(ax)
+    ax.set_ylabel("max |activation|")
+    peak = float(np.max(values)) if len(values) else 0.0
+    # The headroom goes in the TITLE because a healthy run is a flat trace decades
+    # below both lines: without a number the panel reads as "nothing here" whether
+    # the peak is 55 or 55,000.
+    ax.set_title(f"Activation headroom — peak {peak:,.0f}, {peak / F16_MAX:.2%} of the f16 ceiling",
+                 loc="left")
+    _legend(ax, loc="best", fontsize=8)
+    _note(ax, "the ceiling is fixed by the dtype, so a healthy run sits decades under it and this "
+              "panel is meant to look empty. What is worth reading is the slope, not the level.")
+
+
 HEALTH_CHARTS = (
     ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm, "grad_norm.png"),
+    ("act_max", ("act_max",), _panel_act_max, "act_max.png"),
     ("depth", ("depth_avg",), _panel_depth, "depth.png"),
     ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits, "logits.png"),
 )
