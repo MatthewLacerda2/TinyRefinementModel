@@ -294,14 +294,17 @@ _TOKEN_BUDGET_ENV = os.environ.get("TRAIN_TOKEN_BUDGET")
 TRAIN_TOKEN_BUDGET = int(float(_TOKEN_BUDGET_ENV)) if _TOKEN_BUDGET_ENV else None
 # The document separator prefill writes between documents: r50k_base's end-of-text.
 EOT_TOKEN_ID = 50256
-# The id masked out of attention keys and loss targets. It has always been EOT_TOKEN_ID,
-# and that plumbs the document separator into the pad sink (#373): EOT is never a
-# target (no learned "the document ends here") and never a key (tokens after a boundary
-# attend into the previous document with no marker that one passed). 50257 is the first
-# id past r50k's real vocabulary, inside the padded table and never written by prefill,
-# so as the pad it makes EOT an ordinary token. Env-overridable for the #373 pair,
-# which judges the fix before a base run adopts it; the default is the historical id.
-PAD_TOKEN_ID = int(os.environ.get("PAD_TOKEN_ID", str(EOT_TOKEN_ID)))
+# The id masked out of attention keys and loss targets. It used to be EOT_TOKEN_ID,
+# and that plumbed the document separator into the pad sink (#373): EOT was never a
+# target (no learned "the document ends here" — a model that cannot stop talking) and
+# never a key (tokens after a boundary attended into the previous document with no
+# marker that one passed). 50257 is the first id past r50k's real vocabulary, inside
+# the padded table and never written by prefill, so as the pad it leaves EOT an
+# ordinary token. Adopted as the default for the base run (owner, 2026-09-20) without
+# its matched pair: #373 is a bug, not a hypothesis — a base run that never learns to
+# end a document is broken whatever the pair would have said. Set PAD_TOKEN_ID=50256
+# to reproduce a run recorded under the old convention.
+PAD_TOKEN_ID = int(os.environ.get("PAD_TOKEN_ID", "50257"))
 if PAD_TOKEN_ID not in (EOT_TOKEN_ID, 50257):
     raise SystemExit(f"PAD_TOKEN_ID={PAD_TOKEN_ID}: use {EOT_TOKEN_ID} (historical) or 50257 (#373)")
 
