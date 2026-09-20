@@ -2,8 +2,9 @@
 
 pad_token_id was the tokenizer's end-of-text, so every real EOT prefill writes between
 documents was masked as pad: never a loss target (no learned "the document ends
-here"), never an attention key (a token after a boundary could not see that one had
-passed). With the pad moved to 50257 both come back; a real pad is still masked."""
+here", so nothing ever taught the model to stop), never an attention key (a token
+after a boundary could not see that one had passed). With the pad moved to 50257 both
+come back; a real pad is still masked."""
 
 import jax.numpy as jnp
 import numpy as np
@@ -57,9 +58,11 @@ def test_the_heldout_ce_never_scores_the_separator_under_either_pad():
     assert heldout_targets(targets, EOT_TOKEN_ID).tolist() == [[5, EOT_TOKEN_ID, 7, NEW_PAD]]
 
 
-def test_the_default_pad_is_still_the_historical_one():
-    """The pair judges the fix before a base run adopts it: until then the default,
-    the golden run and every recorded run keep the old id."""
+def test_the_default_pad_leaves_eot_a_real_token():
+    """The shipped default, adopted for the base run (owner, 2026-09-20): the pad is
+    the unused id, so EOT is trained like any other token and the model can learn to
+    stop. The old id stays reachable to reproduce a run recorded under it."""
     from trm import config
 
-    assert config.PAD_TOKEN_ID == EOT_TOKEN_ID == 50256
+    assert config.PAD_TOKEN_ID == NEW_PAD == 50257
+    assert EOT_TOKEN_ID == 50256 and config.EOT_TOKEN_ID != config.PAD_TOKEN_ID
