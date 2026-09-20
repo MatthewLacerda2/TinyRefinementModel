@@ -44,6 +44,8 @@ VRAM_HEADROOM_ALARM_MIB = float(os.environ.get("VRAM_HEADROOM_ALARM_MIB", 150))
 
 # The items every checkpoint step directory holds, in orbax's item order.
 CHECKPOINT_ITEMS = ("model", "optimizer", "monitor_state", "step")
+# What a milestone step directory holds: the same, without the optimizer (#394).
+MILESTONE_ITEMS = ("model", "monitor_state", "step")
 # Rolling-latest and best checkpoints each keep this many, newest first.
 ROLLING_KEEP = 3
 
@@ -55,3 +57,15 @@ BEST_SUBDIR = "best_val_ce"
 
 # Sibling subdir holding milestone checkpoints, which nothing evicts (#187).
 MILESTONE_SUBDIR = "milestones"
+
+# When a milestone is kept: at doubling token counts — 8M, 16M, 32M, … — so disk
+# grows with log(run length) instead of with it (#394). The horizon is absolute
+# tokens, not a fraction of a budget, because a run that stops on a criterion has
+# no budget to take a fraction of. The old fixed 500M cadence would have written
+# ~48 GB of full-state saves over a 10B-token run onto an SSD with 55 GB free, and
+# kept nothing at all inside a 67M-token pair.
+MILESTONE_FIRST_TOKENS = int(os.environ.get("MILESTONE_FIRST_TOKENS", 8_000_000))
+MILESTONE_RATIO = float(os.environ.get("MILESTONE_RATIO", 2))
+# The cap a runaway run stops at: 16 doublings from 8M is 262B tokens, far past
+# anything this card can train.
+MILESTONE_MAX_COUNT = int(os.environ.get("MILESTONE_MAX_COUNT", 16))

@@ -5,7 +5,9 @@ import signal
 
 from flax import nnx
 import orbax.checkpoint as ocp
-from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
+from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_FIRST_TOKENS,
+                                MILESTONE_ITEMS, MILESTONE_MAX_COUNT, MILESTONE_RATIO,
+                                MILESTONE_SUBDIR, ROLLING_KEEP)
 from trm.runtime.monitor import LossMonitor
 from trm.runtime.rewind import refuse_sft_phase_resume
 
@@ -43,33 +45,100 @@ def discover_latest_checkpoint_run(runs_root="runs"):
 # Milestone checkpoints (MILESTONE_SUBDIR, trm/runtime/layout.py) are never evicted (#187).
 # Retention keeps the newest, and when a run goes bad the newest are the broken
 # ones: #157's SFT flip came within two saves of evicting every clean checkpoint.
-# A milestone every MILESTONE_EVERY_TOKENS is kept regardless of recency — the
-# recovery point when a run goes wrong, and the branch point the registry wants
+# A milestone is kept regardless of recency — the branch point the registry wants
 # ("fine-tune from the 1B-token checkpoint"), which rolling retention has always
 # deleted by the time a run ends.
-MILESTONE_EVERY_TOKENS = int(os.environ.get("MILESTONE_EVERY_TOKENS", 500_000_000))
+#
+# Two things make a milestone cheap enough to keep forever (#394): they are spaced
+# by doubling (MILESTONE_* in layout.py), and they hold the weights, not the whole
+# training state. Weights are what the yardstick, the registry and the trajectory
+# figures read; the optimizer state is ~3/4 of a full save and only a resume wants
+# it, which is what the rolling checkpoints are for. So a milestone is not a resume
+# point, and `python -m trm.runtime.rewind` says so when it lists one.
 
 
 def make_milestone_manager(checkpoint_path):
+    """The milestone dir's manager: keeps every step, and holds no optimizer (#394)."""
     return ocp.CheckpointManager(
         os.path.join(str(checkpoint_path), MILESTONE_SUBDIR),
-        item_names=CHECKPOINT_ITEMS,
+        item_names=MILESTONE_ITEMS,
         options=ocp.CheckpointManagerOptions(max_to_keep=None, create=True),
     )
 
 
-def milestone_due(opt_step, every_opt_steps, tokens_per_opt_step, every_tokens=MILESTONE_EVERY_TOKENS):
-    """Whether a token milestone was crossed since the previous checkpoint boundary.
+def milestone_thresholds(first=MILESTONE_FIRST_TOKENS, ratio=MILESTONE_RATIO,
+                         count=MILESTONE_MAX_COUNT):
+    """The token counts a milestone is kept at: first, first*ratio, … capped at
+    `count` of them. `first <= 0` turns milestones off."""
+    if first <= 0 or count <= 0:
+        return ()
+    marks, mark = [], float(first)
+    for _ in range(count):
+        marks.append(int(mark))
+        mark *= ratio
+    return tuple(marks)
 
-    Checked only where a rolling checkpoint is written, so a milestone lands on the
-    first boundary at or past each multiple of `every_tokens` — exact multiples
-    never line up with the save cadence, and crossing is what matters.
+
+def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None):
+    """Whether a milestone token count was crossed between two optimizer steps.
+
+    Checked every optimizer step, not only where a rolling checkpoint lands: the
+    early milestones (8M tokens is 61 opt steps at the shipping config) are denser
+    than the rolling cadence, and a milestone that waits for the next boundary is
+    not the point in training it claims to be.
     """
-    if every_tokens <= 0:
-        return False
-    tokens_now = opt_step * tokens_per_opt_step
-    tokens_before = max(opt_step - every_opt_steps, 0) * tokens_per_opt_step
-    return tokens_now // every_tokens > tokens_before // every_tokens
+    marks = milestone_thresholds() if thresholds is None else thresholds
+    now = opt_step * tokens_per_opt_step
+    before = max(since_opt_step, 0) * tokens_per_opt_step
+    return any(before < mark <= now for mark in marks)
+
+
+def _monitor_state(monitor, run_id):
+    """The JSON side of a save: everything a resume rebuilds the run from."""
+    return {
+        "ce_history": list(monitor.ce_history),
+        "best_ce": monitor.best_ce,
+        "best_loss": monitor.best_loss,
+        "best_avg_ce": monitor.best_avg_ce,
+        "best_val_ce": monitor.best_val_ce,
+        "last_improvement_step": monitor.last_improvement_step,
+        "run_id": run_id,
+        # Samples actually consumed, counted as they were served rather
+        # than re-derived (#24). Resume rebuilds the data position from
+        # this; computing it as step x BATCH_SIZE would mis-seek exactly
+        # the run that needs it — one resumed at a different batch size
+        # than it was trained at, whose history spans both.
+        "samples_seen": monitor.samples_seen,
+        # Where the data stream is, exactly (#424). A fresh dict per batch
+        # that nothing mutates afterwards, so handing it over is safe.
+        "data_state": monitor.data_state,
+    }
+
+
+def save_milestone(mngr, step, model, monitor, run_id, wait=False):
+    """Persist the weights (plus the small JSON state) at `step` — no optimizer.
+
+    ~550 MB against ~2.4 GB for a full save, which is what lets every milestone of
+    a run survive to the end of it (#394). Everything else matches `save_checkpoint`,
+    including the one-write-in-flight rule.
+    """
+    wait_for_pending_saves()
+    saved = mngr.save(
+        step,
+        args=ocp.args.Composite(
+            model=ocp.args.StandardSave(nnx.state(model)),
+            monitor_state=ocp.args.JsonSave(_monitor_state(monitor, run_id)),
+            step=ocp.args.JsonSave(step),
+        ),
+    )
+    if not saved:
+        raise RuntimeError(
+            f"orbax declined to save milestone {step} in {mngr.directory}: its newest is "
+            f"step {mngr.latest_step()}.")
+    if wait:
+        mngr.wait_until_finished()
+    else:
+        _PENDING.append(mngr)
 
 
 def _make_best_manager(checkpoint_path):
@@ -160,24 +229,7 @@ def save_checkpoint(mngr, step, model, optimizer, monitor, run_id, wait=True):
         args=ocp.args.Composite(
             model=ocp.args.StandardSave(nnx.state(model)),
             optimizer=ocp.args.StandardSave(nnx.state(optimizer)),
-            monitor_state=ocp.args.JsonSave({
-                "ce_history": list(monitor.ce_history),
-                "best_ce": monitor.best_ce,
-                "best_loss": monitor.best_loss,
-                "best_avg_ce": monitor.best_avg_ce,
-                "best_val_ce": monitor.best_val_ce,
-                "last_improvement_step": monitor.last_improvement_step,
-                "run_id": run_id,
-                # Samples actually consumed, counted as they were served rather
-                # than re-derived (#24). Resume rebuilds the data position from
-                # this; computing it as step x BATCH_SIZE would mis-seek exactly
-                # the run that needs it — one resumed at a different batch size
-                # than it was trained at, whose history spans both.
-                "samples_seen": monitor.samples_seen,
-                # Where the data stream is, exactly (#424). A fresh dict per batch
-                # that nothing mutates afterwards, so handing it over is safe.
-                "data_state": monitor.data_state,
-            }),
+            monitor_state=ocp.args.JsonSave(_monitor_state(monitor, run_id)),
             step=ocp.args.JsonSave(step),
         ),
     )

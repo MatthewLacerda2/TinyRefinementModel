@@ -136,9 +136,12 @@ def test_samples_seen_is_counted_not_derived():
     """The consumed-sample counter must accumulate actual batch rows. Deriving it
     at save time as step x BATCH_SIZE is wrong for the one run that needs it: a
     resume whose history spans two different batch sizes."""
-    save_src = inspect.getsource(checkpoints.save_checkpoint)
+    # _monitor_state builds the JSON side of every save — full state and
+    # weights-only milestones alike (#394).
+    save_src = inspect.getsource(checkpoints._monitor_state)
     assert '"samples_seen": monitor.samples_seen' in save_src
     assert "step * BATCH_SIZE" not in save_src
+    assert "_monitor_state(monitor, run_id)" in inspect.getsource(checkpoints.save_checkpoint)
     assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
 
 
