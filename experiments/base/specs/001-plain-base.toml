@@ -15,11 +15,12 @@ id = "001-plain-base"
 status = "open"
 title = "Does the plain recipe, trained to its budget, reach GPT-2-small on LAMBADA?"
 hypothesis = """
-The live recipe — PlainTransformer at dim 960, f16 compute, tied embeddings, r50k, the
-fineweb-edu/code/math curriculum ramped over the first third of the run (#362), and the
-optimizer adopted in #388: Muon x16.667 on a 6e-4 warmup-cosine schedule (WSD if #386
-keeps it) — trained to `budget_tokens` reaches GPT-2-small's LAMBADA last-word
-accuracy (0.3256, calibrated in-repo, exact match to lm-eval-harness).
+The live recipe — PlainTransformer at dim 960, 8 layers at batch 2, f16 compute, tied
+embeddings, r50k with EOT a trained token (#373), the fineweb-edu/code/math curriculum
+ramped over the first third of the run (#362), and the optimizer adopted in #388: Muon
+x16.667 on a 6e-4 warmup-stable-decay schedule (#386, adopted 2026-09-20) — trained to
+`budget_tokens` reaches GPT-2-small's LAMBADA last-word accuracy (0.3256, calibrated
+in-repo, exact match to lm-eval-harness).
 
 This is CLAUDE.md's base-model bar: the gate, not the neighbour. A miss below it by the
 margin registered here says the bug is in the data / LR / tokenizer / eval, and gets
@@ -41,6 +42,19 @@ that credited the mechanism too much. This one is a level, not a ratio, and the
 base rate that matters is that adopted-literature recipes have delivered every
 time here and novel mechanisms never have — so the timid error is the one to expect
 again, and 0.29 is written knowing that.
+
+Amended 2026-09-20, before launch, by a second session. What changed since the
+prediction above was registered: the budget is 5B rather than 4B (10 days at the
+measured 6,149 tok/s), the shape is 8 layers at batch 2 rather than 9 at batch 1
+(#385, +39% throughput), the schedule is WSD rather than cosine (#386, adopted
+without its pair), and EOT is a trained token rather than the pad (#373, adopted as
+a bug). The 0.29 above stands as the registered prediction of this line and is what
+gets scored. This session's own estimate, written down so two guesses can both be
+wrong on the record: **0.33**, reaching GPT-2-small's level at roughly 2B tokens
+(honest range 1B-4B), and well short of SmolLM2-135M's 0.4289 at any budget this
+card can afford. The difference between 0.29 and 0.33 is one session reading the
+512-step pairs as flattering and the other reading 25x more tokens than any
+finished run as the dominant term.
 """
 issue = 294
 
@@ -58,15 +72,34 @@ metric_key = "lambada_acc"
 metric = "LAMBADA last-word accuracy on the full 5,153-example set (instruments.yardstick.eval_yardstick), at completion"
 matched = "n/a — a single arm against a published reference; observational, not causal"
 notes = """
-Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens):
+Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens).
+
+The budget is a time budget in disguise: 6,149 tok/s measured on the real trainer at
+this shape (#385, 2026-09-20), so 5B tokens is ~9.4 days, inside the owner's 10-day
+ceiling. It is 25x the ~200M tokens every previous base run died at, and half of
+GPT-2-small's ~10B.
+
+How it stops (owner, 2026-09-20): at the budget, or earlier if held-out CE passes
+3.6. WSD is what makes "earlier" a real option — the stable phase holds the peak LR,
+and a decay branched from any checkpoint reads what the model would score if it
+stopped there. A cosine would have to be told the end before step 1.
+
+Waived by name for this run, both by the owner on 2026-09-20: #373's matched pair
+(the fix was adopted as a bug, not judged as a hypothesis) and #386's WSD pair (WSD
+matching a cosine at a fixed budget is settled outside this repo).
 """
-budget_tokens = 4000000000
+budget_tokens = 5000000000
 arch = "plain"
-layers = 9
+layers = 8
+batch_size = 2
+accumulation_steps = 64
 optimizer = "muon"
 muon_lr_mult = 16.666667
 peak_lr = 6e-4
+lr_schedule = "wsd"
+wsd_decay_fraction = 0.2
 warmup_steps = 1000
+pad_token_id = 50257
 curriculum_end_mix = "web 0.35 / code 0.40 / math 0.25"
 seeds = "MODEL_SEED=42, DATA_SEED=42"
 milestone_yardstick_limit = 1000

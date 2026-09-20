@@ -22,7 +22,7 @@ def test_the_committed_base_spec_is_a_valid_base_spec():
 @pytest.mark.parametrize("mutation, message", [
     ("[arms.gpt2_small]\nrole = \"floor\"\nconstant = true\n", "constant="),
     ("[results.run]\ngpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }\n", "declares no"),
-    ("budget_tokens = 4000000000\n", "budget_tokens"),
+    ("budget_tokens = 5000000000\n", "budget_tokens"),
 ])
 def test_a_spec_missing_its_reference_or_budget_fails_to_load(tmp_path, mutation, message):
     text = SPEC.read_text()
@@ -79,17 +79,17 @@ def test_a_launch_refuses_an_uncommitted_or_dirty_spec(tmp_path):
     loose.write_text(SPEC.read_text())
     assert "not committed" in launch.spec_refusal(loose)
     assert launch.spec_refusal(REPO / "experiments/depth/specs/235-post-norm.toml") is None
-    assert launch.spec_budget_tokens(SPEC) == 4000000000
+    assert launch.spec_budget_tokens(SPEC) == 5000000000
 
 
 def test_the_launcher_needs_a_spec_and_a_matching_budget(tmp_path, monkeypatch):
     from trm.runtime import launch
     with pytest.raises(SystemExit, match="no SPEC"):
-        launch.main(["--budget", "4e9", "--dry-run"])
+        launch.main(["--budget", "5e9", "--dry-run"])
     monkeypatch.setattr(launch, "spec_refusal", lambda p: None)
     with pytest.raises(SystemExit, match="disagrees with the spec"):
         launch.main(["--budget", "1e9", "--spec", str(SPEC), "--dry-run"])
-    launch.main(["--budget", "4e9", "--spec", str(SPEC), "--dry-run"])
+    launch.main(["--budget", "5e9", "--spec", str(SPEC), "--dry-run"])
 
 
 def test_trm_never_imports_the_instruments_it_drives():

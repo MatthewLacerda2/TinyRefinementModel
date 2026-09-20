@@ -103,7 +103,10 @@ def make_reasoner_model():
     the reasoner has: the carried hunch and the aux regularizers. Goes with #292."""
     from instruments.arch import build
 
-    return lambda seed=0: build("reasoner", dim=TINY_DIM, seed=seed)
+    # batch_size=1 explicitly: the reasoner sizes its hunch cache from the shipped
+    # BATCH_SIZE, which is 2 since #385, and every test on this fixture feeds one row.
+    return lambda seed=0, batch_size=1: build("reasoner", dim=TINY_DIM, seed=seed,
+                                              batch_size=batch_size)
 
 
 @pytest.fixture(scope="session")

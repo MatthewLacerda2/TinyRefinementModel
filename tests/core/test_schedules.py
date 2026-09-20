@@ -120,10 +120,12 @@ def test_horizon_recorded_in_run_metadata():
 def test_every_schedule_declares_what_its_horizon_scales_with():
     from trm.train import schedules
 
-    assert set(schedules.SCHEDULE_HORIZONS) == {"warmup", "lr cosine", "mixture ramp"}, "the default is cosine"
+    # The default is WSD since 2026-09-20, so its decay start declares a horizon too.
+    assert set(schedules.SCHEDULE_HORIZONS) == {"warmup", "lr wsd", "mixture ramp", "wsd decay start"}
     kinds = {name: kind for name, (kind, _) in schedules.SCHEDULE_HORIZONS.items()}
-    assert kinds == {"warmup": "absolute", "lr cosine": "budget", "mixture ramp": "budget"}
-    assert schedules.SCHEDULE_HORIZONS["lr cosine"][1] == schedules.DECAY_STEPS
+    assert kinds == {"warmup": "absolute", "lr wsd": "budget", "mixture ramp": "budget",
+                     "wsd decay start": "budget"}
+    assert schedules.SCHEDULE_HORIZONS["lr wsd"][1] == schedules.DECAY_STEPS
 
 
 def test_the_ramp_keeps_the_champions_shape_at_4b_and_scales_down_for_a_pair():

@@ -63,12 +63,16 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
 # model. WSD holds the peak and anneals only at the end, so a decay can be BRANCHED
 # from any checkpoint to read what the model would score if it stopped there. That is
 # the owner's stop rule for the base run as a mechanism (val CE < 3.6 or 10 days).
-#   LR_SCHEDULE          cosine (the historical default) | wsd
+# Adopted as the default for the base run without its matched pair (owner,
+# 2026-09-20): WSD matching the cosine at a fixed budget is settled outside (MiniCPM,
+# DeepSeek), so the pair would have asked how much it gains HERE, and what the run
+# needs is the flexibility, not the number. #386's spec stays on disk, pre-empted.
+#   LR_SCHEDULE          wsd (the default since 2026-09-20) | cosine
 #   WSD_DECAY_FRACTION   the share of the horizon the final decay takes (0.2: SmolLM2's)
 #   WSD_DECAY_START      an explicit opt step to start the decay at, for a branch
 #                        resumed from a checkpoint; unset, the decay starts at
 #                        (1 - WSD_DECAY_FRACTION) x DECAY_STEPS.
-LR_SCHEDULE = os.environ.get("LR_SCHEDULE", "cosine")
+LR_SCHEDULE = os.environ.get("LR_SCHEDULE", "wsd")
 if LR_SCHEDULE not in ("cosine", "wsd"):
     raise SystemExit(f"LR_SCHEDULE={LR_SCHEDULE!r}: use cosine or wsd (#386)")
 WSD_DECAY_FRACTION = float(os.environ.get("WSD_DECAY_FRACTION", "0.2"))

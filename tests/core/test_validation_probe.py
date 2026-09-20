@@ -53,7 +53,10 @@ def test_chunked_probe_matches_full_logit_scoring(arch):
     from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID
     from trm.train import validation
 
-    model = build(arch, dim=60, seed=3, **({"num_layers": 2} if arch == "plain" else {}))
+    # The probe scores one row at a time; the reasoner sizes its hunch cache from the
+    # shipped BATCH_SIZE, which is 2 since #385, so it is built for one row here.
+    extra = {"plain": {"num_layers": 2}, "reasoner": {"batch_size": 1}}.get(arch, {})
+    model = build(arch, dim=60, seed=3, **extra)
     rng = np.random.default_rng(0)
     batch = jnp.asarray(rng.integers(1, 50000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     batch = batch.at[0, -40:].set(PAD_TOKEN_ID)  # a padded tail, so the mask is exercised
