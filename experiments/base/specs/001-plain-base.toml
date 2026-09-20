@@ -15,22 +15,32 @@ id = "001-plain-base"
 status = "open"
 title = "Does the plain recipe, trained to its budget, reach GPT-2-small on LAMBADA?"
 hypothesis = """
-The live recipe — PlainTransformer at dim 960, 9 layers, f16 compute, tied
-embeddings, r50k, the fineweb-edu/code/math curriculum, AdamW with the schedule in
-trm/train/schedules.py — trained to `budget_tokens` reaches GPT-2-small's LAMBADA
-last-word accuracy (0.3256, calibrated in-repo, exact match to lm-eval-harness).
+The live recipe — PlainTransformer at dim 960, f16 compute, tied embeddings, r50k, the
+fineweb-edu/code/math curriculum ramped over the first third of the run (#362), and the
+optimizer adopted in #388: Muon x16.667 on a 6e-4 warmup-cosine schedule (WSD if #386
+keeps it) — trained to `budget_tokens` reaches GPT-2-small's LAMBADA last-word
+accuracy (0.3256, calibrated in-repo, exact match to lm-eval-harness).
 
-This is CLAUDE.md's base-model bar: the validity check on the whole pipeline. A
-miss says the bug is in the data / LR / tokenizer / eval, not in any architecture
-idea, and gets fixed before clever work resumes.
+This is CLAUDE.md's base-model bar: the gate, not the neighbour. A miss below it by the
+margin registered here says the bug is in the data / LR / tokenizer / eval, and gets
+fixed before clever work resumes. A run between the gate and SmolLM2-135M (0.4289, ~2T
+tokens) did what its budget allows and becomes the champion.
 
-Prediction registered: MISS, by a wide margin, if launched at the current recipe.
-The 4B refiner champion scored 0.098 (#280 confirmed the eval); its own held-out
-ppl was healthy (38.4). The plain stack is the same block without the loop, and
-nothing in this recipe has changed since except the layer count. The one recipe
-lever with a plausible 3x in it is the peak LR (#287, never swept); the Muon pair
-(#26) is the other. Whichever of those the owner adopts, this spec's recipe fields
-are updated in the same commit — before launch, never after.
+Prediction registered 2026-09-19, for the recipe in the fields below (the one
+registered on 2026-09-15 said MISS by a wide margin at AdamW 1e-4; that recipe is
+gone, so that prediction is withdrawn, not scored): **0.29, in the band between the
+KILL margin (0.2756) and the gate (0.3256), i.e. INCONCLUSIVE.** Reasoning: the 4B
+refiner champion scored 0.098 on the old recipe (#280 confirmed the eval); the recipe
+pairs since then bought ~2.8x fewer tokens to a fixed early CE from the LR (#287) and
+1.32x more from Muon (#382), measured at 512 steps, which flatters; GPT-2-small's
+0.3256 came from ~10B tokens of WebText, and this run sees 4B of a mix that ends at
+65% code and math. If the owner's 10-day rule runs it to ~6B tokens at batch 2, the
+point estimate moves to ~0.31. Prediction record on this line: three recipe
+predictions in a row were too timid (#287 twice, #382), after four depth predictions
+that credited the mechanism too much. This one is a level, not a ratio, and the
+base rate that matters is that adopted-literature recipes have delivered every
+time here and novel mechanisms never have — so the timid error is the one to expect
+again, and 0.29 is written knowing that.
 """
 issue = 294
 
