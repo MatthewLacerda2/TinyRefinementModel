@@ -174,15 +174,24 @@ model, the data, or the scale — both July runs stopped at opt step 1540, which
 (`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
 Read the "drunk" behaviour as what 200M tokens buys, and nothing more: no conclusion
 about this architecture was ever licensed by those runs. At ~138M params the right target is *not* "useful /
-gets the prompt" (unreachable at this scale) — it's **a modern model our size on a standard
-yardstick**: SmolLM2-135M, LAMBADA last-word accuracy 0.4289 / per-word perplexity 19.26,
-measured by our own instrument (`instruments/yardstick/`). GPT-2-small (0.3256 / 40.06)
-stays only as the instrument's calibration: it reproduces lm-eval-harness exactly.
-Until a *vanilla* model trained to completion hits that floor, no architecture ablation
+gets the prompt" (unreachable at this scale). Two numbers on one yardstick, with different jobs:
+
+- **The gate** is what our size reaches on our token budget: **GPT-2-small** (124M, ~10B
+  tokens), LAMBADA last-word accuracy 0.3256 / ppl 40.06, measured by our own instrument
+  (`instruments/yardstick/`, exact match to lm-eval-harness). The base spec
+  (`experiments/base/specs/001-plain-base.toml`) judges against it: at or above is KEEP,
+  more than 0.05 below is the "fix the pipeline" branch — the bug is in the data / LR /
+  tokenizer / eval, and it gets fixed before any clever-architecture work.
+- **The neighbour** is what our size reaches with ~200× our data: **SmolLM2-135M**
+  (~2T tokens, WSD), 0.4289 / 19.26 by the same instrument. It is the reference for
+  "top for its size", and the distance to it is the token axis, not a defect. A run
+  that lands between the gate and the neighbour did what its budget allows; it is a
+  champion, and the gap above it is where the data-axis research starts.
+
+Until a *vanilla* model trained to completion clears the gate, no architecture ablation
 is interpretable: if the base is mush, you can't tell whether a change helped or just
 stirred the mush. The full base run is therefore also the validity check on the whole
-pipeline — if a plain model on the full budget lands nowhere near that bar, the bug is in
-the data / LR / tokenizer / eval, and that gets fixed before any clever-architecture work.
+pipeline. Read a miss below the gate as a bug, never a miss below the neighbour.
 
 ## The model registry & reproducibility
 
@@ -420,7 +429,7 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 | **Inference** | `trm/infer.py` |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), `eval_refiner_transfer.py` (the depth-transfer probe); `experiments/scratchpad/harness.py` |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: the SmolLM2-135M bar, GPT-2-small as calibration), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
+| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: GPT-2-small is the gate and the calibration, SmolLM2-135M the neighbour), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots` |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs only) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`. `make lint` runs both; run it before pushing, and delete what it finds. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16

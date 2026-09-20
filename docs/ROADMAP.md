@@ -34,16 +34,20 @@ checklist; it has to be empty, or its leftovers waived by the owner by name. Gro
   shape (a layer, batch 2, a longer window), speed decides how many tokens the run's
   days buy.
 - **The recipe.** Adopt the measured recipe as the default; decide the shape (8 layers +
-  batch 2, 9 layers, a 1024 window); decide how the run anneals and stops (WSD, to the
-  owner's rule: val CE < 3.6 or 10 days, whichever first); and check that the winning
+  batch 2, 9 layers — a 1024 window does not fit, #385); decide how the run anneals and
+  stops (WSD, to the owner's rule: a val-CE target or 10 days, whichever first — the
+  "< 3.6" first named came from the champion's 4-row probe, which the 64-row probe does
+  not reproduce (#184), so the number is re-stated on the new probe before launch, or
+  the stop is #386's rule: two consecutive decay branches within the noise); and check that the winning
   recipe still wins on the mixture the long run actually ends on (65% code and math),
   since every recipe pair so far trained on the start of the ramp.
 - **Surviving the week.** The run comes back by itself after a power cut; milestones
   do not fill the disk.
 
 Measured on the card as matched pairs, each run under 24h and as many as a question
-needs (the standing permission). The reference model is **SmolLM2-135M** on LAMBADA;
-GPT-2-small's published number only calibrates the yardstick.
+needs (the standing permission). On LAMBADA, **GPT-2-small** is the gate the base spec
+judges against (what our size reaches on our budget) and **SmolLM2-135M** is the neighbour
+(what it reaches with ~200× the data) — `CLAUDE.md`, "The base-model bar".
 
 ## Stage 2 — the base run
 
@@ -60,9 +64,13 @@ selectable only until then); extend the context (train short, then a brief phase
 longer window); then the work that needs a capable base — inference speed, SFT, RL.
 
 ## Far future
-- **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
-  out of sequence — you RL on a base that already has capability to elicit; revisit
-  only after pretraining + scaling produce a base worth aligning.
+- **RL post-training** — #29: the model learns to code by coding, against tests, with
+  no model judging the answer. The *loop* waits for a base with something to elicit;
+  the *world* does not — the task generator, sandbox verifier and pass@k readout (#440)
+  are CPU-lane tools, and the first question the loop needs, at what share of code
+  pretraining the initial pass rate leaves the floor (#441), is a pair against the
+  champion. Rollouts dominate RL compute, so the KV cache (#153 / PR #302) sits on
+  this line's critical path.
 
 ## Explicitly NOT planned
 - bf16 *compute*: no tensor-core bf16 on Turing — f16 compute policy stands.
@@ -74,6 +82,15 @@ longer window); then the work that needs a capable base — inference speed, SFT
   (#38) uses. Bonus = dead; grade = allowed.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
+- **Long-context / serving attention work — MLA, Kimi Delta Attention (gated linear
+  attention), LatentMoE**: not killed, *scale-conditional*. Each pays only where
+  sequence length dominates compute or KV-cache bytes are the constraint. At
+  MAX_SEQ_LEN 512 attention is ~8% of block FLOPs (#291, which killed chunked
+  attention for exactly this reason), generation has no KV cache to shrink yet
+  (#153), and MoE at 138M dense params on 6 GB is not a trade that exists. Revisit
+  if the context widens (#435) or the champion is ever served. **NoPE**, from the
+  same Kimi K3 list, is scale-free and is filed as an idea (#444) rather than
+  ruled out here.
 
 ## Graveyard
 Killed ideas and closed post-mortems, with reasons, so they stay dead. New
