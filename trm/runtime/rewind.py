@@ -42,8 +42,11 @@ class Checkpoint:
     opt_step: int
 
     def describe(self) -> str:
+        # A milestone holds weights only (#394), so it is a branch point, not a
+        # resume point: say so where someone reads the list to pick one.
+        weights_only = "" if (self.path / "optimizer").exists() else "  (weights only — not a resume point)"
         return f"{self.path.parent.name + '/' if self.path.parent.name in (BEST_SUBDIR, MILESTONE_SUBDIR) else ''}" \
-               f"{self.step:>9}  opt {self.opt_step:>6}"
+               f"{self.step:>9}  opt {self.opt_step:>6}{weights_only}"
 
 
 def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Checkpoint]:

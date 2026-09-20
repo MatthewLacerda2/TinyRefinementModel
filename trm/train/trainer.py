@@ -41,7 +41,7 @@ from trm.model import build_model
 from trm.runtime.layout import (CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS,
                                 VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS)
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
-                                     wait_for_pending_saves)
+                                     save_milestone, wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
@@ -441,10 +441,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
                                     run_tracker.run_id, wait=False)
-                    # Milestones: never evicted by recency (#187), in their own dir.
-                    if milestone_due(opt_step, CHECKPOINT_EVERY_OPT_STEPS, TOKENS_PER_OPT_STEP):
-                        save_checkpoint(milestone_mngr, step, model, optimizer, monitor,
-                                        run_tracker.run_id, wait=False)
+
+                # Milestones: never evicted by recency (#187), in their own dir, at
+                # doubling token counts and weights-only (#394). Checked every
+                # optimizer step rather than at the rolling boundary, because the
+                # early ones are closer together than that boundary.
+                if milestone_due(opt_step, opt_step - 1, TOKENS_PER_OPT_STEP):
+                    save_milestone(milestone_mngr, step, model, monitor,
+                                   run_tracker.run_id, wait=False)
 
             if is_log_step:
                 opt_step = (step + 1) // ACCUMULATION_STEPS

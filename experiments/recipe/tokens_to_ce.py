@@ -172,7 +172,7 @@ def main(argv=None) -> int:
         "WARMUP_STEPS": str(args.warmup),
         "VAL_EVERY_OPT_STEPS": str(args.val_every),
         "CHECKPOINT_EVERY_OPT_STEPS": "256",
-        "MILESTONE_EVERY_TOKENS": "0",
+        "MILESTONE_FIRST_TOKENS": "0",
     }
     if args.lr_mult is not None:
         env["MUON_LR_MULT"] = str(args.lr_mult)
