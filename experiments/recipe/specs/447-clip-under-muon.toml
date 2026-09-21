@@ -1,0 +1,229 @@
+# PRE-REGISTERED. Commit this file BEFORE running it: git recording that the
+# criteria preceded the numbers is the only thing that makes them criteria.
+
+[experiment]
+id = "447"
+status = "recorded"
+title = "Does the global-norm clip reach the weights through Muon and AdamW, and for how long?"
+hypothesis = """
+The chain is clip_by_global_norm(1.0) -> Muon on the matrices, AdamW on the rest.
+Both halves are invariant to a *uniform* rescale of the gradient (Muon divides its
+momentum by the Frobenius norm before Newton-Schulz; AdamW's m/sqrt(v) cancels a
+common factor), so the clip cannot cap a step's size. What it can do is reweight
+the moment estimates: a step whose gradient was large counts for less.
+
+The base run training now records its pre-clip global norm: 10 -> 3 over the first
+~250 opt steps, 2.0 by step 512, 0.56 after step 1,000. The clip binds on every
+step until ~512, on 28% of steps to 1,000, and never after.
+
+WHY THIS SPEC EXISTS, AND WHAT IT DOES NOT CLAIM. An exploratory replay at dim 64,
+2 layers (seeds 0-2, run 2026-09-21 and reported on #447) already measured the
+effect, and it contradicted two of the four predictions registered on #447 before
+it ran. Those numbers were seen before this file was written, so they cannot be
+judged by it. This spec registers a CONFIRMING run at a different model size --
+dim 128, 4 layers, twice the width and depth, a larger vocabulary and window --
+which asks whether what the exploration found transfers across scale, the largest
+caveat it carries. The exploration's numbers are the prior; they are not results.
+
+Exploration, dim 64 (seeds 0/1/2):
+  Muon partition, median update cosine clipped vs unclipped, steps 0-100:
+    0.885 / 0.861 / 0.847     (steps 100-250: 0.965-0.967; 1000+: 1.000)
+  AdamW partition, update-norm ratio clipped/unclipped, steps 1000-1300:
+    1.663 / 1.669 / 1.633     (a 4,000-step tail on seed 0: 1.62, 1.43, 1.25,
+                               1.11 over 1000-1500 / 1500-2000 / 2000-3000 / 3000-4000)
+  The smooth-trend control (no step-to-step noise) gave the same, so the effect
+  follows the norm's trend and not the noise model.
+
+PREDICTIONS for this confirming run (dim 128, 4 layers):
+  - Muon, median update cosine in steps 0-100: 0.80-0.93. The mechanism is the
+    momentum's ~20-step memory against a norm that falls 3x in 250 steps; width
+    and depth do not enter it, so the value should land near the exploration's.
+  - AdamW, update-norm ratio in steps 1000-1300: 1.3-1.9. The mechanism is v's
+    ~1,000-step memory of the unclipped early gradients; it depends on the norm
+    profile, which is replayed identically, more than on the model.
+  - The null arm reports cosine 1 and ratio 1 at every point, exactly.
+
+Prior on myself: the four registered predictions about depth recurrence were all
+wrong in one direction, crediting the mechanism too much. On #447 I predicted the
+clip would matter LITTLE, and was wrong in the other direction on both partitions.
+That is now two recorded patterns in opposite directions, which is itself worth
+knowing: my error here is not a lean, it is a failure to reason about optimizer
+memory against a moving gradient norm. If this run lands near the exploration, the
+prior was the exploration, not me.
+
+What would make it false: a Muon cosine at dim 128 inside 2 sigma of the null (the
+clip does not reach the matrices at a larger size), or an AdamW ratio inside 2
+sigma of 1 after step 1,000 (the long tail was a small-model artifact).
+"""
+issue = 447
+
+[protocol]
+metric_key = "value"
+metric = """
+One number per point, named quantity@steps. muon_cos / adam_cos: the median over
+the band of the per-step cosine between the update the clipped optimizer emits and
+the one the unclipped optimizer emits, fed the SAME gradient at the SAME
+parameters. muon_ratio / adam_ratio: the median of the ratio of their norms,
+clipped over unclipped. Unitless.
+"""
+matched = """
+Replay: one gradient sequence per seed feeds both optimizer states inside one
+process. Same seed => same init, same token draws, same norm profile, same noise.
+Between the two arms, only --clip differs.
+"""
+floor_note = """
+No generator floor applies: the metric is a comparison of two optimizers fed
+identical inputs, and its null is exact, not sampled. The control arm IS that null
+-- a clip of 1e9, which never binds, makes optax's clip_by_global_norm pass the
+gradient through unchanged, so the control reports cosine 1 and ratio 1 at every
+point on every seed. A control that reported anything else would mean the harness
+compares different gradients, and would void the run.
+"""
+caveats = """
+Not the real model: dim 128 / 4 layers / vocab 8192 / window 128, on real
+FineWeb-Edu tokens folded into that vocabulary. The norm profile is the base run's
+recorded pre-clip norm (logged every 5 opt steps, interpolated in log space with
+the logged scatter put back as noise). This answers what the clip does to the
+update, given the base run's norm profile; it does not measure what that does to
+the loss. That is a GPU pair, and this spec decides whether one is worth running.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.clip_under_muon",
+           "--metrics", "runs/run_20260920_191351/metrics.csv",
+           "--data", "runs/data/pretrain/fineweb-edu",
+           "--steps", "1300", "--dim", "128", "--layers", "4",
+           "--vocab", "8192", "--seq", "128"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { JAX_PLATFORMS = "cpu", FORCE_F32_COMPUTE = "1" }
+
+[arms.null]
+role = "control"
+flags = ["--clip", "1e9"]
+
+[arms.clip1]
+role = "treatment"
+flags = ["--clip", "1.0"]
+
+# Keep: the clip turns the matrix update while it binds, by a margin that is not
+# rounding (0.05 of cosine is ~18 degrees).
+[criteria.clip_turns_the_matrix_update]
+rule = "loses"
+treatment = "clip1"
+control = "null"
+sigmas = 2.0
+min_delta = 0.05
+points = ["muon_cos@0-100"]
+
+# Keep: the clip leaves AdamW's steps at least 20% larger after it has stopped
+# binding, through v's memory of the clipped era.
+[criteria.clip_enlarges_the_adam_step_after_it_stops]
+rule = "beats"
+treatment = "clip1"
+control = "null"
+sigmas = 2.0
+min_delta = 0.2
+points = ["adam_ratio@1000-1300"]
+
+# Kill: at the larger size, the matrices do not notice the clip.
+[criteria.matrices_do_not_notice]
+rule = "within"
+treatment = "clip1"
+control = "null"
+sigmas = 2.0
+points = ["muon_cos@0-100"]
+
+# Kill: at the larger size, AdamW is back to parity once the clip stops binding.
+# 1,300 steps, not more: every step replayed is one the base run has logged.
+[criteria.adam_is_back_to_parity]
+rule = "within"
+treatment = "clip1"
+control = "null"
+sigmas = 2.0
+points = ["adam_ratio@1000-1300"]
+
+[verdict]
+keep_if = ["clip_turns_the_matrix_update", "clip_enlarges_the_adam_step_after_it_stops"]
+kill_if = ["matrices_do_not_notice", "adam_is_back_to_parity"]
+
+# --- Results (per seed, written by instruments/experiment.py; metric = value) ---
+[results."adam_cos@0-100"]
+clip1 = [0.9863, 0.9829, 0.9825]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@100-250"]
+clip1 = [0.9518, 0.9498, 0.9529]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@1000-1300"]
+clip1 = [0.9805, 0.9804, 0.9804]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@250-512"]
+clip1 = [0.9776, 0.9773, 0.9770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@512-1000"]
+clip1 = [0.9763, 0.9761, 0.9761]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@0-100"]
+clip1 = [1.5080, 1.6156, 1.6135]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@100-250"]
+clip1 = [1.0850, 1.0817, 1.0770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@1000-1300"]
+clip1 = [1.6191, 1.6105, 1.6124]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@250-512"]
+clip1 = [1.3405, 1.3330, 1.3401]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@512-1000"]
+clip1 = [1.7655, 1.7559, 1.7675]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@0-100"]
+clip1 = [0.8976, 0.8772, 0.8720]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@100-250"]
+clip1 = [0.9675, 0.9718, 0.9688]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@1000-1300"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@250-512"]
+clip1 = [0.9768, 0.9783, 0.9770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@512-1000"]
+clip1 = [0.9981, 0.9974, 0.9976]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@0-100"]
+clip1 = [0.9975, 0.9937, 0.9946]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@100-250"]
+clip1 = [1.0000, 1.0002, 1.0003]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@1000-1300"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@250-512"]
+clip1 = [1.0007, 1.0006, 1.0006]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@512-1000"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
