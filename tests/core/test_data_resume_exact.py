@@ -61,5 +61,5 @@ def test_a_state_from_a_different_source_list_is_refused(tmp_path):
     mixer = _mixer(tmp_path)
     state = mixer.state()
     state["sources"] = state["sources"][:1]
-    with pytest.raises(ValueError, match="PRETRAIN_SOURCES"):
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
         _mixer(tmp_path).load_state(state)

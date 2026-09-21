@@ -122,8 +122,14 @@ class TextDataGenerator:
         return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
 
 class DataMixer:
-    def __init__(self, sources, weights, rng=None):
+    def __init__(self, sources, weights, rng=None, names=None):
         self.sources = list(sources)
+        # What each source is called, in the same order (#439): the buckets of the
+        # run's DATA_MIXTURE. Saved with the state, so a resume can tell whether it
+        # is reading the mixture the checkpoint was written with.
+        self.names = list(names) if names is not None else None
+        if self.names is not None and len(self.names) != len(self.sources):
+            raise ValueError(f"{len(self.names)} names for {len(self.sources)} sources")
         # Every source by its original index, alive or not: what `state()` saves.
         self._all = list(sources)
         self.weights = list(weights)
@@ -136,15 +142,31 @@ class DataMixer:
         self.last_source = None
 
     def state(self):
-        """Every reader's `state()` plus the mixer's own draw stream and which
-        sources are still alive (#424). JSON-safe."""
-        return {"rng": self.rng.bit_generator.state, "alive": list(self._alive),
-                "weights": [float(w) for w in self.weights], "sources": [s.state() for s in self._all]}
+        """Every reader's `state()` plus the mixer's own draw stream, which sources
+        are still alive (#424), and what they are called (#439). JSON-safe."""
+        state = {"rng": self.rng.bit_generator.state, "alive": list(self._alive),
+                 "weights": [float(w) for w in self.weights], "sources": [s.state() for s in self._all]}
+        if self.names is not None:
+            state["names"] = list(self.names)
+        return state
 
     def load_state(self, state):
+        """Restore a snapshot, refusing one written for a different mixture.
+
+        The state is positional — source i's reader, source i's weight — so the
+        buckets have to be the same ones *in the same order*. A resume that silently
+        mapped a code reader's position onto a web shard would not crash; it would
+        train on a stream nobody chose. A state saved before #439 carries no names
+        and is matched by count alone, as it always was.
+        """
+        saved = state.get("names")
+        if saved is not None and self.names is not None and list(saved) != self.names:
+            raise ValueError(f"data state was written for the mixture {list(saved)}, and this "
+                             f"run reads {self.names}: a different DATA_MIXTURE cannot resume "
+                             f"a run's exact data stream")
         if len(state["sources"]) != len(self._all):
             raise ValueError(f"data state has {len(state['sources'])} sources, "
-                             f"the mixer {len(self._all)}: a different PRETRAIN_SOURCES")
+                             f"the mixer {len(self._all)}: a different DATA_MIXTURE")
         self.rng.bit_generator.state = state["rng"]
         for source, source_state in zip(self._all, state["sources"]):
             source.load_state(source_state)
