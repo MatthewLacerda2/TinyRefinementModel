@@ -46,6 +46,12 @@ from trm.rl import sandbox, tasks
 STOPS = ("\ndef ", "\nclass ", "\nif __name__", "\nprint(", "\n#", "\n@", "\n>>>",
          "\nassert ")
 
+REPORTS = {
+    "pass@1, pass@k": ("estimated", "the unbiased estimator over --samples completions per task, "
+                                     "averaged over --tasks held-out tasks drawn per level"),
+    "test_fraction": ("sampled", "tests passed over tests run, across every attempt at those tasks"),
+}
+
 DEFAULT_MAX_NEW_TOKENS = 192
 # Sampling, not greedy: pass@k is only meaningful over a distribution, and a greedy
 # decode makes every one of the k attempts the same attempt.
