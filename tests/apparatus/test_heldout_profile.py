@@ -32,6 +32,19 @@ def test_position_buckets_partition_the_window():
     assert out["ce_by_position"]["4-7"] == 5.5 and out["ce_by_position"]["512"] == 512.0
 
 
+def test_labels_do_not_depend_on_which_lengths_survive_the_mask():
+    kept = np.array([1, 300, 300])  # nothing between 256 and 511 but 300, no 512 at all
+    out = heldout_profile.profile(nll=[1.0, 2.0, 2.0], top_prob=[0.5] * 3, correct=[0] * 3,
+                                  context_len=kept, nbytes=[1] * 3, window=512)
+    assert list(out["ce_by_position"]) == ["1", "256-511"]
+
+
+def test_every_checkpoint_dir_of_a_run_writes_to_the_run():
+    run = heldout_profile.pathlib.Path("/r/run_x")
+    for sub in ("checkpoints", "checkpoints/milestones", "checkpoints/best_val_ce"):
+        assert heldout_profile.run_dir(f"/r/run_x/{sub}") == run
+
+
 def test_the_tail_is_a_tail():
     out = heldout_profile.profile(**_flat(20_000, np.random.default_rng(0)))
     assert out["worst_1%_ce"] >= out["worst_10%_ce"] >= out["ce"]

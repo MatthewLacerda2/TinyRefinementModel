@@ -24,11 +24,17 @@ the run's `heldout_profile.jsonl`, keyed by step, so a run's checkpoints make a 
 
 from __future__ import annotations
 
+import os
+
+# CPU and f32 by default, before anything imports jax or trm.config: this runs beside
+# a training run, and on the card it would take memory the trainer's arena counts on.
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ.setdefault("FORCE_F32_COMPUTE", "1")
+
 import argparse
 import datetime
 import json
 import math
-import os
 import pathlib
 
 import numpy as np
@@ -56,24 +62,25 @@ def position_bucket(context_len):
     return np.floor(np.log2(np.asarray(context_len))).astype(int)
 
 
-def profile(nll, top_prob, correct, context_len, nbytes):
+def profile(nll, top_prob, correct, context_len, nbytes, window=None):
     """The four readings, from per-target arrays: loss in nats, top-1 probability,
     whether top-1 was the target, context length it was predicted from, and the
-    UTF-8 byte count of the target token. Pure numpy, so it is tested exactly."""
+    UTF-8 byte count of the target token. Pure numpy, so it is tested exactly.
+
+    Bucket labels are the lengths a bucket can hold in a `window`-long window (the
+    longest context seen, by default), so every row of one run keys the same way."""
     nll, top_prob = np.asarray(nll, np.float64), np.asarray(top_prob, np.float64)
     correct, nbytes = np.asarray(correct, bool), np.asarray(nbytes, np.int64)
     out = {"targets": int(nll.size), "ce": float(nll.mean()),
            "bpb": float(nll.sum() / math.log(2) / nbytes.sum())}
 
-    # Labelled by the context lengths each bucket actually holds, so the last one
-    # reads "512", not "512-1023", when the window ends there.
     context_len = np.asarray(context_len)
+    window = int(context_len.max()) if window is None else window
     buckets = position_bucket(context_len)
     out["ce_by_position"] = {}
     for k in np.unique(buckets):
-        held = context_len[buckets == k]
-        label = str(held.min()) if held.min() == held.max() else f"{held.min()}-{held.max()}"
-        out["ce_by_position"][label] = float(nll[buckets == k].mean())
+        lo, hi = 2 ** int(k), min(2 ** (int(k) + 1) - 1, window)
+        out["ce_by_position"][str(lo) if lo == hi else f"{lo}-{hi}"] = float(nll[buckets == k].mean())
 
     worst = np.sort(nll)[::-1]
     for share in TAILS:
@@ -98,7 +105,7 @@ def token_bytes(vocab_size):
                      for t in range(vocab_size)], dtype=np.int64)
 
 
-def score_rows(model, rows, depth=4):
+def score_rows(model, rows):
     """Per-target arrays over held-out rows. Each row is two windows, window 1 opening
     a document and window 2 continuing it, the way `trm.train.validation` scores them;
     a target's context length is its position in its window plus one."""
@@ -107,11 +114,11 @@ def score_rows(model, rows, depth=4):
     from flax import nnx
 
     from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID
-    from trm.train.validation import heldout_targets
+    from trm.train.validation import VAL_FIXED_DEPTH, heldout_targets
 
     @nnx.jit(static_argnames=["new_document"])
     def window(model, tokens, targets, new_document):
-        logits = model(tokens, depth=depth, training=False, new_document=new_document).logits
+        logits = model(tokens, depth=VAL_FIXED_DEPTH, training=False, new_document=new_document).logits
         logp = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
         nll = -jnp.take_along_axis(logp, targets[..., None], axis=-1)[..., 0]
         return nll, jnp.exp(logp.max(-1)), logp.argmax(-1) == targets
@@ -145,9 +152,11 @@ def memory_available_gib():
 
 
 def run_dir(checkpoint_path):
-    """The run a checkpoint manager dir belongs to: runs/<run>/checkpoints[/milestones]."""
+    """The run a checkpoint manager dir belongs to: runs/<run>/checkpoints, or one of
+    its subdirs (milestones, best_val_ce)."""
+    from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
     path = pathlib.Path(os.path.abspath(checkpoint_path))
-    return (path.parent if path.name == "milestones" else path).parent
+    return (path.parent if path.name in (MILESTONE_SUBDIR, BEST_SUBDIR) else path).parent
 
 
 def main(argv=None):
@@ -167,7 +176,7 @@ def main(argv=None):
         raise SystemExit(f"only {available:.1f} GiB available (< {MIN_AVAILABLE_GIB}); not starting beside a trainer")
 
     load_env()
-    from trm.config import VOCAB_SIZE, resolve_root
+    from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, resolve_root
     from trm.runtime.restore import restore_arch
     from trm.train.validation import VAL_ROWS, VAL_SKIP_SAMPLES, ValidationProbe
 
@@ -185,7 +194,7 @@ def main(argv=None):
             continue
         scored = score_rows(model, rows)
         result = profile(scored["nll"], scored["top_prob"], scored["correct"],
-                         scored["context_len"], nbytes[scored["target"]])
+                         scored["context_len"], nbytes[scored["target"]], window=MAX_SEQ_LEN)
         row["sources"][source] = result
         print(f"\n{source}: {result['targets']} targets  CE {result['ce']:.4f}  bpb {result['bpb']:.4f}  "
               f"top-1 {result['top1_accuracy']:.3f}  ECE {result['ece']:.4f}")
