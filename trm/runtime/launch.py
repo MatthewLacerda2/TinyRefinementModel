@@ -60,7 +60,8 @@ from dataclasses import dataclass
 
 from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS
 from trm.runtime.run_budget import BUDGET_ENV
-from trm.runtime.supervisor import DELIBERATE, GAVE_UP, RUNS_DIR, GpuLock, _pid_alive, read_progress
+from trm.runtime.gpu_lock import GpuLock, _pid_alive
+from trm.runtime.supervisor import DELIBERATE, GAVE_UP, RUNS_DIR, read_progress
 
 # The base run a launch started and has not seen end, for --resume after a reboot.
 ACTIVE_RUN = RUNS_DIR / ".active_base_run.json"

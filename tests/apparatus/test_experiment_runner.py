@@ -574,3 +574,85 @@ chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
     assert set(reloaded) == {"chance", "control", "treated"}
     assert reloaded["chance"]["mean"] == 0.2106
     assert spec_path.read_text().count("[results.d1]") == 1, "one table per point"
+
+
+# --- the card is a serial queue and this runner is most of what goes on it -----
+
+@pytest.fixture(autouse=True)
+def card_lock(tmp_path, monkeypatch):
+    """The runner's lock, pointed at a throwaway file for every test in this module.
+
+    Autouse and not opt-in: the runner now queues for the real card (#445), so a
+    test that called `main()` without this would pass or fail depending on whether
+    a training run happened to be going. A suite that reads the machine's mood is
+    not a suite.
+    """
+    from trm.runtime.gpu_lock import GpuLock
+
+    path = tmp_path / "gpu.lock"
+    monkeypatch.setattr(experiment, "GpuLock", lambda label="": GpuLock(path, label))
+    return path
+
+
+def _a_dead_pid():
+    """A pid that certainly belonged to something, and certainly does not now."""
+    import subprocess
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    return done.pid
+
+
+def test_the_runner_refuses_a_card_someone_else_is_using(tmp_path, monkeypatch, card_lock):
+    """The whole point of #445: this runner is most of what the card does, and it
+    used to queue against nothing. A base run launched beside a pair is an OOM on
+    6 GB, and the kernel usually takes the watching session rather than either
+    trainer."""
+    import os
+
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{os.getpid()} someone-elses-pair\n")
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 1
+    assert "results" not in spec_path.read_text(), "it must not have swept"
+    assert lock.read_text().startswith(str(os.getpid())), "it must not have stolen the lock"
+
+
+def test_a_lock_whose_holder_died_is_taken_over(tmp_path, monkeypatch, card_lock):
+    """A lock nobody can clear is worse than no lock: one crash would idle the card
+    until a human noticed."""
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{_a_dead_pid()} a-run-that-did-not-survive-the-reboot\n")
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+    assert not lock.exists(), "and it releases what it took"
+
+
+def test_the_lock_is_released_when_the_sweep_finishes(tmp_path, monkeypatch, card_lock):
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+    assert not lock.exists()
+
+
+def test_a_cpu_only_spec_can_say_so(tmp_path, monkeypatch, card_lock):
+    """The escape hatch, matching the supervisor's. A spec whose arms never touch
+    the card should not have to wait behind one that does."""
+    import os
+
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{os.getpid()} a-real-run\n")
+
+    assert experiment.main([str(spec_path), "--no-gate", "--no-gpu-lock"]) == 0
+    assert lock.read_text().startswith(str(os.getpid())), "and it leaves the holder alone"

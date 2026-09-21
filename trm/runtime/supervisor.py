@@ -44,6 +44,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from trm.runtime.gpu_lock import GpuLock, Preflight
 from trm.runtime.layout import (  # standard library only: the supervisor stays jax-free
     ACT_MAX_ALARM,
     LOG_REAL_STEPS,
@@ -54,7 +55,6 @@ from trm.runtime.layout import (  # standard library only: the supervisor stays 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
-GPU_LOCK = RUNS_DIR / ".gpu.lock"
 
 # What the supervisor decided to do about the child.
 CONTINUE, STOP, KILL, RELAUNCH, GIVE_UP = "CONTINUE", "STOP", "KILL", "RELAUNCH", "GIVE_UP"
@@ -271,10 +271,6 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
 
 # --- preflight ----------------------------------------------------------------
 
-class Preflight(Exception):
-    """A reason not to start. Raised before anything expensive happens."""
-
-
 def check_disk_headroom(path: pathlib.Path, min_free_gb: float) -> float:
     """Refuse to launch onto a nearly-full disk.
 
@@ -419,65 +415,6 @@ def largest_checkpoint_gb(checkpoint_dir: pathlib.Path) -> float | None:
     sizes = [sum(f.stat().st_size for f in marker.parent.rglob("*") if f.is_file())
              for marker in checkpoint_dir.rglob("_CHECKPOINT_METADATA")]
     return max(sizes) / 1e9 if sizes else None
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, ValueError):
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    return True
-
-
-class GpuLock:
-    """The single RTX 2060 is a serial queue; this is the queue.
-
-    A stale lock — the holder died without releasing — is taken over rather than
-    respected. A lock nobody can clear is worse than no lock: it turns one crash
-    into a card that stays idle until a human notices.
-    """
-
-    def __init__(self, path: pathlib.Path = GPU_LOCK, label: str = ""):
-        self.path = path
-        self.label = label
-        self.held = False
-
-    def holder(self) -> tuple[int, str] | None:
-        if not self.path.exists():
-            return None
-        try:
-            pid_text, _, label = self.path.read_text().strip().partition(" ")
-            return int(pid_text), label
-        except ValueError:
-            return None  # unreadable lock is a stale lock
-
-    def acquire(self) -> None:
-        current = self.holder()
-        if current and _pid_alive(current[0]):
-            raise Preflight(
-                f"the GPU is held by pid {current[0]} ({current[1] or 'unlabelled'}) — "
-                f"one run at a time on this card")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{os.getpid()} {self.label}\n")
-        self.held = True
-
-    def release(self) -> None:
-        """Only ever removes our own lock — a supervisor that took over a stale
-        lock must not delete whatever replaced it."""
-        current = self.holder()
-        if self.held and current and current[0] == os.getpid():
-            self.path.unlink(missing_ok=True)
-        self.held = False
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *exc):
-        self.release()
-        return False
 
 
 # --- reading the run ----------------------------------------------------------

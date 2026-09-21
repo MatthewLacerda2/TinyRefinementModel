@@ -69,3 +69,25 @@ def test_the_lock_releases_on_the_way_out_of_a_with_block(tmp_path):
         with GpuLock(path, label="x"):
             raise RuntimeError("the run blew up")
     assert not path.exists()
+
+
+def test_the_lock_names_one_place_on_the_box_not_one_per_worktree(tmp_path):
+    """Almost every change here is built in a worktree off origin/main. A lock that
+    resolved to the worktree's own `runs/` would queue against itself and see
+    nothing of the run actually holding the card (#445)."""
+    from trm.runtime.gpu_lock import shared_runs_dir
+
+    main = tmp_path / "checkout"
+    (main / ".git" / "worktrees" / "feature").mkdir(parents=True)
+    worktree = tmp_path / "feature"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {main / '.git' / 'worktrees' / 'feature'}\n")
+
+    assert shared_runs_dir(worktree) == main / "runs"
+    # An ordinary checkout, and anything unreadable, keep the old behaviour.
+    (main / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    assert shared_runs_dir(main) == main / "runs"
+    odd = tmp_path / "odd"
+    (odd).mkdir()
+    (odd / ".git").write_text("not a gitdir line\n")
+    assert shared_runs_dir(odd) == odd / "runs"

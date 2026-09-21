@@ -32,6 +32,7 @@ whichever `experiments/` folder gets tombstoned next.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -47,6 +48,7 @@ from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
+from trm.runtime.gpu_lock import GpuLock, Preflight
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -548,6 +550,9 @@ def main(argv=None) -> int:
                     help="ignore the journal and re-run every (arm, seed)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite results already recorded in the spec file")
+    ap.add_argument("--no-gpu-lock", action="store_true",
+                    help="run the sweep without taking the card's lock — for a spec whose "
+                         "arms never touch the GPU. Anything that trains must take it")
     ap.add_argument("--new", action="store_true",
                     help="write a pre-registration skeleton at SPEC and stop, with the "
                          "runner's two blocking traps already avoided (command as a "
@@ -567,12 +572,27 @@ def main(argv=None) -> int:
     if args.dry_run:
         for leg, arm, seed in planned:
             print(f"$ {' '.join(execution.argv(leg, arm, seed))}")
+        holder = GpuLock().holder()
+        if holder:
+            print(f"\n(the card is currently claimed by pid {holder[0]} "
+                  f"{holder[1] or 'unlabelled'})")
         return 0
 
     if not args.no_gate:
         run_gate(REPO_ROOT)
 
-    rows = sweep(spec, execution, resume=not args.no_resume)
+    # The card is a serial queue and this runner is most of what goes on it, so it
+    # has to queue like everything else (#445). Taken after the gate, not before:
+    # a gate that fails never wanted the card, and holding it through a few minutes
+    # of CPU tests would idle the card for a run that is not going to happen.
+    card = contextlib.nullcontext() if args.no_gpu_lock else GpuLock(label=spec.id)
+    try:
+        with card:
+            rows = sweep(spec, execution, resume=not args.no_resume)
+    except Preflight as exc:
+        print(f"❌ {exc}")
+        print("   wait for it, or pass --no-gpu-lock if this spec never touches the card")
+        return 1
     results = merge_constants(spec, collect(rows, execution.metric), args.spec)
     record_results(args.spec, results, execution.metric, force=args.force)
 
