@@ -80,9 +80,43 @@ ceiling. It is 25x the ~200M tokens every previous base run died at, and half of
 GPT-2-small's ~10B.
 
 How it stops (owner, 2026-09-20): at the budget, or earlier if held-out CE passes
-3.6. WSD is what makes "earlier" a real option — the stable phase holds the peak LR,
-and a decay branched from any checkpoint reads what the model would score if it
-stopped there. A cosine would have to be told the end before step 1.
+3.6, or earlier still under the stall rule below. WSD is what makes "earlier" a real
+option — the stable phase holds the peak LR, and a decay branched from any checkpoint
+reads what the model would score if it stopped there. A cosine would have to be told
+the end before step 1.
+
+THE STALL RULE, registered 2026-09-20 before the run's first reading counted, so the
+bar cannot move once numbers exist (rule 3):
+
+  After the mixture ramp ends, read held-out CE every 12 hours. When TWO CONSECUTIVE
+  12-hour windows each gain less than 0.01, start a 1,000-opt-step decay and end the
+  run there.
+
+Where those numbers come from — the 4B champion's own val curve (runs/
+run_20260813_214725/metrics.csv, 467 readings), split into the third where it was
+still learning and the flat third:
+
+  reading-to-reading noise   learning 0.037 | flat 0.006
+  gain over 12h (250M tok)   learning median +0.049, min -0.013
+                             flat     median +0.004, max +0.059
+  gain over 24h (500M tok)   learning median +0.156, min +0.036
+                             flat     median +0.007
+
+0.01 per 12 hours sits in the gap: five times under the learning median, more than
+twice over the flat one. Two windows rather than one because a single 12-hour window
+reads wrong in BOTH directions — a learning window measured -0.013 and a flat window
++0.059. Two consecutive windows decide in the same 24 hours a single long window
+would take, on two pieces of evidence instead of one.
+
+What the rule is worth: the champion's last 30% (~3.2 days) bought 0.009 CE, and it
+could not stop, because a cosine cut short leaves an un-annealed model. The decay
+costs 1,000 opt steps = 131M tokens = 6-8 hours at the measured rate, against the
+scheduled 20% decay's ~1B tokens.
+
+One consequence of #394 to know before using this: a decay must branch from a
+FULL-STATE checkpoint, and milestones hold weights only. The rolling checkpoints are
+the full-state ones, so a decay can start from "now" but not from two weeks ago. The
+stall rule only ever needs "now".
 
 Waived by name for this run, both by the owner on 2026-09-20: #373's matched pair
 (the fix was adopted as a bug, not judged as a hypothesis) and #386's WSD pair (WSD
