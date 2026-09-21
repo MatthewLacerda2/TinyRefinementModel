@@ -3,7 +3,7 @@
 
 [experiment]
 id = "447"
-status = "open"
+status = "recorded"
 title = "Does the global-norm clip reach the weights through Muon and AdamW, and for how long?"
 hypothesis = """
 The chain is clip_by_global_norm(1.0) -> Muon on the matrices, AdamW on the rest.
@@ -146,3 +146,84 @@ points = ["adam_ratio@1000-1300"]
 [verdict]
 keep_if = ["clip_turns_the_matrix_update", "clip_enlarges_the_adam_step_after_it_stops"]
 kill_if = ["matrices_do_not_notice", "adam_is_back_to_parity"]
+
+# --- Results (per seed, written by instruments/experiment.py; metric = value) ---
+[results."adam_cos@0-100"]
+clip1 = [0.9863, 0.9829, 0.9825]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@100-250"]
+clip1 = [0.9518, 0.9498, 0.9529]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@1000-1300"]
+clip1 = [0.9805, 0.9804, 0.9804]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@250-512"]
+clip1 = [0.9776, 0.9773, 0.9770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_cos@512-1000"]
+clip1 = [0.9763, 0.9761, 0.9761]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@0-100"]
+clip1 = [1.5080, 1.6156, 1.6135]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@100-250"]
+clip1 = [1.0850, 1.0817, 1.0770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@1000-1300"]
+clip1 = [1.6191, 1.6105, 1.6124]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@250-512"]
+clip1 = [1.3405, 1.3330, 1.3401]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."adam_ratio@512-1000"]
+clip1 = [1.7655, 1.7559, 1.7675]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@0-100"]
+clip1 = [0.8976, 0.8772, 0.8720]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@100-250"]
+clip1 = [0.9675, 0.9718, 0.9688]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@1000-1300"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@250-512"]
+clip1 = [0.9768, 0.9783, 0.9770]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_cos@512-1000"]
+clip1 = [0.9981, 0.9974, 0.9976]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@0-100"]
+clip1 = [0.9975, 0.9937, 0.9946]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@100-250"]
+clip1 = [1.0000, 1.0002, 1.0003]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@1000-1300"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@250-512"]
+clip1 = [1.0007, 1.0006, 1.0006]
+null = [1.0000, 1.0000, 1.0000]
+
+[results."muon_ratio@512-1000"]
+clip1 = [1.0000, 1.0000, 1.0000]
+null = [1.0000, 1.0000, 1.0000]
