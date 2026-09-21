@@ -116,9 +116,19 @@ def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run)
 def test_the_checkpoint_is_taken_between_optimizer_windows(run):
     """#355: the trainer's opt-step boundary is the optimizer's. A checkpoint taken
     one micro-step early holds 127 gradients in the accumulator and N-1 updates."""
+    import jax
     import orbax.checkpoint as ocp
 
-    leaves = dict(_leaves(ocp.StandardCheckpointer().restore(run["checkpoint"] / "optimizer")))
+    # Read the two counters as host numpy. The trainer that wrote this checkpoint ran
+    # under JAX_PLATFORMS=cpu (ENV above), so the file records CPU placement; restoring
+    # it with no target rebuilds that placement, and under RUN_TESTS_ON_GPU=1 there is
+    # no CPU device to rebuild it on — "Device TFRT_CPU_0 was not found" (#452). Nothing
+    # here wants a device, so ask for ndarray and the stored sharding is never read.
+    path = (run["checkpoint"] / "optimizer").resolve()
+    meta = ocp.PyTreeCheckpointHandler().metadata(path)
+    restore_args = jax.tree.map(lambda _: ocp.RestoreArgs(restore_type=np.ndarray), meta,
+                                is_leaf=lambda leaf: hasattr(leaf, "shape"))
+    leaves = dict(_leaves(ocp.PyTreeCheckpointer().restore(path, restore_args=restore_args)))
     assert int(leaves["/opt_state/mini_step/value"]) == 0
     assert int(leaves["/opt_state/gradient_step/value"]) == FIRST_LEG
 
