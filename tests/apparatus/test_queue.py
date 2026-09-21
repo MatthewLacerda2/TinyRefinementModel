@@ -101,6 +101,28 @@ def test_blocker_references_parse_lists():
     assert blockers_named("blocked by a condition") == []
 
 
+def test_blockers_with_a_note_beside_each_are_all_read():
+    """#29's own body. Reading only the first number called it unblocked the moment
+    #440 closed, with #441 still open and still in its way."""
+    body = ("**Blocked by #440** (the world), **#441** (a base whose initial pass rate "
+            "is non-zero), **#302** (the KV cache: rollouts dominate RL compute).\n"
+            "## What gets built (once unblocked)\nSee #12 for the history.")
+    assert blockers_named(body) == [302, 440, 441]
+    issues = [issue(29, "ideas", "gpu", "blocked", body=body), issue(441, "ideas", "gpu", "blocked")]
+    queue = build_queue(issues, [], FREE)
+    assert not any(n == 29 for n, _ in queue.needs_human), "#441 is open: the block is live"
+
+
+def test_a_condition_that_mentions_an_issue_is_still_a_condition():
+    """#127's and #292's bodies. Reading every number in the sentence would call
+    both stale blocks — their references are closed — when what holds them is a
+    condition no issue can close."""
+    assert blockers_named("**Blocked by:** the owner turning the hypothesis into a "
+                          "pre-registered question; its tool shipped in #391.") == []
+    assert blockers_named("Blocked by: a `plain` base run superseding the champion "
+                          "(no issue for that run exists yet; it follows the #287 LR pair)") == []
+
+
 def test_a_pr_claims_the_issue_it_closes():
     assert claimed_by_pr([{"number": 7, "title": "x", "body": "Fixes #3\nresolves #4"}]) == {3: 7, 4: 7}
 

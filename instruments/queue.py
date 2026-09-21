@@ -38,10 +38,16 @@ REPORTS = {}  # ranks issues and says why; prints no quantities
 TYPE_ORDER = ("architecture", "optimization", "tools", "ideas", "documentation")
 UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
 
-# "Blocked by" alone marks a block; followed by issue numbers, it names the blockers.
+# "Blocked by" alone marks a block. When the first thing after it is an issue number,
+# every number in the rest of that sentence names a blocker — bodies annotate each
+# one, "**Blocked by #440** (the world), **#441** (a base that can pass)", and a
+# pattern that wanted a bare `#a, #b and #c` stopped at the first `**` and read #29
+# as unblocked while #441 still held it. When the first thing is prose, the block is
+# a condition and a number later in the sentence is a reference, not a blocker:
+# "Blocked by: the owner turning it into a question; its tool shipped in #391."
 _BLOCKED = r"blocked by"
 BLOCKED_ON_CONDITION = re.compile(_BLOCKED, re.I)
-BLOCKED_BY = re.compile(_BLOCKED + r"\s+((?:#\d+(?:\s*(?:,|and|&|/)\s*)?)+)", re.I)
+BLOCKED_BY = re.compile(_BLOCKED + r"[\s:*_]*(#\d+[^\n.]*)", re.I)
 CLOSES = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.I)
 TITLE_REF = re.compile(r"\(#(\d+)\)")
 
