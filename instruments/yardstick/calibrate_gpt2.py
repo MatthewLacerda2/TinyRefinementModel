@@ -81,7 +81,8 @@ def main():
         for window in (int(w) for w in args.fineweb_windows.split(",")):
             out = fineweb_val.score(make_gpt2_logits_fn(model), tokens, window, batch=args.batch)
             print(f"FineWeb val CE, GPT-2 124M, window {window}: {out['val_ce']:.4f} "
-                  f"({out['targets']} targets, EOT share {out['eot_share']:.4f})", flush=True)
+                  f"({out['targets']} targets, EOT share {out['eot_share']:.4f}; "
+                  f"recorded {fineweb_val.GPT2_MEASURED.get(window)})", flush=True)
 
     texts = load_examples(fetch_lambada())
     if args.limit:

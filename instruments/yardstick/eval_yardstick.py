@@ -60,10 +60,10 @@ REPORTS = {
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per eval forward, not the training micro-batch"}
 
-# 2^20 targets by default: the full 10.5M shard is ~10x the CPU time of LAMBADA at a
-# milestone, and 1M targets already reads the mean to about a hundredth of a nat.
+# 2^18 targets by default: ~15 min of CPU beside a trainer (2^20 took an hour), and
+# on the base run's milestone 2^16 and 2^20 read within 0.012 of each other (#462).
 # The model card's number takes --fineweb-tokens 10485760.
-FINEWEB_DEFAULT_TOKENS = 1 << 20
+FINEWEB_DEFAULT_TOKENS = 1 << 18
 
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
@@ -186,8 +186,10 @@ def main(argv=None):
         print(f"{'held-out ppl (our corpus)':<28} {heldout['ppl']:>10.2f} {'—':>12}   "
               f"(val CE {heldout['val_ce']:.4f}; internal track, no external reference)")
     if fineweb:
-        print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {fineweb_val.REFERENCE['val_ce']:>12.2f}   "
-              f"(speedrun target; ours at a {fineweb['window']}-token window, theirs 1,024)")
+        gpt2 = fineweb_val.GPT2_MEASURED.get(fineweb["window"])
+        print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {gpt2 if gpt2 else float('nan'):>12.4f}   "
+              f"(GPT-2 measured at this {fineweb['window']}-token window; the speedrun's target is "
+              f"{fineweb_val.REFERENCE['val_ce']} at 1,024)")
     if args.limit:
         print(f"⚠️ --limit {args.limit}: a smoke reading, not the bar.")
 

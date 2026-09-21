@@ -43,6 +43,10 @@ REFERENCE = {
     "source": "modded-nanogpt speedrun target: llm.c GPT-2 124M after 10B FineWeb tokens, "
               "on this shard's first 10,485,760 tokens at a 1,024-token window",
 }
+# OpenAI's GPT-2 124M (HF `gpt2`, trained on WebText, not FineWeb) measured by this
+# module through calibrate_gpt2 on the shard's first 2^18 targets, 2026-09-21 (#462).
+# The pair of windows is the window's own share of any gap: 0.086 nats.
+GPT2_MEASURED = {512: 3.4272, 1024: 3.3416}
 
 
 def fetch_fineweb_val(path=FINEWEB_VAL_CACHE):
