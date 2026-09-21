@@ -54,7 +54,10 @@ def fetch_fineweb_val(path=FINEWEB_VAL_CACHE):
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         print(f"⬇️  Downloading the FineWeb val shard -> {path}")
-        urllib.request.urlretrieve(FINEWEB_VAL_URL, path)
+        # Through a .part file: an interrupted 200 MB download must not leave a file
+        # that fails the sha check on every later call.
+        urllib.request.urlretrieve(FINEWEB_VAL_URL, path + ".part")
+        os.replace(path + ".part", path)
     verify_sha256(path, FINEWEB_VAL_SHA256)
     return path
 
@@ -82,28 +85,33 @@ def windows(tokens, seq):
     return inputs, targets
 
 
-def score(logits_fn, tokens, seq, batch=4, progress=None):
+def score(logits_fn, tokens, seq, batch=4):
     """Mean CE (nats) over every target of `tokens` in `seq`-long windows, and the
-    target count, with the share of targets that are end-of-text."""
+    target count, with the share of targets that are end-of-text.
+
+    Reduced one window at a time in f64: a whole batch of full-vocab logits in f64
+    is ~0.8 GB per array, and this runs on the host beside a trainer."""
     inputs, targets = windows(tokens, seq)
     total = 0.0
     for start in range(0, len(inputs), batch):
-        logits = np.asarray(logits_fn(inputs[start:start + batch]), dtype=np.float64)
-        top = logits.max(-1, keepdims=True)
-        logz = np.log(np.exp(logits - top).sum(-1)) + top[..., 0]
-        picked = np.take_along_axis(logits, targets[start:start + batch, :, None], -1)[..., 0]
-        total += float((logz - picked).sum())
-        if progress:
-            progress(min(start + batch, len(inputs)), len(inputs))
+        logits = np.asarray(logits_fn(inputs[start:start + batch]))
+        for row, target in zip(logits, targets[start:start + batch]):
+            row = row.astype(np.float64)
+            top = row.max(-1, keepdims=True)
+            logz = np.log(np.exp(row - top).sum(-1)) + top[:, 0]
+            total += float((logz - row[np.arange(len(target)), target]).sum())
     return {"val_ce": total / targets.size, "targets": int(targets.size), "window": seq,
             "eot_share": float((targets == EOT).mean())}
 
 
 def document_keys(tokens, width=24):
-    """A 64-bit key per document start in `tokens`: the `width` tokens after each
-    end-of-text, hashed. Used to ask whether this shard's documents sit inside a
-    training corpus (FineWeb-Edu is a filtered subset of FineWeb)."""
-    starts = np.flatnonzero(tokens[:-width] == EOT) + 1
+    """A 64-bit key per document start in `tokens`: the `width` tokens at the stream's
+    start and after each end-of-text, hashed. Used to ask whether this shard's
+    documents sit inside a training corpus (FineWeb-Edu is a filtered subset of
+    FineWeb). A lower bound on overlap: a document split across two corpus files, or
+    shorter than `width`, keys differently from its copy."""
+    starts = np.concatenate([[0], np.flatnonzero(tokens[:-width] == EOT) + 1])
+    starts = starts[tokens[starts] != EOT]  # a stream that opens with EOT starts after it
     spans = tokens[starts[:, None] + np.arange(width)].astype(np.uint64)
     keys = np.zeros(len(starts), dtype=np.uint64)
     for column in spans.T:  # FNV-style mix; wraps mod 2^64 on purpose
@@ -112,10 +120,10 @@ def document_keys(tokens, width=24):
 
 
 def overlap(val_tokens, corpus_files, width=24):
-    """How many of the shard's documents open with the same `width` tokens as some
-    document in `corpus_files` (int32 .npy token streams, documents EOT-separated)."""
+    """How many distinct document openings of the shard (`width` tokens each) also
+    open some document in `corpus_files` (int32 .npy streams, EOT-separated)."""
     wanted = np.unique(document_keys(val_tokens, width))
     found = np.zeros(0, dtype=np.uint64)
     for path in corpus_files:
         found = np.union1d(found, np.intersect1d(wanted, document_keys(np.load(path, mmap_mode="r"), width)))
-    return {"documents": int(len(wanted)), "found_in_corpus": int(len(found)), "width": width}
+    return {"openings": int(len(wanted)), "found_in_corpus": int(len(found)), "width": width}

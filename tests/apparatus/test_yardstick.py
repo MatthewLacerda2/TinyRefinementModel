@@ -215,6 +215,28 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     assert row["fineweb_val"]["targets"] > 0 and np.isfinite(row["fineweb_val"]["val_ce"])
 
 
+def test_a_fineweb_failure_does_not_cost_the_lambada_reading(tmp_path, monkeypatch):
+    import json
+    import types
+
+    from instruments.yardstick import eval_yardstick
+
+    def broken():
+        raise ValueError("sha256 mismatch")
+
+    monkeypatch.setattr(eval_yardstick.fineweb_val, "fetch_fineweb_val", broken)
+    monkeypatch.setattr(eval_yardstick, "restore_arch", lambda arch, path, step=None: (object(), 3))
+    monkeypatch.setattr(eval_yardstick, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: FakeEnc()))
+    monkeypatch.setattr(eval_yardstick, "make_logits_fn", lambda model, depth: rule_logits_fn)
+    data = tmp_path / "lambada.jsonl"
+    data.write_text('{"text": "1 2 3 4"}\n')
+    out = tmp_path / "row.json"
+    eval_yardstick.main(["--checkpoint-path", str(tmp_path), "--data-path", str(data), "--no-heldout",
+                         "--json-out", str(out), "--arch", "plain"])
+    row = json.loads(out.read_text())
+    assert row["lambada"]["num_examples"] == 1 and "sha256 mismatch" in row["fineweb_val"]["error"]
+
+
 def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
     """#328: a milestones dir holds every milestone, and restore used to take the newest
     step of whatever dir it was given. Scoring milestone M must load exactly M."""

@@ -119,7 +119,7 @@ def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False
     row = json.loads(out.read_text())
     entry = {"step": step, "source": source, "limit": limit, "on_cpu": on_cpu, **row["lambada"],
              **({"fineweb_val_ce": row["fineweb_val"]["val_ce"], "fineweb_targets": row["fineweb_val"]["targets"]}
-                if row.get("fineweb_val") else {}),
+                if "val_ce" in (row.get("fineweb_val") or {}) else {}),
              "when": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     with (run_dir / JOURNAL).open("a") as fh:
         fh.write(json.dumps(entry) + "\n")

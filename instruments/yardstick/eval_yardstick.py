@@ -170,10 +170,17 @@ def main(argv=None):
     heldout = None if args.no_heldout else heldout_perplexity(model)
     fineweb = None
     if args.fineweb_tokens:
-        tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
-        print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
-        fineweb = fineweb_val.score(make_logits_fn(model, args.depth), tokens, args.fineweb_window, batch=args.batch)
-        fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
+        # An added reading must not cost a milestone the LAMBADA score it always had:
+        # a fetch, sha or scoring failure is recorded in the row, not raised.
+        try:
+            tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
+            print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
+            fineweb = fineweb_val.score(make_logits_fn(model, args.depth), tokens, args.fineweb_window,
+                                        batch=args.batch)
+            fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
+        except Exception as err:  # recorded in the row; the rest of the eval stands
+            print(f"⚠️ FineWeb val skipped: {err!r}")
+            fineweb = {"error": repr(err)}
 
     ref_acc, ref_ppl = GPT2_SMALL_REFERENCE["lambada_acc"], GPT2_SMALL_REFERENCE["lambada_ppl"]
     print()
@@ -185,7 +192,7 @@ def main(argv=None):
     if heldout:
         print(f"{'held-out ppl (our corpus)':<28} {heldout['ppl']:>10.2f} {'—':>12}   "
               f"(val CE {heldout['val_ce']:.4f}; internal track, no external reference)")
-    if fineweb:
+    if fineweb and "val_ce" in fineweb:
         gpt2 = fineweb_val.GPT2_MEASURED.get(fineweb["window"])
         print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {gpt2 if gpt2 else float('nan'):>12.4f}   "
               f"(GPT-2 measured at this {fineweb['window']}-token window; the speedrun's target is "

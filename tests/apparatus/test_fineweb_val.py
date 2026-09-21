@@ -60,7 +60,16 @@ def test_overlap_finds_a_shared_document_and_only_that_one(tmp_path):
     corpus = tmp_path / "chunk_0.npy"
     np.save(corpus, np.array([7, 7, e, *shared, e, *range(300, 330)], dtype=np.int32))
     out = fineweb_val.overlap(val, [corpus], width=24)
-    assert out == {"documents": 2, "found_in_corpus": 1, "width": 24}
+    assert out == {"openings": 2, "found_in_corpus": 1, "width": 24}
+
+
+def test_a_corpus_files_first_document_is_keyed_too(tmp_path):
+    """Prefill writes text then EOT, so a file's first document has no EOT before it."""
+    e = fineweb_val.EOT
+    shared = list(range(100, 130))
+    np.save(tmp_path / "chunk_0.npy", np.array([*shared, e, 5], dtype=np.int32))
+    out = fineweb_val.overlap(np.array([e, *shared, e, 1]), [tmp_path / "chunk_0.npy"])
+    assert out["found_in_corpus"] == 1
 
 
 def test_the_pin_is_the_hubs_object_id():
