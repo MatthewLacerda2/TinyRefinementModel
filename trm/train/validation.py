@@ -106,7 +106,7 @@ class ValidationProbe:
         self.rows, self.skip, self.source = rows, skip, source
         self._batches = None
 
-    def _load(self):
+    def load_rows(self):
         skip = self.skip
         if skip is None:
             skip = max(corpus_samples(self.source_dir) - VAL_TAIL_ROWS, 0)
@@ -117,7 +117,7 @@ class ValidationProbe:
 
     def run(self, model):
         if self._batches is None:
-            self._batches = self._load()
+            self._batches = self.load_rows()
         if not self._batches:
             return None
         total, count = 0.0, 0

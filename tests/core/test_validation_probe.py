@@ -108,5 +108,5 @@ def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatc
 
     monkeypatch.setattr(validation, "VAL_TAIL_ROWS", 2)
     probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, source="finemath")
-    rows = probe._load()
+    rows = probe.load_rows()
     assert [int(r[0, 0]) for r in rows] == [4, 5]
