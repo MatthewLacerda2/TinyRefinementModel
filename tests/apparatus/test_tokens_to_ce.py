@@ -50,3 +50,15 @@ def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
     for bad in (["ADAM_BETA2=0.95"], ["adam_b2=0.95"], ["ADAM_B2"]):
         with pytest.raises(SystemExit):
             parse_knobs(bad)
+
+
+def test_an_arm_can_set_its_mixture():
+    """#439: the mixture is a knob a spec pins per arm. `--set` refuses any name
+    trm/config.py does not define, so a mixture knob that lived anywhere else could
+    not be put on an arm at all — and the `=` inside the value must survive."""
+    from experiments.recipe.tokens_to_ce import parse_knobs
+
+    knobs = parse_knobs(["DATA_MIXTURE=pretrain/fineweb-edu=0.9:0.6,pretrain/finemath=0.1:0.4",
+                         "MIXTURE_RAMP_FRACTION=0.5"])
+    assert knobs == {"DATA_MIXTURE": "pretrain/fineweb-edu=0.9:0.6,pretrain/finemath=0.1:0.4",
+                     "MIXTURE_RAMP_FRACTION": "0.5"}

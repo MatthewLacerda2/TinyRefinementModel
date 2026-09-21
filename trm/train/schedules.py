@@ -3,7 +3,8 @@ import os
 import numpy as np
 import optax
 
-from trm.config import MAX_STEPS_LIMIT, DATA_SEED, TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET, WEIGHT_DECAY
+from trm.config import (DATA_MIXTURE, DATA_SEED, MAX_STEPS_LIMIT, MIXTURE_RAMP_FRACTION,
+                        TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET, WEIGHT_DECAY)
 
 # Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
 # phase that does not grow with the run. Env-overridable for one purpose: a
@@ -119,15 +120,15 @@ weight_decay_schedule = optax.constant_schedule(WEIGHT_DECAY)
 # trained with (10,000 of 30,518 steps), so a 4B base run resolves to exactly the
 # ramp it always had, while a 512-step pair now sees the same web-to-code/math turn
 # instead of barely leaving 85% web. Warmup stays absolute: it settles the optimizer
-# state, not the recipe. With no budget set, the historical 10,000 steps.
-CURRICULUM_RAMP_FRACTION = 10000 / 30518
+# state, not the recipe. With no budget set, the historical 10,000 steps. The
+# fraction itself is MIXTURE_RAMP_FRACTION in trm/config.py (#439).
 _DEFAULT_CURRICULUM_STEPS = 10000
 
 
 def resolve_curriculum_steps(token_budget, decay_steps):
     if token_budget is None:
         return _DEFAULT_CURRICULUM_STEPS
-    return max(1, round(CURRICULUM_RAMP_FRACTION * decay_steps))
+    return max(1, round(MIXTURE_RAMP_FRACTION * decay_steps))
 
 
 CURRICULUM_STEPS = resolve_curriculum_steps(TRAIN_TOKEN_BUDGET, DECAY_STEPS)
@@ -144,9 +145,43 @@ if LR_SCHEDULE == "wsd":
     SCHEDULE_HORIZONS["wsd decay start"] = (
         "absolute" if WSD_DECAY_START is not None else "budget",
         WSD_DECAY_START if WSD_DECAY_START is not None else round((1 - WSD_DECAY_FRACTION) * DECAY_STEPS))
-# Endpoints over the (web, code, math) sources, in DataMixer source order.
-CURRICULUM_START_WEIGHTS = [0.85, 0.10, 0.05]
-CURRICULUM_END_WEIGHTS = [0.35, 0.40, 0.25]
+def parse_mixture(text):
+    """`DATA_MIXTURE` (trm/config.py) -> (buckets, start weights, end weights), or a refusal that
+    says what is wrong. Refusing at import, before a model is built, is the point:
+    a typo here would otherwise cost the hours it takes to notice the mix is odd."""
+    buckets, starts, ends = [], [], []
+    for entry in (part.strip() for part in text.split(",")):
+        if not entry:
+            continue
+        bucket, sep, weights = entry.partition("=")
+        bucket = bucket.strip()
+        if not sep or not bucket:
+            raise SystemExit(f"DATA_MIXTURE entry {entry!r}: write it as bucket=start:end or bucket=weight")
+        start, _, end = weights.partition(":")
+        try:
+            start = float(start)
+            end = float(end) if end.strip() else start
+        except ValueError:
+            raise SystemExit(f"DATA_MIXTURE entry {entry!r}: {weights!r} is not a weight") from None
+        if start < 0 or end < 0:
+            raise SystemExit(f"DATA_MIXTURE entry {entry!r}: a weight cannot be negative")
+        if bucket in buckets:
+            raise SystemExit(f"DATA_MIXTURE names {bucket!r} twice")
+        buckets.append(bucket)
+        starts.append(start)
+        ends.append(end)
+    if not buckets:
+        raise SystemExit("DATA_MIXTURE names no bucket")
+    for column, weights in (("start", starts), ("end", ends)):
+        if abs(sum(weights) - 1.0) > 1e-9:
+            raise SystemExit(f"DATA_MIXTURE {column} weights sum to {sum(weights):.6g}, not 1: {text!r}")
+    return tuple(buckets), starts, ends
+
+
+# Buckets and endpoints in DataMixer source order. One tuple feeds the loaders, the
+# `mix` column of metrics.csv and the per-source gradient telemetry, so the recorded
+# mixture cannot name a source other than the one that was served.
+PRETRAIN_SOURCES, CURRICULUM_START_WEIGHTS, CURRICULUM_END_WEIGHTS = parse_mixture(DATA_MIXTURE)
 
 def get_curriculum_weights(loader_step):
     step = float(loader_step)

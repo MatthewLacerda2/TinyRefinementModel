@@ -330,3 +330,25 @@ TOKENIZER_NAME = "r50k_base"
 #                the model with).
 DATA_SEED = int(os.environ.get("DATA_SEED", "42"))
 MODEL_SEED = int(os.environ.get("MODEL_SEED", "42"))
+
+# The training mixture (#439): which buckets under DATA_ROOT a run reads, and how
+# their weights move. One `bucket=start:end` per source, comma-separated, in mixer
+# order; the weights ramp linearly from the start column to the end column over the
+# mixture ramp, then hold. `bucket=w` holds w the whole run. Each column must sum to
+# 1 — a renormalization nobody wrote down is a hidden default on the hot path.
+# Parsed and checked by trm.train.schedules.parse_mixture.
+#
+# Chosen in the spec, before the run, never after a number is seen (CLAUDE.md rule
+# 3), so two arms that differ only here are a matched pair on the mixture. A pair
+# that informs a base run inherits that run's mixture.
+#
+# The default is the ramp every run so far trained with, web-heavy to a code/math
+# blend (#362), so an unset environment resolves bit-for-bit to what it always did.
+DEFAULT_DATA_MIXTURE = ("pretrain/fineweb-edu=0.85:0.35,"
+                        "pretrain/codeparrot=0.10:0.40,"
+                        "pretrain/finemath=0.05:0.25")
+DATA_MIXTURE = os.environ.get("DATA_MIXTURE", DEFAULT_DATA_MIXTURE)
+# Where the ramp ends, as a fraction of the LR schedule's decay horizon (#362): a
+# third of the way in, the shape the 4B champion trained with (10,000 of 30,518
+# steps). Budget-relative, so a short pair inherits the shape of the run it informs.
+MIXTURE_RAMP_FRACTION = float(os.environ.get("MIXTURE_RAMP_FRACTION", 10000 / 30518))

@@ -36,6 +36,8 @@ from trm.config import (
     MUON_EPS,
     MUON_NESTEROV,
     LOSS_SCALE_GROWTH_INTERVAL,
+    DATA_MIXTURE,
+    MIXTURE_RAMP_FRACTION,
 )
 from trm.runtime.layout import VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
 from trm.train.schedules import (
@@ -190,8 +192,11 @@ class RunTracker:
             # The run's recipe horizon (#83): budget in, resolved anneal out.
             "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
             "DECAY_STEPS": DECAY_STEPS,
-            # The mixture ramp's resolved horizon, budget-relative since #362.
+            # The mixture ramp's resolved horizon, budget-relative since #362, and the
+            # mixture itself (#439): which buckets, at which weights, start to end.
             "CURRICULUM_STEPS": CURRICULUM_STEPS,
+            "DATA_MIXTURE": DATA_MIXTURE,
+            "MIXTURE_RAMP_FRACTION": MIXTURE_RAMP_FRACTION,
             # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
             "LR_SCHEDULE": LR_SCHEDULE,
             "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,

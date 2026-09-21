@@ -48,8 +48,10 @@ from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import (
+    CURRICULUM_END_WEIGHTS,
     CURRICULUM_START_WEIGHTS,
     DECAY_STEPS,
+    PRETRAIN_SOURCES,
     SCHEDULE_HORIZONS,
     WARMUP_STEPS,
     get_curriculum_weights,
@@ -76,10 +78,6 @@ if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
 
 
-# Data sources, in mixer order. One list feeds both the loaders and the `mix`
-# column of metrics.csv, so the recorded mixture cannot name a source other than
-# the one that was served.
-PRETRAIN_SOURCES = ("pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
 
 
 def mixture_label(sources, weights):
@@ -201,6 +199,9 @@ def init_model_and_optimizer():
     # Every schedule with its horizon and what it scales with (#362).
     print("🗓️ Schedules: " + " | ".join(
         f"{name} {steps:,} opt steps ({kind})" for name, (kind, steps) in SCHEDULE_HORIZONS.items()))
+    # The mixture at both ends of its ramp, by bucket (#439): what this run reads.
+    print(f"🥣 Mixture: {mixture_label(PRETRAIN_SOURCES, CURRICULUM_START_WEIGHTS)} -> "
+          f"{mixture_label(PRETRAIN_SOURCES, CURRICULUM_END_WEIGHTS)}")
     # The whole optimizer at launch, every knob named (#358).
     muon = (f"muon on the matrices (LR x{MUON_LR_MULT:g}, beta {MUON_BETA:g}, "
             f"{MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
@@ -218,7 +219,7 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
         print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
     print("🚀 Initializing Dynamic Data Phases...")
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
-    pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS)
+    pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS, names=PRETRAIN_SOURCES)
 
     if start_step > 0 and data_state is not None:
         # Exact (#424): the reader and mixer state saved with the last batch the
