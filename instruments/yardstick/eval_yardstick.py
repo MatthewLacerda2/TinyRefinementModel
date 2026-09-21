@@ -47,15 +47,23 @@ from instruments.yardstick.yardstick import (
     score_examples,
     summarize,
 )
+from instruments.yardstick import fineweb_val
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "LAMBADA acc, ppl": ("measured", "the full LAMBADA test set; with --limit it is a subsample and not the bar"),
     "held-out ppl": ("sampled", "a fixed slice of held-out rows from our corpus"),
+    "FineWeb val CE": ("sampled", "the first --fineweb-tokens of the speedrun's FineWeb val shard at our window; "
+                                  "the reference reads 10,485,760 of them at 1,024"),
 }
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per eval forward, not the training micro-batch"}
+
+# 2^18 targets by default: ~15 min of CPU beside a trainer (2^20 took an hour), and
+# on the base run's milestone 2^16 and 2^20 read within 0.012 of each other (#462).
+# The model card's number takes --fineweb-tokens 10485760.
+FINEWEB_DEFAULT_TOKENS = 1 << 18
 
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
@@ -122,6 +130,11 @@ def main(argv=None):
     ap.add_argument("--json-out", default=None,
                     help="where to write the model-card row (default runs/yardstick/<step>.json)")
     ap.add_argument("--no-heldout", action="store_true", help="skip the own-corpus ppl probe")
+    ap.add_argument("--fineweb-tokens", type=int, default=FINEWEB_DEFAULT_TOKENS,
+                    help=f"tokens of the speedrun's FineWeb val shard to score (0 skips; the full reference "
+                         f"set is {fineweb_val.SPEEDRUN_VAL_TOKENS})")
+    ap.add_argument("--fineweb-window", type=int, default=MAX_SEQ_LEN,
+                    help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
     args = ap.parse_args(argv)
 
     if args.arch == "reasoner" and args.batch != EVAL_BATCH_SIZE:
@@ -155,6 +168,19 @@ def main(argv=None):
     )
     result = summarize(scores)
     heldout = None if args.no_heldout else heldout_perplexity(model)
+    fineweb = None
+    if args.fineweb_tokens:
+        # An added reading must not cost a milestone the LAMBADA score it always had:
+        # a fetch, sha or scoring failure is recorded in the row, not raised.
+        try:
+            tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
+            print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
+            fineweb = fineweb_val.score(make_logits_fn(model, args.depth), tokens, args.fineweb_window,
+                                        batch=args.batch)
+            fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
+        except Exception as err:  # recorded in the row; the rest of the eval stands
+            print(f"⚠️ FineWeb val skipped: {err!r}")
+            fineweb = {"error": repr(err)}
 
     ref_acc, ref_ppl = GPT2_SMALL_REFERENCE["lambada_acc"], GPT2_SMALL_REFERENCE["lambada_ppl"]
     print()
@@ -166,6 +192,11 @@ def main(argv=None):
     if heldout:
         print(f"{'held-out ppl (our corpus)':<28} {heldout['ppl']:>10.2f} {'—':>12}   "
               f"(val CE {heldout['val_ce']:.4f}; internal track, no external reference)")
+    if fineweb and "val_ce" in fineweb:
+        gpt2 = fineweb_val.GPT2_MEASURED.get(fineweb["window"])
+        print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {gpt2 if gpt2 else float('nan'):>12.4f}   "
+              f"(GPT-2 measured at this {fineweb['window']}-token window; the speedrun's target is "
+              f"{fineweb_val.REFERENCE['val_ce']} at 1,024)")
     if args.limit:
         print(f"⚠️ --limit {args.limit}: a smoke reading, not the bar.")
 
@@ -177,6 +208,7 @@ def main(argv=None):
         "tokenizer": TOKENIZER_NAME,
         "lambada": {**result, "data_sha256": LAMBADA_SHA256, "limit": args.limit},
         "heldout": heldout,
+        "fineweb_val": fineweb and {**fineweb, "reference": fineweb_val.REFERENCE},
         "gpt2_small_reference": GPT2_SMALL_REFERENCE,
     }
     out = args.json_out or f"runs/yardstick/step{step}.json"
