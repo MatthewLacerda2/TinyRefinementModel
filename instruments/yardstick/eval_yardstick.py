@@ -47,15 +47,23 @@ from instruments.yardstick.yardstick import (
     score_examples,
     summarize,
 )
+from instruments.yardstick import fineweb_val
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "LAMBADA acc, ppl": ("measured", "the full LAMBADA test set; with --limit it is a subsample and not the bar"),
     "held-out ppl": ("sampled", "a fixed slice of held-out rows from our corpus"),
+    "FineWeb val CE": ("sampled", "the first --fineweb-tokens of the speedrun's FineWeb val shard at our window; "
+                                  "the reference reads 10,485,760 of them at 1,024"),
 }
 
 # Off-config defaults, on purpose (tests/apparatus/test_instrument_defaults.py).
 CONFIG_DIVERGENCES = {"--batch": "examples per eval forward, not the training micro-batch"}
+
+# 2^20 targets by default: the full 10.5M shard is ~10x the CPU time of LAMBADA at a
+# milestone, and 1M targets already reads the mean to about a hundredth of a nat.
+# The model card's number takes --fineweb-tokens 10485760.
+FINEWEB_DEFAULT_TOKENS = 1 << 20
 
 # Where this differs from production's environment, and why (#166).
 ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the card with a training run"}
@@ -122,6 +130,11 @@ def main(argv=None):
     ap.add_argument("--json-out", default=None,
                     help="where to write the model-card row (default runs/yardstick/<step>.json)")
     ap.add_argument("--no-heldout", action="store_true", help="skip the own-corpus ppl probe")
+    ap.add_argument("--fineweb-tokens", type=int, default=FINEWEB_DEFAULT_TOKENS,
+                    help=f"tokens of the speedrun's FineWeb val shard to score (0 skips; the full reference "
+                         f"set is {fineweb_val.SPEEDRUN_VAL_TOKENS})")
+    ap.add_argument("--fineweb-window", type=int, default=MAX_SEQ_LEN,
+                    help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
     args = ap.parse_args(argv)
 
     if args.arch == "reasoner" and args.batch != EVAL_BATCH_SIZE:
@@ -155,6 +168,12 @@ def main(argv=None):
     )
     result = summarize(scores)
     heldout = None if args.no_heldout else heldout_perplexity(model)
+    fineweb = None
+    if args.fineweb_tokens:
+        tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
+        print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
+        fineweb = fineweb_val.score(make_logits_fn(model, args.depth), tokens, args.fineweb_window, batch=args.batch)
+        fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
 
     ref_acc, ref_ppl = GPT2_SMALL_REFERENCE["lambada_acc"], GPT2_SMALL_REFERENCE["lambada_ppl"]
     print()
@@ -166,6 +185,9 @@ def main(argv=None):
     if heldout:
         print(f"{'held-out ppl (our corpus)':<28} {heldout['ppl']:>10.2f} {'—':>12}   "
               f"(val CE {heldout['val_ce']:.4f}; internal track, no external reference)")
+    if fineweb:
+        print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {fineweb_val.REFERENCE['val_ce']:>12.2f}   "
+              f"(speedrun target; ours at a {fineweb['window']}-token window, theirs 1,024)")
     if args.limit:
         print(f"⚠️ --limit {args.limit}: a smoke reading, not the bar.")
 
@@ -177,6 +199,7 @@ def main(argv=None):
         "tokenizer": TOKENIZER_NAME,
         "lambada": {**result, "data_sha256": LAMBADA_SHA256, "limit": args.limit},
         "heldout": heldout,
+        "fineweb_val": fineweb and {**fineweb, "reference": fineweb_val.REFERENCE},
         "gpt2_small_reference": GPT2_SMALL_REFERENCE,
     }
     out = args.json_out or f"runs/yardstick/step{step}.json"

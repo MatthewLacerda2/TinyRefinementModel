@@ -24,6 +24,14 @@ VOCAB = 11
 PAD = 0
 
 
+def _write_shard(path, tokens):
+    """A speedrun-format token shard: the 256-int32 header, then uint16 ids."""
+    from instruments.yardstick import fineweb_val
+    header = np.zeros(fineweb_val.HEADER_INT32S, dtype=np.int32)
+    header[:3] = fineweb_val.MAGIC, 1, len(tokens)
+    path.write_bytes(header.tobytes() + np.asarray(tokens, dtype=np.uint16).tobytes())
+
+
 class FakeEnc:
     """Whitespace tokenizer over a tiny closed vocabulary (ids 1..9)."""
 
@@ -187,9 +195,13 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     data = tmp_path / "lambada.jsonl"
     data.write_text('{"text": "1 2 3 4"}\n{"text": "5 6 7 8 9"}\n')
     out = tmp_path / "row.json"
+    shard = tmp_path / "fineweb_val.bin"
+    _write_shard(shard, np.random.default_rng(0).integers(1, 9, 200))
+    monkeypatch.setattr(eval_yardstick.fineweb_val, "fetch_fineweb_val", lambda: str(shard))
 
     eval_yardstick.main(["--checkpoint-path", str(tmp_path / "checkpoints"), "--data-path", str(data),
-                         "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out), *arch_flag])
+                         "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out),
+                         "--fineweb-tokens", "130", "--fineweb-window", "64", *arch_flag])
 
     assert restored["arch"] == "plain"
     saved_leaves = jax.tree_util.tree_leaves(nnx.state(saved))
@@ -200,6 +212,7 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     row = json.loads(out.read_text())
     assert row["arch"] == "plain" and row["checkpoint"]["step"] == 7
     assert row["lambada"]["num_examples"] == 2 and 0.0 <= row["lambada"]["lambada_acc"] <= 1.0
+    assert row["fineweb_val"]["targets"] > 0 and np.isfinite(row["fineweb_val"]["val_ce"])
 
 
 def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
