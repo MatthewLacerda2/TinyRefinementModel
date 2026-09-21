@@ -236,6 +236,35 @@ def test_the_grad_norm_panel_reads_against_the_clip_when_the_run_logged_it(tmp_p
     matplotlib.pyplot.close(fig)
 
 
+def test_the_act_max_panel_states_the_headroom_a_flat_trace_hides(tmp_path):
+    """#235: a healthy run sits decades under the f16 ceiling, so the trace alone
+    says nothing — the peak and its share of the ceiling have to be on the panel."""
+    from instruments import plots, runlog
+    header = HEADER + ",act_max"
+    rows = [row(step) + f",{40.0 + step / 10}" for step in range(5, 401, 5)]
+    run_dir = tmp_path / "run_20990101_000000"
+    run_dir.mkdir()
+    (run_dir / "metrics.csv").write_text("\n".join([header, *rows]) + "\n")
+    import matplotlib
+    matplotlib.use("Agg")
+    fig, ax = matplotlib.pyplot.subplots()
+    log = runlog.load(str(run_dir / "metrics.csv"))
+    plots._panel_act_max(ax, log, plots.RunConfig.of(log))
+    title = ax.get_title(loc="left")
+    assert "80" in title and "0.12%" in title, title
+    # Both lines are drawn, and the axis reaches the ceiling even though the data
+    # is three decades below it — the point of the panel is the gap.
+    assert ax.get_ylim()[1] >= plots.F16_MAX
+    matplotlib.pyplot.close(fig)
+
+
+def test_a_run_without_act_max_omits_the_panel(tmp_path, capsys):
+    """Runs older than the column (the 4B champion among them) must not get a
+    flat-zero panel — rule 1 of the plotter's docstring."""
+    build(a_run(tmp_path), str(tmp_path / "out"))
+    assert "act_max" in capsys.readouterr().out
+
+
 # ── the run's own config decides the figure, not this process's (#305) ───────
 
 def with_metadata(csv_path, **parameters):
