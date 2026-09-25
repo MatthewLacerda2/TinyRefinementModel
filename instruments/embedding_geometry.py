@@ -15,9 +15,12 @@ run — so it can be pointed at the live run's milestones while it trains.
 A picture here is a hypothesis, so three numbers are printed beside it (and emitted as
 RESULT lines) for every milestone:
 
-  separation   mean cosine between tokens of the same kind, minus between kinds. 0 means
-               the kinds are indistinguishable in the embedding; it can only rise if the
-               model is grouping punctuation with punctuation, digits with digits.
+  separation   mean cosine between tokens of the same kind, minus between kinds, over the
+               NAMED kinds only. `other` is "none of the above" and has no reason to
+               cohere, so counting it as a kind would put ~23% of the signal on a bucket
+               that means nothing. Reported per kind as well, because the named kinds are
+               wildly unequal in size: words are ~76% of the same-kind pairs, so the
+               headline is mostly about them and the small kinds need their own number.
   anisotropy   the share of variance on the first principal direction. LM embeddings are
                famously anisotropic (Ethayarajh 2019); watching it move says whether the
                spread is going into one direction or spreading out.
@@ -47,9 +50,9 @@ import numpy as np
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
 from instruments.arch import add_arch_argument
-from instruments.plots import AQUA, BLUE, GRID, INK, INK_DIM, ORANGE, STYLE
+from instruments.plots import AQUA, BLUE, GRID, INK, INK_DIM, ORANGE, STYLE, _note
 from instruments.results import emit
-from instruments.runlog import recorded_tokens_per_opt_step
+from instruments.runlog import checkpoint_steps, recorded_tokens_per_opt_step
 
 REPORTS = {
     "separation, anisotropy, rms": ("measured", "the checkpoint's own embedding rows for the "
@@ -98,8 +101,10 @@ def token_kinds(ids):
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
     kinds = []
     for tid in ids:
-        raw = enc.decode_single_token_bytes(int(tid)) if int(tid) < enc.n_vocab else b""
-        kinds.append(kind_of(raw.decode("utf-8", errors="replace")))
+        if int(tid) >= enc.n_vocab:  # a padding slot the tokenizer has no token for
+            kinds.append("other")
+            continue
+        kinds.append(kind_of(enc.decode_single_token_bytes(int(tid)).decode("utf-8", errors="replace")))
     return np.array(kinds)
 
 
@@ -112,24 +117,39 @@ def projection(rows, components=2):
     return centre, vt[:components]
 
 
+NAMED_KINDS = tuple(k for k in KINDS if k != "other")
+
+
+def _gap(gram, same, off):
+    """Mean cosine inside `same` minus inside `off`, or nan when either side is empty:
+    undefined says "not measured here", 0 would say "measured, no grouping"."""
+    return float(gram[same].mean() - gram[off].mean()) if same.any() and off.any() else float("nan")
+
+
 def readings(rows, kinds):
-    """separation, anisotropy and rms of one milestone's embedding rows."""
+    """separation, anisotropy and rms of one milestone's embedding rows, plus a
+    separation per named kind (that kind against everything else)."""
     unit = rows / np.maximum(np.linalg.norm(rows, axis=1, keepdims=True), 1e-9)
     gram = unit @ unit.T
+    named = np.isin(kinds, NAMED_KINDS)
     same = np.zeros_like(gram, dtype=bool)
-    for kind in np.unique(kinds):
+    for kind in NAMED_KINDS:
         picked = kinds == kind
         same |= np.outer(picked, picked)
     np.fill_diagonal(same, False)
-    off = ~same
+    off = np.outer(named, named) & ~same
     np.fill_diagonal(off, False)
     spectrum = np.linalg.svd(rows - rows.mean(0), compute_uv=False) ** 2
-    # With a single kind there are no across-kind pairs, so separation is undefined
-    # rather than zero: nan says "not measured here", 0 would say "no grouping".
-    separation = float(gram[same].mean() - gram[off].mean()) if same.any() and off.any() else float("nan")
-    return {"separation": separation,
-            "anisotropy": float(spectrum[0] / spectrum.sum()),
-            "rms": float(np.sqrt((rows ** 2).mean()))}
+    out = {"separation": _gap(gram, same, off),
+           # Undefined, not 1: identical rows have no direction to put variance on.
+           "anisotropy": float(spectrum[0] / spectrum.sum()) if spectrum.sum() > 0 else float("nan"),
+           "rms": float(np.sqrt((rows ** 2).mean()))}
+    for kind in NAMED_KINDS:
+        picked = kinds == kind
+        inside = np.outer(picked, picked)
+        np.fill_diagonal(inside, False)
+        out[f"separation_{kind}"] = _gap(gram, inside, np.outer(picked, ~picked))
+    return out
 
 
 def density(points, limit, bins=150, smooth=4.0):
@@ -138,7 +158,9 @@ def density(points, limit, bins=150, smooth=4.0):
     approximates one) so the instrument keeps its dependency list to numpy."""
     grid, _, _ = np.histogram2d(points[:, 1], points[:, 0], bins=bins,
                                 range=[[-limit, limit], [-limit, limit]])
-    width = max(int(smooth), 1)
+    # Odd width, always: mode="same" centres an even kernel half a sample off, and three
+    # passes per axis would draw every field 1.5 bins up and to the right of its tokens.
+    width = max(int(smooth) | 1, 1)
     kernel = np.ones(width) / width
     for _ in range(3):
         grid = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="same"), 0, grid)
@@ -225,6 +247,18 @@ def write_point_cloud(points, kinds, path, arm=0.012):
     return path
 
 
+def run_dir(checkpoint_path):
+    """The run a checkpoint dir belongs to: runs/<run>/checkpoints, or a subdir of it.
+    A dir with no run_metadata.json beside it is not a run, and saying so beats writing
+    a run's figure and journal into whatever directory happened to be two levels up."""
+    path = pathlib.Path(os.path.abspath(checkpoint_path))
+    for candidate in (path.parent, path.parent.parent):
+        if (candidate / "run_metadata.json").exists():
+            return candidate
+    raise SystemExit(f"{checkpoint_path}: no run_metadata.json above it — point --checkpoint-path "
+                     "at a run's checkpoints dir (or its milestones subdir)")
+
+
 def tokens_per_micro_step(run_dir):
     """Tokens in one checkpointed step, from the run's OWN recipe (#305). A checkpoint
     step is a micro-step, so the accumulation factor comes back out of the opt-step
@@ -241,35 +275,31 @@ def tokens_per_micro_step(run_dir):
 
 
 def trend_figure(rows, out, run_label, tokens_per_step):
-    """The three numbers against tokens — one chart, the plots.py convention. The picture
-    shows that something is happening; this says how much, and whether it is still going."""
+    """Separation per kind against tokens — one chart, the plots.py convention, in the
+    same colours the clouds use so the two figures read as one. The overall line is the
+    named kinds together; anisotropy and rms are in the JSON beside it, not here, because
+    they are a different quantity and this chart answers one question."""
     # Without the run's recipe there is no honest x axis in tokens, so the steps stay steps.
     tokens = [r["step"] * (tokens_per_step or 1) for r in rows]
     with plt.rc_context(STYLE):
-        fig, ax = plt.subplots(figsize=(7.2, 4.2))
-        ax.plot(tokens, [r["separation"] for r in rows], color=BLUE, marker="o", markersize=3.5,
-                label="separation (kinds grouping together)")
-        ax.plot(tokens, [r["anisotropy"] for r in rows], color=ORANGE, marker="o", markersize=3.5,
-                label="anisotropy (variance on one direction)")
-        ax.plot(tokens, [r["rms"] for r in rows], color=AQUA, marker="o", markersize=3.5,
-                label="rms norm")
+        fig, ax = plt.subplots(figsize=(7.6, 4.4))
+        for kind in NAMED_KINDS:
+            ax.plot(tokens, [r[f"separation_{kind}"] for r in rows], color=COLOURS[kind],
+                    marker="o", markersize=3.5, label=kind)
+        ax.plot(tokens, [r["separation"] for r in rows], color=INK_DIM, linewidth=1.1,
+                linestyle="--", label="all named kinds")
         ax.set_xscale("log")
         ax.set_xlabel("tokens trained" if tokens_per_step else
                       "checkpoint step (the run recorded no recipe to read tokens from)")
+        ax.set_ylabel("separation")
         ax.legend(loc="upper left")
-        ax.set_title("the embedding organizing itself")
+        ax.set_title("each kind finding its place")
         ax.set_title(run_label, loc="right", fontsize=7.5, fontweight="normal", color=INK_DIM)
+        _note(ax, "separation = mean cosine inside a kind minus to everything else; "
+                  "the small closed kinds group hardest")
         fig.savefig(out)
         plt.close(fig)
     return out
-
-
-def milestone_steps(checkpoint_path):
-    import orbax.checkpoint as ocp
-
-    from trm.runtime.layout import CHECKPOINT_ITEMS
-    path = os.path.abspath(checkpoint_path)
-    return sorted(ocp.CheckpointManager(path, item_names=CHECKPOINT_ITEMS).all_steps())
 
 
 def main(argv=None):
@@ -305,13 +335,15 @@ def main(argv=None):
     print(f"🔤 {len(ids)} frequent tokens: "
           + "  ".join(f"{k} {int((kinds == k).sum())}" for k in KINDS if (kinds == k).any()))
 
-    steps = milestone_steps(args.checkpoint_path)
+    steps = checkpoint_steps(args.checkpoint_path)
     if not steps:
         raise SystemExit(f"no checkpoints under {args.checkpoint_path}")
     embeddings = []
     for step in steps:
         model, _ = restore_arch(args.arch, args.checkpoint_path, step=step)
-        embeddings.append(np.asarray(model.embed.embedding[...], dtype=np.float64)[ids])
+        # Index first, cast second: the whole table in f64 is 386 MB, and this runs
+        # beside a trainer on a box where this session is what the OOM killer picks.
+        embeddings.append(np.asarray(model.embed.embedding[...])[ids].astype(np.float64))
         del model
 
     centre, axes = projection(embeddings[-1])
@@ -324,7 +356,7 @@ def main(argv=None):
               f"anisotropy {reading['anisotropy']:.4f}  rms {reading['rms']:.3f}")
         emit(f"embedding@{step}", **reading)
 
-    run = pathlib.Path(os.path.abspath(args.checkpoint_path)).parents[1]
+    run = run_dir(args.checkpoint_path)
     per_step = args.tokens_per_step or tokens_per_micro_step(run)
     out = args.out or run / "embedding_geometry.png"
     print(f"\n🖼  {figure(frames, kinds, out, run.name)}")

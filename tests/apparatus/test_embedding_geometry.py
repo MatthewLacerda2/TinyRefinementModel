@@ -51,6 +51,42 @@ def test_separation_sees_grouping_and_not_noise():
     assert eg.readings(grouped, kinds)["separation"] > 0.5
 
 
+def test_the_none_of_the_above_bucket_is_not_counted_as_a_kind():
+    """`other` is defined as what did not match; rows in it have no reason to cohere, and
+    counting them as a kind would hand a quarter of the signal to a bucket that means
+    nothing. It is excluded from the reading — moving those rows must not move it."""
+    rng = np.random.default_rng(2)
+    kinds = np.array(["word"] * 20 + ["digits"] * 20 + ["other"] * 20)
+    rows = rng.normal(size=(60, 8)) + np.where(kinds[:, None] == "word", 5.0, 0.0)
+    moved = rows.copy()
+    moved[kinds == "other"] = rng.normal(size=(20, 8)) + 40.0  # pile `other` up somewhere
+    assert np.isclose(eg.readings(rows, kinds)["separation"],
+                      eg.readings(moved, kinds)["separation"])
+
+
+def test_each_named_kind_gets_its_own_number():
+    """Words are ~76% of the same-kind pairs in the real vocabulary, so the headline is
+    mostly about them; a small kind that groups must be visible on its own."""
+    rng = np.random.default_rng(3)
+    kinds = np.array(["word"] * 40 + ["digits"] * 6 + ["code"] * 6)
+    rows = rng.normal(size=(52, 8))
+    rows[kinds == "digits"] += 30.0  # only the digits are piled together
+    reading = eg.readings(rows, kinds)
+    assert reading["separation_digits"] > 0.5
+    assert abs(reading["separation_code"]) < 0.2
+
+
+def test_a_padding_id_is_other_not_punctuation(monkeypatch):
+    """An id past the tokenizer decodes to nothing, and nothing looks like whitespace —
+    it must not join a real group."""
+    import types
+    fake = types.SimpleNamespace(n_vocab=10, decode_single_token_bytes=lambda tid: b" the")
+    monkeypatch.setattr(eg, "token_kinds", eg.token_kinds)
+    import sys
+    monkeypatch.setitem(sys.modules, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: fake))
+    assert eg.token_kinds([3, 11]).tolist() == ["word", "other"]
+
+
 def test_anisotropy_and_rms_read_a_known_shape():
     rows = np.zeros((50, 4))
     rows[:, 0] = np.linspace(-1, 1, 50)  # all the variance on one axis
@@ -82,12 +118,15 @@ def test_the_point_cloud_is_edges_and_one_object_per_kind(tmp_path):
 
 def test_density_blurs_into_a_field_without_moving_its_middle():
     """The soft field is what makes two kinds sharing ground read as a mixed colour; it
-    must not slide the mass away from where the tokens are."""
+    must not slide the mass away from where the tokens are. The band here is half a bin,
+    not four: an even blur kernel shifts the whole field by 1.5 bins, which is exactly the
+    defect this guards, and a loose band would pass it."""
     points = np.zeros((50, 2))
     field = eg.density(points, limit=1.0, bins=50)
     assert np.isclose(field.max(), 1.0)
-    rows, columns = np.nonzero(field > 0.5)
-    assert 20 <= rows.mean() <= 29 and 20 <= columns.mean() <= 29  # still centred
+    grid = np.indices(field.shape)
+    centroid = [float((axis * field).sum() / field.sum()) for axis in grid]
+    assert all(abs(c - 25.0) <= 0.5 for c in centroid), centroid  # a point at 0 lands in bin 25 of 50
     assert (field > 0.01).sum() > 4  # and spread over neighbouring cells, not one spike
 
 
