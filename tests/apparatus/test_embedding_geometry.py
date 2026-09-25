@@ -3,6 +3,8 @@ projection's. That rests on three properties: the token kinds are what they say,
 frame goes through the SAME projection, and the separation number only rises when tokens
 of a kind actually group together."""
 
+import pathlib
+
 import numpy as np
 
 from instruments import embedding_geometry as eg
@@ -58,6 +60,35 @@ def test_anisotropy_and_rms_read_a_known_shape():
     # One kind only: there is no across-kind pair to compare against, and saying 0
     # would claim "measured, no grouping".
     assert np.isnan(reading["separation"])
+
+
+def test_the_point_cloud_is_edges_and_one_object_per_kind(tmp_path):
+    """The board's mesh widget draws EDGES: a bare vertex is invisible there, so every
+    token must arrive as a cross of three segments, under a named object its colour can
+    be pinned to."""
+    points = np.array([[0.0, 0, 0], [1.0, 2, 3], [-1.0, 0, 1]])
+    kinds = np.array(["word", "digits", "word"])
+    text = pathlib.Path(eg.write_point_cloud(points, kinds, tmp_path / "cloud.obj")).read_text()
+    assert [ln.split()[1] for ln in text.splitlines() if ln.startswith("o ")] == ["digits", "word"]
+    assert sum(ln.startswith("l ") for ln in text.splitlines()) == 3 * len(points)
+    assert sum(ln.startswith("v ") for ln in text.splitlines()) == 6 * len(points)
+    # Every segment names two vertices that exist, and each is one axis long.
+    vertices = [np.array([float(x) for x in ln.split()[1:]])
+                for ln in text.splitlines() if ln.startswith("v ")]
+    for line in (ln for ln in text.splitlines() if ln.startswith("l ")):
+        a, b = (vertices[int(i) - 1] for i in line.split()[1:])
+        assert np.count_nonzero(np.abs(a - b) > 1e-9) == 1
+
+
+def test_density_blurs_into_a_field_without_moving_its_middle():
+    """The soft field is what makes two kinds sharing ground read as a mixed colour; it
+    must not slide the mass away from where the tokens are."""
+    points = np.zeros((50, 2))
+    field = eg.density(points, limit=1.0, bins=50)
+    assert np.isclose(field.max(), 1.0)
+    rows, columns = np.nonzero(field > 0.5)
+    assert 20 <= rows.mean() <= 29 and 20 <= columns.mean() <= 29  # still centred
+    assert (field > 0.01).sum() > 4  # and spread over neighbouring cells, not one spike
 
 
 def test_frequency_counts_come_from_the_shards(tmp_path):

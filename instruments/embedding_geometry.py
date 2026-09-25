@@ -103,13 +103,13 @@ def token_kinds(ids):
     return np.array(kinds)
 
 
-def projection(rows):
-    """The 2D projection this instrument draws in: the top two principal directions of
-    `rows` (the LAST milestone), returned with the centre they are taken around so every
-    earlier milestone can be projected through the same one."""
+def projection(rows, components=2):
+    """The projection this instrument draws in: the top principal directions of `rows`
+    (the LAST milestone), returned with the centre they are taken around so every earlier
+    milestone can be projected through the same one."""
     centre = rows.mean(0)
     _, _, vt = np.linalg.svd(rows - centre, full_matrices=False)
-    return centre, vt[:2]
+    return centre, vt[:components]
 
 
 def readings(rows, kinds):
@@ -132,13 +132,37 @@ def readings(rows, kinds):
             "rms": float(np.sqrt((rows ** 2).mean()))}
 
 
+def density(points, limit, bins=150, smooth=4.0):
+    """A smoothed 2D histogram of `points` on the shared [-limit, limit] square, peak
+    normalised to 1. Gaussian-blurred by hand (a separable box blur applied three times
+    approximates one) so the instrument keeps its dependency list to numpy."""
+    grid, _, _ = np.histogram2d(points[:, 1], points[:, 0], bins=bins,
+                                range=[[-limit, limit], [-limit, limit]])
+    width = max(int(smooth), 1)
+    kernel = np.ones(width) / width
+    for _ in range(3):
+        grid = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="same"), 0, grid)
+        grid = np.apply_along_axis(lambda row: np.convolve(row, kernel, mode="same"), 1, grid)
+    return grid / max(grid.max(), 1e-12)
+
+
 def panel(ax, points, kinds, title, limit):
+    """Each kind laid down as a soft field of its own colour, so where two kinds share
+    ground the colours mix into the shade in between and the regions read as regions.
+    The dots stay on top, faint: the field says where the mass is, the dots say that it
+    is made of tokens."""
     for kind in KINDS:
         picked = kinds == kind
         if not picked.any():
             continue
-        ax.scatter(points[picked, 0], points[picked, 1], s=3.5, linewidths=0,
-                   color=COLOURS[kind], alpha=0.35 if kind == "other" else 0.75, label=kind)
+        field = density(points[picked], limit)
+        layer = np.zeros(field.shape + (4,))
+        layer[..., :3] = matplotlib.colors.to_rgb(COLOURS[kind])
+        layer[..., 3] = np.clip(field ** 0.55, 0, 1) * (0.45 if kind == "other" else 0.8)
+        ax.imshow(layer, extent=(-limit, limit, -limit, limit), origin="lower",
+                  interpolation="bilinear", zorder=1)
+        ax.scatter(points[picked, 0], points[picked, 1], s=1.6, linewidths=0, zorder=2,
+                   color=COLOURS[kind], alpha=0.30 if kind == "other" else 0.55, label=kind)
     ax.set_title(title, fontsize=10)
     ax.set_xlim(-limit, limit)
     ax.set_ylim(-limit, limit)
@@ -172,6 +196,33 @@ def figure(frames, kinds, out, run_label):
         fig.savefig(out)
         plt.close(fig)
     return out
+
+
+def write_point_cloud(points, kinds, path, arm=0.012):
+    """The cloud as an OBJ the board can turn: one named object per kind, and every token
+    a three-segment cross, because the mesh widget draws EDGES — a bare vertex is
+    invisible there. `arm` is the cross's half-length as a share of the cloud's extent."""
+    span = float(np.abs(points).max())
+    step = arm * span
+    lines, vertex = [f"# token embedding point cloud, {len(points)} tokens"], 1
+    for kind in KINDS:
+        picked = np.flatnonzero(kinds == kind)
+        if not picked.size:
+            continue
+        lines.append(f"o {kind}")
+        body = []
+        for point in points[picked]:
+            for axis in range(3):
+                for sign in (-1, 1):
+                    offset = np.zeros(3)
+                    offset[axis] = sign * step
+                    tip = point + offset
+                    lines.append(f"v {tip[0]:.6f} {tip[1]:.6f} {tip[2]:.6f}")
+                body.append(f"l {vertex} {vertex + 1}")
+                vertex += 2
+        lines.extend(body)
+    pathlib.Path(path).write_text("\n".join(lines) + "\n")
+    return path
 
 
 def tokens_per_micro_step(run_dir):
@@ -230,6 +281,14 @@ def main(argv=None):
     ap.add_argument("--count-budget", type=int, default=2_000_000,
                     help="tokens read per source when counting frequency")
     ap.add_argument("--out", type=pathlib.Path, default=None, help="where the figure goes")
+    ap.add_argument("--obj-out", type=pathlib.Path, default=None,
+                    help="also write the last milestone's cloud in 3D as an OBJ (for the board)")
+    ap.add_argument("--obj-tokens", type=int, default=600,
+                    help="how many of the most frequent tokens the 3D cloud holds; a wireframe "
+                         "of thousands of crosses reads as fog and renders slowly")
+    ap.add_argument("--obj-stride", type=int, default=2,
+                    help="keep every Nth token of that range (2 halves it), so the cloud thins "
+                         "out without becoming only the very commonest tokens")
     ap.add_argument("--tokens-per-step", type=int, default=None,
                     help="tokens per checkpointed step, for the trend's x axis; the default "
                          "comes from the run's own recipe (a checkpoint step is a micro-step: "
@@ -270,6 +329,11 @@ def main(argv=None):
     out = args.out or run / "embedding_geometry.png"
     print(f"\n🖼  {figure(frames, kinds, out, run.name)}")
     print(f"🖼  {trend_figure(rows, out.with_name(out.stem + '_trend.png'), run.name, per_step)}")
+    if args.obj_out:
+        keep = slice(0, args.obj_tokens * args.obj_stride, args.obj_stride)
+        centre3, axes3 = projection(embeddings[-1], components=3)
+        cloud = (embeddings[-1][keep] - centre3) @ axes3.T
+        print(f"🧊 {write_point_cloud(cloud, kinds[keep], args.obj_out)}")
     with open(run / "embedding_geometry.jsonl", "a") as handle:
         handle.write(json.dumps({"commit": git_head(short=False), "tokens": len(ids),
                                  "milestones": rows}) + "\n")
