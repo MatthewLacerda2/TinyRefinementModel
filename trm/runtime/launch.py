@@ -37,8 +37,15 @@ at boot (user lingering is on, so it runs without a login):
     WorkingDirectory=/home/lendacerda/Desktop/Repos/TinyRefinementModel
     ExecStartPre=/bin/sleep 90
     ExecStart=/home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python -m trm.runtime.launch --resume
+    KillMode=process
+    RemainAfterExit=yes
     [Install]
     WantedBy=default.target
+
+`KillMode=process` is not optional: `--resume` detaches the supervisor and exits, and
+a oneshot unit without it tears down its whole cgroup when ExecStart returns, killing
+the supervisor it just started. The unit then reports success while the run stays
+down, which is exactly what the power cut of 2026-09-24 produced.
 
 The data position after a resume is an estimate (fine for a base run, not for a
 matched pair), and what a cut costs is the steps since the last checkpoint,
