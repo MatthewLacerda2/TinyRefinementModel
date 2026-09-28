@@ -78,16 +78,13 @@ is how the apparatus that produced it gets cleaned up afterwards:
 
    **Compute the floor from the task; never assume it from the vocabulary.** Two arms
    that both *fail* are trivially "within 2σ" of each other, so a parity criterion
-   without an absolute floor beside it reads a shared failure as a pass. #246 build 1
-   registered chance as 1/7 = 0.143 on a mod-7 task; multiplication mod 7 makes zero
-   absorbing, the real majority-class floor was 0.34, both arms scored 0.334–0.341 —
-   they had learned "always guess the mode" and nothing else — and the criterion called
-   it parity. Measure the floor by sampling the generator, and declare it as an arm.
+   without an absolute floor beside it reads a shared failure as a pass (#246: both
+   arms "at parity" had learned to guess the mode). Measure the floor by sampling the
+   generator, and declare it as an arm.
 
    **A check that can only fire after the failure is a post-mortem, not a gate.** Gate
-   on *margin*. `smoke_refiner_gpu` asserted loss and gradients were finite and ran
-   green through a whole 10-day run while the model trained itself to 0.6% of the f16
-   ceiling — finite the entire way (#235).
+   on *margin*: a finiteness check stayed green while the model trained itself to 0.6%
+   of the f16 ceiling (#235).
 
 2. **One variable per experiment, matched pairs.** An ablation only attributes cause if
    exactly one thing changes and everything else is held fixed — **same seed, same data
@@ -103,11 +100,9 @@ is how the apparatus that produced it gets cleaned up afterwards:
 
    **Register the prediction too, beside the criterion.** The threshold tests the idea;
    the prediction tests the person holding it, and only the second one exposes a
-   *pattern*. Four predictions about the depth-recurrence loop were registered across
-   #238/#242/#246 and all four were wrong **in the same direction** — every one
-   crediting the mechanism too much. That is visible in a page of registered
-   predictions and invisible in a page of thresholds. Write down what you expect, and
-   write down that you were wrong last time.
+   *pattern*: four registered predictions about depth recurrence (#238/#242/#246) were
+   all wrong **in the same direction**, crediting the mechanism too much. Write down
+   what you expect, and write down that you were wrong last time.
 
 4. **Earn the comparison with a strong baseline.** A win over a weak or undertuned
    baseline is a mirage. Before any architecture bet is judged, the vanilla control it's
@@ -145,36 +140,31 @@ is how the apparatus that produced it gets cleaned up afterwards:
    suite from growing forever: tests aren't retired by judgment calls nobody makes,
    they're retired by the kill they belong to. The finding survives the harness.
 
-**Three rules the build enforces, so nobody has to remember them.** Each has a
-test behind it (or one landing with the issue named); this file keeps only the *why*.
+**Rules the build enforces, so nobody has to remember them.** Each has a test behind
+it, or names the issue its test lands with; this file keeps only the *why*.
 - **No hidden defaults on the hot path.** Every knob the optimizer or model reads
-  is named in `trm/config.py` and recorded in the run's metadata. Adam's β2 sat at
-  optax's 0.999 for the whole project without appearing anywhere we could read it —
-  a recipe nobody chose, that a library upgrade could change silently (#358).
+  is named in `trm/config.py` and recorded in the run's metadata: an unnamed default
+  is a recipe nobody chose, that a library upgrade can change silently (#358).
 - **The dtype policy is about compute, not state.** Matmuls run f16; anything that
   *accumulates* — the residual stream, the gradient accumulator, an optimizer
-  moment — is f32 unless a line in `config.py` says why not. f16 has 10 mantissa
-  bits: once the residual stream passes ~4k, a block's O(1) contribution rounds to
-  nothing, and the 4B champion sat at 65k with its loss scaler pinned at 1 (#357).
+  moment — is f32 unless a line in `config.py` says why not: past ~4k, f16's 10
+  mantissa bits round a block's O(1) contribution to nothing. **Not yet true of the
+  residual stream**, which is still f16; its test lands with #357.
 - **Every schedule declares its horizon** — absolute steps or a fraction of the
-  budget — and the launch banner prints both. The LR cosine scales with the run;
-  the mixture ramp did not, so every 512-step recipe pair trained on ~web-only data
-  while the base run it licensed ended at 65% code and math (#362). Judgment call
-  that stays prose: *a short pair inherits the shape of the run it informs* —
-  warmup is the legitimate exception, since it stabilizes optimizer state, not the
-  recipe.
+  budget — and the launch banner prints both, so a short pair cannot silently train
+  on a different mix than the run it licenses (#362). Judgment call that stays
+  prose: *a short pair inherits the shape of the run it informs* — warmup is the
+  legitimate exception, since it stabilizes optimizer state, not the recipe.
 
 **The base-model bar.** We have never finished training a base model — past runs died at
 ~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
 "drunk" (locally fluent, globally lost). That is not "small models can't work"; it's a
-model that never finished school. **And it never finished for a boring reason**: every
-one of those runs was killed by BFC allocator fragmentation, not by anything about the
-model, the data, or the scale — both July runs stopped at opt step 1540, which is
-201.9M tokens exactly, with an OOM as their last log line
+model that never finished school, and it never finished for a boring reason: allocator
+fragmentation, not the model, the data or the scale
 (`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
-Read the "drunk" behaviour as what 200M tokens buys, and nothing more: no conclusion
-about this architecture was ever licensed by those runs. At ~138M params the right target is *not* "useful /
-gets the prompt" (unreachable at this scale). Two numbers on one yardstick, with different jobs:
+Those runs license no conclusion about the architecture. At ~138M params the right
+target is *not* "useful / gets the prompt" (unreachable at this scale). Two numbers on
+one yardstick, with different jobs:
 
 - **The gate** is what our size reaches on our token budget: **GPT-2-small** (124M, ~10B
   tokens), LAMBADA last-word accuracy 0.3256 / ppl 40.06, measured by our own instrument
@@ -257,12 +247,11 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 2. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
    what the model is**. Same model, fewer resources. (If it changes the model, it's an
    `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
-   an optimization.) Second only to the repo's architecture (owner, 2026-09-19): speed
-   and memory make every later run cheaper, so they speed up the research itself, and
-   they change what ideas can be — freed memory decides whether a layer, a batch or a
-   longer window fits (Muon's 380 MiB reopened batch 2, #385), and speed decides how
-   many tokens a base run buys in its days. After architecture, not before it:
-   optimizing code that doesn't read clearly yet is premature.
+   an optimization.) Second only to the repo's architecture: speed and memory make every
+   later run cheaper, and they decide what ideas can be — freed memory decides whether a
+   layer, a batch or a longer window fits, and speed decides how many tokens a base run
+   buys in its days. After architecture, not before it: optimizing code that doesn't
+   read clearly yet is premature.
 3. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
    the model, research and investigate: the harness, instruments, runners, telemetry, CI.
    Comes after optimization — tools are what let ideas be tested cheaply. Only after
@@ -320,7 +309,9 @@ found, because now nobody will look again. Two habits follow:
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
 (a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
-full training run is last because nothing depends on its output.
+matched pair or sweep is last because nothing depends on its output. A base run is the
+opposite: ablations cannot be read without it and warm-starts need it, so the `base-gate`
+list is a launch checklist to close or waive, not a queue to drain.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
 tier order, then issues other open issues are blocked by, and **when the card is idle,
@@ -334,9 +325,7 @@ here change, the tool changes in the same PR; prose and command must not drift.
 widened 2026-09-19).** Any **single run under 24 hours of card time**, and **as many of
 them as a question needs**: smoke tests, ablations, matched pairs, sweeps, small models,
 and Claude's own hypotheses about what works or doesn't. The limit is per run, not per
-question: sweeping Muon's multiplier at five values with three seeds is fifteen ~4h
-runs, sixty hours in all, and needs nobody's permission, because no one run of it is
-long. Each is pre-registered through the referee like everything else, claimed on the
+question: a sweep of fifteen ~4h runs needs nobody's permission. Each is pre-registered through the referee like everything else, claimed on the
 issue, and recorded per rule 5. The owner still decides any single run of 24 hours or
 more (a base run), anything that changes what the shipped model *is* without a verdict
 behind it, and the budget/size of the next base run. Judgment calls of that kind get
@@ -423,9 +412,9 @@ have different param trees, so a run of one cannot resume another's checkpoint:
 | **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
 | **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `rope.py`; `trm/model/__init__.py` `build_model(arch, dim, rngs)` is the one factory every entry point builds through |
 | **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` + `layers.py` (UniversalReasoner and its block) |
-| **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry), `grad_step.py`, `losses.py`, `optimizers.py`, `schedules.py`, `validation.py` (held-out probe) |
+| **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry); the rest is one concern per file |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py` |
-| **Persistence & run state** | `trm/runtime/` — `layout.py` (stdlib-only: run cadences, checkpoint item names, retention, subdir names), `checkpoints.py`, `restore.py` (rebuild a skeleton + load weights), `rewind.py` (list a run's checkpoints; resume from an earlier one — `python -m trm.runtime.rewind`), `run_tracker.py`, `metrics.py`, `monitor.py`, `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch, GPU lock, disk precheck, heartbeat — `python -m trm.runtime.supervisor`) |
+| **Persistence & run state** | `trm/runtime/` — `layout.py` (stdlib-only: cadences, checkpoint names, retention), `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch — `python -m trm.runtime.supervisor`), `rewind.py` (resume from an earlier checkpoint — `python -m trm.runtime.rewind`); the rest is one concern per file |
 | **Inference** | `trm/infer.py` |
 | **Verifiable worlds** | `trm/rl/` — `tasks.py` (procedural Python problems with their own tests, split train/held-out by a hash of the instance), `sandbox.py` + `_sandbox_child.py` (run a candidate under kernel limits and say what happened). The world the model is meant to learn in by trying; it trains nothing on its own |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
@@ -450,10 +439,3 @@ the single biggest VRAM line.
   at issues; issues never hardcode mutable plans the roadmap should own.
 - **Design rationale for the live arch** → `docs/design/plan-a.md`.
 - **Local-only scratch** (gitignored) → `docs/plans/`, `aux*` — working notes, not truth.
-
-## Token Optimization Rules (RTK)
-
-RTK (Rust Token Killer) is installed globally to save context during terminal output.
-1. **Prepend `rtk`** to commands with massive output: `rtk git diff`, `rtk git status`,
-   `rtk test` / `rtk cargo test` / `rtk npm test`, `rtk run <command>` for verbose logs.
-2. RTK strips ANSI codes, truncates repetitive linter/test walls, and compresses output.
