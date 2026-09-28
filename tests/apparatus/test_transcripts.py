@@ -52,12 +52,12 @@ class TestRepetitionScore:
 
 
 class TestPromptSet:
-    def test_the_set_is_frozen_at_eight(self):
+    def test_the_set_is_frozen_at_nine(self):
         """Not a style rule. Every stored transcript was generated against this
         list, so an edit that is not accompanied by a version bump silently breaks
         comparability with every entry already on disk."""
-        assert len(PROMPTS) == 8
-        assert PROMPT_SET_VERSION == 1
+        assert len(PROMPTS) == 9
+        assert PROMPT_SET_VERSION == 2
 
     def test_the_loop_detector_is_present(self):
         """Enumeration is what provokes the failure mode the logbook watches; drop

@@ -51,7 +51,7 @@ REPORTS = {}  # writes generated text for reading; no quantities
 # has been written into the environment. Hoisting them would pin the backend before
 # --device is read, which is the whole hazard this module used to carry.
 
-PROMPT_SET_VERSION = 1
+PROMPT_SET_VERSION = 2  # v2 (2026-09-28): the Roman Empire prompt shortened, Genesis appended
 
 # The one line a caller reads to find the transcript a run wrote (#338). Everything else
 # on stdout is for a human and may change; this line is a contract, parsed by
@@ -63,16 +63,18 @@ WRITTEN_PREFIX = "TRANSCRIPT "
 # Frozen. Changing or removing a prompt bumps PROMPT_SET_VERSION; appending does
 # not, because every file records the prompts that actually ran. Prompts 1-4 probe
 # prose, 5-8 cover the code/math/procedure/narrative ground the first four miss —
-# code and math are ~65% of the current curriculum and would otherwise go unlogged.
+# code and math are ~65% of the current curriculum and would otherwise go unlogged;
+# 9 is memorised scripture, a register the curriculum barely holds.
 PROMPTS = [
     "the capital of france is",                    # factual recall, one right answer
     "the american flag is red, white and",         # loop detector: enumeration invites repetition
     "know the truth and the truth will set you",   # memorised common text
-    "The Roman Empire was one of the largest",     # multi-sentence explanation
+    "the roman empire was",                        # multi-sentence explanation
     "def fibonacci(n):",                           # code
     "2 + 2 = 4. 3 + 5 =",                          # arithmetic
     "To make bread, you first need to",            # ordered procedure
     "Once upon a time, in a small village,",       # long-range coherence, no factual anchor
+    "and God said let there be the light",         # memorised scripture, archaic register
 ]
 
 # The live arch has no depth dial. A looped arch (kept to load the 4B champion) is
