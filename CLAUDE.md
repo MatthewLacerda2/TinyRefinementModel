@@ -31,10 +31,9 @@ Push back when it's earned:
   suppress a novel idea just because it's unproven. The line is "documented to fail"
   versus "simply not yet tried."
 - The other side of the same line: **what the literature settled *in favour* and we
-  don't have yet is work to do**, not research to re-run (Muon, #26: settled outside,
-  missing here, 2.1× fewer tokens once adopted). Its pair asks how much it gains
-  *here* and that it breaks nothing, not whether it works, and "settled" means settled
-  in the literature's setting: re-ask it when ours differs (Muon made #360 and #366 small).
+  don't have yet is work to do**, not research to re-run. Its pair asks how much it
+  gains *here* and that it breaks nothing, not whether it works — and "settled" means
+  settled in the literature's setting: re-ask it when ours differs.
 
 Align before building. The user must have a clear, defined idea of what he's trying to
 say. If the idea isn't yet clear — to him or to you — **stop**: don't plan, don't
@@ -46,20 +45,19 @@ works and what doesn't. Knowing — pinning down what holds and what breaks — 
 speculative model improvement every time.
 
 **Just because something can run on the CPU does not mean it should.** A CPU toy run
-establishes that a mechanism works at all; a verdict about the language model comes
-only from the real model on the real data (depth recurrence passed its toy gate in
-June and was found suppressed on language in September, after a 10-day run). When the
-card is free, measure there — `experiments/recipe/tokens_to_ce.py` is the real
-trainer for a few hours per arm-seed. **Run-length tiers for real-model pairs** (the
-LR schedule completes in-run, ≥3 seeds, the readout is tokens-to-target, never CE at
-a fixed step): recipe knobs (LR, optimizer, weight decay, mix) ~512 opt steps ≈ 67M
-tokens ≈ 4h per arm-seed; architecture changes ~2,000 opt steps ≈ 260M tokens ≈ 15h
-per arm-seed (each run under 24h, so Claude's to run — see the standing permission);
-anything a plain champion can
-warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
-means buildable without the card, not preferably measured without it**: the lane
-stays because cloud sessions build tooling while the card trains, but the
-measurement of an idea goes to the card.
+establishes that a mechanism works at all; a verdict about the language model comes only
+from the real model on the real data — a mechanism can pass its toy gate and still be
+suppressed on language. When the card is free, measure there —
+`experiments/recipe/tokens_to_ce.py` is the real trainer for a few hours per arm-seed.
+**Run-length tiers for real-model pairs** (the LR schedule completes in-run, ≥3 seeds,
+the readout is tokens-to-target, never CE at a fixed step): recipe knobs (LR, optimizer,
+weight decay, mix) ~512 opt steps ≈ 67M tokens ≈ 4h per arm-seed; architecture changes
+~2,000 opt steps ≈ 260M tokens ≈ 15h per arm-seed (both well under the 48-hour line, so
+Claude's to run — see "What Claude may do without asking"); anything a plain champion
+can warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
+means buildable without the card, not preferably measured without it**: the lane stays
+because cloud sessions build tooling while the card trains, but the measurement of an
+idea goes to the card.
 
 ## How we know something worked
 
@@ -123,9 +121,9 @@ is how the apparatus that produced it gets cleaned up afterwards:
    - **A findings entry names where it came from.** Either `Spec: <path>` (the
      pre-registered spec that judged it, and it must resolve) or
      `Evidence: observational — <why no control applies>`. Observational is a real
-     category — #229's all-NaN logits were found by accident while running something
-     else — not a loophole. Enforced by the `finding-cites-spec` rule of
-     `python -m instruments.audit` (#304), which CI runs over whatever a change
+     category — an anomaly found by accident while running something else — not a
+     loophole. Enforced by the `finding-cites-spec` rule of
+     `python -m instruments.audit`, which CI runs over whatever a change
      can reach; entries before 2026-09-12 are grandfathered, since rewriting their
      provenance now would be inventing it. The same audit asks of every spec
      whether its verdict can be *trusted* — floor, seeds, sigma, criteria committed
@@ -140,31 +138,27 @@ is how the apparatus that produced it gets cleaned up afterwards:
    suite from growing forever: tests aren't retired by judgment calls nobody makes,
    they're retired by the kill they belong to. The finding survives the harness.
 
-**Rules the build enforces, so nobody has to remember them.** Each has a test behind
-it, or names the issue its test lands with; this file keeps only the *why*.
+**Rules the build enforces, so nobody has to remember them.** Each is guarded by a
+test, or by an open issue that adds one; this file keeps only the *why*.
 - **No hidden defaults on the hot path.** Every knob the optimizer or model reads
   is named in `trm/config.py` and recorded in the run's metadata: an unnamed default
-  is a recipe nobody chose, that a library upgrade can change silently (#358).
+  is a recipe nobody chose, that a library upgrade can change silently.
 - **The dtype policy is about compute, not state.** Matmuls run f16; anything that
   *accumulates* — the residual stream, the gradient accumulator, an optimizer
-  moment — is f32 unless a line in `config.py` says why not: past ~4k, f16's 10
-  mantissa bits round a block's O(1) contribution to nothing. **Not yet true of the
-  residual stream**, which is still f16; its test lands with #357.
+  moment — belongs in f32: past ~4k, f16's 10 mantissa bits round a block's O(1)
+  contribution to nothing. An accumulator that is not f32 has a line in `config.py`
+  saying why; read that file, not this one, for which ones are f32 today.
 - **Every schedule declares its horizon** — absolute steps or a fraction of the
   budget — and the launch banner prints both, so a short pair cannot silently train
-  on a different mix than the run it licenses (#362). Judgment call that stays
+  on a different mix than the run it licenses. Judgment call that stays
   prose: *a short pair inherits the shape of the run it informs* — warmup is the
   legitimate exception, since it stabilizes optimizer state, not the recipe.
 
-**The base-model bar.** We have never finished training a base model — past runs died at
-~200M tokens; a 124M GPT-2-small saw ~10B, so ours was ~50× undertrained and behaved
-"drunk" (locally fluent, globally lost). That is not "small models can't work"; it's a
-model that never finished school, and it never finished for a boring reason: allocator
-fragmentation, not the model, the data or the scale
-(`docs/findings/2026-08-14-bfc-fragmentation-killed-every-base-run.md`, fixed in #162).
-Those runs license no conclusion about the architecture. At ~138M params the right
-target is *not* "useful / gets the prompt" (unreachable at this scale). Two numbers on
-one yardstick, with different jobs:
+**The base-model bar.** At ~138M params the right target is *not* "useful / gets the
+prompt" (unreachable at this scale). A base that is locally fluent and globally lost
+is undertrained until proven otherwise, and a run that died early — for whatever
+reason — licenses no conclusion about the architecture. Two numbers on one
+yardstick, with different jobs:
 
 - **The gate** is what our size reaches on our token budget: **GPT-2-small** (124M, ~10B
   tokens), LAMBADA last-word accuracy 0.3256 / ppl 40.06, measured by our own instrument
@@ -214,12 +208,12 @@ ballpark" — never proof that an idea works. Only the matched one-variable pair
 can claim a cause. Keep the two straight.
 
 **Storage convention.** The SSD (root fs, `runs/`) is the *live* tier — current training
-runs, ablations, smoke tests. The 1TB HDD is the *cold* tier — mirror artifacts there
-once they're old or done (champion weights, and the tokenized corpus, which is
-regenerable but cost ~a day to build). Treat the HDD as dumb blob storage (copy files);
-don't train off it or rely on its symlinks/permissions. This also keeps the near-full
-SSD from filling. The tokenized corpus in `runs/data/` is sacred — never delete it to
-free space; archive or surface it instead.
+runs, ablations, smoke tests. The 1TB HDD (`/mnt/d_drive`, under `TRM_cold/`) is the
+*cold* tier — mirror artifacts there once they're old or done (champion weights, and the
+tokenized corpus, which is regenerable but cost ~a day to build). Treat the HDD as dumb
+blob storage (copy files); don't train off it or rely on its symlinks/permissions. This
+also keeps the near-full SSD from filling. The tokenized corpus in `runs/data/` is
+sacred — never delete it to free space; archive or surface it instead.
 
 ## How work is tracked — issues, labels, priority
 
@@ -308,10 +302,11 @@ found, because now nobody will look again. Two habits follow:
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
-(a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
-matched pair or sweep is last because nothing depends on its output. A base run is the
-opposite: ablations cannot be read without it and warm-starts need it, so the `base-gate`
-list is a launch checklist to close or waive, not a queue to drain.
+(a result that reframes the question). Repo-architecture, tools, and tests ripple
+downstream, so they lead; a matched pair or sweep is last because nothing depends on its
+output. A base run is the opposite: ablations cannot be read without it and warm-starts
+need it, so the `base-gate` list is a launch checklist to close or waive, not a queue to
+drain.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
 tier order, then issues other open issues are blocked by, and **when the card is idle,
@@ -321,26 +316,31 @@ tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 
-**What Claude may run without asking (owner's standing permission, 2026-09-14,
-widened 2026-09-19).** Any **single run under 24 hours of card time**, and **as many of
-them as a question needs**: smoke tests, ablations, matched pairs, sweeps, small models,
-and Claude's own hypotheses about what works or doesn't. The limit is per run, not per
-question: a sweep of fifteen ~4h runs needs nobody's permission. Each is pre-registered through the referee like everything else, claimed on the
-issue, and recorded per rule 5. The owner still decides any single run of 24 hours or
-more (a base run), anything that changes what the shipped model *is* without a verdict
-behind it, and the budget/size of the next base run. Judgment calls of that kind get
-surfaced, not made.
+**What Claude may do without asking (the owner's standing permission).**
+- **Start any job that takes under 48 hours to compute**, and as many of them as a
+  question needs: smoke tests, ablations, matched pairs, sweeps, small models, and
+  Claude's own hypotheses about what works or doesn't. The limit is per job, not per
+  question — a sweep of fifteen 4-hour runs is sixty hours in all and still needs
+  nobody's permission, because no one job of it is long.
+- **Merge any PR Claude judges ready**, its own included (with a merge commit, below).
+  Ready means what this file asks of it: CI green, the verdict recorded, what the PR
+  does *not* cover said plainly.
+
+The one thing that waits for the owner: **starting any single job of 48 hours or more**
+— in practice a base run. Surface it with its budget and wait. The permission waives
+asking, never the discipline: every experiment is still pre-registered through the
+referee, claimed on its issue, and recorded per rule 5.
 
 **Before a base run launches: whatever only pays if the run has it.** The test is two
 questions, not a label. *Can it be judged before the run* (does it work, is it worth
 it)? And *does its benefit need the run to have been trained or logged with it*? Both
 yes → it lands before the run starts, because afterwards is too late for these weights.
 That covers anything that makes the run lighter or faster (its days buy more tokens),
-anything that changes what the weights learn (recipe, shape, a model bug like #373),
+anything that changes what the weights learn (recipe, shape, a model bug),
 and every piece of telemetry (a metrics column, a per-block reading, a margin the
 supervisor watches): a log the run did not write cannot be recovered from its
 checkpoints. What the finished weights can use at any time does not gate the run: a KV
-cache for generation (#153), an eval, a plot of logs that already exist. An issue that
+cache for generation, an eval, a plot of logs that already exist. An issue that
 passes the test but cannot land in time is waived by the owner by name, not skipped
 silently. **The `base-gate` label marks the issues that pass the test**, applied when
 an issue is filed or when the test is re-asked of it; the base run's launch checklist is
@@ -363,7 +363,7 @@ squash or rebase, so every commit on the branch stays in main's history.
 
 ## Repo map — what's where
 
-**Four trees, and the folder is the declaration of kind** (#143). A new file has exactly
+**Four trees, and the folder is the declaration of kind.** A new file has exactly
 one home, and the rule is short enough to hold in your head:
 
 | if it… | it goes in | and it lives |
@@ -385,26 +385,18 @@ assembling supervisor flags by hand.
 `experiments/` or `instruments/`, and one research line never imports another — so
 tombstoning a line stays a single folder deletion (rule 6). The same test holds that line.
 
-Three architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/config.py`); they
-have different param trees, so a run of one cannot resume another's checkpoint:
+Three architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/config.py`).
+They have different param trees, so a run of one cannot resume another's checkpoint,
+and resuming a run that is not `plain` requires naming its architecture:
 - **`plain`** — `PlainTransformer` in `trm/model/plain.py`: N distinct causal blocks,
-  no loop, no gate, no time signal, no depth dial. **The default** since depth
-  recurrence was retired.
-- **`refiner`** — Plan A, `CausalRefiner` in `trm/model/refiner.py`: causal within-window
-  depth recurrence (a shared block looped K times under a causal mask). **Retired as the
-  live bet 2026-09-12** — it works on sequential composition
-  (`docs/findings/2026-06-13-plan-a-depth-recurrence-works.md`, unretracted) and is
-  actively *suppressed* on language: the trained gate routes to 6 of 960 channels on
-  prose, and bounding the activation scale does not recover it
-  (`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`). Kept
-  selectable — it is the 4B champion's architecture, and loading or resuming that
-  checkpoint requires `MODEL_ARCH=refiner`.
-- **`reasoner`** — `UniversalReasoner` in `trm/model/reasoner.py`: the original
-  cross-window "hunch" design. The hunch is **proven inert**
-  (`docs/findings/2026-06-13-cross-window-hunch-inert.md`), so this is effectively a
-  vanilla random-depth transformer — kept as the control baseline, selected explicitly
-  with `MODEL_ARCH=reasoner`. The default is `plain`; resuming any older run requires
-  naming its architecture explicitly.
+  no loop, no gate, no time signal, no depth dial. **The default and the live
+  architecture.**
+- **`refiner`** — `CausalRefiner` in `trm/model/refiner.py`: a shared block looped K
+  times under a causal mask (depth recurrence). Not the live bet — why is in the
+  ROADMAP and its findings. Kept selectable because the 4B champion is one, and
+  loading that checkpoint requires `MODEL_ARCH=refiner`.
+- **`reasoner`** — `UniversalReasoner` in `trm/model/reasoner.py`: effectively a
+  vanilla random-depth transformer, kept as a control baseline.
 
 | Concern | Files |
 |---|---|
@@ -437,5 +429,6 @@ the single biggest VRAM line.
   reasons so they stay dead).
 - **Per-item state / what's live** → GitHub issues (`gh issue list`). The roadmap points
   at issues; issues never hardcode mutable plans the roadmap should own.
-- **Design rationale for the live arch** → `docs/design/plan-a.md`.
+- **Design docs** → `docs/design/` (the experiment-spec format; `plan-a.md` is the
+  depth-recurrence design, not the live arch).
 - **Local-only scratch** (gitignored) → `docs/plans/`, `aux*` — working notes, not truth.
