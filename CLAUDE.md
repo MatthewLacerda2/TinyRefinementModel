@@ -309,7 +309,9 @@ found, because now nobody will look again. Two habits follow:
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
 (a result that reframes the question). Repo-architecture, tools, and tests ripple downstream, so they lead; a
-full training run is last because nothing depends on its output.
+matched pair or sweep is last because nothing depends on its output. A base run is the
+opposite: ablations cannot be read without it and warm-starts need it, so the `base-gate`
+list is a launch checklist to close or waive, not a queue to drain.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
 tier order, then issues other open issues are blocked by, and **when the card is idle,
