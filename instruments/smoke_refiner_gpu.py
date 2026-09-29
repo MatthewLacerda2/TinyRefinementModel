@@ -213,7 +213,7 @@ def main():
     if shallow:
         print("— finiteness at shallow depths 1 and 4 —")
     for depth in shallow:
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1), depth)
+        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1 // CONFIG.ACCUMULATION_STEPS), depth)
         ok = math.isfinite(float(loss)) and math.isfinite(float(gnorm))
         print(f"  depth {depth}: loss={float(loss):.4f}  grad_norm={float(gnorm):.4f}  {'OK' if ok else '✗'}")
         assert ok

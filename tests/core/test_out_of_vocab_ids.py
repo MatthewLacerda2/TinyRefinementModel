@@ -89,7 +89,9 @@ def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):
     from trm.data.loaders import TextDataGenerator
 
     shard = np.full(4 * MAX_SEQ_LEN + 8, 5, dtype=np.int32)
-    shard[100] = VOCAB_SIZE + 1
+    # One impossible id per MAX_SEQ_LEN * 2 tokens, so the first row holds one wherever
+    # the reader's random start offset (under one row) lands.
+    shard[100::2 * MAX_SEQ_LEN] = VOCAB_SIZE + 1
     np.save(tmp_path / "chunk_0.npy", shard)
 
     gen = TextDataGenerator(str(tmp_path), max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(0))

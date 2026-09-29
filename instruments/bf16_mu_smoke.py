@@ -41,7 +41,7 @@ from flax import nnx
 import optax
 
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, NUM_HEADS, resolve_root
+from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, NUM_HEADS, resolve_root
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -112,7 +112,7 @@ def run(mu_dtype, batches, depth, steps, batch, lr, arch, size):
     losses = []
     for s in range(steps):
         b = batches[s * batch:(s + 1) * batch]
-        loss, _o, grads, _gn = compute_grad_step(model, b, s, depth, doc_boundary)
+        loss, _o, grads, _gn = compute_grad_step(model, b, s // ACCUMULATION_STEPS, depth, doc_boundary)
         apply_grads(opt, grads, model)
         losses.append(float(loss))
     return losses, dtype_histogram(opt)
