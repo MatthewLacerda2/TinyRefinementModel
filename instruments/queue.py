@@ -17,7 +17,8 @@ by affects another item, so it leads its tier.
 
 It also refuses to trust labels it can check. A `blocked` label whose blockers
 are all closed is surfaced as stale, not obeyed; an issue with no type label is
-surfaced, not guessed into a tier.
+surfaced, not guessed into a tier. And it surfaces an issue nobody has touched in
+`STALE_DAYS`, unless it is legitimately waiting: to be kept with a reason, or closed.
 
 `--cloud` asks the same question for a session without this machine: no card, no
 trained weights, no tokenized corpus, no HDD. It drops what needs the card to
@@ -57,6 +58,16 @@ BLOCKED_ON_CONDITION = re.compile(_BLOCKED, re.I)
 BLOCKED_BY = re.compile(_BLOCKED + r"[\s:*_]*(#\d+[^\n.]*)", re.I)
 CLOSES = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.I)
 TITLE_REF = re.compile(r"\(#(\d+)\)")
+
+# An open issue untouched this long (#482) is either still wanted, and a comment says
+# why (which resets the clock), or dead, and closes with CLAUDE.md's vocabulary. Three
+# weeks, the issue's proposal: longer than any job Claude starts unasked (<48h) or a
+# base run (days), so what the clock measures is an issue nobody is holding.
+STALE_DAYS = 21
+# A parked partial-cpu draft (CLAUDE.md "Lane") waits on the card, not on anybody:
+# its "What waits" section, up to the next heading, names the card or the GPU.
+WHAT_WAITS = re.compile(r"what waits.*?(?=\n#|\Z)", re.I | re.S)
+ON_THE_CARD = re.compile(r"\b(?:card|gpu)\b", re.I)
 
 
 @dataclass
@@ -110,15 +121,32 @@ def blockers_named(body: str) -> list[int]:
                    for n in re.findall(r"#(\d+)", m.group(1))})
 
 
+def issues_claimed(pr: dict) -> set[int]:
+    text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
+    return {int(n) for n in CLOSES.findall(text) + TITLE_REF.findall(pr.get("title", ""))}
+
+
 def claimed_by_pr(prs: list[dict]) -> dict[int, int]:
     """Issue number → the open PR that addresses it. A draft counts: CLAUDE.md
     parks partial-cpu work as a draft precisely to keep it out of the queue."""
     claims = {}
     for pr in prs:
-        text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
-        for n in CLOSES.findall(text) + TITLE_REF.findall(pr.get("title", "")):
-            claims.setdefault(int(n), pr["number"])
+        for n in issues_claimed(pr):
+            claims.setdefault(n, pr["number"])
     return claims
+
+
+def parked_on_card(pr: dict) -> bool:
+    what_waits = WHAT_WAITS.search(pr.get("body") or "")
+    return bool(pr.get("isDraft") and what_waits and ON_THE_CARD.search(what_waits.group(0)))
+
+
+def days_untouched(issue: dict, claiming: list[dict], now: datetime.datetime) -> int:
+    """Whole days since anyone touched the issue or an open PR that claims it (work on
+    the PR is work on the issue). `updatedAt` moves on a comment, an edit or a label."""
+    stamps = [issue["updatedAt"]] + [pr["updatedAt"] for pr in claiming if pr.get("updatedAt")]
+    last = max(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) for s in stamps)
+    return (now - last).days
 
 
 # A session without this machine (#492): it has no card to wait for, and none of the
@@ -126,11 +154,15 @@ def claimed_by_pr(prs: list[dict]) -> dict[int, int]:
 CLOUD_CARD = Card(False, "cloud session — no card")
 
 
-def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = False) -> Queue:
+def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = False,
+                now: datetime.datetime | None = None) -> Queue:
     """Pure: the open issues, the open PRs, and the card's state in; the queue out.
-    Every issue passed in is taken to be open, so a blocker absent from the list
-    is a closed one. `cloud` also drops what needs this machine's files (`local`)."""
+    Every issue and PR passed in is taken to be open, so a blocker absent from both
+    lists is a closed one: GitHub numbers them in one sequence, and a PR named as a
+    blocker holds until it merges (#480). `cloud` also drops what needs this
+    machine's files (`local`); `now` turns on the untouched-issue check (#482)."""
     open_numbers = {i["number"] for i in issues}
+    open_prs = {p["number"] for p in prs}
     claims = claimed_by_pr(prs)
     dependents: dict[int, list[int]] = {}
     for issue in issues:
@@ -144,7 +176,8 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
         n, labels = issue["number"], {lb["name"] for lb in issue.get("labels", [])}
         body = issue.get("body") or ""
         named = blockers_named(body)
-        live_blockers = [b for b in named if b in open_numbers]
+        live_blockers = [b for b in named if b in open_numbers | open_prs]
+        live = ", ".join(f"PR #{b}" if b in open_prs else f"#{b}" for b in live_blockers)
 
         on_condition = not named and BLOCKED_ON_CONDITION.search(body)
         if "blocked" in labels and not named and not on_condition:
@@ -153,12 +186,15 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
             needs_human.append((n, "stale block — every blocker it names is closed ("
                                 + ", ".join(f"#{b}" for b in named) + ")"))
         elif live_blockers and "blocked" not in labels:
-            needs_human.append((n, "says blocked by open "
-                                + ", ".join(f"#{b}" for b in live_blockers)
-                                + " but carries no blocked label"))
+            needs_human.append((n, f"says blocked by open {live} but carries no blocked label"))
         tier = next((t for t in TYPE_ORDER if t in labels), None)
         if tier is None:
             needs_human.append((n, "no type label — cannot be placed in a tier"))
+        claiming = [pr for pr in prs if n in issues_claimed(pr)]
+        if (now is not None and not live_blockers and not any(map(parked_on_card, claiming))
+                and (days := days_untouched(issue, claiming, now)) > STALE_DAYS):
+            needs_human.append((n, f"untouched for {days} days — keep it (comment why) or close "
+                                   "it (wont-fix: <reason> / superseded-by #N)"))
 
         if issue.get("assignees"):
             not_ready.append((n, "claimed by " + ", ".join(a["login"] for a in issue["assignees"])))
@@ -167,7 +203,7 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
         elif "plan" in labels:
             not_ready.append((n, "plan — not ready to start"))
         elif live_blockers:
-            not_ready.append((n, "blocked by open " + ", ".join(f"#{b}" for b in live_blockers)))
+            not_ready.append((n, f"blocked by open {live}"))
         elif on_condition and "blocked" in labels:
             not_ready.append((n, "blocked on a condition, not an issue — the queue cannot check it"))
         elif "blocked" in labels:
@@ -292,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
                     help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
                          "exit 1 if any (CI runs this on every push)")
     args = ap.parse_args(argv)
-    prs = gh_json("pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,body,headRefName")
+    prs = gh_json("pr", "list", "--state", "open", "--limit", "200",
+                  "--json", "number,title,body,headRefName,isDraft,updatedAt")
     strays = stray_branches(remote_branches(), {p["headRefName"] for p in prs},
                             datetime.datetime.now(datetime.timezone.utc))
     if args.strays:
@@ -301,8 +338,9 @@ def main(argv: list[str] | None = None) -> int:
                   f"(a draft counts), or delete it; a pushed branch nobody can find is #74 again.")
         return 1 if strays else 0
     issues = gh_json("issue", "list", "--state", "open", "--limit", "500",
-                     "--json", "number,title,labels,assignees,body")
-    q = build_queue(issues, prs, CLOUD_CARD if args.cloud else card_state(), cloud=args.cloud)
+                     "--json", "number,title,labels,assignees,body,updatedAt")
+    q = build_queue(issues, prs, CLOUD_CARD if args.cloud else card_state(), cloud=args.cloud,
+                    now=datetime.datetime.now(datetime.timezone.utc))
     if not args.cloud and not (pathlib.Path(__file__).resolve().parents[1] / "runs" / "data").is_dir():
         q.needs_human.append((0, "runs/data/ is missing: this looks like a cloud session — "
                                  "run `python -m instruments.queue --cloud`"))

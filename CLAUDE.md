@@ -328,7 +328,11 @@ tier order, then issues other open issues are blocked by, and **when the card is
 `gpu`-lane items first within their tier** (an idle card is the scarce resource going
 to waste; see "measure there" above) — and says so where they stop deciding (within a
 tier is judgment). It also surfaces labels it can check and that fail:
-a `blocked` whose blockers are all closed, an issue with no type label. When the rules
+a `blocked` whose blockers are all closed (an open PR named as a blocker counts as
+open), an issue with no type label. And it surfaces every issue untouched for more
+than `STALE_DAYS` (21) — neither it nor a PR claiming it — unless it waits on an open
+blocker or on the card as a parked draft: each is kept with a comment saying why,
+which resets the clock, or closed with the closing vocabulary below. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
 
 **Cloud sessions are the exception.** The project is built for this machine: its

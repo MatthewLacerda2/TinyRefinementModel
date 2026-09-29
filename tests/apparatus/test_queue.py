@@ -9,10 +9,10 @@ from instruments.queue import CLOUD_CARD, Card, blockers_named, build_queue, cla
 FREE, BUSY = Card(True, "free"), Card(False, "held by a run")
 
 
-def issue(n, *labels, body="", assignee=None, title=None):
+def issue(n, *labels, body="", assignee=None, title=None, updated="2026-09-27T00:00:00Z"):
     return {"number": n, "title": title or f"issue {n}", "body": body,
             "labels": [{"name": lb} for lb in labels],
-            "assignees": [{"login": assignee}] if assignee else []}
+            "assignees": [{"login": assignee}] if assignee else [], "updatedAt": updated}
 
 
 def ranked(q):
@@ -63,6 +63,17 @@ def test_a_block_whose_blockers_all_closed_is_surfaced_not_obeyed_or_trusted():
     q = build_queue([issue(5, "tools", "cpu", "blocked", body="Blocked by #4")], [], FREE)
     assert "stale block" in flagged(q)[5]
     assert not ranked(q), "a stale label is a question for a human, not a green light"
+
+
+def test_a_block_on_an_open_pr_holds_and_is_not_called_stale():
+    """#476 named draft PR #418 as its blocker and was reported a stale block: an open
+    PR was read as closed because only open issues counted (#480)."""
+    q = build_queue([issue(476, "tools", "cpu", "blocked", body="Blocked by #418")],
+                    [{"number": 418, "title": "#411 stage 1", "body": "", "isDraft": True}], FREE)
+    assert 476 not in flagged(q) and 476 in excluded(q)
+    assert dict(q.not_ready)[476] == "blocked by open PR #418"
+    assert "stale block" in flagged(build_queue([issue(476, "tools", "cpu", "blocked",
+                                                       body="Blocked by #418")], [], FREE))[476]
 
 
 def test_a_block_on_a_condition_holds_but_an_unexplained_one_is_flagged():
@@ -189,3 +200,34 @@ def test_a_cloud_session_gets_neither_the_card_nor_this_machines_files():
 def test_local_means_nothing_to_a_session_on_this_machine():
     q = build_queue([issue(1, "tools", "cpu", "local")], [], FREE)
     assert ranked(q) == {"tools": [1]}
+
+
+# --- issues nobody has touched in weeks (#482) ------------------------------------
+
+def test_an_untouched_issue_is_surfaced_unless_it_is_legitimately_waiting():
+    import datetime
+    from instruments.queue import STALE_DAYS
+    now = datetime.datetime(2026, 9, 28, tzinfo=datetime.timezone.utc)
+    old, fresh = "2026-08-01T00:00:00Z", "2026-09-20T00:00:00Z"   # 58 and 8 days
+    card_draft = {"number": 90, "title": "the cpu half (#4)", "isDraft": True, "updatedAt": old,
+                  "body": "## What changed\nwiring\n\n## What waits on the card (resume protocol)\nrun it"}
+    idle_draft = {"number": 91, "title": "a sketch (#5)", "isDraft": True, "updatedAt": old,
+                  "body": "## What waits\nthe owner's call\n\n## Notes\nnot on the GPU yet"}
+    busy_pr = {"number": 92, "title": "work in flight (#6)", "isDraft": False,
+               "updatedAt": fresh, "body": ""}
+    prs = [card_draft, idle_draft, busy_pr]
+    issues = [issue(1, "tools", "cpu", updated=old),                        # stale
+              issue(2, "tools", "cpu", updated=fresh),                      # fresh
+              issue(3, "tools", "cpu", "blocked", body="Blocked by #2", updated=old),
+              issue(4, "tools", "cpu", "gpu", updated=old),                 # parked on the card
+              issue(5, "ideas", "cpu", updated=old),                        # its draft waits on nobody
+              issue(6, "tools", "cpu", updated=old),                        # its PR moved last week
+              issue(7, "ideas", "cpu", "blocked", body="Blocked by: a condition", updated=old)]
+    q = build_queue(issues, prs, FREE, now=now)
+    stale = {n for n, why in q.needs_human if why.startswith("untouched")}
+    assert stale == {1, 5, 7}, "a condition no issue can close is exactly what rots unasked"
+    assert "58 days" in flagged(q)[1] and "keep it (comment why) or close" in flagged(q)[1]
+    assert not any(why.startswith("untouched") for _, why in build_queue(issues, prs, FREE).needs_human), \
+        "without `now` the check is off"
+    at_edge = issue(8, "tools", "cpu", updated=(now - datetime.timedelta(days=STALE_DAYS)).isoformat())
+    assert 8 not in flagged(build_queue([at_edge], [], FREE, now=now)), "more than STALE_DAYS, not at it"
