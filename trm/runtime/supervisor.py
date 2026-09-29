@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight
 from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_JOURNAL  # jax-free
+from trm.runtime.rewind import unresumable  # jax-free
 from trm.settings import CONFIG, Config, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -70,6 +71,10 @@ CHECKPOINTS_PER_WRITE = 3
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
+# The checkpoint a (re)launch would resume is refused (rewind.unresumable, #505).
+# Not DELIBERATE: it waits for a human, so the supervisor exits non-zero, and a
+# `make resume` after it tries again, since the fix (a rewind) may have landed.
+REFUSED_RESUME = "REFUSED_RESUME"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
@@ -116,6 +121,9 @@ class Observation:
     # The f16 margins the last metrics row crosses (#368), as (kind, sentence). An
     # alarm, announced when it appears and when it clears; never a kill.
     margins: tuple = ()
+    # Why the checkpoint a relaunch would resume is refused (rewind.unresumable),
+    # read while the child is dead; None when it is resumable or nothing is.
+    resume_refusal: str | None = None
 
 
 @dataclass
@@ -254,6 +262,10 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
             return Decision(STOP, KILLED_OOM,
                             f"died at step {obs.step} with an out-of-memory failure; "
                             f"relaunching would repeat it exactly")
+        # The same for a checkpoint the trainer refuses to resume: every relaunch
+        # would be refused alike, then read as GAVE_UP (#505).
+        if obs.resume_refusal:
+            return Decision(STOP, REFUSED_RESUME, obs.resume_refusal)
         if state.retries_used >= limits.max_retries:
             return Decision(GIVE_UP, GAVE_UP,
                             f"died before budget and {limits.max_retries} relaunches were used")
@@ -597,6 +609,9 @@ class Supervisor:
     # full-state copy when the run ends. None when no COLD_ROOT is set.
     cold: ColdTier | None = None
     _cold_error: str | None = None
+    # The checkpoints a relaunch resumes (resumed_checkpoint_dir); None when the
+    # command resumes nothing.
+    checkpoint_dir: pathlib.Path | None = None
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: list = field(default_factory=list)  # their handles, pruned of finished ones each poll
 
@@ -627,14 +642,17 @@ class Supervisor:
         step, ce = read_progress(self.metrics_csv)
         text = read_log_since(self.log_path, self.log_offset)
         run_dir = self.metrics_csv.parent
+        alive = proc.poll() is None
         return Observation(
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            alive=proc.poll() is None,
+            alive=alive,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
             margins=margin_alarms(self.config, read_last_row(self.metrics_csv)),
+            resume_refusal=(unresumable(self.checkpoint_dir, self.config.ACCUMULATION_STEPS)
+                            if not alive and self.checkpoint_dir is not None else None),
         )
 
     def run(self) -> str:
@@ -751,6 +769,21 @@ class Supervisor:
         self.report(message)
 
 
+def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path | None:
+    """The checkpoint dir the trainer these arguments launch resumes: its
+    --checkpoint-path (against the repo root, its cwd), else the run dir's own, where
+    start.py puts them. None under --new-run, which every relaunch replays."""
+    args = list(trainer_args)
+    if "--new-run" in args:
+        return None
+    for i, arg in enumerate(args):
+        if arg == "--checkpoint-path" and i + 1 < len(args):
+            return REPO_ROOT / args[i + 1]
+        if arg.startswith("--checkpoint-path="):
+            return REPO_ROOT / arg.split("=", 1)[1]
+    return run_dir / "checkpoints"
+
+
 def _stamp() -> str:
     return datetime.datetime.now().strftime("%F %T")
 
@@ -851,6 +884,7 @@ def main(argv=None) -> int:
                         protected=protected_roots())
     print(f"cold tier: {describe_cold(cold)}")
 
+    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
@@ -862,9 +896,17 @@ def main(argv=None) -> int:
         spec=args.spec,
         cold=cold,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
+        checkpoint_dir=checkpoint_dir,
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
     )
+
+    # Refused before the lock, the fit gate and the first launch: a trainer launched
+    # onto this checkpoint would only be refused the same way (#505).
+    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
+    if why:
+        supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
+        return 1
 
     lock = GpuLock(label=f"stop_step={args.stop_step}")
     try:
