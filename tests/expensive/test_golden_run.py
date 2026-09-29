@@ -43,6 +43,7 @@ import optax
 import pytest
 from flax import nnx
 
+from trm import settings
 from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
 from trm.train.grad_step import apply_grads, compute_grad_step
@@ -56,7 +57,8 @@ RTOL = 10 * NOISE_FLOOR
 
 
 def _losses():
-    model = PlainTransformer(CONFIG["dim"], nnx.Rngs(CONFIG["seed"]), num_layers=CONFIG["num_layers"])
+    model = PlainTransformer(CONFIG["dim"], nnx.Rngs(CONFIG["seed"]), settings.CONFIG,
+                             num_layers=CONFIG["num_layers"])
     optimizer = nnx.Optimizer(
         model,
         optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(1e-3)),

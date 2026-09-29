@@ -48,6 +48,7 @@ from instruments.yardstick.yardstick import (
     summarize,
 )
 from instruments.yardstick import fineweb_val
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -145,7 +146,7 @@ def main(argv=None):
         # keep restoring checkpoints written before batching changed.
         print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
         args.batch = EVAL_BATCH_SIZE
-    model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
+    model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
 
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)

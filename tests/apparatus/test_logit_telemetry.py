@@ -18,6 +18,7 @@ from trm.config import LATENT_DIM, MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.train.losses import chunked_cross_entropy
 from trm.model.reasoner import UniversalReasoner
+from trm.settings import CONFIG
 
 
 def _naive_stats(hidden, embedding, targets, pad_id):
@@ -62,7 +63,7 @@ def test_stats_carry_no_gradient(ce_batch):
 def test_grad_step_surfaces_stats_in_diag():
     """The production grad step must expose the readings where the metrics logger
     looks (out.diag), finite and within the softmax's hard bounds."""
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(5), batch_size=1)
+    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(5), CONFIG, batch_size=1)
     rng = np.random.default_rng(11)
     batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     _, out, _, _ = compute_grad_step(model, batch, opt_step=0, depth=1)

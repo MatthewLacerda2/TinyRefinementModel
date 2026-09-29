@@ -11,6 +11,7 @@ import numpy as np
 from flax import nnx
 
 from trm.config import EOT_TOKEN_ID, MAX_SEQ_LEN, VOCAB_SIZE
+from trm.settings import CONFIG
 
 NEW_PAD = 50257
 
@@ -33,7 +34,7 @@ def test_eot_is_an_attention_key_when_it_is_not_the_pad():
     new pad (EOT is a key), and must not notice when that position is a real pad."""
     from trm.model.plain import PlainTransformer
 
-    model = PlainTransformer(16, nnx.Rngs(0), num_heads=2, num_layers=1, max_seq_len=MAX_SEQ_LEN,
+    model = PlainTransformer(16, nnx.Rngs(0), CONFIG, num_heads=2, num_layers=1, max_seq_len=MAX_SEQ_LEN,
                              pad_token_id=NEW_PAD)
     base = np.full((1, MAX_SEQ_LEN), 11, dtype=np.int32)
     base[0, :12] = np.arange(100, 112)

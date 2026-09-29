@@ -97,8 +97,8 @@ def test_lambda_schedules_keep_their_own_horizon():
     training — absolute-step dynamics — and must not silently stretch with the
     LR horizon. Their end values land at LAMBDA_DECAY_STEPS regardless."""
     assert LAMBDA_DECAY_STEPS == 15000
-    assert np.isclose(float(forget_lambda_schedule(LAMBDA_DECAY_STEPS)), 0.001, rtol=1e-6)
-    assert np.isclose(float(diversity_lambda_schedule(LAMBDA_DECAY_STEPS)), 0.1, rtol=1e-6)
+    assert np.isclose(float(forget_lambda_schedule(WARMUP_STEPS)(LAMBDA_DECAY_STEPS)), 0.001, rtol=1e-6)
+    assert np.isclose(float(diversity_lambda_schedule(WARMUP_STEPS)(LAMBDA_DECAY_STEPS)), 0.1, rtol=1e-6)
 
 
 def test_the_budget_a_config_carries_sets_its_horizon():

@@ -3,16 +3,8 @@ import jax.numpy as jnp
 import optax
 from flax import nnx, struct
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS, NUM_HEADS, COMPUTE_DTYPE
+from trm.config import MAX_STEPS_LIMIT, SHARED_SLOTS, COMPUTE_DTYPE
 from trm.model.rope import rope_tables, apply_rope
-
-# GQA is a property of the retired reasoner only (#291): ~4 query heads per K/V
-# group. It lived in config as if it described the live model; the plain model's
-# attention projects full-width K and V. Kept here so the stored control
-# checkpoint (GQA-shaped K/V) stays loadable until the reasoner is tombstoned.
-REASONER_KV_GROUPS = NUM_HEADS // 4
-assert NUM_HEADS % REASONER_KV_GROUPS == 0, (
-    f"NUM_HEADS ({NUM_HEADS}) must be divisible by its GQA group count ({REASONER_KV_GROUPS})")
 
 @struct.dataclass
 class ScanStepOutput:
@@ -21,16 +13,14 @@ class ScanStepOutput:
     step_div: jnp.ndarray
 
 class RotaryAttention(nnx.Module):
-    def __init__(self, num_heads, in_features, num_groups=4, rngs=None):
+    def __init__(self, num_heads, in_features, num_groups=4, rngs=None, *, max_positions):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = in_features // num_heads
 
-        # Extended to cover MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS positions
+        # The reasoner asks for MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS positions,
         # so that slot query positions can advance with each reasoning iteration
-        self.cos_cached, self.sin_cached = rope_tables(
-            MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS, self.head_dim
-        )
+        self.cos_cached, self.sin_cached = rope_tables(max_positions, self.head_dim)
 
         self.q_proj = nnx.Linear(in_features, in_features, rngs=rngs, dtype=COMPUTE_DTYPE)
         self.k_proj = nnx.Linear(in_features, self.num_groups * self.head_dim, rngs=rngs, dtype=COMPUTE_DTYPE)
@@ -111,8 +101,16 @@ class RotaryAttention(nnx.Module):
         return self.o_proj(out.reshape(b, s, d))
 
 class StandardReasoningBlock(nnx.Module):
-    def __init__(self, latent_dim, num_heads, rngs, dtype=jnp.float32):
-        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=REASONER_KV_GROUPS, rngs=rngs)
+    def __init__(self, latent_dim, num_heads, max_seq_len, rngs, dtype=jnp.float32):
+        # GQA is a property of the retired reasoner only (#291): ~4 query heads per
+        # K/V group. The plain model's attention projects full-width K and V. Kept so
+        # the stored control checkpoint (GQA-shaped K/V) stays loadable until the
+        # reasoner is tombstoned.
+        kv_groups = num_heads // 4
+        assert num_heads % kv_groups == 0, (
+            f"NUM_HEADS ({num_heads}) must be divisible by its GQA group count ({kv_groups})")
+        self.attn = RotaryAttention(num_heads, latent_dim, num_groups=kv_groups, rngs=rngs,
+                                    max_positions=max_seq_len + MAX_STEPS_LIMIT * SHARED_SLOTS)
         self.norm1 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
 
@@ -142,7 +140,8 @@ class StandardReasoningBlock(nnx.Module):
         return x
 
 class BlockStack(nnx.Module):
-    def __init__(self, num_blocks, latent_dim, num_heads, rngs, dtype=jnp.float32, share_weights=False, use_remat=True):
+    def __init__(self, num_blocks, latent_dim, num_heads, max_seq_len, rngs, dtype=jnp.float32,
+                 share_weights=False, use_remat=True):
         self.num_blocks = num_blocks
         self.share_weights = share_weights
         # Per-block remat: recompute each block's intermediates during the backward
@@ -154,11 +153,11 @@ class BlockStack(nnx.Module):
         self.use_remat = use_remat
         if share_weights:
             self.blocks = nnx.List([
-                StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
+                StandardReasoningBlock(latent_dim, num_heads, max_seq_len, rngs=rngs, dtype=dtype)
             ])
         else:
             self.blocks = nnx.List([
-                StandardReasoningBlock(latent_dim, num_heads, rngs=rngs, dtype=dtype)
+                StandardReasoningBlock(latent_dim, num_heads, max_seq_len, rngs=rngs, dtype=dtype)
                 for _ in range(num_blocks)
             ])
 

@@ -196,7 +196,7 @@ def _main(argv=None):
     from trm.runtime.restore import load_eval_batches, restore_arch
     from trm.settings import CONFIG
 
-    model, _ = restore_arch(MODEL_ARCH, args.checkpoint_path, step=args.step)
+    model, _ = restore_arch(CONFIG, MODEL_ARCH, args.checkpoint_path, step=args.step)
     rows = [row[:, :MAX_SEQ_LEN] for row in load_eval_batches(CONFIG, args.source, num_rows=args.rows)]
     states, gaps = collect(model, rows, PAD_TOKEN_ID)
 

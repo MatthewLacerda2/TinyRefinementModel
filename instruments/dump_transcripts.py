@@ -43,6 +43,7 @@ import os
 # Module-level names on purpose: select_device and main look them up here, which is
 # also where a test replaces them.
 from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -78,7 +79,7 @@ PROMPTS = [
 ]
 
 # The live arch has no depth dial. A looped arch (kept to load the 4B champion) is
-# served at trm.infer's INFERENCE_DEPTH, and its entries record that depth.
+# served at the Config's INFERENCE_DEPTH, and its entries record that depth.
 DEPTHLESS_ARCHES = frozenset({"plain"})
 
 DEFAULT_SEED = 42
@@ -242,7 +243,7 @@ def main(argv=None):
 
     import tiktoken
     from trm.config import ACCUMULATION_STEPS, MODEL_ARCH, TOKENIZER_NAME, TOKENS_PER_OPT_STEP
-    from trm.infer import DEFAULT_TEMPERATURE, INFERENCE_DEPTH, generate_text
+    from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     from trm.runtime.restore import restore_model
 
@@ -256,7 +257,7 @@ def main(argv=None):
         if discovered is not None:
             run_dir = os.path.join("runs", run_id)
 
-    model, ckpt_step = restore_model(args.checkpoint_path)
+    model, ckpt_step = restore_model(CONFIG, args.checkpoint_path)
     opt_step = opt_step_from_checkpoint(ckpt_step, ACCUMULATION_STEPS)
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
@@ -287,7 +288,7 @@ def main(argv=None):
     for index, prompt in enumerate(prompts):
         started = datetime.datetime.now()
         tokens = generate_text(model, enc, prompt, max_new_tokens=args.max_new_tokens,
-                               temperature=temperature, depth=INFERENCE_DEPTH, seed=args.seed,
+                               temperature=temperature, depth=CONFIG.INFERENCE_DEPTH, seed=args.seed,
                                quiet=True)
         elapsed = (datetime.datetime.now() - started).total_seconds()
         new_tokens = tokens[len(enc.encode(prompt)):]
@@ -318,7 +319,7 @@ def main(argv=None):
         "train_ce": None if train_ce is None else round(train_ce, 4),
         "val_ce": None if val_ce is None else round(val_ce, 4),
         # Only a looped arch has a depth to record (None is omitted from the frontmatter).
-        "depth": None if MODEL_ARCH in DEPTHLESS_ARCHES else INFERENCE_DEPTH,
+        "depth": None if MODEL_ARCH in DEPTHLESS_ARCHES else CONFIG.INFERENCE_DEPTH,
         "val_ce_depth": None if MODEL_ARCH in DEPTHLESS_ARCHES else _val_depth(),
         "device": args.device,
         "seed": args.seed,

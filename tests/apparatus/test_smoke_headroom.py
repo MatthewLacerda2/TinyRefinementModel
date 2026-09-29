@@ -22,6 +22,7 @@ from flax import nnx
 
 from trm.config import MAX_SEQ_LEN
 from instruments import smoke_refiner_gpu as smoke
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -33,11 +34,11 @@ def _toy(arch, embed_scale=1.0):
     """A three-block model of `arch`: plain's whole stack, or the refiner's encoder."""
     if arch == "plain":
         from trm.model.plain import PlainTransformer
-        model = PlainTransformer(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+        model = PlainTransformer(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
                                  num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     else:
         from trm.model.refiner_lm import RefinerForTraining
-        model = RefinerForTraining(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+        model = RefinerForTraining(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
                                    encoder_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     embed, _ = smoke.traced_stack(model, arch)
     embed.embedding[...] = embed.embedding[...] * embed_scale

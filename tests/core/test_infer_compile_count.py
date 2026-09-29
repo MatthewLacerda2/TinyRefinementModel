@@ -24,6 +24,7 @@ from flax import nnx
 
 from trm import infer
 from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 # Deliberately tiny: the defect lives in the jit cache key, not in the model, so
 # nothing here needs the live config's dimensions. RefinerForTraining makes every
@@ -31,8 +32,8 @@ from trm.config import MAX_SEQ_LEN
 TOY_DIM = 32
 TOY_VOCAB = 37
 TOY_HEADS = 4
-# Sequence length is the one knob that cannot shrink: generate_text pads to the
-# config's MAX_SEQ_LEN, so a toy model has to agree with it. Everything else does.
+# generate_text pads to the model's own window, so this could shrink too; it stays at
+# MAX_SEQ_LEN so the generation loop runs at the shape it serves.
 TOY_SEQ_LEN = MAX_SEQ_LEN
 TOY_PAD = TOY_VOCAB - 1
 TOY_DEPTH = 2
@@ -45,7 +46,7 @@ def toy_refiner():
     from trm.model.refiner_lm import RefinerForTraining
 
     return RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         encoder_layers=1, max_seq_len=TOY_SEQ_LEN, pad_token_id=TOY_PAD,
     )
 
@@ -140,7 +141,7 @@ def test_the_arguments_that_must_stay_static_did_not_get_swept_up():
 
 
 
-def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens, monkeypatch, in_vocab_encoder):
+def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens, in_vocab_encoder):
     """End to end through `generate_text`, which is where `refresh` actually
     alternates (every REASONER_REFRESH_EVERY tokens). The unit tests above use one
     call at a time; this is the loop that made the duplicate compile happen, and
@@ -149,7 +150,6 @@ def test_generation_still_runs_with_the_flag_flipping(toy_refiner, padded_tokens
 
     Seeded, so it doubles as a determinism check on the generation path.
     """
-    monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
     enc = in_vocab_encoder(TOY_VOCAB)  # why real ids break a toy model: tests/conftest.py
     del padded_tokens  # generate_text tokenizes its own prompt
 

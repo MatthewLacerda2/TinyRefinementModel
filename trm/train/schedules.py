@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import optax
 
-from trm.config import DATA_SEED, MAX_STEPS_LIMIT
+from trm.config import MAX_STEPS_LIMIT
 
 # The LR anneal's horizon must match the run length (#83): it derives from the
 # planned token budget (TRAIN_TOKEN_BUDGET). With no budget set it stays at the
@@ -228,8 +228,9 @@ class Schedules:
 # Only the looping arches draw it, through their `training_depth` hook; the trainer
 # asks the model, and the plain stack has no depth (#316).
 
-def sample_reasoning_depth(micro_step):
+def sample_reasoning_depth(micro_step, data_seed):
     """Uniform depth in [1, MAX_STEPS_LIMIT], derived deterministically from the
-    micro-step so resumed runs replay the exact same depth sequence."""
-    rng = np.random.default_rng(DATA_SEED * 1_000_003 + micro_step)
+    micro-step and the run's DATA_SEED so resumed runs replay the exact same depth
+    sequence."""
+    rng = np.random.default_rng(data_seed * 1_000_003 + micro_step)
     return int(rng.integers(1, MAX_STEPS_LIMIT + 1))

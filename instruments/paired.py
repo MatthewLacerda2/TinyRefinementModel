@@ -198,7 +198,7 @@ def _main(argv=None):
     from trm.runtime.restore import load_eval_batches, restore_model
     from trm.settings import CONFIG
 
-    model, _ = restore_model(args.checkpoint_path)
+    model, _ = restore_model(CONFIG, args.checkpoint_path)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
     # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
     # cannot overlap even at the largest --rows this is run with.

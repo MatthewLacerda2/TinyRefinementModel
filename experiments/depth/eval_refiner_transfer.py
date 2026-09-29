@@ -36,6 +36,7 @@ from trm.model.refiner_lm import RefinerForTraining
 from trm.data.loaders import TextDataGenerator
 from trm.runtime.checkpoints import discover_latest_checkpoint_run
 from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.settings import CONFIG
 
 # Curriculum domains, associative -> compositional. Depth should pay off most where
 # the prediction needs multi-step aggregation (math/code), least on web text.
@@ -60,7 +61,7 @@ def restore_refiner(checkpoint_path=None):
         print(f"🔎 Using latest checkpointed run: {run_id}")
     checkpoint_path = os.path.abspath(checkpoint_path)
 
-    model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42), CONFIG)
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
