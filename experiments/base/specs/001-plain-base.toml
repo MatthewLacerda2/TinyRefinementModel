@@ -12,7 +12,8 @@
 
 [experiment]
 id = "001-plain-base"
-status = "open"
+status = "recorded"
+recorded = "KILL"
 title = "Does the plain recipe, trained to its budget, reach GPT-2-small on LAMBADA?"
 hypothesis = """
 The live recipe — PlainTransformer at dim 960, 8 layers at batch 2, f16 compute, tied
@@ -149,6 +150,8 @@ constant = true
 # The reference: acc 0.3256 / ppl 40.06. Declared as a summary with sigma 0, n 1.
 [results.run]
 gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }
+# run_20260920_191351 at completion (opt step 38,208, 5.008B tokens), full 5,153 set, 2026-09-28.
+plain = [0.2036]
 
 # KEEP: at or above the reference (a 0-sigma 'beats' is 'delta >= 0').
 [criteria.meets_the_bar]

@@ -261,6 +261,11 @@ def floor_both_arms(a: Audited) -> Status:
     if not carrying:
         return Status(rule, GREEN, f"verdict {a.outcome} rests on no criterion")
     for c in carrying:
+        if "floor" in (a.role(c.treatment), a.role(c.control)):
+            # Measured AGAINST the floor arm (the base spec's gate is a constant
+            # reference, 001-plain-base.toml): falling below it is the result the
+            # criterion asks about, not two arms sharing a failure.
+            continue
         for point in a.points_of(c):
             arms = a.results[point]
             pair = (arms[c.treatment], arms[c.control])
