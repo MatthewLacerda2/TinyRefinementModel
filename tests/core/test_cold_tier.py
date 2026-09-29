@@ -362,9 +362,10 @@ def _scored_run_supervisor(root, tier, spec):
 
 def test_the_supervisor_keeps_every_milestone_still_owed_a_score(ssd):
     """The pass bar of #515, end to end: under the margin, a mirrored milestone with no
-    score in the journal (queued, claimed or failed) survives the tick; a scored,
-    unclaimed one is removed. Its scorer reads the SSD copy, so a pruned one would
-    never be scored, and the run's end would not name it."""
+    score in the journal survives the tick, whether its scorer is still running (121,
+    mid-restore) or failed (243, an error line); a scored, unclaimed one (60) is
+    removed. Its scorer reads the SSD copy, so a pruned one would never be scored, and
+    the run's end would not name it."""
     from trm.runtime.layout import YARDSTICK_JOURNAL
 
     free = [100.0]
@@ -374,6 +375,11 @@ def test_the_supervisor_keeps_every_milestone_still_owed_a_score(ssd):
         json.dumps({"source": "milestone", "step": 60, "lambada_acc": 0.1}) + "\n"
         + json.dumps({"source": "milestone", "step": 243, "error": "killed"}) + "\n")
     sup = _scored_run_supervisor(ssd, tier, spec=ssd / "spec.toml")
+
+    class Running:
+        def poll(self):
+            return None
+    sup._scorers["121"] = Running()
     free[0] = 1.0
     sup.tend_cold_tier()
 
