@@ -18,6 +18,13 @@ by affects another item, so it leads its tier.
 It also refuses to trust labels it can check. A `blocked` label whose blockers
 are all closed is surfaced as stale, not obeyed; an issue with no type label is
 surfaced, not guessed into a tier.
+
+`--cloud` asks the same question for a session without this machine: no card, no
+trained weights, no tokenized corpus, no HDD. It drops what needs the card to
+finish (the `gpu` lane without `cpu`) and what needs this machine's files (the
+`local` label), and keeps the CPU half of a partial-cpu issue, which such a
+session builds and parks as a draft. A checkout without `runs/data/` is how a
+cloud session looks from inside, and the queue says so when --cloud is missing.
 """
 
 from __future__ import annotations
@@ -114,10 +121,15 @@ def claimed_by_pr(prs: list[dict]) -> dict[int, int]:
     return claims
 
 
-def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
+# A session without this machine (#492): it has no card to wait for, and none of the
+# machine's files, which the `local` label marks.
+CLOUD_CARD = Card(False, "cloud session — no card")
+
+
+def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = False) -> Queue:
     """Pure: the open issues, the open PRs, and the card's state in; the queue out.
     Every issue passed in is taken to be open, so a blocker absent from the list
-    is a closed one."""
+    is a closed one. `cloud` also drops what needs this machine's files (`local`)."""
     open_numbers = {i["number"] for i in issues}
     claims = claimed_by_pr(prs)
     dependents: dict[int, list[int]] = {}
@@ -160,6 +172,8 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
             not_ready.append((n, "blocked on a condition, not an issue — the queue cannot check it"))
         elif "blocked" in labels:
             continue  # surfaced above; a label that fails its own check is not obeyed
+        elif cloud and "local" in labels:
+            not_ready.append((n, "local — needs this machine's weights, corpus or HDD"))
         elif "gpu" in labels and "cpu" not in labels and not card.free:
             not_ready.append((n, f"gpu lane, card busy ({card.why})"))
         elif tier is not None:
@@ -270,6 +284,10 @@ def render(q: Queue) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--cloud", action="store_true",
+                    help="the queue for a session without this machine: no card, and no issue "
+                         "labelled `local` (weights, corpus, HDD); the cpu half of a partial-cpu "
+                         "issue stays (#492)")
     ap.add_argument("--strays", action="store_true",
                     help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
                          "exit 1 if any (CI runs this on every push)")
@@ -284,7 +302,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if strays else 0
     issues = gh_json("issue", "list", "--state", "open", "--limit", "500",
                      "--json", "number,title,labels,assignees,body")
-    q = build_queue(issues, prs, card_state())
+    q = build_queue(issues, prs, CLOUD_CARD if args.cloud else card_state(), cloud=args.cloud)
+    if not args.cloud and not (pathlib.Path(__file__).resolve().parents[1] / "runs" / "data").is_dir():
+        q.needs_human.append((0, "runs/data/ is missing: this looks like a cloud session — "
+                                 "run `python -m instruments.queue --cloud`"))
     q.needs_human += [(0, f"stray branch {name}: last commit {days} days ago, no open PR") for name, days in strays]
     print(render(q), end="")
     return 0
