@@ -30,7 +30,7 @@ from flax import nnx
 
 from instruments._common import load_env
 from instruments.arch import add_arch_argument, build
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, NUM_BLOCKS
+from trm.config import ACCUMULATION_STEPS, LATENT_DIM, MAX_SEQ_LEN, NUM_BLOCKS
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -92,12 +92,13 @@ def main():
         batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     else:
         from trm.runtime.restore import load_eval_batches
-        batch = load_eval_batches(num_rows=1, skip=0)[0]
+        from trm.settings import CONFIG
+        batch = load_eval_batches(CONFIG, num_rows=1, skip=0)[0]
 
     ces = []
     for step in range(args.steps):
         loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, step, depth=args.depth, doc_boundary=False
+            model, batch, step // ACCUMULATION_STEPS, depth=args.depth, doc_boundary=False
         )
         apply_grads(optimizer, grads, model)
         ce = float(out.diag["token_loss"])

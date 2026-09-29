@@ -13,6 +13,7 @@ import queue
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 from dotenv import load_dotenv
 
@@ -20,8 +21,8 @@ from trm.config import MAX_STEPS_LIMIT, resolve_root
 from trm.model import build_model
 from trm.settings import DEFAULT_DATA_MIXTURE, location
 from trm.runtime.layout import LOG_REAL_STEPS
-from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
-                                     save_milestone, wait_for_pending_saves)
+from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, milestone_thresholds,
+                                     save_checkpoint, save_milestone, wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
@@ -194,8 +195,12 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
         print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
     print("🚀 Initializing Dynamic Data Phases...")
     schedules = Schedules.of(config)
-    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in schedules.sources]
-    pretrain_mixer = DataMixer(pretrain_sources, schedules.start_weights, names=schedules.sources)
+    # Every reader and the mixer seeded from DATA_SEED, each its own stream.
+    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}", max_seq_len=config.MAX_SEQ_LEN,
+                                          rng=np.random.default_rng(config.DATA_SEED))
+                        for path in schedules.sources]
+    pretrain_mixer = DataMixer(pretrain_sources, schedules.start_weights,
+                               rng=np.random.default_rng(config.DATA_SEED), names=schedules.sources)
 
     if config.DATA_BRANCH and start_step == 0:
         # A branch that found no checkpoint would train a fresh model on the arm's
@@ -264,8 +269,8 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
     schedules = Schedules.of(config)
     start_opt_step = start_step // accumulation_steps + 1 if start_step > 0 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
-    val_probe = ValidationProbe(DATA_ROOT)
-    source_probes = [ValidationProbe(DATA_ROOT, skip=None, source=s) for s in VAL_BY_SOURCE]
+    val_probe = ValidationProbe.of(config, DATA_ROOT)
+    source_probes = [ValidationProbe.of(config, DATA_ROOT, source=s) for s in VAL_BY_SOURCE]
     step = start_step
 
     # f16 gradients underflow to exactly zero without this, which is what destroyed
@@ -288,6 +293,8 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
     window = LogWindow()
     source_grads = SourceGrads(schedules.sources)
     milestone_mngr = make_milestone_manager(mngr.directory)
+    milestones = milestone_thresholds(config.MILESTONE_FIRST_TOKENS, config.MILESTONE_RATIO,
+                                      config.MILESTONE_MAX_COUNT)
     t_compute = 0.0
     nonfinite_streak = 0
     # Latest held-out CE from the validation probe, carried so the (less frequent)
@@ -326,7 +333,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             # about to be measured against.
             ceiling = grad_guard.threshold
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,
+                model, batch, jnp.array(step // accumulation_steps), depth, doc_boundary=doc_boundary,
                 loss_scale=jnp.float32(loss_scaler.value),
                 clip_norm=jnp.float32(jnp.inf if ceiling is None else ceiling),
             )
@@ -438,7 +445,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 # doubling token counts and weights-only (#394). Checked every
                 # optimizer step rather than at the rolling boundary, because the
                 # early ones are closer together than that boundary.
-                if milestone_due(opt_step, opt_step - 1, config.TOKENS_PER_OPT_STEP):
+                if milestone_due(opt_step, opt_step - 1, config.TOKENS_PER_OPT_STEP, milestones):
                     save_milestone(milestone_mngr, step, model, monitor,
                                    run_tracker.run_id, wait=False)
 

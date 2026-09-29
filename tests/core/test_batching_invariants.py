@@ -20,6 +20,7 @@ import pytest
 
 from trm.runtime import checkpoints
 from trm.runtime.monitor import LossMonitor
+from trm.settings import CONFIG
 from trm.runtime.resume_state import ResumeState
 
 from trm import config
@@ -153,7 +154,7 @@ def test_pre_24_checkpoints_resume_exactly():
     sample per micro-step is its exact position — not an approximation."""
     pre_24 = {"run_id": "r", "ce_history": [], "best_ce": 3.0, "best_loss": 3.0,
               "best_avg_ce": 3.0, "last_improvement_step": 0}
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
     ResumeState.load(pre_24, "a pre-#24 checkpoint").restore(monitor, micro_step=1000)
     assert monitor.samples_seen == 1000
     assert "micro_step=restored[\"step\"]" in inspect.getsource(checkpoints.load_or_create_checkpoint)

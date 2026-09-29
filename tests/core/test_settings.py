@@ -112,7 +112,7 @@ def test_the_constants_modules_still_import_are_this_process_config():
     # added since #475 are read from a Config handed down, so the bridge never grows,
     # and neither are the schedule's: trm.train.schedules resolves from a Config.
     passed_down = {"MILESTONE_SCORERS", "WARMUP_STEPS", "PEAK_LR", "LR_SCHEDULE",
-                   "WSD_DECAY_FRACTION", "WSD_DECAY_START"}
+                   "WSD_DECAY_FRACTION", "WSD_DECAY_START", "VAL_SKIP_SAMPLES"}
     assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"} - passed_down
     drift = {key: value for key, value in exported.items() if value != getattr(CONFIG, key[1])}
     assert not drift, drift

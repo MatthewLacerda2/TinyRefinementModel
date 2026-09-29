@@ -20,7 +20,7 @@ def _one_step(make_tiny_model):
     model = make_tiny_model(seed=5)
     rng = np.random.default_rng(11)
     batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
-    loss, out, grads, grad_norm = compute_grad_step(model, batch, step=0, depth=1)
+    loss, out, grads, grad_norm = compute_grad_step(model, batch, opt_step=0, depth=1)
     return float(loss), float(grad_norm)
 
 

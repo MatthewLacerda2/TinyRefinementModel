@@ -14,7 +14,7 @@ from trm.model import build_model
 from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
 from trm.runtime.layout import CHECKPOINT_ITEMS
 from trm.settings import location
-from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
+from trm.train.validation import read_heldout_rows
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
 # reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
@@ -78,10 +78,11 @@ def restore_model(checkpoint_path=None):
     return restore_arch(MODEL_ARCH, checkpoint_path)
 
 
-def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_SAMPLES):
-    """Held-out rows: skip past the data the training run has consumed.
+def load_eval_batches(config, source="pretrain/fineweb-edu", num_rows=16, skip=None):
+    """Held-out rows: skip past the data the training run has consumed. Rows are
+    `config`'s shape, read the way its trainer reads them.
 
-    The default skip sits far beyond plausible consumption (an 8k-opt-step run
+    The default skip, config.VAL_SKIP_SAMPLES, sits far beyond plausible consumption (an 8k-opt-step run
     reads under 1M fineweb samples of its 4.3M) — the old 200k default was
     inside the range long runs train through, contaminating the eval slice.
 
@@ -93,8 +94,10 @@ def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_
     if not data_root:
         raise SystemExit("DATA_ROOT is not set.")
     source_dir = f"{resolve_root(data_root)}/{source}"
+    skip = config.VAL_SKIP_SAMPLES if skip is None else skip
 
-    batches = read_heldout_rows(source_dir, num_rows, skip)
+    batches = read_heldout_rows(source_dir, num_rows, skip,
+                                max_seq_len=config.MAX_SEQ_LEN, data_seed=config.DATA_SEED)
     if not batches:
         # "No eval data available" alone sends you looking for a missing corpus.
         # The actual cause is almost always that the default skip -- sized for the

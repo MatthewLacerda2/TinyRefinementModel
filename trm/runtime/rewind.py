@@ -64,7 +64,7 @@ def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Che
 
 
 def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
-                            accumulation_steps: int | None = None) -> None:
+                            accumulation_steps: int) -> None:
     """Refuse to resume a checkpoint written inside the retired SFT phase (#323).
 
     The in-run SFT flip is gone, so the trainer would resume such a checkpoint as
@@ -75,9 +75,6 @@ def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
     sft_start_step = monitor_state.get("sft_start_step")
     if sft_start_step is None:
         return
-    if accumulation_steps is None:
-        from trm.config import ACCUMULATION_STEPS
-        accumulation_steps = ACCUMULATION_STEPS
     # The flip happened on an opt-step boundary, after that boundary's saves, so
     # every checkpoint at or below this opt step is still pretraining.
     last_clean_opt_step = (sft_start_step + 1) // accumulation_steps
@@ -148,8 +145,8 @@ def main(argv: list[str] | None = None) -> int:
                          "Pass the run's own value if it trained under a different one.")
     args = ap.parse_args(argv)
     if args.accumulation_steps is None:
-        from trm.config import ACCUMULATION_STEPS
-        args.accumulation_steps = ACCUMULATION_STEPS
+        from trm.settings import CONFIG
+        args.accumulation_steps = CONFIG.ACCUMULATION_STEPS
 
     if args.to_opt_step is None:
         for directory in (args.checkpoint_dir, args.checkpoint_dir / BEST_SUBDIR,

@@ -54,6 +54,8 @@ diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
 class UniversalReasoner(LanguageModel):
     def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):
         self.latent_dim = latent_dim
+        # The id masked out of attention and scoring, as the other arches carry it.
+        self.pad_token_id = PAD_TOKEN_ID
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
 
@@ -110,7 +112,7 @@ class UniversalReasoner(LanguageModel):
 
 
     def _encode_sequence(self, tokens, training=False):
-        pad_mask = tokens != PAD_TOKEN_ID
+        pad_mask = tokens != self.pad_token_id
         pad_bias = (pad_mask.astype(jnp.float32) - 1.0) * 1e9
         pad_bias = pad_bias[:, None, None, :]
 

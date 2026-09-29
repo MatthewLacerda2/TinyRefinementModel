@@ -297,6 +297,7 @@ def _supervised(tmp_path, tier, **kw):
     import textwrap
 
     from trm.runtime.supervisor import Limits, Supervisor
+    from trm.settings import Config
 
     child = tmp_path / "child.py"
     child.write_text(textwrap.dedent(f"""
@@ -310,7 +311,7 @@ def _supervised(tmp_path, tier, **kw):
     reported = []
     sup = Supervisor(command=(sys.executable, str(child)), limits=Limits(stop_step=50, max_retries=0),
                      log_path=tmp_path / "train.log", metrics_csv=tier.run_dir / "metrics.csv",
-                     poll_seconds=0.2, heartbeat_every=1000, report=reported.append, cold=tier, **kw)
+                     config=Config.from_env({}), poll_seconds=0.2, heartbeat_every=1000, report=reported.append, cold=tier, **kw)
     return sup, reported
 
 

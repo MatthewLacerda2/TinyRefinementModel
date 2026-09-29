@@ -121,12 +121,13 @@ def load_batch(rng):
     root = os.environ.get("DATA_ROOT", "")
     if root:
         from trm.config import resolve_root
-        from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
+        from trm.train.validation import read_heldout_rows
         for source in ("codeparrot", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue
-            rows = read_heldout_rows(path, 1, VAL_SKIP_SAMPLES)
+            rows = read_heldout_rows(path, 1, CONFIG.VAL_SKIP_SAMPLES, max_seq_len=CONFIG.MAX_SEQ_LEN,
+                                     data_seed=CONFIG.DATA_SEED)
             if rows:
                 (row,) = rows
                 print(f"📚 real tokens from {source} (the distribution that stresses f16)")
@@ -198,7 +199,8 @@ def main():
 
     print(f"— grad steps at depth {MAX_STEPS_LIMIT} (worst case; inert for plain) with optimizer resident —")
     for s in range(1, 4):
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s), MAX_STEPS_LIMIT)
+        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s // CONFIG.ACCUMULATION_STEPS),
+                                                 MAX_STEPS_LIMIT)
         loss_f, grad_f = float(loss), float(gnorm)
         ok = math.isfinite(loss_f) and math.isfinite(grad_f) and grad_f > 0
         print(f"  step {s}: loss={loss_f:.4f}  grad_norm={grad_f:.4f}  {'OK' if ok else '✗ NON-FINITE/ZERO'}")
@@ -211,7 +213,7 @@ def main():
     if shallow:
         print("— finiteness at shallow depths 1 and 4 —")
     for depth in shallow:
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1), depth)
+        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1 // CONFIG.ACCUMULATION_STEPS), depth)
         ok = math.isfinite(float(loss)) and math.isfinite(float(gnorm))
         print(f"  depth {depth}: loss={float(loss):.4f}  grad_norm={float(gnorm):.4f}  {'OK' if ok else '✗'}")
         assert ok

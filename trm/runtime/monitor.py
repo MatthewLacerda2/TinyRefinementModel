@@ -1,13 +1,11 @@
-from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
-
-
 class LossMonitor:
     """Tracks the held-out best for checkpointing and detects CE plateaus. A plateau is
     reported, never acted on: the in-run SFT flip it used to trigger was removed (#323)."""
 
-    def __init__(self, patience=PLATEAU_PATIENCE, window=4, min_delta=PLATEAU_MIN_DELTA):
-        # The plateau bar is config's (#318): these defaults used to be literals,
-        # and drifted to 0.005 while config raised PLATEAU_MIN_DELTA to 0.01.
+    def __init__(self, *, patience, min_delta, window=4):
+        # The plateau bar is the run's (PLATEAU_PATIENCE / PLATEAU_MIN_DELTA, #318):
+        # these used to be literal defaults, and drifted to 0.005 while the knob moved
+        # to 0.01, so they have no default here at all (`LossMonitor.of`).
         # `window` counts VALIDATION readings (one per VAL_EVERY_OPT_STEPS), not
         # logging rows: 4 readings at the 64-step cadence is a 256-step smoothing.
         self.patience = patience
@@ -28,6 +26,11 @@ class LossMonitor:
         # The data loader's exact state after the last batch consumed (#424), saved
         # with every checkpoint so a resume reads the rows the run would have.
         self.data_state = None
+
+    @classmethod
+    def of(cls, config):
+        """The monitor a run of `config` keeps."""
+        return cls(patience=config.PLATEAU_PATIENCE, min_delta=config.PLATEAU_MIN_DELTA)
 
     def push(self, step, ce_loss, total_loss):
         """Record one logging-window observation of TRAIN CE: the raw bests only.

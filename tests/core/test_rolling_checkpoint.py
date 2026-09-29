@@ -19,6 +19,7 @@ import pytest
 from trm.runtime.checkpoints import _monitor_state, save_checkpoint, discover_latest_checkpoint_run
 from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
+from trm.settings import CONFIG
 from trm.runtime.resume_state import _READ_ONLY, ResumeState
 
 
@@ -50,7 +51,7 @@ def test_rolling_latest_advances_past_best(tmp_path):
     must point at the true latest — the save-on-best-only bug failed this."""
     chk = tmp_path / "checkpoints"
     mngr = _make_manager(chk)
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
 
     # Step 100: a "best". Steps 200, 300: NOT new bests, but training moved on.
     for step, w in [(100, 1.0), (200, 2.0), (300, 3.0)]:
@@ -76,7 +77,7 @@ def test_best_subdir_does_not_break_discovery(tmp_path):
     rolling manager (and discovery) must ignore it as a non-step entry."""
     runs_root = tmp_path / "runs"
     chk = runs_root / "run_test" / "checkpoints"
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
 
     rolling = _make_manager(chk)
     best = _make_manager(chk / BEST_SUBDIR)
@@ -102,7 +103,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
     from trm.runtime.checkpoints import load_or_create_checkpoint
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
     monitor.best_ce = 1.23
     monitor.best_val_ce = 3.6474
     # A real generator state: PCG64's 128-bit ints must survive orbax's JSON (#424).
@@ -118,7 +119,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
 
     fresh = make_tiny_model(seed=99)
     fresh_opt = nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param)
-    _, _, resumed, start_step = load_or_create_checkpoint(fresh, fresh_opt, chk)
+    _, _, resumed, start_step = load_or_create_checkpoint(CONFIG, fresh, fresh_opt, chk)
 
     assert start_step == 43, "resume must continue at saved step + 1"
     assert resumed.best_val_ce == 3.6474, (
@@ -137,7 +138,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
 def test_a_save_records_every_field_of_the_resume_state():
     """A field declared with a default but not set by ResumeState.of would save
     its default on every checkpoint, the silent default #477 removed from load."""
-    assert ResumeState.of(LossMonitor(), "run_x").model_fields_set == set(ResumeState.model_fields) - _READ_ONLY
+    assert ResumeState.of(LossMonitor.of(CONFIG), "run_x").model_fields_set == set(ResumeState.model_fields) - _READ_ONLY
 
 
 def _with_saved_state_edited(tmp_path, tiny_model, edit):
@@ -153,7 +154,7 @@ def _with_saved_state_edited(tmp_path, tiny_model, edit):
         options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True),
     )
     save_checkpoint(mngr, 255, tiny_model, nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param),
-                    LossMonitor(), "run_x")
+                    LossMonitor.of(CONFIG), "run_x")
     del mngr
     metadata = chk / "255" / "monitor_state" / "metadata"
     metadata.write_text(json.dumps(edit(json.loads(metadata.read_text()))))
@@ -182,7 +183,7 @@ def test_a_misspelled_resume_key_is_refused_by_name_not_resumed_with_a_default(
         lambda state: {("best_val_cee" if k == "best_val_ce" else k): v for k, v in state.items()})
     fresh = make_tiny_model(seed=99)
     with pytest.raises(SystemExit, match="best_val_cee"):
-        load_or_create_checkpoint(fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
+        load_or_create_checkpoint(CONFIG, fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
 
 
 def test_a_pretraining_checkpoint_from_before_the_flip_was_removed_still_resumes(
@@ -194,6 +195,7 @@ def test_a_pretraining_checkpoint_from_before_the_flip_was_removed_still_resumes
     chk = _with_legacy_phase_fields(tmp_path, tiny_model, sft_active=False, sft_start_step=None)
     fresh = make_tiny_model(seed=99)
     _, _, _, start_step = load_or_create_checkpoint(
+        CONFIG,
         fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
     assert start_step == 256
 
@@ -209,7 +211,7 @@ def test_a_checkpoint_from_inside_the_sft_phase_is_refused_not_resumed_as_pretra
     chk = _with_legacy_phase_fields(tmp_path, tiny_model, sft_active=True, sft_start_step=127)
     fresh = make_tiny_model(seed=99)
     with pytest.raises(SystemExit, match="trm.runtime.rewind"):
-        load_or_create_checkpoint(fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
+        load_or_create_checkpoint(CONFIG, fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
 
 
 # --- The best checkpoint is selected on held-out CE (#222) -------------------
@@ -218,7 +220,7 @@ def test_best_follows_val_ce_when_train_ce_gets_lucky_early():
     """The shape of both stale `best/` dirs: one lucky train window early, then
     train CE never beats it while val CE keeps improving. Selection on val must
     keep moving; selection on train would have frozen at the first window."""
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
     train = [3.9, 1.4, 3.7, 3.6, 3.5, 3.4]        # 1.4 is the lucky window
     val = [3.95, 3.90, 3.80, 3.70, 3.72, 3.60]    # steady, with one uptick
     saved = []
@@ -252,7 +254,7 @@ def test_the_trainer_saves_best_only_on_a_val_improvement():
                 and any(save in list(ast.walk(node)) for save in saves)]
     assert cadenced, ("the best save must sit inside the probe's cadence, so best writes "
                       "are bounded to one per probe (#174), not one per improving log step")
-    assert not hasattr(LossMonitor(), "is_new_best"), "the train-CE trigger is gone"
+    assert not hasattr(LossMonitor.of(CONFIG), "is_new_best"), "the train-CE trigger is gone"
 
 
 def test_the_best_dir_is_named_for_its_criterion():

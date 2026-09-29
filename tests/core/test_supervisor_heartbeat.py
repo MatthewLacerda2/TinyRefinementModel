@@ -5,6 +5,7 @@ test_supervisor.py (#325)."""
 import sys
 import textwrap
 
+from trm.settings import Config
 
 from trm.runtime.supervisor import (
     BUDGET_COMPLETE,
@@ -26,6 +27,7 @@ def _supervisor_over(tmp_path, script: str, limits: Limits, **kw):
         limits=limits,
         log_path=tmp_path / "train.log",
         metrics_csv=tmp_path / "metrics.csv",
+        config=Config.from_env({}),
         poll_seconds=0.2,
         heartbeat_every=1,
         report=reported.append,
@@ -85,7 +87,7 @@ def test_routine_reports_are_daily_not_hourly():
     from trm.runtime.supervisor import Supervisor
     import pathlib
     sup = Supervisor(command=(), limits=Limits(stop_step=1),
-                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"))
+                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"), config=Config.from_env({}))
     assert sup.heartbeat_every * sup.poll_seconds / 3600 == 24.0
 
 

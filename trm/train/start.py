@@ -118,7 +118,7 @@ if __name__ == "__main__":
     model, optimizer = init_model_and_optimizer(config)
 
     mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
-        model, optimizer, active_checkpoint_path, force_new_run=args.new_run
+        config, model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
     data_queue = setup_data_pipeline(config, start_step, samples_seen=monitor.samples_seen or None,

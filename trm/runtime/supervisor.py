@@ -47,16 +47,7 @@ from dataclasses import dataclass, field
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight
-from trm.runtime.layout import (  # jax-free, so the supervisor stays jax-free
-    ACT_MAX_ALARM,
-    LOG_REAL_STEPS,
-    LOSS_SCALE_FLOOR_ALARM,
-    MILESTONE_SUBDIR,
-    SSD_KEEP_FREE_GB,
-    VRAM_HEADROOM_ALARM_MIB,
-    YARDSTICK_JOURNAL,
-    ZERO_GRAD_ALARM,
-)
+from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_JOURNAL  # jax-free
 from trm.settings import CONFIG, Config, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -347,8 +338,8 @@ def _without_path_flags(trainer_args):
     return out
 
 
-def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0,
-                  tokens_per_opt_step=None, workroot: pathlib.Path = RUNS_DIR) -> FitResult:
+def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout_s=1800.0, poll_s=5.0,
+                  workroot: pathlib.Path = RUNS_DIR) -> FitResult:
     """Run the real trainer until its first metrics row, then throw it away (#168).
 
     Every launch that died on 2026-08-13 died of memory, at an optimizer apply, a
@@ -397,8 +388,6 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
             if row is not None:
                 peak = row.get("arena_peak_mib") or None
                 compute = _COMPUTE.search(text)
-                if compute and tokens_per_opt_step is None:
-                    from trm.config import TOKENS_PER_OPT_STEP as tokens_per_opt_step
                 rate = (FIT_GATE_LOG_ROWS_OPT_STEPS * tokens_per_opt_step / float(compute.group(1))
                         if compute and float(compute.group(1)) > 0 else None)
                 return FitResult(True, "survived five optimizer applies, validation passes and checkpoint saves",
@@ -479,8 +468,9 @@ def _number(row: dict, key: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def margin_alarms(row: dict) -> tuple:
-    """The f16 margins this metrics row crosses (#368), as (kind, sentence). Pure.
+def margin_alarms(config: Config, row: dict) -> tuple:
+    """The f16 margins this metrics row crosses (#368), as (kind, sentence), against
+    `config`'s bars (ACT_MAX_ALARM and its siblings, trm/settings.py). Pure.
 
     The failures they warn of were all visible in real time and none was watched:
     the champion trained itself to 65,120 of f16's 65,504 (#235); its loss scaler sat
@@ -489,19 +479,19 @@ def margin_alarms(row: dict) -> tuple:
     """
     alarms = []
     act = _number(row, "act_max")
-    if act is not None and act > ACT_MAX_ALARM:
-        alarms.append(("act_max", f"act_max {act:,.0f} > {ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
+    if act is not None and act > config.ACT_MAX_ALARM:
+        alarms.append(("act_max", f"act_max {act:,.0f} > {config.ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
     scale = _number(row, "loss_scale")
-    if scale is not None and scale <= LOSS_SCALE_FLOOR_ALARM:
-        alarms.append(("loss_scale", f"loss scale {scale:g} <= {LOSS_SCALE_FLOOR_ALARM:g}: the "
+    if scale is not None and scale <= config.LOSS_SCALE_FLOOR_ALARM:
+        alarms.append(("loss_scale", f"loss scale {scale:g} <= {config.LOSS_SCALE_FLOOR_ALARM:g}: the "
                                      f"backward overflows with almost no scaling left"))
     zero = _number(row, "applied_zero_frac_dense_max")
-    if zero is not None and zero >= ZERO_GRAD_ALARM:
-        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {ZERO_GRAD_ALARM:g}: "
+    if zero is not None and zero >= config.ZERO_GRAD_ALARM:
+        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {config.ZERO_GRAD_ALARM:g}: "
                                     f"gradients underflowing"))
     peak, limit = _number(row, "arena_peak_mib"), _number(row, "arena_limit_mib")
-    if peak is not None and limit is not None and limit - peak < VRAM_HEADROOM_ALARM_MIB:
-        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {VRAM_HEADROOM_ALARM_MIB:,.0f}"))
+    if peak is not None and limit is not None and limit - peak < config.VRAM_HEADROOM_ALARM_MIB:
+        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {config.VRAM_HEADROOM_ALARM_MIB:,.0f}"))
     return tuple(alarms)
 
 
@@ -570,6 +560,9 @@ class Supervisor:
     limits: Limits
     log_path: pathlib.Path
     metrics_csv: pathlib.Path
+    # The supervising process's knobs (the margin alarms' bars, MILESTONE_SCORERS),
+    # handed in by main() (#475).
+    config: Config
     poll_seconds: float = 300.0
     # Byte offset where the current launch's output begins; set by launch(). 0 is
     # correct before the first launch — there is nothing of ours to skip yet.
@@ -600,7 +593,6 @@ class Supervisor:
     # and the journal line lands in <run-dir>/yardstick.jsonl.
     spec: pathlib.Path | None = None
     milestone_limit: int = 1000
-    config: Config = CONFIG  # the knobs it reads: MILESTONE_SCORERS
     # The run's cold tier (#458): mirrors and prunes each poll, and takes a last
     # full-state copy when the run ends. None when no COLD_ROOT is set.
     cold: ColdTier | None = None
@@ -642,7 +634,7 @@ class Supervisor:
             alive=proc.poll() is None,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
-            margins=margin_alarms(read_last_row(self.metrics_csv)),
+            margins=margin_alarms(self.config, read_last_row(self.metrics_csv)),
         )
 
     def run(self) -> str:
@@ -854,7 +846,7 @@ def main(argv=None) -> int:
         problem = cold_root_problem(args.cold_root, RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT)
         if problem:
             print(f"preflight: ⚠ cold tier waits — {problem}", file=sys.stderr)
-        cold = ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=SSD_KEEP_FREE_GB,
+        cold = ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
                         fullstate_every_hours=stall_window_hours(args.spec),
                         protected=protected_roots())
     print(f"cold tier: {describe_cold(cold)}")
@@ -864,6 +856,7 @@ def main(argv=None) -> int:
         limits=limits,
         log_path=args.log,
         metrics_csv=args.run_dir / "metrics.csv",
+        config=CONFIG,
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
         spec=args.spec,
@@ -879,7 +872,7 @@ def main(argv=None) -> int:
             lock.acquire()
         if not args.skip_fit_gate:
             print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
-            fit = preflight_fit(args.trainer_args)
+            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP)
             if not fit.ok:
                 raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
             print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "

@@ -7,6 +7,9 @@ import pytest
 
 from instruments import base_run
 from instruments.verdict import INCONCLUSIVE, KEEP, KILL
+from trm.settings import Config
+
+DEFAULTS = Config.from_env({})
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SPEC = REPO / "experiments/base/specs/001-plain-base.toml"
@@ -109,7 +112,7 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
     launched = []
     monkeypatch.setattr(sup_mod.subprocess, "Popen", lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0})())
     sup = Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
-                     metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None)
+                     metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None, config=DEFAULTS)
     sup.score_new_milestones()
     sup.score_new_milestones()
     assert len(launched) == 2 and all("--cpu" in a and "--limit" in a for a in launched)
@@ -160,7 +163,7 @@ def test_a_resumed_supervisor_scores_only_what_the_journal_lacks(tmp_path, monke
     launched = []
     _fake_scorers(monkeypatch, launched, [False])
     Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
-               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None).score_new_milestones()
+               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None, config=DEFAULTS).score_new_milestones()
     assert _steps(launched) == ["400"]
 
 
@@ -221,7 +224,7 @@ def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tm
     monkeypatch.setattr(sup_mod.subprocess, "Popen",
                         lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0})())
     Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
-               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None).score_new_milestones()
+               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None, config=DEFAULTS).score_new_milestones()
     assert len(launched) == 1, "one milestone; the orbax tmp dir beside it is not one"
     (argv,) = launched
     assert argv[argv.index("--checkpoint-dir") + 1] == str(milestones)

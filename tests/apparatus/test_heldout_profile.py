@@ -76,7 +76,7 @@ def test_per_token_losses_average_to_the_trainers_val_ce():
     rows = [rng.integers(0, 300, (1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32) for _ in range(2)]
     rows[0][0, 7] = EOT_TOKEN_ID  # masked out of the targets on both paths (#373)
     model = build_model("plain", 32, nnx.Rngs(0), vocab_size=50304, num_heads=2, num_layers=1)
-    probe = ValidationProbe("unused")
+    probe = ValidationProbe("unused", rows=2, skip=0, max_seq_len=MAX_SEQ_LEN, data_seed=0)
     probe._batches = rows
     scored = heldout_profile.score_rows(model, rows)
     assert scored["nll"].size == 2 * 2 * MAX_SEQ_LEN - 1

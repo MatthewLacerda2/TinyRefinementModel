@@ -15,17 +15,15 @@ def test_trainer_imports():
     from trm.train import validation  # noqa: F401
 
 
-def test_validation_probe_scores_and_preserves_training_state(reasoner_model, monkeypatch):
+def test_validation_probe_scores_and_preserves_training_state(reasoner_model):
+    from trm.settings import CONFIG
     from trm.train import trainer
-
     from trm.train import validation
-
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
-    monkeypatch.setattr(validation, "VAL_ROWS", 1)
 
-    probe = validation.ValidationProbe(trainer.DATA_ROOT)
+    probe = validation.ValidationProbe.of(CONFIG, trainer.DATA_ROOT, rows=1)
     sentinel = jnp.ones_like(reasoner_model.hunch_cache[...]) * 0.123
     reasoner_model.hunch_cache[...] = sentinel
 
@@ -104,9 +102,10 @@ def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatc
     # Two shards of 3 samples each; sample i is filled with the value i.
     np.save(source / "chunk_0.npy", np.repeat(np.arange(3, dtype=np.int32), stride))
     np.save(source / "chunk_1.npy", np.repeat(np.arange(3, 6, dtype=np.int32), stride))
-    assert validation.corpus_samples(str(source)) == 6
+    assert validation.corpus_samples(str(source), MAX_SEQ_LEN) == 6
 
     monkeypatch.setattr(validation, "VAL_TAIL_ROWS", 2)
-    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, source="finemath")
+    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, max_seq_len=MAX_SEQ_LEN,
+                                       data_seed=0, source="finemath")
     rows = probe.load_rows()
     assert [int(r[0, 0]) for r in rows] == [4, 5]

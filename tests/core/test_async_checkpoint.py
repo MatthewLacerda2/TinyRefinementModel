@@ -19,6 +19,7 @@ from flax import nnx
 
 from trm.runtime import checkpoints as ck
 from trm.runtime.monitor import LossMonitor
+from trm.settings import CONFIG
 
 
 def _leaves(tree):
@@ -30,7 +31,7 @@ def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_i
 
     model = build("plain", dim=60, num_layers=2)
     optimizer = nnx.Optimizer(model, optax.adam(1e-2), wrt=nnx.Param)
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
     monitor.ce_history = [3.0, 2.9]
     snapshot = _leaves(nnx.state(model))
 
@@ -72,8 +73,8 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     log = []
     rolling, best = _Manager(log, "rolling"), _Manager(log, "best")
-    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
-    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
+    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor.of(CONFIG), "r", wait=False)
+    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor.of(CONFIG), "r", wait=False)
     ck.wait_for_pending_saves()
     assert log == ["rolling.save", "rolling.wait", "best.save", "best.wait"]
 

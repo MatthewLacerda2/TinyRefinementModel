@@ -5,9 +5,8 @@ import signal
 
 from flax import nnx
 import orbax.checkpoint as ocp
-from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_FIRST_TOKENS,
-                                MILESTONE_ITEMS, MILESTONE_MAX_COUNT, MILESTONE_RATIO,
-                                MILESTONE_SUBDIR, ROLLING_KEEP)
+from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_ITEMS, MILESTONE_SUBDIR,
+                                ROLLING_KEEP)
 from trm.runtime.monitor import LossMonitor
 from trm.runtime.resume_state import ResumeState
 from trm.runtime.rewind import refuse_sft_phase_resume
@@ -51,7 +50,7 @@ def discover_latest_checkpoint_run(runs_root="runs"):
 # deleted by the time a run ends.
 #
 # Two things make a milestone cheap enough to keep forever (#394): they are spaced
-# by doubling (MILESTONE_* in layout.py), and they hold the weights, not the whole
+# by doubling (MILESTONE_* in trm/settings.py), and they hold the weights, not the whole
 # training state. Weights are what the yardstick, the registry and the trajectory
 # figures read; the optimizer state is ~3/4 of a full save and only a resume wants
 # it, which is what the rolling checkpoints are for. So a milestone is not a resume
@@ -67,10 +66,10 @@ def make_milestone_manager(checkpoint_path):
     )
 
 
-def milestone_thresholds(first=MILESTONE_FIRST_TOKENS, ratio=MILESTONE_RATIO,
-                         count=MILESTONE_MAX_COUNT):
+def milestone_thresholds(first, ratio, count):
     """The token counts a milestone is kept at: first, first*ratio, … capped at
-    `count` of them. `first <= 0` turns milestones off."""
+    `count` of them (MILESTONE_FIRST_TOKENS / _RATIO / _MAX_COUNT). `first <= 0`
+    turns milestones off."""
     if first <= 0 or count <= 0:
         return ()
     marks, mark = [], float(first)
@@ -80,7 +79,7 @@ def milestone_thresholds(first=MILESTONE_FIRST_TOKENS, ratio=MILESTONE_RATIO,
     return tuple(marks)
 
 
-def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None):
+def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds):
     """Whether a milestone token count was crossed between two optimizer steps.
 
     Checked every optimizer step, not only where a rolling checkpoint lands: the
@@ -88,10 +87,9 @@ def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None
     than the rolling cadence, and a milestone that waits for the next boundary is
     not the point in training it claims to be.
     """
-    marks = milestone_thresholds() if thresholds is None else thresholds
     now = opt_step * tokens_per_opt_step
     before = max(since_opt_step, 0) * tokens_per_opt_step
-    return any(before < mark <= now for mark in marks)
+    return any(before < mark <= now for mark in thresholds)
 
 
 def _monitor_state(monitor, run_id):
@@ -249,8 +247,8 @@ def exit_cleanly_on_sigterm():
     signal.signal(signal.SIGTERM, _raise)
 
 
-def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
-    monitor = LossMonitor()
+def load_or_create_checkpoint(config, model, optimizer, checkpoint_path, force_new_run=False):
+    monitor = LossMonitor.of(config)
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
@@ -281,7 +279,7 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         m_state = restored["monitor_state"]
         # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
         # don't. Absent reads as pretraining, and an SFT-phase one is refused.
-        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path)
+        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path, config.ACCUMULATION_STEPS)
         ResumeState.load(m_state, f"checkpoint step {latest_step} in {checkpoint_path}").restore(
             monitor, micro_step=restored["step"])
 

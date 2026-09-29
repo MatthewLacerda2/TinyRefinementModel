@@ -61,7 +61,7 @@ def test_both_arches_train_through_the_identical_call(arch, make_reasoner_model)
     batch = jnp.asarray(rng.integers(1, 37, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
 
     loss, out, grads, grad_norm = compute_grad_step(
-        model, batch, step=0, depth=2, doc_boundary=True)
+        model, batch, opt_step=0, depth=2, doc_boundary=True)
 
     assert np.isfinite(float(loss)) and np.isfinite(float(grad_norm))
     assert float(grad_norm) > 0.0, "no gradient flowed"
