@@ -1,3 +1,4 @@
+import argparse
 import glob
 import json
 import os
@@ -13,8 +14,16 @@ import tiktoken
 from datasets import load_dataset
 
 from trm.config import TOKENIZER_NAME, resolve_root
+from trm.data.dedup import DedupParams, NearDedup
 from trm.settings import CONFIG, load_env, location
 
+# Near-dedup (#486): `--dedup` drops each source's near-duplicate documents before they
+# are tokenized (trm/data/dedup.py, knobs DEDUP_* in trm/settings.py) and records what it
+# removed in the source's status.json. A deduped corpus is a NEW corpus: point DATA_ROOT
+# at a new folder. A folder is only ever resumed with the dedup settings it was started
+# with, so the tokenized corpus in runs/data/ (written without) refuses `--dedup`.
+# `--measure N` only counts: it judges a source's first N documents and writes nothing.
+#
 # Shard order (#364, measured by reading the code below, not assumed): each source is
 # streamed with load_dataset(..., streaming=True) and never shuffled, so the chunk
 # files hold documents in the Hugging Face stream order, and the loader reads them
@@ -116,22 +125,33 @@ def extract_text(item, alias):
     return txt or None
 
 
-def load_progress(save_path, name):
-    """Returns (file_idx, total_tokens, items_processed) for a dataset, reading
-    status.json or — recovery mode — scanning existing chunk files."""
+def load_status(save_path):
+    """The folder's status.json, or None when it has none."""
     status_file = os.path.join(save_path, "status.json")
+    if not os.path.exists(status_file):
+        return None
+    with open(status_file) as f:
+        return json.load(f)
+
+
+def load_progress(save_path, name):
+    """Returns (file_idx, total_tokens, items_processed, stream_offset) for a dataset,
+    reading status.json or — recovery mode — scanning existing chunk files.
+    `items_processed` counts the documents written; `stream_offset` the raw records
+    consumed from the stream, which is where a resume continues. A status written before
+    the two were told apart has only the first, and it is used for both."""
     file_idx = 0
     total_tokens = 0
     items_processed = 0
 
-    if os.path.exists(status_file):
-        with open(status_file, 'r') as f:
-            status = json.load(f)
-            file_idx = status.get("file_idx", 0)
-            total_tokens = status.get("total_tokens", 0)
-            items_processed = status.get("items_processed", 0)
-        print(f"🔄 Resuming {name} from status.json: item {items_processed:,} (Tokens: {total_tokens/1e6:.1f}M, Chunk: {file_idx})")
-        return file_idx, total_tokens, items_processed
+    status = load_status(save_path)
+    if status is not None:
+        file_idx = status.get("file_idx", 0)
+        total_tokens = status.get("total_tokens", 0)
+        items_processed = status.get("items_processed", 0)
+        stream_offset = status.get("stream_offset", items_processed)
+        print(f"🔄 Resuming {name} from status.json: record {stream_offset:,} (Tokens: {total_tokens/1e6:.1f}M, Chunk: {file_idx})")
+        return file_idx, total_tokens, items_processed, stream_offset
 
     existing_chunks = glob.glob(os.path.join(save_path, "chunk_*.npy"))
     if existing_chunks:
@@ -150,21 +170,63 @@ def load_progress(save_path, name):
             file_idx = 0
             total_tokens = 0
 
-    return file_idx, total_tokens, items_processed
+    return file_idx, total_tokens, items_processed, items_processed
 
 
-def save_progress(save_path, file_idx, total_tokens, items_processed):
-    with open(os.path.join(save_path, "status.json"), 'w') as f:
+def save_progress(save_path, tally):
+    """status.json: where a resume continues, and the source's manifest. With a dedup,
+    its index is written first, so a status never points past the index it resumes with."""
+    if tally.dedup is not None:
+        tally.dedup.save(os.path.join(save_path, DEDUP_INDEX))
+    tmp = os.path.join(save_path, "status.json.tmp")
+    with open(tmp, 'w') as f:
         json.dump({
-            "file_idx": file_idx,
-            "total_tokens": total_tokens,
-            "items_processed": items_processed
-        }, f)
+            "file_idx": tally.file_idx,
+            "total_tokens": tally.total_tokens,
+            "items_processed": tally.items_processed,
+            "stream_offset": tally.stream_offset,
+            "dedup": None if tally.dedup is None else tally.dedup.record(),
+        }, f, indent=1)
+    os.replace(tmp, os.path.join(save_path, "status.json"))
+
+
+# The dedup index beside a source's chunks, for a resume. Not `.npy`: the loaders read
+# every `.npy` in a bucket as tokens.
+DEDUP_INDEX = "dedup_index.npz"
+
+
+def open_dedup(save_path, name, params):
+    """The near-dedup a source's folder continues with: a fresh one, the one it saved,
+    or a refusal. A folder is only resumed under the dedup settings that started it, so
+    `--dedup` can never add to a corpus written without it (runs/data/), and a deduped
+    corpus is never continued without it."""
+    status = load_status(save_path)
+    started = status is not None or bool(glob.glob(os.path.join(save_path, "chunk_*.npy")))
+    if not started:
+        return None if params is None else NearDedup(params)
+    saved = (status or {}).get("dedup")
+    wanted = None if params is None else params.record()
+    built = None if saved is None else {k: saved.get(k) for k in (wanted or saved)}
+    if built != wanted:
+        raise SystemExit(
+            f"{save_path} was written with dedup={built} and this prefill asks for "
+            f"dedup={wanted}. A folder is only continued the way it was started: point "
+            f"DATA_ROOT at a new folder for a deduplicated corpus.")
+    if params is None:
+        return None
+    index = os.path.join(save_path, DEDUP_INDEX)
+    if not os.path.exists(index):
+        raise SystemExit(f"{save_path} is a deduplicated corpus without its {DEDUP_INDEX}: "
+                         f"it cannot be continued without re-admitting what it dropped.")
+    print(f"🔄 Resuming {name}'s dedup index ({os.path.getsize(index)/1e6:.0f} MB)")
+    return NearDedup.load(index, params)
 
 
 def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
-    """Producer: streams raw text records into out_queue, reconnecting on network
-    failures and resuming from the last consumed item. Ends with a None sentinel."""
+    """Producer: streams (stream offset, raw text) into out_queue, reconnecting on
+    network failures and resuming from the last consumed record. The offset counts every
+    raw record read, the ones extract_text filters out included, so it is where a resume
+    must skip to. Ends with a None sentinel."""
     split_name = ds_cfg.get('split', 'train')
 
     def open_stream(offset):
@@ -175,20 +237,18 @@ def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
     active_ds = open_stream(current_offset)
 
     while not stop_event.is_set():
-        consumed = 0
         try:
             for item in active_ds:
                 if stop_event.is_set():
                     break
-                consumed += 1
+                current_offset += 1
                 txt = extract_text(item, name)
                 if txt:
-                    out_queue.put(txt)
+                    out_queue.put((current_offset, txt))
             # Natural exit means dataset is completed
             break
         except Exception as e:
             # Catch connection timeouts, name resolution failures, or closed HTTPX client errors
-            current_offset += consumed
             t_now = time.strftime('%H:%M:%S', time.localtime())
             print(f"\n[{t_now}] 🔌 Prefetcher connection dropped: {e}")
             print(f"[{t_now}] 🔄 Re-connecting and resuming dataset from item {current_offset:,} in 5 seconds...")
@@ -227,12 +287,15 @@ def write_chunk(save_path, file_idx, token_acc, stride):
 
 @dataclass
 class Tally:
-    """Where one dataset's prefill stands: the next chunk index, the tokens and source
-    items counted so far, and what is tokenized (token_acc) or read (buffer) but not
-    yet saved."""
+    """Where one dataset's prefill stands: the next chunk index, the tokens and documents
+    counted so far, the raw stream records consumed (where a resume continues), the
+    near-dedup with its index and counters (None without --dedup), and what is tokenized
+    (token_acc) or read (buffer) but not yet saved."""
     file_idx: int
     total_tokens: int
     items_processed: int
+    stream_offset: int
+    dedup: NearDedup | None = None
     token_acc: list = field(default_factory=list)
     buffer: list = field(default_factory=list)
 
@@ -260,21 +323,27 @@ def stop_prefetcher(prefetch_queue, stop_event):
 
 
 def tokenize_pending(pool, tally):
-    """Moves the buffered raw texts into token_acc and counts them."""
-    flat_batch = tokenize_buffer(pool, tally.buffer)
+    """Moves the buffered raw texts into token_acc and counts them. With a dedup, its
+    near-duplicates are dropped first: never tokenized, never counted as written."""
+    texts = tally.buffer if tally.dedup is None else tally.dedup.keep(tally.buffer, pool.map)
+    tally.buffer = []
+    if not texts:
+        return
+    flat_batch = tokenize_buffer(pool, texts)
     tally.token_acc.append(flat_batch)
     tally.total_tokens += len(flat_batch)
-    tally.items_processed += len(tally.buffer)
-    tally.buffer = []
+    tally.items_processed += len(texts)
 
 
 def print_progress(tally, initial_tokens, target, t_start):
     elapsed = time.time() - t_start
     tokens_sec = (tally.total_tokens - initial_tokens) / max(1e-3, elapsed)
     progress = (tally.total_tokens / target) * 100
+    dropped = "" if tally.dedup is None else \
+        f" | Near-dups dropped: {tally.dedup.record()['doc_removal_rate']:.1%}"
     sys.stdout.write(
         f"\rProgress: {tally.total_tokens/1e6:.1f}M/{target/1e6:.0f}M tokens ({progress:.1f}%) | "
-        f"Speed: {tokens_sec/1e3:.1f}k tok/s | Elapsed: {elapsed/60:.1f}m"
+        f"Speed: {tokens_sec/1e3:.1f}k tok/s | Elapsed: {elapsed/60:.1f}m{dropped}"
     )
     sys.stdout.flush()
 
@@ -285,10 +354,11 @@ def fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name):
     t_start = time.time()
     initial_tokens = tally.total_tokens
     while True:
-        txt = prefetch_queue.get()
-        if txt is None:  # Sentinel: stream completed
+        item = prefetch_queue.get()
+        if item is None:  # Sentinel: stream completed
             return
 
+        tally.stream_offset, txt = item
         tally.buffer.append(txt)
         if len(tally.buffer) < TOKENIZE_BATCH_ITEMS:
             continue
@@ -298,39 +368,49 @@ def fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name):
 
         if sum(len(x) for x in tally.token_acc) >= TOKENS_PER_FILE:
             tally.file_idx, tally.token_acc = write_chunk(save_path, tally.file_idx, tally.token_acc, stride)
-            save_progress(save_path, tally.file_idx, tally.total_tokens, tally.items_processed)
+            save_progress(save_path, tally)
 
         if tally.total_tokens >= target:
             print(f"\n✅ {name} target reached.")
             return
 
 
-def flush_remainder(pool, tally, save_path, stride, target, name):
-    """Final flush for this dataset: what the stream left short of a full chunk."""
-    if not ((tally.token_acc or tally.buffer) and tally.total_tokens < target):
-        return
+def flush_remainder(pool, tally, save_path, stride, name):
+    """Final flush for this dataset, run whether the stream ended or the target was
+    reached: what the last full chunk left is written, and the status (with its dedup
+    counts) then describes exactly what is on disk."""
     if tally.buffer:
         tokenize_pending(pool, tally)
     if tally.token_acc:
         tally.file_idx, _ = write_chunk(save_path, tally.file_idx, tally.token_acc, stride)
-        save_progress(save_path, tally.file_idx, tally.total_tokens, tally.items_processed)
-        print(f"\n🏁 Finished {name}. Total: {tally.total_tokens/1e9:.2f}B tokens")
+    save_progress(save_path, tally)
+    record = "" if tally.dedup is None else f" | {json.dumps(tally.dedup.record())}"
+    print(f"\n🏁 Finished {name}. Total: {tally.total_tokens/1e9:.2f}B tokens{record}")
 
 
-def process_dataset(pool, ds_cfg, stride):
-    name = ds_cfg.get('alias') or ds_cfg['path'].split('/')[-1]
+def source_name(ds_cfg):
+    return ds_cfg.get('alias') or ds_cfg['path'].split('/')[-1]
+
+
+def process_dataset(pool, ds_cfg, stride, dedup_params=None):
+    """Stream one source into `stride`-aligned chunks until its token target, resuming
+    where its status.json says. With `dedup_params`, near-duplicate documents are
+    dropped before they are tokenized (see the note at the top)."""
+    name = source_name(ds_cfg)
     target = ds_cfg['target_tokens']
     save_path = os.path.join(OUTPUT_DIR, ds_cfg['folder'], name)
     os.makedirs(save_path, exist_ok=True)
 
-    print(f"\n🚀 Processing {name} | Target: {target/1e9:.2f}B tokens")
+    print(f"\n🚀 Processing {name} | Target: {target/1e9:.2f}B tokens"
+          + (f" | near-dedup {dedup_params.record()}" if dedup_params else ""))
 
-    tally = Tally(*load_progress(save_path, name))
+    dedup = open_dedup(save_path, name, dedup_params)
+    tally = Tally(*load_progress(save_path, name), dedup=dedup)
     if tally.total_tokens >= target:
         print(f"⏩ {name} already completed. Skipping.")
         return
 
-    prefetch_queue, stop_event = start_prefetcher(ds_cfg, name, tally.items_processed)
+    prefetch_queue, stop_event = start_prefetcher(ds_cfg, name, tally.stream_offset)
     try:
         fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name)
     except KeyboardInterrupt:
@@ -340,18 +420,90 @@ def process_dataset(pool, ds_cfg, stride):
     finally:
         stop_event.set()
 
-    flush_remainder(pool, tally, save_path, stride, target, name)
+    flush_remainder(pool, tally, save_path, stride, name)
 
 
-def run_prefill():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def take_texts(prefetch_queue, count):
+    """Up to `count` texts off the stream, and whether it has ended."""
+    texts = []
+    while len(texts) < count:
+        item = prefetch_queue.get()
+        if item is None:  # Sentinel: stream completed
+            return texts, True
+        texts.append(item[1])
+    return texts, False
+
+
+def judge_prefix(pool, prefetch_queue, dedup, docs):
+    """Feeds the stream's first `docs` documents to `dedup`, batch by batch."""
+    t_start = time.time()
+    done = False
+    while not done and dedup.counts["docs_seen"] < docs:
+        batch = min(TOKENIZE_BATCH_ITEMS, docs - dedup.counts["docs_seen"])
+        texts, done = take_texts(prefetch_queue, batch)
+        dedup.keep(texts, pool.map)
+        sys.stdout.write(f"\r{dedup.counts['docs_seen']:,} documents | "
+                         f"dropped {dedup.record()['doc_removal_rate']:.1%} | "
+                         f"{(time.time() - t_start)/60:.1f}m")
+        sys.stdout.flush()
+
+
+def measure_duplicates(pool, ds_cfg, docs, dedup_params):
+    """Judge a source's first `docs` documents and write nothing: its near-duplicate rate
+    at no disk cost, for deciding whether a source needs the pass. A prefix's rate is a
+    floor on the whole source's, since every document has fewer earlier ones to match."""
+    name = source_name(ds_cfg)
+    print(f"\n🔎 Measuring {name}'s near-duplicates over its first {docs:,} documents")
+    dedup = NearDedup(dedup_params)
+    prefetch_queue, stop_event = start_prefetcher(ds_cfg, name, 0)
+    try:
+        judge_prefix(pool, prefetch_queue, dedup, docs)
+    finally:
+        stop_prefetcher(prefetch_queue, stop_event)
+    record = {"source": name, **dedup.record()}
+    print("\nDEDUP_RATE " + json.dumps(record), flush=True)
+    return record
+
+
+def select_sources(only):
+    """Every MIXTURE source, or the ones named in `only`, in MIXTURE order."""
+    known = [source_name(c) for c in MIXTURE]
+    unknown = set(only) - set(known)
+    if unknown:
+        raise SystemExit(f"unknown sources {sorted(unknown)}; the MIXTURE has {known}")
+    return [c for c in MIXTURE if not only or source_name(c) in only]
+
+
+def run_prefill(only=(), dedup=False, measure=None):
+    """Tokenize the selected sources into OUTPUT_DIR or, with `measure`, write nothing
+    and print each one's near-duplicate rate over its first `measure` documents."""
+    sources = select_sources(only)
+    params = DedupParams.of(CONFIG) if dedup or measure else None
     # Leave one core free to keep the system responsive
     num_workers = max(1, int(cpu_count() - 1))
 
     with Pool(num_workers) as pool:
-        for ds_cfg in MIXTURE:
-            process_dataset(pool, ds_cfg, 2 * CONFIG.MAX_SEQ_LEN + 1)
+        for ds_cfg in sources:
+            if measure:
+                measure_duplicates(pool, ds_cfg, measure, params)
+            else:
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                process_dataset(pool, ds_cfg, 2 * CONFIG.MAX_SEQ_LEN + 1, params)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Tokenize the MIXTURE's sources into DATA_ROOT.")
+    parser.add_argument("--only", nargs="+", default=(), metavar="SOURCE",
+                        help="just these sources (their aliases), e.g. --only codeparrot")
+    parser.add_argument("--dedup", action="store_true",
+                        help="drop near-duplicate documents before tokenizing (#486); needs a "
+                             "DATA_ROOT whose folders were not written without it")
+    parser.add_argument("--measure", type=int, default=None, metavar="DOCS",
+                        help="write nothing: print each source's near-duplicate rate over its "
+                             "first DOCS documents")
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
-    run_prefill()
+    args = parse_args()
+    run_prefill(args.only, args.dedup, args.measure)

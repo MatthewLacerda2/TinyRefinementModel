@@ -37,6 +37,11 @@ DEFAULT_DATA_MIXTURE = ("pretrain/fineweb-edu=0.85:0.35,"
                         "pretrain/codeparrot=0.10:0.40,"
                         "pretrain/finemath=0.05:0.25")
 
+# How far the LSH S-curve's knee, (1/bands)^(1/rows), may sit from DEDUP_THRESHOLD before
+# the validator says the bands and rows were not moved with it (see DEDUP_ROWS): 25 x 10
+# has its knee at 0.72, so 0.7 passes and 0.8 alone is refused.
+DEDUP_KNEE_SLACK = 0.05
+
 
 class Config(BaseSettings):
     # init_settings is the only source: `from_env` hands over the environment as a
@@ -341,6 +346,36 @@ class Config(BaseSettings):
     # three seeds fit the 254M-token general-web bucket #489 reads. Off: a resume is exact.
     DATA_BRANCH: bool = False
     DATA_BRANCH_SEED_STRIDE: int = 80_000
+
+    # ── Prefill near-dedup (trm/data/dedup.py, #486) ─────────────────────────────
+    # Read by `python -m trm.data.prefill --dedup`, recorded in each deduped source's
+    # status.json; nothing that trains reads them. StarCoder's settings (Li et al. 2023,
+    # §3.5): word 5-grams, Jaccard 0.7, 256 MinHash permutations as in the BigCode
+    # pipeline it follows. BANDS x ROWS is the LSH cut datasketch's _optimal_param picks
+    # for that threshold and permutation count (equal weight on false positives and
+    # negatives; tests/core/test_near_dedup.py recomputes it): 25 x 10, whose S-curve
+    # crosses one half at Jaccard 0.72. The validator refuses a threshold moved without
+    # its bands and rows. The seed draws the permutations.
+    DEDUP_THRESHOLD: float = 0.7
+    DEDUP_NUM_PERM: int = 256
+    DEDUP_BANDS: int = 25
+    DEDUP_ROWS: int = 10
+    DEDUP_NGRAM: int = 5
+    DEDUP_SEED: int = 42
+
+    @field_validator("DEDUP_ROWS")
+    @classmethod
+    def _bands_fit_the_threshold(cls, rows, info):
+        bands, perms, threshold = (info.data.get(k) for k in ("DEDUP_BANDS", "DEDUP_NUM_PERM", "DEDUP_THRESHOLD"))
+        if None in (bands, perms, threshold):
+            return rows  # one of them is already refused, by name
+        if bands < 1 or rows < 1 or bands * rows > perms:
+            raise ValueError(f"{bands} bands x {rows} rows must fit DEDUP_NUM_PERM={perms}")
+        knee = (1 / bands) ** (1 / rows)
+        if abs(knee - threshold) > DEDUP_KNEE_SLACK:
+            raise ValueError(f"{bands} bands x {rows} rows match at Jaccard ~{knee:.2f}, not near "
+                             f"DEDUP_THRESHOLD={threshold}: move DEDUP_BANDS/DEDUP_ROWS with it")
+        return rows
 
     # ── Run cadence (in optimizer steps) ──────────────────────────────────────
     # Both fire at the opt-step boundary — NOT nested in the logging block (nesting
