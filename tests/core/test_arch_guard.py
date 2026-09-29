@@ -1,32 +1,41 @@
 """MODEL_ARCH must fail closed (#104): the selector's fallthrough default means
 a typo would silently train the wrong architecture for a whole run — on the
-base run, ~9 GPU-hours discovered late or never. Import-time validation turns
-that into an immediate, explicit launch failure.
+base run, ~9 GPU-hours discovered late or never. Validation when the Config is read
+turns that into an immediate, explicit launch failure.
 
-config validates at import, and this process has long since imported it, so every
-case is a fresh import of trm.config. All nine run in one child interpreter
-(`import_config_under` in tests/conftest.py) rather than nine cold starts (#325); a
-refused case is one whose import raised, exactly what would kill a launch.
+Building a Config is a pure function of a mapping (#475), so each case is built here,
+in-process; a refused case is one whose build raised SystemExit, exactly what
+`Config.from_env` does to a launch.
 """
 
 import pytest
+
+from trm.settings import Config
 
 CASES = {
     "arch=refnier": {"MODEL_ARCH": "refnier"},
     "arch=plain": {"MODEL_ARCH": "plain"},
     "arch=refiner": {"MODEL_ARCH": "refiner"},
     "arch=reasoner": {"MODEL_ARCH": "reasoner"},
-    "arch unset": {"MODEL_ARCH": None},
+    "arch unset": {},
     "time_signal=sinsuoidal": {"TIME_SIGNAL": "sinsuoidal"},
     "time_signal=sinusoidal": {"TIME_SIGNAL": "sinusoidal"},
     "time_signal=table": {"TIME_SIGNAL": "table"},
-    "time_signal unset": {"TIME_SIGNAL": None},
+    "time_signal unset": {},
 }
 
 
+def _outcome(environ):
+    try:
+        Config.from_env(environ)
+    except SystemExit as refused:
+        return {"ok": False, "error": str(refused.code)}
+    return {"ok": True}
+
+
 @pytest.fixture(scope="module")
-def outcomes(import_config_under):
-    return dict(zip(CASES, import_config_under(list(CASES.values()))))
+def outcomes():
+    return {case: _outcome(environ) for case, environ in CASES.items()}
 
 
 def test_unknown_model_arch_fails_closed_before_anything_builds(outcomes):

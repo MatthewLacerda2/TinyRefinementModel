@@ -35,14 +35,14 @@ FIRST_LEG, SECOND_LEG = 10, 15
 # Micro-steps and rows per optimizer step, from the shipped recipe: orbax numbers a
 # checkpoint by the micro-step, and the pair moved to 64 x 2 when batch 2 landed
 # (#385). Their product is fixed at 128 rows, so the token budget below does not move.
-from trm.config import ACCUMULATION_STEPS as ACC, BATCH_SIZE as ROWS  # noqa: E402
+from trm.settings import CONFIG  # noqa: E402
 ENV = {
     "JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1",
     "LATENT_DIM": "32", "NUM_HEADS": "4", "MAX_SEQ_LEN": str(SEQ), "PLAIN_LAYERS": "2",
     "MODEL_ARCH": "plain", "EVAL_ROWS": "2", "VAL_SKIP_SAMPLES": "0",
     "VAL_EVERY_OPT_STEPS": "5", "VAL_BY_SOURCE_EVERY_OPT_STEPS": "5",
     "CHECKPOINT_EVERY_OPT_STEPS": "5", "MILESTONE_FIRST_TOKENS": "0",
-    "WARMUP_STEPS": "2", "TRAIN_TOKEN_BUDGET": str(40 * ACC * ROWS * 2 * SEQ),
+    "WARMUP_STEPS": "2", "TRAIN_TOKEN_BUDGET": str(40 * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE * 2 * SEQ),
     "MODEL_SEED": "0", "DATA_SEED": "0",
 }
 
@@ -92,7 +92,7 @@ def run(tmp_path_factory):
     run_dir = tmp_path / "runs" / "run_e2e"
     run_dir.mkdir(parents=True)
     first = _train_until(tmp_path, run_dir, FIRST_LEG)
-    checkpoint = run_dir / "checkpoints" / str(FIRST_LEG * ACC - 1)
+    checkpoint = run_dir / "checkpoints" / str(FIRST_LEG * CONFIG.ACCUMULATION_STEPS - 1)
     # The cold tier's copy of the run's last full state (the tick's device check aside:
     # tmp_path is one disk), then the SSD's checkpoints gone and the copy branched back
     # in, as experiments/mix/branch_decay.py branches a decay.
@@ -122,7 +122,7 @@ def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run)
     state = json.loads((run["checkpoint"] / "monitor_state" / "metadata").read_text())
     # One row per micro-step at BATCH_SIZE 1, counted as served (#24): a full window
     # per opt step, so the checkpoint sits on the optimizer's boundary (#355).
-    assert state["samples_seen"] == FIRST_LEG * ACC * ROWS
+    assert state["samples_seen"] == FIRST_LEG * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE
     assert state["data_state"]["sources"], "the exact data position (#424)"
 
 
@@ -158,7 +158,7 @@ def _leaves(tree, prefix=""):
 
 
 def test_the_resume_continues_from_the_checkpoint_and_restores_the_data_exactly(run):
-    assert f"Resuming from step {FIRST_LEG * ACC}" in run["second"]
+    assert f"Resuming from step {FIRST_LEG * CONFIG.ACCUMULATION_STEPS}" in run["second"]
     assert "Data stream restored exactly" in run["second"]
     steps = [r["step"] for r in load(str(run["dir"])).metrics]
     assert steps == sorted(set(steps)) and SECOND_LEG in steps

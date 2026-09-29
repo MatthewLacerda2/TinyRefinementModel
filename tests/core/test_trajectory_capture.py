@@ -18,7 +18,6 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.settings import CONFIG
 
 TOY_DIM = 32
@@ -35,19 +34,19 @@ def toy_refiner():
 
     return RefinerForTraining(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
+        encoder_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
 
 
 @pytest.fixture(scope="module")
 def tokens():
-    t = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    t = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     return t.at[0, : len(PROMPT)].set(jnp.array(PROMPT, dtype=jnp.int32))
 
 
 def test_the_trajectory_has_one_state_per_pass_plus_the_origin(toy_refiner, tokens):
     states, _ = toy_refiner.capture_trajectory(tokens, depth=TOY_DEPTH)
-    assert states.shape == (TOY_DEPTH + 1, 1, MAX_SEQ_LEN, TOY_DIM), (
+    assert states.shape == (TOY_DEPTH + 1, 1, CONFIG.MAX_SEQ_LEN, TOY_DIM), (
         "depth+1 states: the encoder output plus one per refine pass")
 
 
@@ -113,7 +112,7 @@ def test_an_architecture_without_a_refine_loop_refuses():
     from trm.model.reasoner import UniversalReasoner
 
     model = UniversalReasoner(60, nnx.Rngs(0), CONFIG, num_blocks=1, batch_size=1)
-    toks = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32)
+    toks = jnp.zeros((1, CONFIG.MAX_SEQ_LEN), dtype=jnp.int32)
 
     with pytest.raises(NotImplementedError, match="no trajectory to capture"):
         model.capture_trajectory(toks, depth=2)
@@ -129,13 +128,13 @@ def toy_plain():
     from trm.model.plain import PlainTransformer
 
     return PlainTransformer(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-                            num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+                            num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
 def test_the_plain_trajectory_has_one_state_per_block_plus_the_embedding(toy_plain, tokens):
     states, gates = toy_plain.capture_trajectory(tokens)
 
-    assert states.shape == (TOY_LAYERS + 1, 1, MAX_SEQ_LEN, TOY_DIM)
+    assert states.shape == (TOY_LAYERS + 1, 1, CONFIG.MAX_SEQ_LEN, TOY_DIM)
     assert states.dtype == jnp.float32
     assert gates is None, "the plain stack has no gate"
     assert jnp.array_equal(states[0], toy_plain.embed(tokens).astype(jnp.float32))

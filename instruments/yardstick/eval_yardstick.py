@@ -35,7 +35,7 @@ from flax import nnx
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
 
-from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME
+from trm.config import TOKENIZER_NAME
 from trm.runtime.restore import EVAL_BATCH_SIZE, restore_arch
 from instruments.arch import add_arch_argument
 from instruments.yardstick.yardstick import (
@@ -135,7 +135,7 @@ def main(argv=None):
     ap.add_argument("--fineweb-tokens", type=int, default=FINEWEB_DEFAULT_TOKENS,
                     help=f"tokens of the speedrun's FineWeb val shard to score (0 skips; the full reference "
                          f"set is {fineweb_val.SPEEDRUN_VAL_TOKENS})")
-    ap.add_argument("--fineweb-window", type=int, default=MAX_SEQ_LEN,
+    ap.add_argument("--fineweb-window", type=int, default=CONFIG.MAX_SEQ_LEN,
                     help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
     args = ap.parse_args(argv)
 
@@ -155,7 +155,7 @@ def main(argv=None):
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
     encoded, skipped = [], 0
     for text in texts:
-        pair = encode_example(enc, text, MAX_SEQ_LEN)
+        pair = encode_example(enc, text, CONFIG.MAX_SEQ_LEN)
         if pair is None:
             skipped += 1
         else:
@@ -165,7 +165,7 @@ def main(argv=None):
 
     print(f"📏 LAMBADA: {len(encoded)} examples | arch {args.arch} | depth {args.depth} | batch {args.batch}")
     scores = score_examples(
-        make_logits_fn(model, args.depth), encoded, PAD_TOKEN_ID, batch_size=args.batch,
+        make_logits_fn(model, args.depth), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
         progress=lambda done, total: print(f"  … {done}/{total}", flush=True) if done % 512 < args.batch else None,
     )
     result = summarize(scores)

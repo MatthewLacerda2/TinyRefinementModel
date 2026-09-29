@@ -31,7 +31,6 @@ import pytest
 from flax import nnx
 
 from trm import infer
-from trm.config import MAX_SEQ_LEN
 from trm.settings import CONFIG
 
 TOY_DIM = 32
@@ -126,7 +125,7 @@ def test_generation_raises_instead_of_emitting_a_token(monkeypatch):
         lambda *a, **k: jnp.full((TOY_VOCAB,), jnp.nan))
 
     with pytest.raises(infer.NonFiniteLogits):
-        stub = types.SimpleNamespace(max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        stub = types.SimpleNamespace(max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
         infer.generate_text(stub, _StubEncoder(), "hello", max_new_tokens=4, depth=1, quiet=True)
 
 
@@ -148,7 +147,7 @@ def test_a_healthy_model_still_generates(monkeypatch):
 
     model = RefinerForTraining(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
+        encoder_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
     infer.generate_text(model, _StubEncoder(), "hello", max_new_tokens=3,
                         top_k=8, depth=TOY_DEPTH, seed=0, quiet=True)

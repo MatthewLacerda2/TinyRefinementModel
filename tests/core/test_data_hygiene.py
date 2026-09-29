@@ -14,7 +14,8 @@ import numpy as np
 import pytest
 from dotenv import load_dotenv
 
-from trm.config import EOT_TOKEN_ID, VOCAB_SIZE, PAD_TOKEN_ID, resolve_root
+from trm.config import EOT_TOKEN_ID, VOCAB_SIZE, resolve_root
+from trm.settings import CONFIG
 
 load_dotenv()
 
@@ -45,7 +46,7 @@ def test_token_streams_are_sane(source_dir):
         assert sample.max() < VOCAB_SIZE, (
             f"{path}: token id {sample.max()} >= vocab size {VOCAB_SIZE}"
         )
-        pad_fraction = float(np.mean(sample == PAD_TOKEN_ID))
+        pad_fraction = float(np.mean(sample == CONFIG.PAD_TOKEN_ID))
         assert pad_fraction < 0.25, (
             f"{path}: {pad_fraction:.0%} of sampled tokens are PAD — stream is mostly padding"
         )

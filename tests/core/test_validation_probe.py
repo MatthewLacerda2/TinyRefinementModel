@@ -48,7 +48,7 @@ def test_chunked_probe_matches_full_logit_scoring(arch):
     from flax import nnx
 
     from instruments.arch import build
-    from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID
+    from trm.settings import CONFIG
     from trm.train import validation
 
     # The probe scores one row at a time; the reasoner sizes its hunch cache from the
@@ -56,18 +56,18 @@ def test_chunked_probe_matches_full_logit_scoring(arch):
     extra = {"plain": {"num_layers": 2}, "reasoner": {"batch_size": 1}}.get(arch, {})
     model = build(arch, dim=60, seed=3, **extra)
     rng = np.random.default_rng(0)
-    batch = jnp.asarray(rng.integers(1, 50000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
-    batch = batch.at[0, -40:].set(PAD_TOKEN_ID)  # a padded tail, so the mask is exercised
+    batch = jnp.asarray(rng.integers(1, 50000, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = batch.at[0, -40:].set(CONFIG.PAD_TOKEN_ID)  # a padded tail, so the mask is exercised
 
     @nnx.jit
     def full_logit_sums(model, batch):
-        seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
-        seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:]
+        seq1_in, seq1_out = batch[:, :CONFIG.MAX_SEQ_LEN], batch[:, 1:CONFIG.MAX_SEQ_LEN + 1]
+        seq2_in, seq2_out = batch[:, CONFIG.MAX_SEQ_LEN:2 * CONFIG.MAX_SEQ_LEN], batch[:, CONFIG.MAX_SEQ_LEN + 1:]
         out1 = model(seq1_in, depth=validation.VAL_FIXED_DEPTH, training=False, new_document=True)
         out2 = model(seq2_in, depth=validation.VAL_FIXED_DEPTH, training=False, new_document=False)
         total, count = 0.0, 0
         for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
-            mask = targets != PAD_TOKEN_ID
+            mask = targets != CONFIG.PAD_TOKEN_ID
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
             total, count = total + jnp.sum(ce * mask), count + jnp.sum(mask)
         return total, count
@@ -93,19 +93,19 @@ def test_the_probe_never_asks_for_full_logits():
 def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatch):
     """`skip=None` (#363) reads each corpus from its tail: the rows a run reaches only
     by exhausting that corpus, so they stay held out whatever the mixture does."""
-    from trm.config import MAX_SEQ_LEN
+    from trm.settings import CONFIG
     from trm.train import validation
 
-    stride = 2 * MAX_SEQ_LEN + 1
+    stride = 2 * CONFIG.MAX_SEQ_LEN + 1
     source = tmp_path / "pretrain" / "finemath"
     source.mkdir(parents=True)
     # Two shards of 3 samples each; sample i is filled with the value i.
     np.save(source / "chunk_0.npy", np.repeat(np.arange(3, dtype=np.int32), stride))
     np.save(source / "chunk_1.npy", np.repeat(np.arange(3, 6, dtype=np.int32), stride))
-    assert validation.corpus_samples(str(source), MAX_SEQ_LEN) == 6
+    assert validation.corpus_samples(str(source), CONFIG.MAX_SEQ_LEN) == 6
 
     monkeypatch.setattr(validation, "VAL_TAIL_ROWS", 2)
-    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, max_seq_len=MAX_SEQ_LEN,
+    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, max_seq_len=CONFIG.MAX_SEQ_LEN,
                                        data_seed=0, source="finemath")
     rows = probe.load_rows()
     assert [int(r[0, 0]) for r in rows] == [4, 5]

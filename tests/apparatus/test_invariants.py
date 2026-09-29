@@ -20,12 +20,13 @@ def _log(rows):
 def test_the_depth_corridor_is_derived_from_the_config_not_hardcoded():
     """Change MAX_STEPS_LIMIT or ACCUMULATION_STEPS and the bounds must move with
     them. A hardcoded tolerance silently becomes wrong instead of loudly wrong."""
-    from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT
+    from trm.config import MAX_STEPS_LIMIT
+    from trm.settings import CONFIG
 
     mean, sigma = invariants.depth_expectation()
     assert mean == (MAX_STEPS_LIMIT + 1) / 2
     assert sigma == pytest.approx(
-        math.sqrt((MAX_STEPS_LIMIT**2 - 1) / 12 / ACCUMULATION_STEPS))
+        math.sqrt((MAX_STEPS_LIMIT**2 - 1) / 12 / CONFIG.ACCUMULATION_STEPS))
 
 
 def test_it_catches_the_resume_artifact():

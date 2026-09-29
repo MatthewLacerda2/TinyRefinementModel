@@ -192,13 +192,12 @@ def _main(argv=None):
     args = ap.parse_args(argv)
     load_env()
 
-    from trm.config import MAX_SEQ_LEN, MODEL_ARCH, PAD_TOKEN_ID
     from trm.runtime.restore import load_eval_batches, restore_arch
     from trm.settings import CONFIG
 
-    model, _ = restore_arch(CONFIG, MODEL_ARCH, args.checkpoint_path, step=args.step)
-    rows = [row[:, :MAX_SEQ_LEN] for row in load_eval_batches(CONFIG, args.source, num_rows=args.rows)]
-    states, gaps = collect(model, rows, PAD_TOKEN_ID)
+    model, _ = restore_arch(CONFIG, CONFIG.MODEL_ARCH, args.checkpoint_path, step=args.step)
+    rows = [row[:, :CONFIG.MAX_SEQ_LEN] for row in load_eval_batches(CONFIG, args.source, num_rows=args.rows)]
+    states, gaps = collect(model, rows, CONFIG.PAD_TOKEN_ID)
 
     checkpoint = pathlib.Path(args.checkpoint_path).resolve()
     step = args.step if args.step is not None else "latest"

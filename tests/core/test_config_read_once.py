@@ -100,3 +100,53 @@ def test_the_scan_sees_a_read_and_passes_a_hand_off():
     assert _environment_reads('from os import environ\n') == [("<module>", 1)]
     assert _environment_reads('import os\nenv = {**os.environ, "A": "1"}\n') == []
     assert _environment_reads('import os\nos.environ.setdefault("XLA_FLAGS", "")\n') == []
+
+
+# ── read once, then passed down ──────────────────────────────────────────────────
+# `trm.settings.CONFIG` is this process's Config. A library module never reads it: it
+# takes the Config (or the value) its caller hands down, so a test or an instrument can
+# hand it any other Config and a resumed run trains on the one start.py built (#475).
+# These are the modules a process starts from, which read it and hand it down.
+ENTRY_POINTS = {
+    "trm/train/start.py": "the trainer: this process's Config, with a resumed run's own budget",
+    "trm/runtime/supervisor.py": "main(): the margin alarms' bars, the fit gate, the scorer cap",
+    "trm/runtime/launch.py": "main(): the run's stop step and cold-tier margin",
+    "trm/runtime/rewind.py": "main(): the accumulation a checkpoint's opt step is counted in",
+    "trm/infer.py": "the serving CLI: the model it builds and its default depth",
+    "trm/data/prefill.py": "the tokenizer run: the row stride its chunks align to",
+    "trm/config.py": "the compute dtype is process-wide (FORCE_F32_COMPUTE)",
+}
+
+
+def _reads_process_config(source):
+    """Lines where `CONFIG` is imported from trm.settings, or read as settings.CONFIG."""
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module == "trm.settings" \
+                and any(alias.name == "CONFIG" for alias in node.names):
+            lines.append(node.lineno)
+        if isinstance(node, ast.Attribute) and node.attr == "CONFIG" \
+                and isinstance(node.value, ast.Name) and node.value.id == "settings":
+            lines.append(node.lineno)
+    return lines
+
+
+def test_only_entry_points_read_this_process_config():
+    stray = [f"{p.relative_to(REPO_ROOT)}:{line}" for p in _library_files()
+             if str(p.relative_to(REPO_ROOT)) not in ENTRY_POINTS.keys() | {READER}
+             for line in _reads_process_config(p.read_text())]
+    assert not stray, (
+        "these library modules read this process's CONFIG:\n  " + "\n  ".join(stray)
+        + "\nTake a Config (or the value) from the caller instead; an entry point hands it down.")
+
+
+def test_every_entry_point_still_reads_it():
+    """An entry named here that no longer reads CONFIG would quietly excuse the next one."""
+    stale = [name for name in ENTRY_POINTS if not _reads_process_config((REPO_ROOT / name).read_text())]
+    assert not stale, f"stale entry points: {stale}"
+
+
+def test_the_scan_sees_both_ways_of_reading_it():
+    assert _reads_process_config("from trm.settings import CONFIG, location\n") == [1]
+    assert _reads_process_config("from trm import settings\nx = settings.CONFIG.BATCH_SIZE\n") == [2]
+    assert _reads_process_config("from trm.settings import Config\n") == []

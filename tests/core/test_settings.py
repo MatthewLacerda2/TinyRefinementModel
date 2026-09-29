@@ -1,8 +1,8 @@
 """The run's knobs are one frozen Config, read once and recorded whole (#475).
 
 Building a Config is a pure function of a mapping, so these cases need no fresh
-interpreter: the import-time cases (`import_config_under`) stay for what still
-reads constants at import, and this file holds the reader itself.
+interpreter. This file holds the reader itself; tests/core/test_config_read_once.py
+holds who may read it.
 """
 
 import pytest
@@ -98,21 +98,12 @@ def test_the_run_records_every_knob():
     assert {k: recorded.get(k) for k in dumped} == dumped
 
 
-def test_the_constants_modules_still_import_are_this_process_config():
-    """The bridge (trm/config.py and the modules re-exporting from it) must not drift
-    from CONFIG while modules still import knobs as constants."""
+def test_no_module_re_exports_a_knob():
+    """A knob is read from the Config its caller hands down (#475), never from a module
+    constant frozen at import: none of the modules that used to re-export one does."""
     import importlib
 
-    modules = [importlib.import_module(m) for m in
-               ("trm.config", "trm.runtime.layout", "trm.train.schedules", "trm.train.validation")]
-    exported = {(m.__name__, name): getattr(m, name)
-                for m in modules for name in Config.model_fields | Config.model_computed_fields
-                if hasattr(m, name)}
-    # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported. Knobs
-    # added since #475 are read from a Config handed down, so the bridge never grows,
-    # and neither are the schedule's: trm.train.schedules resolves from a Config.
-    passed_down = {"MILESTONE_SCORERS", "WARMUP_STEPS", "PEAK_LR", "LR_SCHEDULE",
-                   "WSD_DECAY_FRACTION", "WSD_DECAY_START", "VAL_SKIP_SAMPLES"}
-    assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"} - passed_down
-    drift = {key: value for key, value in exported.items() if value != getattr(CONFIG, key[1])}
-    assert not drift, drift
+    knobs = set(Config.model_fields) | set(Config.model_computed_fields)
+    for name in ("trm.config", "trm.runtime.layout", "trm.train.schedules", "trm.train.validation"):
+        exported = knobs & set(vars(importlib.import_module(name)))
+        assert not exported, f"{name} re-exports {sorted(exported)}: pass a Config down instead"

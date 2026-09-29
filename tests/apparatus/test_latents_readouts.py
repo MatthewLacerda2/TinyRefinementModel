@@ -110,7 +110,7 @@ def test_results_are_emitted_one_line_per_pass(capsys):
 
 def test_an_arch_without_a_trajectory_is_refused_before_anything_loads(monkeypatch):
     import instruments.latents as latents
-    monkeypatch.setattr("trm.config.MODEL_ARCH", "reasoner")
+    monkeypatch.setattr(latents, "CONFIG", latents.CONFIG.model_copy(update={"MODEL_ARCH": "reasoner"}))
     monkeypatch.setattr("trm.runtime.restore.restore_arch",
                         lambda *a, **k: pytest.fail("restored a model it should have refused"))
     with pytest.raises(SystemExit, match="MODEL_ARCH='reasoner'"):
@@ -128,7 +128,7 @@ def test_the_arches_with_a_trajectory_get_past_the_guard(monkeypatch, arch):
     def restore(*args, **kwargs):
         raise Restored
 
-    monkeypatch.setattr("trm.config.MODEL_ARCH", arch)
+    monkeypatch.setattr(latents, "CONFIG", latents.CONFIG.model_copy(update={"MODEL_ARCH": arch}))
     monkeypatch.setattr("trm.runtime.restore.restore_arch", restore)
     with pytest.raises(Restored):
         latents._main(["--checkpoint", "nowhere"])

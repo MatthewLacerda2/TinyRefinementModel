@@ -12,7 +12,7 @@ import json
 import pytest
 
 from instruments import runlog
-from trm.config import TOKENS_PER_OPT_STEP
+from trm.settings import CONFIG
 
 HEADER = "step,ce,loss,val_ce,avg_forget_cost,grad_norm_avg"
 
@@ -66,7 +66,7 @@ def test_reads_a_real_shaped_run(tmp_path):
     assert not log.has("avg_forget_cost")
 
     assert log.last_step == 15
-    assert log.tokens == 15 * TOKENS_PER_OPT_STEP
+    assert log.tokens == 15 * CONFIG.TOKENS_PER_OPT_STEP
 
 
 def test_a_placeholder_zero_column_is_distinguishable_from_a_measurement(tmp_path):

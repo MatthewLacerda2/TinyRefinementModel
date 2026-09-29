@@ -12,7 +12,8 @@ current window's mean — the second leak).
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import COMPUTE_DTYPE, PAD_TOKEN_ID
+from trm.config import COMPUTE_DTYPE
+from trm.settings import CONFIG
 
 
 def _logits(model, tokens_np, depth=2):
@@ -32,8 +33,8 @@ def test_pad_run_length_does_not_change_the_real_tokens_after_it(tiny_model, mak
     sees relative distances between the (unmasked) real tokens, so the real-token
     logits must not depend on it."""
     real = token_batch[:, :48]
-    short = np.concatenate([np.full((1, 8), PAD_TOKEN_ID, dtype=np.int32), real], axis=1)
-    long = np.concatenate([np.full((1, 16), PAD_TOKEN_ID, dtype=np.int32), real], axis=1)
+    short = np.concatenate([np.full((1, 8), CONFIG.PAD_TOKEN_ID, dtype=np.int32), real], axis=1)
+    long = np.concatenate([np.full((1, 16), CONFIG.PAD_TOKEN_ID, dtype=np.int32), real], axis=1)
 
     logits_short = _logits(tiny_model, short)[:, 8:]
     logits_long = _logits(tiny_model, long)[:, 16:]

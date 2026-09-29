@@ -16,7 +16,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.grad_step import compute_grad_step
 from trm.settings import CONFIG
@@ -127,9 +126,9 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
     from flax import nnx
 
     model = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+                               encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
     _, _, loose, raw_norm = compute_grad_step(model, batch, jnp.array(1), 2)
     ceiling = float(raw_norm) / 10.0
@@ -154,9 +153,9 @@ def test_an_infinite_ceiling_is_exactly_todays_behaviour():
     from flax import nnx
 
     model = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+                               encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
     _, _, default, _ = compute_grad_step(model, batch, jnp.array(1), 2)
     _, _, explicit, _ = compute_grad_step(model, batch, jnp.array(1), 2,

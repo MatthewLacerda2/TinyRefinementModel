@@ -29,7 +29,8 @@ import dataclasses
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
+from trm.config import MAX_STEPS_LIMIT
+from trm.settings import CONFIG
 
 from instruments import results as result_lines
 from instruments._common import add_checkpoint_argument, load_env
@@ -160,9 +161,8 @@ def _main(argv=None):
     ap.add_argument("--step", type=int, default=None,
                     help="checkpoint step to restore (default: the newest the manager holds)")
     args = ap.parse_args(argv)
-    from trm.config import MODEL_ARCH
-    if MODEL_ARCH not in TRAJECTORY_ARCHES:
-        raise SystemExit(f"instruments.latents reads a trajectory; MODEL_ARCH={MODEL_ARCH!r} "
+    if CONFIG.MODEL_ARCH not in TRAJECTORY_ARCHES:
+        raise SystemExit(f"instruments.latents reads a trajectory; MODEL_ARCH={CONFIG.MODEL_ARCH!r} "
                          f"has none to capture. Use one of {', '.join(TRAJECTORY_ARCHES)}.")
 
     # DATA_ROOT lives in .env and the held-out loader reads it from the
@@ -171,12 +171,11 @@ def _main(argv=None):
     load_env()
 
     from trm.runtime.restore import load_eval_batches, restore_arch
-    from trm.settings import CONFIG
 
-    model, _ = restore_arch(CONFIG, MODEL_ARCH, args.checkpoint_path, step=args.step)
+    model, _ = restore_arch(CONFIG, CONFIG.MODEL_ARCH, args.checkpoint_path, step=args.step)
     # load_eval_batches yields input rows, not (input, target) pairs.
     for i, row in enumerate(load_eval_batches(CONFIG, args.source, num_rows=args.rows)):
-        traj = capture(model, jnp.asarray(row[:, :MAX_SEQ_LEN]), args.depth)
+        traj = capture(model, jnp.asarray(row[:, :CONFIG.MAX_SEQ_LEN]), args.depth)
         if not traj.ok:
             print(f"row {i}: {traj.nonfinite} non-finite values — skipped (#229/#233)")
             continue

@@ -454,7 +454,8 @@ def location(name, default=None, environ=os.environ):
     return environ.get(name, default)
 
 
-# The launching process's Config, read when this module is first imported. The bridge
-# while modules still import knobs as constants (trm/config.py and the modules that
-# re-export from it); it retires as entry points build a Config and pass it down (#475).
+# The launching process's Config, read when this module is first imported. Only entry
+# points read it (the trainer's start, the supervisor, launch, rewind, infer, prefill,
+# and trm/config.py for the compute dtype) and hand it down; library code takes the
+# Config it is given (#475, tests/core/test_config_read_once.py).
 CONFIG = Config.from_env()

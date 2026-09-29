@@ -33,7 +33,8 @@ ignore it.
 import math
 
 from instruments._common import F16_MAX  # the ceiling act_max is measured against
-from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.settings import CONFIG
 
 # How many standard deviations of the sampling distribution `depth_avg` may sit
 # from its mean before the row is called suspect. The observed artifact was 8.6
@@ -43,7 +44,7 @@ from trm.config import ACCUMULATION_STEPS, MAX_STEPS_LIMIT, VOCAB_SIZE
 DEPTH_SIGMA_TOLERANCE = 5.0
 
 
-def depth_expectation(accumulation_steps=ACCUMULATION_STEPS):
+def depth_expectation(accumulation_steps=CONFIG.ACCUMULATION_STEPS):
     """(mean, sigma) of `depth_avg` for a run at `accumulation_steps`.
 
     Depth is uniform over the integers 1..K per micro-step, so mean = (K+1)/2 and
@@ -63,7 +64,7 @@ def depth_expectation(accumulation_steps=ACCUMULATION_STEPS):
     return mean, sigma
 
 
-def _depth_bounds(accumulation_steps=ACCUMULATION_STEPS):
+def _depth_bounds(accumulation_steps=CONFIG.ACCUMULATION_STEPS):
     mean, sigma = depth_expectation(accumulation_steps)
     spread = DEPTH_SIGMA_TOLERANCE * sigma
     # Never wider than the support: a mean of draws in [1, K] cannot leave [1, K]
@@ -71,7 +72,7 @@ def _depth_bounds(accumulation_steps=ACCUMULATION_STEPS):
     return max(1.0, mean - spread), min(float(MAX_STEPS_LIMIT), mean + spread)
 
 
-def build_invariants(accumulation_steps=ACCUMULATION_STEPS):
+def build_invariants(accumulation_steps=CONFIG.ACCUMULATION_STEPS):
     """(column, low, high, why) for every quantity with a known-correct range.
 
     Built on call rather than at import so a test can vary the config and get
@@ -141,9 +142,9 @@ def suspect_rows(log, accumulation_steps=None):
     """
     if accumulation_steps is None:
         try:
-            accumulation_steps = int(log.params.get("ACCUMULATION_STEPS", ACCUMULATION_STEPS))
+            accumulation_steps = int(log.params.get("ACCUMULATION_STEPS", CONFIG.ACCUMULATION_STEPS))
         except (AttributeError, TypeError, ValueError):
-            accumulation_steps = ACCUMULATION_STEPS
+            accumulation_steps = CONFIG.ACCUMULATION_STEPS
     invariants = build_invariants(accumulation_steps)
     suspect = {}
     for row in log.metrics:

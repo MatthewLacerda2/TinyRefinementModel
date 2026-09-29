@@ -144,7 +144,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     # Heavy imports after arg parsing so --help stays instant.
-    from trm.config import MODEL_ARCH
+    from trm.settings import CONFIG
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     import orbax.checkpoint as ocp
 
@@ -165,7 +165,7 @@ def main(argv=None):
     step = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS).latest_step()
     if step is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}.")
-    print(f"📋 Milestone report: {source}, step {step}, arch '{MODEL_ARCH}'")
+    print(f"📋 Milestone report: {source}, step {step}, arch '{CONFIG.MODEL_ARCH}'")
 
     # Forward the checkpoint only when the user overrode it; otherwise each tool
     # self-discovers the same latest run (and keeps its own output placement).
@@ -175,7 +175,7 @@ def main(argv=None):
 
     sections = [
         run_section("Depth curve", lambda: section_depth_curve(
-            MODEL_ARCH, fwd_args, batches, args.section_timeout)),
+            CONFIG.MODEL_ARCH, fwd_args, batches, args.section_timeout)),
         run_section("Fixed-prompt transcripts", lambda: section_transcripts(
             fwd_args, transcript_args, args.section_timeout)),
         run_section("Held-out validation CE", lambda: section_val_ce(checkpoint_path)),
@@ -185,7 +185,7 @@ def main(argv=None):
         f"# Milestone report — checkpoint step {step}",
         "",
         f"- generated: {datetime.datetime.now().astimezone().isoformat()}",
-        f"- arch: {MODEL_ARCH}",
+        f"- arch: {CONFIG.MODEL_ARCH}",
         f"- checkpoint: {checkpoint_path}",
         f"- commit: {git_head() or 'unknown'}",
         "",

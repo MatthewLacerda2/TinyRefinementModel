@@ -153,11 +153,12 @@ test, or by an open issue that adds one; this file keeps only the *why*.
 - **No hidden defaults on the hot path.** Every knob the optimizer or model reads
   is a field of `Config` in `trm/settings.py` and recorded in the run's metadata: an
   unnamed default is a recipe nobody chose, that a library upgrade can change silently.
-- **Config is read once, by `Config.from_env`.** No other read of the environment
-  for a knob in `trm/` (paths go through `settings.location`); new code takes a
-  `Config` passed down rather than importing constants. Import-time reads scattered
-  over eleven files froze values in whatever order modules loaded and forced the
-  `start.py` / `run_budget` ordering dance (#475).
+- **Config is read once, by `Config.from_env`, and passed down.** No other read of
+  the environment for a knob in `trm/` (paths go through `settings.location`), and no
+  knob is a module constant: a library module takes the `Config` (or the value) its
+  caller hands it, and only entry points read this process's `CONFIG`. Import-time
+  reads scattered over eleven files froze values in whatever order modules loaded and
+  forced the `start.py` / `run_budget` ordering dance (#475).
 - **The dtype policy is about compute, not state.** Matmuls run f16; anything that
   *accumulates* — the residual stream, the gradient accumulator, an optimizer
   moment — belongs in f32: past ~4k, f16's 10 mantissa bits round a block's O(1)
@@ -432,13 +433,13 @@ and resuming a run that is not `plain` requires naming its architecture:
 
 | Concern | Files |
 |---|---|
-| **Config (single source of truth)** | `trm/settings.py` — `Config`, every knob a launch can set (the arch selector included), read once from the environment and recorded whole; `trm/config.py` — the dtype policy, the non-knob constants, and this process's knobs re-exported as constants for the modules not yet handed a `Config` |
+| **Config (single source of truth)** | `trm/settings.py` — `Config`, every knob a launch can set (the arch selector included), read once from the environment and recorded whole; `trm/config.py` — the dtype policy and the constants that are not knobs. Entry points hand this process's `CONFIG` down; library code takes a `Config` |
 | **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
-| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `rope.py`; `trm/model/__init__.py` `build_model(arch, dim, rngs)` is the one factory every entry point builds through |
+| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `rope.py`; `trm/model/__init__.py` `build_model(config, rngs)` is the one factory every entry point builds through |
 | **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` + `layers.py` (UniversalReasoner and its block) |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry); the rest is one concern per file |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py` |
-| **Persistence & run state** | `trm/runtime/` — `layout.py` (jax-free: cadences, checkpoint names, retention), `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch — `python -m trm.runtime.supervisor`), `rewind.py` (resume from an earlier checkpoint — `python -m trm.runtime.rewind`); the rest is one concern per file |
+| **Persistence & run state** | `trm/runtime/` — `layout.py` (jax-free: checkpoint names, retention), `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch — `python -m trm.runtime.supervisor`), `rewind.py` (resume from an earlier checkpoint — `python -m trm.runtime.rewind`); the rest is one concern per file |
 | **Inference** | `trm/infer.py` |
 | **Verifiable worlds** | `trm/rl/` — `tasks.py` (procedural Python problems with their own tests, split train/held-out by a hash of the instance), `sandbox.py` + `_sandbox_child.py` (run a candidate under kernel limits and say what happened). The world the model is meant to learn in by trying; it trains nothing on its own |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |

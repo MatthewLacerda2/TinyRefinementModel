@@ -41,7 +41,7 @@ def test_minutes_to_target_times_from_the_first_row(tmp_path):
 
 
 def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
-    """--set reaches the trainer's env only for a name trm/config.py defines (#359):
+    """--set reaches the trainer's env only for a knob, a trm.settings.Config field (#359):
     a typo would otherwise train an arm identical to its control."""
     import pytest
     from experiments.recipe.tokens_to_ce import parse_knobs
@@ -54,7 +54,7 @@ def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
 
 def test_an_arm_can_set_its_mixture():
     """#439: the mixture is a knob a spec pins per arm. `--set` refuses any name
-    trm/config.py does not define, so a mixture knob that lived anywhere else could
+    that is not a Config field, so a mixture knob that lived anywhere else could
     not be put on an arm at all — and the `=` inside the value must survive."""
     from experiments.recipe.tokens_to_ce import parse_knobs
 

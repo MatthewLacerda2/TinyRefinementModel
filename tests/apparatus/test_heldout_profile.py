@@ -68,18 +68,18 @@ def test_per_token_losses_average_to_the_trainers_val_ce():
     from the probe's number, every reading beside it would be about other targets."""
     from flax import nnx
 
-    from trm.config import EOT_TOKEN_ID, MAX_SEQ_LEN
+    from trm.config import EOT_TOKEN_ID
+    from trm.settings import CONFIG
     from trm.model import build_model
     from trm.train.validation import ValidationProbe
 
     rng = np.random.default_rng(2)
-    rows = [rng.integers(0, 300, (1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32) for _ in range(2)]
+    rows = [rng.integers(0, 300, (1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32) for _ in range(2)]
     rows[0][0, 7] = EOT_TOKEN_ID  # masked out of the targets on both paths (#373)
-    from trm.settings import CONFIG
     model = build_model(CONFIG, nnx.Rngs(0), arch="plain", dim=32, vocab_size=50304, num_heads=2, num_layers=1)
-    probe = ValidationProbe("unused", rows=2, skip=0, max_seq_len=MAX_SEQ_LEN, data_seed=0)
+    probe = ValidationProbe("unused", rows=2, skip=0, max_seq_len=CONFIG.MAX_SEQ_LEN, data_seed=0)
     probe._batches = rows
     scored = heldout_profile.score_rows(model, rows)
-    assert scored["nll"].size == 2 * 2 * MAX_SEQ_LEN - 1
+    assert scored["nll"].size == 2 * 2 * CONFIG.MAX_SEQ_LEN - 1
     assert math.isclose(float(scored["nll"].mean()), probe.run(model), rel_tol=1e-5)
-    assert scored["context_len"].min() == 1 and scored["context_len"].max() == MAX_SEQ_LEN
+    assert scored["context_len"].min() == 1 and scored["context_len"].max() == CONFIG.MAX_SEQ_LEN

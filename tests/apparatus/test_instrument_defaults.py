@@ -1,4 +1,4 @@
-"""An instrument's default may not be a silent second copy of a config.py constant (#167).
+"""An instrument's default may not be a silent second copy of a knob or config.py constant (#167).
 
 `vram_headroom_smoke` defaulted `--batch` to 1 after #24 changed BATCH_SIZE, and
 dim/heads to 512/16 after the shipping model became 960/15. On 2026-08-13 it ran at
@@ -19,7 +19,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Flag → the config.py constant it shadows.
+# Flag → the knob (a Config field) or trm/config.py constant it shadows.
 SHADOWS = {
     "--dim": "LATENT_DIM",
     "--heads": "NUM_HEADS",
@@ -65,8 +65,8 @@ INSTRUMENTS = sorted(p for p in (ROOT / "instruments").rglob("*.py") if "__pycac
 def test_instrument_defaults_follow_config(path):
     bad = literal_defaults(path.read_text())
     assert not bad, "\n".join(
-        f"{path.relative_to(ROOT)}:{line} {flag} default={value} shadows config.{SHADOWS[flag]} — "
-        f"use default={SHADOWS[flag]}, or declare it in CONFIG_DIVERGENCES with a reason"
+        f"{path.relative_to(ROOT)}:{line} {flag} default={value} shadows {SHADOWS[flag]} — "
+        f"use default=CONFIG.{SHADOWS[flag]}, or declare it in CONFIG_DIVERGENCES with a reason"
         for flag, value, line in bad)
 
 
@@ -83,6 +83,8 @@ def test_a_declaration_needs_a_reason():
 
 
 def test_every_shadowed_constant_exists_in_config():
+    """A knob (a Config field) or one of trm/config.py's constants."""
     import trm.config as config
-    missing = [c for c in set(SHADOWS.values()) if not hasattr(config, c)]
+    from trm.settings import Config
+    missing = [c for c in set(SHADOWS.values()) if c not in Config.model_fields and not hasattr(config, c)]
     assert not missing, missing

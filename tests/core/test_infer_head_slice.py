@@ -22,7 +22,6 @@ import pytest
 from flax import nnx
 
 from trm import infer
-from trm.config import MAX_SEQ_LEN
 from trm.settings import CONFIG
 
 TOY_DIM = 32
@@ -35,7 +34,7 @@ PROMPT = [1, 2, 3, 4]
 
 # Every position that has ever been an off-by-one: the first, a live one in the
 # middle of the prompt, and the last valid index.
-PROBE_POSITIONS = (0, len(PROMPT) - 1, MAX_SEQ_LEN - 1)
+PROBE_POSITIONS = (0, len(PROMPT) - 1, CONFIG.MAX_SEQ_LEN - 1)
 
 
 @pytest.fixture(scope="module")
@@ -44,13 +43,13 @@ def toy_refiner():
 
     return RefinerForTraining(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
+        encoder_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
 
 
 @pytest.fixture(scope="module")
 def padded_tokens():
-    tokens = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    tokens = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     return tokens.at[0, : len(PROMPT)].set(jnp.array(PROMPT, dtype=jnp.int32))
 
 
@@ -80,7 +79,7 @@ def test_asking_for_one_position_returns_one_position(toy_refiner, padded_tokens
 def test_omitting_the_position_still_returns_every_row(toy_refiner, padded_tokens):
     """The seam is opt-in. Eval paths that score whole sequences must be untouched."""
     full = toy_refiner(padded_tokens, depth=TOY_DEPTH, training=False).logits
-    assert full.shape == (1, MAX_SEQ_LEN, TOY_VOCAB)
+    assert full.shape == (1, CONFIG.MAX_SEQ_LEN, TOY_VOCAB)
 
 
 def test_the_training_path_is_unaffected(toy_refiner, padded_tokens):
@@ -88,7 +87,7 @@ def test_the_training_path_is_unaffected(toy_refiner, padded_tokens):
     so the chunked-CE path (#19) cannot have been disturbed."""
     out = toy_refiner(padded_tokens, depth=TOY_DEPTH, training=True)
     assert out.logits is None
-    assert out.hidden.shape == (1, MAX_SEQ_LEN, TOY_DIM)
+    assert out.hidden.shape == (1, CONFIG.MAX_SEQ_LEN, TOY_DIM)
 
 
 def test_the_jitted_sampling_step_reads_the_row_it_asked_for(toy_refiner, padded_tokens):
@@ -134,7 +133,7 @@ def test_the_control_baseline_agrees_with_itself_too():
     from trm.model.reasoner import UniversalReasoner
 
     model = UniversalReasoner(60, nnx.Rngs(0), CONFIG, num_blocks=1, batch_size=1)
-    tokens = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32).at[0, :4].set(
+    tokens = jnp.zeros((1, CONFIG.MAX_SEQ_LEN), dtype=jnp.int32).at[0, :4].set(
         jnp.array(PROMPT, dtype=jnp.int32))
 
     full = model(tokens, depth=2, training=False).logits

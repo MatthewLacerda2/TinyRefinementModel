@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from trm.config import EOT_TOKEN_ID, MAX_SEQ_LEN, VOCAB_SIZE
+from trm.config import EOT_TOKEN_ID, VOCAB_SIZE
 from trm.settings import CONFIG
 
 NEW_PAD = 50257
@@ -34,9 +34,9 @@ def test_eot_is_an_attention_key_when_it_is_not_the_pad():
     new pad (EOT is a key), and must not notice when that position is a real pad."""
     from trm.model.plain import PlainTransformer
 
-    model = PlainTransformer(16, nnx.Rngs(0), CONFIG, num_heads=2, num_layers=1, max_seq_len=MAX_SEQ_LEN,
+    model = PlainTransformer(16, nnx.Rngs(0), CONFIG, num_heads=2, num_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN,
                              pad_token_id=NEW_PAD)
-    base = np.full((1, MAX_SEQ_LEN), 11, dtype=np.int32)
+    base = np.full((1, CONFIG.MAX_SEQ_LEN), 11, dtype=np.int32)
     base[0, :12] = np.arange(100, 112)
 
     def later_logits(at_five):
@@ -65,5 +65,5 @@ def test_the_default_pad_leaves_eot_a_real_token():
     stop. The old id stays reachable to reproduce a run recorded under it."""
     from trm import config
 
-    assert config.PAD_TOKEN_ID == NEW_PAD == 50257
-    assert EOT_TOKEN_ID == 50256 and config.EOT_TOKEN_ID != config.PAD_TOKEN_ID
+    assert CONFIG.PAD_TOKEN_ID == NEW_PAD == 50257
+    assert EOT_TOKEN_ID == 50256 and config.EOT_TOKEN_ID != CONFIG.PAD_TOKEN_ID

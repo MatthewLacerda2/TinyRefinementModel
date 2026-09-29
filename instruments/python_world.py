@@ -165,11 +165,10 @@ def main(argv=None):
 
     model = enc = depth = None
     if not args.reference:
-        from trm.config import INFERENCE_DEPTH
         from trm.runtime.restore import restore_arch
         model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
         enc = tiktoken.get_encoding(TOKENIZER_NAME)
-        depth = INFERENCE_DEPTH if args.depth is None else args.depth
+        depth = CONFIG.INFERENCE_DEPTH if args.depth is None else args.depth
         print(f"📐 {args.arch} at step {step}, depth {depth}, temperature {args.temperature}")
     else:
         print("📐 reference solutions — the generator checking itself")

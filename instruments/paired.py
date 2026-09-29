@@ -38,7 +38,7 @@ import numpy as np
 
 from instruments import results as result_lines
 from instruments._common import add_checkpoint_argument, load_env
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 # ARCH-SPECIFIC: refiner/reasoner — it compares one model at two depths, and plain has no depth dial (#317).
 
@@ -159,7 +159,7 @@ def compare(model, corpora, *, treatment_depth, control_depth, pad_token_id):
     for name, rows in corpora.items():
         acc = _Accumulator()
         for row in rows:
-            toks = jnp.asarray(np.asarray(row)[:, :MAX_SEQ_LEN])
+            toks = jnp.asarray(np.asarray(row)[:, :CONFIG.MAX_SEQ_LEN])
             ce_t, mask = ce_per_position(model, toks, treatment_depth, pad_token_id)
             ce_c, _ = ce_per_position(model, toks, control_depth, pad_token_id)
             # control minus treatment, so positive = treatment better (lower CE)
@@ -188,15 +188,13 @@ def _main(argv=None):
                          "(finemath has 19 chunks to the others' 30 and runs out before "
                          "the default)")
     args = ap.parse_args(argv)
-    from trm.config import MODEL_ARCH
-    if MODEL_ARCH == "plain":
+    if CONFIG.MODEL_ARCH == "plain":
         raise SystemExit("instruments.paired compares one model at two depths; MODEL_ARCH='plain' "
                          "ignores depth, so both arms would score the same forward pass. "
                          "Load a looped checkpoint with MODEL_ARCH=refiner or reasoner.")
 
     load_env()
     from trm.runtime.restore import load_eval_batches, restore_model
-    from trm.settings import CONFIG
 
     model, _ = restore_model(CONFIG, args.checkpoint_path)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]

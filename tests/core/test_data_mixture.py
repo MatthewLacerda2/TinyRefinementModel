@@ -20,7 +20,7 @@ import json
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 from trm.settings import Config
 from trm.train import schedules
 from trm.train.schedules import Schedules
@@ -28,7 +28,7 @@ from trm.train.schedules import Schedules
 # An unset environment: the defaults every run so far trained with.
 TODAY = Schedules.of(Config.from_env({}))
 
-STRIDE = 2 * MAX_SEQ_LEN + 1
+STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
 
 # ── today, exactly ───────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ def _corpus(root, name, base):
 def _mixer(tmp_path, names=("web", "code")):
     from trm.data.loaders import DataMixer, TextDataGenerator
     dirs = [_corpus(tmp_path, "web", 0), _corpus(tmp_path, "code", 20000)]
-    return DataMixer([TextDataGenerator(d, max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [0.6, 0.4], rng=np.random.default_rng(11), names=names)
 
 
@@ -169,7 +169,7 @@ def _branch_mixer(tmp_path, names):
     from trm.data.loaders import DataMixer, TextDataGenerator
     bases = {"web": 0, "code": 20000, "math": 40000}
     dirs = [_corpus(tmp_path, name, bases[name]) for name in names]
-    return DataMixer([TextDataGenerator(d, max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [1.0 / len(names)] * len(names), rng=np.random.default_rng(11), names=list(names))
 
 

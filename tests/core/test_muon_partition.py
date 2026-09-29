@@ -6,8 +6,6 @@ a linear map — through Newton-Schulz. A wrong partition still trains and the
 loss still falls, so nothing downstream would notice.
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -77,10 +75,10 @@ def test_the_matrix_partition_runs_at_the_multiplied_lr():
     assert steps[10.0] > 5 * steps[1.0]
 
 
-def test_the_selector_fails_closed_and_the_default_is_muon(import_config_under):
-    # A fresh import of trm.config, in the shared config child (tests/conftest.py).
-    (typo,) = import_config_under([{"TRM_OPTIMIZER": "moun"}])
-    assert not typo["ok"], "a typo'd TRM_OPTIMIZER must refuse to start"
-    assert "moun" in typo["error"] and "adamw" in typo["error"] and "muon" in typo["error"]
-    assert CONFIG.TRM_OPTIMIZER == "muon" or os.environ.get("TRM_OPTIMIZER") == "adamw"
+def test_the_selector_fails_closed_and_the_default_is_muon():
+    with pytest.raises(SystemExit) as typo:
+        Config.from_env({"TRM_OPTIMIZER": "moun"})
+    error = str(typo.value.code)
+    assert "moun" in error and "adamw" in error and "muon" in error, "a typo'd TRM_OPTIMIZER must refuse"
+    assert Config.from_env({}).TRM_OPTIMIZER == "muon"
     assert optimizers.inner_optimizer(Config.from_env({"TRM_OPTIMIZER": "adamw"}), lambda s: 1e-3) is not None
