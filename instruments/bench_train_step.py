@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, MODEL_ARCH, VOCAB_SIZE
+from trm.settings import CONFIG
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import compute_grad_step, apply_grads
 
@@ -71,7 +72,7 @@ def main():
         jax.nn.dot_product_attention = functools.partial(_orig, implementation=args.attn_impl)
 
     # The trainer's own constructor, so the bench times the model a launch trains.
-    model, optimizer = init_model_and_optimizer()
+    model, optimizer = init_model_and_optimizer(CONFIG)
 
     rng = np.random.default_rng(0)
     batch = jnp.array(

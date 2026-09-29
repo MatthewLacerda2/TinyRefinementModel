@@ -298,7 +298,7 @@ class Config(BaseSettings):
 
     # ── Schedules (built in trm/train/schedules.py) ───────────────────────────
     # Planned token budget for the run (#83), recorded in run_metadata.json. Drives
-    # schedules.DECAY_STEPS so the LR anneal bottoms out when training ends instead of
+    # Schedules.decay_steps so the LR anneal bottoms out when training ends instead of
     # at a constant chosen for past short runs (15000 opt steps ≈ 2.0B tokens — an
     # anneal that would sit frozen at the floor for most of a longer run). Accepts plain
     # ints or scientific notation ("2e9"). Unset → the historical 15000-step horizon, so

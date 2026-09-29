@@ -30,9 +30,6 @@ NOT_KNOBS = {
         "JAX_COMPILATION_CACHE_DIR is JAX's own variable: when set, JAX's value wins over ours",
     ("trm/runtime/supervisor.py", "preflight_fit"):
         "PYTEST_CURRENT_TEST refuses to launch the real trainer from inside a test",
-    ("trm/runtime/run_budget.py", "adopt_recorded_budget"):
-        "writes a resumed run's own TRAIN_TOKEN_BUDGET into the environment before "
-        "trm.settings reads it (#197); retires once start.py passes its Config down",
 }
 
 

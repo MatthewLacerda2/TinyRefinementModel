@@ -93,7 +93,7 @@ def test_the_run_records_every_knob():
     are the Config's dump, so a new field is recorded without anyone listing it."""
     from trm.runtime.run_tracker import RunTracker
 
-    recorded = RunTracker.get_hyperparameters()
+    recorded = RunTracker.get_hyperparameters(CONFIG)
     dumped = CONFIG.model_dump()
     assert {k: recorded.get(k) for k in dumped} == dumped
 
@@ -109,8 +109,10 @@ def test_the_constants_modules_still_import_are_this_process_config():
                 for m in modules for name in Config.model_fields | Config.model_computed_fields
                 if hasattr(m, name)}
     # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported. Knobs
-    # added since #475 are read from a Config handed down, so the bridge never grows.
-    passed_down = {"MILESTONE_SCORERS"}
+    # added since #475 are read from a Config handed down, so the bridge never grows,
+    # and neither are the schedule's: trm.train.schedules resolves from a Config.
+    passed_down = {"MILESTONE_SCORERS", "WARMUP_STEPS", "PEAK_LR", "LR_SCHEDULE",
+                   "WSD_DECAY_FRACTION", "WSD_DECAY_START"}
     assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"} - passed_down
     drift = {key: value for key, value in exported.items() if value != getattr(CONFIG, key[1])}
     assert not drift, drift

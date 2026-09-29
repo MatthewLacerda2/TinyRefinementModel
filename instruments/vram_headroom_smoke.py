@@ -59,7 +59,9 @@ from instruments.arch import add_arch_argument, build
 from trm.config import (ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT,
                         NUM_HEADS, PLAIN_LAYERS, REFINER_ENCODER_LAYERS, VOCAB_SIZE)
 from trm.train.grad_step import apply_grads, compute_grad_step
+from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
+from trm.train.schedules import Schedules
 from trm.train.validation import _val_ce_sums
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -137,7 +139,7 @@ def main(argv=None):
     print(f"sizing {args.arch} ({shape}) at dim {args.dim}, {args.heads} heads, batch {args.batch}, "
           f"{param_count(model) / 1e6:.1f}M params, allocator {os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']}")
 
-    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+    optimizer = nnx.Optimizer(model, optimizer_chain(CONFIG, Schedules.of(CONFIG).learning_rate), wrt=nnx.Param)
     batch = jax.random.randint(jax.random.PRNGKey(0), (args.batch, 2 * MAX_SEQ_LEN + 1), 0, VOCAB_SIZE,
                                dtype=jnp.int32)
     doc_boundary = jnp.zeros((args.batch,), dtype=bool)

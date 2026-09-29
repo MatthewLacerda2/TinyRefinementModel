@@ -289,10 +289,11 @@ def test_the_run_records_the_cadence_the_trainer_used():
     """#305: the training curve labels its val CE line "measured every N steps",
     and N has to be the plotted run's own — VAL_EVERY_OPT_STEPS is an env knob
     (the #26 arms run 16, the supervisor's fit gate runs 1)."""
-    from trm.runtime import layout
     from trm.runtime.run_tracker import RunTracker
+    from trm.settings import Config
 
-    assert RunTracker.get_hyperparameters()["VAL_EVERY_OPT_STEPS"] == layout.VAL_EVERY_OPT_STEPS
+    config = Config.from_env({"VAL_EVERY_OPT_STEPS": "16"})
+    assert RunTracker.get_hyperparameters(config)["VAL_EVERY_OPT_STEPS"] == 16
 
 
 def test_old_nested_cadence_was_multiplied():

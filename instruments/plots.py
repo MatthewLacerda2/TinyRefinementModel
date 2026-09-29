@@ -74,7 +74,8 @@ from instruments.invariants import clean_column, suspect_rows
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
 from trm.runtime.layout import ACT_MAX_ALARM
-from trm.train.schedules import PEAK_LR, WARMUP_STEPS, resolve_decay_steps
+from trm.settings import CONFIG
+from trm.train.schedules import DEFAULT_DECAY_STEPS
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -328,11 +329,11 @@ class RunConfig:
 
     @property
     def warmup_steps(self):
-        return self.value("WARMUP_STEPS", WARMUP_STEPS, int)
+        return self.value("WARMUP_STEPS", CONFIG.WARMUP_STEPS, int)
 
     @property
     def peak_lr(self):
-        return self.value("PEAK_LR", PEAK_LR, float)
+        return self.value("PEAK_LR", CONFIG.PEAK_LR, float)
 
     @property
     def budget(self):
@@ -360,7 +361,7 @@ class RunConfig:
             return self.value("DECAY_STEPS", None, int)
         if self.budget:
             return max(1, round(self.budget / self.tokens_per_opt_step))
-        return resolve_decay_steps(None)
+        return DEFAULT_DECAY_STEPS
 
 
 def describe(cfg):
@@ -392,7 +393,7 @@ def describe(cfg):
     # The peak the schedule warms up to. Named only when the run recorded it and
     # it is not the historical 1e-4, so every existing label is unchanged and the
     # #287 arms — which differ in nothing else — cannot be confused for each other.
-    if cfg.recorded("PEAK_LR") and cfg.peak_lr != PEAK_LR:
+    if cfg.recorded("PEAK_LR") and cfg.peak_lr != CONFIG.PEAK_LR:
         parts.append(f"peak LR {cfg.peak_lr:g}")
     return " · ".join(parts)
 
