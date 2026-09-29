@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
-from trm.runtime.gpu_lock import GpuLock, Preflight
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
 from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
 from trm.runtime.rewind import unresumable  # jax-free
 from trm.settings import CONFIG, Config, location
@@ -915,16 +915,6 @@ def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path 
         if arg.startswith("--checkpoint-path="):
             return REPO_ROOT / arg.split("=", 1)[1]
     return run_dir / "checkpoints"
-
-
-def exit_on_sigterm():
-    """Turn SIGTERM into SystemExit, so a supervisor stopped from outside unwinds:
-    run() stops its trainer and main() leaves the GPU lock right (#516). Returns the
-    handler it replaced. The trainer does the same (`exit_cleanly_on_sigterm`)."""
-    def _raise(signum, _frame):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: a second must not abort the stop
-        raise SystemExit(128 + signum)
-    return signal.signal(signal.SIGTERM, _raise)
 
 
 def _stamp() -> str:

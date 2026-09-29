@@ -38,6 +38,7 @@ import hashlib
 import json
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -48,7 +49,7 @@ from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
-from trm.runtime.gpu_lock import GpuLock, Preflight
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -224,13 +225,42 @@ def run_gate(cwd: pathlib.Path) -> None:
             f"gate failed (exit {proc.returncode}) — fix the tree before spending a sweep on it")
 
 
+# How long an arm gets to exit after SIGTERM, then after SIGKILL, when the runner
+# is going down under it (#519).
+STOP_GRACE_SECONDS = 60.0
+KILL_WAIT_SECONDS = 30.0
+
+
+def stop_arm(proc: subprocess.Popen) -> bool:
+    """TERM, then KILL; whether the arm is gone. The grace is the trainer's, to
+    finish a checkpoint write (`exit_cleanly_on_sigterm`)."""
+    if proc.poll() is not None:
+        return True
+    proc.terminate()
+    try:
+        proc.wait(timeout=STOP_GRACE_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    try:
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
-            cwd: pathlib.Path) -> list[dict]:
+            cwd: pathlib.Path, card: GpuLock | None = None) -> list[dict]:
     """Launch one (leg, arm, seed) and return its measurements as journal rows.
 
     Harness stdout is streamed through to the terminal as well as captured: a
     sweep is long, and a runner that swallows its output leaves you watching a
     blank screen for an hour wondering whether it hung.
+
+    The arm is named in `card`, the lock this runner holds, so a runner killed
+    outright leaves a lock its orphaned arm still holds; and whatever ends the
+    runner under a live arm (SIGTERM, Ctrl-C, a bug) stops the arm first, or
+    leaves it the lock if it will not stop (#519, as the supervisor does since #516).
     """
     argv = execution.argv(leg, arm, seed)
     env = module_env(cwd, **execution.env)
@@ -238,12 +268,22 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
     started = time.time()
     captured: list[str] = []
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in proc.stdout:
-        captured.append(line)
-        sys.stdout.write(line)
-    proc.wait()
+    proc = None
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        if card is not None:
+            card.name_child(proc.pid)
+        for line in proc.stdout:
+            captured.append(line)
+            sys.stdout.write(line)
+        proc.wait()
+    except BaseException:
+        if proc is not None and not stop_arm(proc) and card is not None:
+            print(f"⚠ pid {proc.pid} is still alive after SIGKILL; the GPU lock is left to it",
+                  file=sys.stderr, flush=True)
+            card.leave_to(proc.pid)
+        raise
     elapsed = time.time() - started
 
     if proc.returncode != 0:
@@ -263,7 +303,7 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
 
 def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
-          resume: bool = True) -> list[dict]:
+          resume: bool = True, card: GpuLock | None = None) -> list[dict]:
     """Run everything the spec asks for, skipping what the journal already has."""
     path = journal_path(spec.id)
     done = read_journal(path) if resume else []
@@ -275,7 +315,7 @@ def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
         if key in already:
             print(f"skip: {leg.name or 'run'} {arm} seed {seed} (already in journal)", flush=True)
             continue
-        fresh = run_one(execution, leg, arm, seed, cwd)
+        fresh = run_one(execution, leg, arm, seed, cwd, card)
         append_journal(path, fresh)
         rows.extend(fresh)
     return rows
@@ -585,14 +625,17 @@ def main(argv=None) -> int:
     # has to queue like everything else (#445). Taken after the gate, not before:
     # a gate that fails never wanted the card, and holding it through a few minutes
     # of CPU tests would idle the card for a run that is not going to happen.
-    card = contextlib.nullcontext() if args.no_gpu_lock else GpuLock(label=spec.id)
+    card = None if args.no_gpu_lock else GpuLock(label=spec.id)
+    previous_sigterm = exit_on_sigterm()  # so a TERM unwinds through run_one and the `with` (#519)
     try:
-        with card:
-            rows = sweep(spec, execution, resume=not args.no_resume)
+        with card or contextlib.nullcontext():
+            rows = sweep(spec, execution, resume=not args.no_resume, card=card)
     except Preflight as exc:
         print(f"❌ {exc}")
         print("   wait for it, or pass --no-gpu-lock if this spec never touches the card")
         return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
     results = merge_constants(spec, collect(rows, execution.metric), args.spec)
     record_results(args.spec, results, execution.metric, force=args.force)
 
