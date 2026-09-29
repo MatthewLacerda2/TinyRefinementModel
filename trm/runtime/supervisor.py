@@ -760,7 +760,7 @@ class Supervisor:
         if self.cold is None:
             return
         try:
-            for line in self.cold.tick(final=final):
+            for line in self.cold.tick(final=final, keep=self.owed_milestones()):
                 self.record(f"{_stamp()} {line}")
         except Exception as exc:  # whatever it is, supervision of the run goes on
             if str(exc) != self._cold_error:
@@ -802,6 +802,15 @@ class Supervisor:
                            if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
                           key=int)
         return unscored, running
+
+    def owed_milestones(self) -> frozenset[str]:
+        """The milestones the cold tier must leave on the SSD (#515): with a spec, every
+        one the journal holds no score for, queued, claimed or failed, since its scorer
+        reads the SSD copy. Without a spec nothing is scored, so nothing is owed."""
+        if self.spec is None:
+            return frozenset()
+        unscored, running = self.unscored_milestones()
+        return frozenset(unscored) | running
 
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, oldest
