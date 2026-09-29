@@ -9,7 +9,7 @@ imports nothing but the jax-free `trm.settings`, so every one of them can read i
 
 from trm.settings import CONFIG
 
-# Cadences in optimizer steps, and the supervisor's f16 margin alarms: knobs, so each
+# Cadences in optimizer steps, the supervisor's f16 margin alarms and its SSD margin: knobs, so each
 # is a field of trm.settings.Config (what it is, and why this value), re-exported here
 # for the modules that still import them as constants.
 VAL_EVERY_OPT_STEPS = CONFIG.VAL_EVERY_OPT_STEPS
@@ -22,6 +22,7 @@ VRAM_HEADROOM_ALARM_MIB = CONFIG.VRAM_HEADROOM_ALARM_MIB
 MILESTONE_FIRST_TOKENS = CONFIG.MILESTONE_FIRST_TOKENS
 MILESTONE_RATIO = CONFIG.MILESTONE_RATIO
 MILESTONE_MAX_COUNT = CONFIG.MILESTONE_MAX_COUNT
+SSD_KEEP_FREE_GB = CONFIG.SSD_KEEP_FREE_GB
 
 # A metrics.csv row is written every LOG_REAL_STEPS opt steps. A validation probe's CE
 # is held and written on the first such row at or after the probe, not on the probe's

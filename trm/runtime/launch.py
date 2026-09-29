@@ -65,10 +65,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS
+from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
+from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, SSD_KEEP_FREE_GB
 from trm.runtime.run_budget import BUDGET_ENV
 from trm.runtime.gpu_lock import GpuLock, _pid_alive
-from trm.runtime.supervisor import DELIBERATE, GAVE_UP, RUNS_DIR, read_progress
+from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
+                                    read_progress)
 
 # The base run a launch started and has not seen end, for --resume after a reboot.
 ACTIVE_RUN = RUNS_DIR / ".active_base_run.json"
@@ -100,7 +102,7 @@ class Plan:
 
 
 def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: int | None = None,
-         spec: pathlib.Path | None = None,
+         spec: pathlib.Path | None = None, cold_root: pathlib.Path | None = None,
          runs_dir: pathlib.Path = RUNS_DIR, python: str = sys.executable) -> Plan:
     run_dir = runs_dir / run_id
     stop = stop_step_for(budget_tokens, tokens_per_opt_step)
@@ -110,6 +112,9 @@ def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: in
             "--log", str(runs_dir / f"{run_id}.log"),
             *(["--issue", str(issue)] if issue is not None else []),
             *(["--spec", str(spec)] if spec is not None else []),
+            # Named in the argv, not left to the supervisor's environment, so a resume
+            # after a reboot (#384) replays the same cold tier.
+            *(["--cold-root", str(cold_root)] if cold_root is not None else []),
             "--", "--checkpoint-path", str(run_dir / "checkpoints")]
     assert "--new-run" not in argv, "a relaunch would replay it and restart the run from scratch"
     return Plan(run_id, run_dir, stop, argv, {BUDGET_ENV: str(budget_tokens)},
@@ -224,14 +229,24 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"refusing to launch: --budget {int(args.budget):,} disagrees with the spec's "
                          f"budget_tokens {spec_budget:,}; change one, commit, relaunch")
 
+    cold_root = local_location("COLD_ROOT")
+    if cold_root is not None:
+        why = cold_root_problem(cold_root, RUNS_DIR if RUNS_DIR.exists() else RUNS_DIR.parent)
+        if why:
+            raise SystemExit(f"refusing to launch: COLD_ROOT {why}")
+
     from trm.config import TOKENS_PER_OPT_STEP
     run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue, spec=args.spec.resolve())
+    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue, spec=args.spec.resolve(),
+             cold_root=cold_root)
     print(f"run:        {p.run_dir}")
     print(f"budget:     {int(args.budget):,} tokens -> stop at opt step {p.stop_step:,} "
           f"({p.stop_step * TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
     print(f"command:    {' '.join(f'{k}={v}' for k, v in p.env.items())} {' '.join(p.argv)}")
     print(f"supervisor: stdout -> {p.stdout_path}; heartbeats -> runs/{run_id}.supervisor.log")
+    print("cold tier:  " + describe_cold(cold_root and ColdTier(
+        run_dir=p.run_dir, cold_root=cold_root, keep_free_gb=SSD_KEEP_FREE_GB,
+        fullstate_every_hours=stall_window_hours(args.spec))))
     if args.dry_run:
         return 0
     why = refusal(p)

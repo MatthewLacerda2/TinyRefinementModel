@@ -2,7 +2,9 @@
 
 `python -m trm.train.start` trains a 2-block, 32-wide plain model on a synthetic
 corpus: to a checkpoint, killed with TERM the way every pair harness and the
-supervisor stop it, then resumed from that checkpoint. The assertions read what the
+supervisor stop it, then resumed from that checkpoint's cold-tier copy (#458): the
+SSD's checkpoints are deleted and the copy is branched back in, so the exact data
+resume below is read from the HDD copy. The assertions read what the
 run wrote (metrics.csv, the checkpoint, the log), never the trainer's source text.
 A string check that `train_loop` mentions `applied_gradient_stats` passes for code
 that never calls it; a filled `applied_grad_norm` column does not.
@@ -13,6 +15,7 @@ trainer on the card.
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -22,6 +25,7 @@ import numpy as np
 import pytest
 
 from instruments.runlog import load
+from trm.runtime.cold import FULLSTATE_SUBDIR, ColdTier, mirror
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEQ = 16
@@ -89,6 +93,15 @@ def run(tmp_path_factory):
     run_dir.mkdir(parents=True)
     first = _train_until(tmp_path, run_dir, FIRST_LEG)
     checkpoint = run_dir / "checkpoints" / str(FIRST_LEG * ACC - 1)
+    # The cold tier's copy of the run's last full state (the tick's device check aside:
+    # tmp_path is one disk), then the SSD's checkpoints gone and the copy branched back
+    # in, as experiments/mix/branch_decay.py branches a decay.
+    tier = ColdTier(run_dir=run_dir, cold_root=tmp_path / "cold", keep_free_gb=0.0, fullstate_every_hours=None)
+    assert tier.fullstate_due(final=True) == checkpoint
+    copy = tier.cold_run / FULLSTATE_SUBDIR / checkpoint.name
+    assert mirror(checkpoint, copy)
+    shutil.rmtree(run_dir / "checkpoints")
+    shutil.copytree(copy, checkpoint)
     second = _train_until(tmp_path, run_dir, SECOND_LEG)
     return {"dir": run_dir, "first": first, "second": second, "checkpoint": checkpoint}
 
