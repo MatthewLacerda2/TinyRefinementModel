@@ -37,7 +37,7 @@ from trm.train.trainer import (
     setup_data_pipeline,
     train_loop,
 )
-from trm.runtime.rewind import refuse_sft_phase_checkpoint_dir
+from trm.runtime.rewind import unresumable
 from trm.runtime.run_tracker import RunTracker
 from trm.runtime.checkpoints import (discover_latest_run, discover_latest_checkpoint_run, exit_cleanly_on_sigterm,
                                      load_or_create_checkpoint)
@@ -94,11 +94,14 @@ if __name__ == "__main__":
     # inside the warmup refuses here, not after a run folder exists.
     decay_steps = Schedules.of(config).decay_steps
 
-    # A checkpoint from the retired SFT phase is refused here, before the session
-    # below appends to run_metadata.json (#323). load_or_create_checkpoint repeats
-    # the check as a backstop.
+    # A checkpoint that cannot be resumed (the retired SFT phase, #323; a resume
+    # state ResumeState refuses, #477) is refused here, before the session below
+    # appends to run_metadata.json (#505). load_or_create_checkpoint repeats the
+    # checks as a backstop.
     if active_checkpoint_path is not None and not args.new_run:
-        refuse_sft_phase_checkpoint_dir(active_checkpoint_path, config.ACCUMULATION_STEPS)
+        why = unresumable(active_checkpoint_path, config.ACCUMULATION_STEPS)
+        if why:
+            raise SystemExit(why)
 
     # 3. Start/Resume Run Tracker session
     run_tracker = RunTracker(config)

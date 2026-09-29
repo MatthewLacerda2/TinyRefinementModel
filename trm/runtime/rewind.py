@@ -31,6 +31,7 @@ import json
 from dataclasses import dataclass
 
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
+from trm.runtime.resume_state import ResumeState
 
 SET_ASIDE_PREFIX = "set_aside_"
 
@@ -83,25 +84,31 @@ def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
         f"(opt step {last_clean_opt_step}). The in-run SFT flip was removed (#323), so resuming it "
         f"would silently continue as pretraining on a different mixture and LR. Rewind to the "
         f"last pretraining checkpoint first:\n"
-        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}\n"
-        f"(Under the supervisor this exit reads as a crash: it is relaunched, then reported "
-        f"GAVE_UP. These lines are the reason.)")
+        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}")
 
 
-def refuse_sft_phase_checkpoint_dir(checkpoint_dir, accumulation_steps: int) -> None:
-    """The same refusal, read from disk before a launch touches anything: no run
-    session appended, no model built, no orbax restore. Reads the newest finalized
-    checkpoint's monitor state — the one a resume would load. An unreadable state
-    is left for the restore to report."""
+def unresumable(checkpoint_dir, accumulation_steps: int) -> str | None:
+    """Why the checkpoint a resume of `checkpoint_dir` would load must be refused, or
+    None. Read from disk before a launch touches anything: no run session appended,
+    no model built, no orbax restore, no jax. The checkpoint is the newest finalized
+    one; it is refused when it is from the retired SFT phase (#323) or when its
+    resume state is not a ResumeState (#477). The trainer asks before its session
+    starts, and the supervisor before it launches or relaunches one (#505). An
+    unreadable state is left for the restore to report."""
     found = checkpoints_in(pathlib.Path(checkpoint_dir), accumulation_steps)
     if not found:
-        return
+        return None
     newest = found[-1]
     try:
         state = json.loads((newest.path / "monitor_state" / "metadata").read_text())
     except (OSError, ValueError):
-        return
-    refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
+        return None
+    try:
+        refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
+        ResumeState.load(state, f"checkpoint step {newest.step} in {checkpoint_dir}")
+    except SystemExit as refused:
+        return str(refused)
+    return None
 
 
 def resolve(checkpoints: list[Checkpoint], to_opt_step: int) -> Checkpoint:

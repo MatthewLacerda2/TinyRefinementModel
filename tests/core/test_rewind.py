@@ -69,15 +69,36 @@ def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     (newest / "monitor_state" / "metadata").write_text(json.dumps({"sft_start_step": 5056 * ACCUM - 1}))
     _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
 
-    with pytest.raises(SystemExit, match="--to-opt-step 5056"):
-        rw.refuse_sft_phase_checkpoint_dir(checkpoints, ACCUM)
+    assert "--to-opt-step 5056" in rw.unresumable(checkpoints, ACCUM)
     assert metadata.read_bytes() == before
+
+
+# The smallest resume state ResumeState accepts: its fields without a default.
+PRETRAINING = {"run_id": "run_X", "ce_history": [3.4], "best_ce": 3.1, "best_loss": 3.2,
+               "best_avg_ce": 3.4, "last_improvement_step": 100}
+
+
+def _with_state(directory, opt_step, state):
+    path = _ckpt(directory, opt_step)
+    (path / "monitor_state").mkdir()
+    (path / "monitor_state" / "metadata").write_text(json.dumps(state))
+    return path
+
+
+def test_a_resume_state_resumestate_refuses_is_refused_from_disk_naming_the_field(tmp_path):
+    """#505: the misspelled key is named before a launch, not after a session."""
+    _with_state(tmp_path, 4992, PRETRAINING)
+    _with_state(tmp_path, 5056, {**PRETRAINING, "sampels_seen": 5})
+    why = rw.unresumable(tmp_path, ACCUM)
+    assert "sampels_seen" in why and f"checkpoint step {5056 * ACCUM - 1}" in why
 
 
 def test_a_pretraining_checkpoint_dir_passes_the_launch_check(tmp_path):
     _ckpt(tmp_path, 4992)
-    rw.refuse_sft_phase_checkpoint_dir(tmp_path, ACCUM)            # no monitor state: left to restore
-    rw.refuse_sft_phase_checkpoint_dir(tmp_path / "absent", ACCUM)  # a fresh run
+    assert rw.unresumable(tmp_path, ACCUM) is None             # no monitor state: left to restore
+    assert rw.unresumable(tmp_path / "absent", ACCUM) is None  # a fresh run
+    _with_state(tmp_path, 5056, PRETRAINING)
+    assert rw.unresumable(tmp_path, ACCUM) is None
 
 
 def test_the_trainer_refuses_before_it_starts_a_session():
@@ -89,7 +110,7 @@ def test_the_trainer_refuses_before_it_starts_a_session():
         if isinstance(node, ast.Call):
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             lines[name] = min(lines.get(name, node.lineno), node.lineno)
-    assert lines["refuse_sft_phase_checkpoint_dir"] < lines["start_session"]
+    assert lines["unresumable"] < lines["start_session"]
 
 
 def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
