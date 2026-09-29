@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import signal
 
 def shared_runs_dir(checkout: pathlib.Path) -> pathlib.Path:
     """`runs/` in the main checkout, even when the caller is in a linked worktree.
@@ -45,6 +46,17 @@ def shared_runs_dir(checkout: pathlib.Path) -> pathlib.Path:
 # Spelled out rather than imported from the supervisor: that import is the thing
 # this file exists to undo.
 GPU_LOCK = shared_runs_dir(pathlib.Path(__file__).resolve().parents[2]) / ".gpu.lock"
+
+
+def exit_on_sigterm():
+    """Turn SIGTERM into SystemExit, so a holder stopped from outside unwinds: it
+    stops the child it put on the card and its `finally` leaves the lock right
+    (#516, #519). Returns the handler it replaced. The trainer does the same
+    (`exit_cleanly_on_sigterm`)."""
+    def _raise(signum, _frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: a second must not abort the stop
+        raise SystemExit(128 + signum)
+    return signal.signal(signal.SIGTERM, _raise)
 
 
 class Preflight(Exception):
