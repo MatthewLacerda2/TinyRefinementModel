@@ -18,7 +18,8 @@ is the only function here that removes anything from the live tier. It refuses a
 but a real step dir directly under <run>/checkpoints/milestones/, anything inside a
 protected root (runs/data/, the tokenized corpus) or holding one, and anything without a
 byte-identical copy on the cold tier. Rolling and best checkpoints are never candidates,
-and neither is the newest milestone, which a CPU yardstick pass may still be reading.
+and neither is the newest milestone, the one a CPU yardstick pass is most likely still
+reading (an older one's scorer is not tracked; milestones are 20+ minutes apart).
 tests/core/test_cold_tier.py holds each rule, and that nothing else here deletes.
 
 A copy lands whole or not at all: it is written to a dot-named partial dir, checked
@@ -85,13 +86,26 @@ def same_bytes(a: pathlib.Path, b: pathlib.Path) -> bool:
         return False
 
 
+def same_checkpoint(a: pathlib.Path, b: pathlib.Path) -> bool:
+    """Whether two step dirs are copies of one save: orbax's commit metadata, which
+    carries the commit time, matches. A step name alone does not say so: a run resumed
+    through `python -m trm.runtime.rewind` saves the same step numbers again."""
+    try:
+        return (a / MARKER).read_bytes() == (b / MARKER).read_bytes()
+    except OSError:
+        return False
+
+
 def mirror(src: pathlib.Path, dst: pathlib.Path) -> bool:
     """Copy the finalized step dir `src` to `dst`, whole or not at all. False when
-    `dst` is already there. Raises OSError when `src` is not a finalized step dir or
-    changes under the copy (rolling retention can evict it mid-copy); nothing is left
-    at `dst` then, and the next tick tries again."""
+    `dst` already holds this save; a `dst` holding another save of the same step is
+    set aside, never overwritten. Raises OSError when `src` is not a finalized step dir
+    or changes under the copy (rolling retention can evict it mid-copy); nothing is
+    left at `dst` then, and the next tick tries again."""
     if dst.exists():
-        return False
+        if same_checkpoint(src, dst):
+            return False
+        set_aside(dst)
     if not (src / MARKER).is_file():
         raise FileNotFoundError(f"{src} is not a finalized checkpoint")
     partial = dst.parent / f".{dst.name}.partial"
@@ -112,6 +126,17 @@ def mirror(src: pathlib.Path, dst: pathlib.Path) -> bool:
         _discard_partial(partial)
         raise
     return True
+
+
+def set_aside(copy: pathlib.Path) -> pathlib.Path:
+    """Move a cold copy that is not (or no longer) the save its step names out of the
+    step's name, to a dot-named sibling nothing reads. Kept, not deleted: whether an
+    abandoned timeline's weights are worth keeping is the owner's call."""
+    k = 0
+    while (aside := copy.parent / f".{copy.name}.superseded-{k}").exists():
+        k += 1
+    os.rename(copy, aside)
+    return aside
 
 
 def _discard_partial(partial: pathlib.Path) -> None:
@@ -181,6 +206,8 @@ class ColdTier:
         for step in finalized_steps(self.run_dir / "checkpoints" / MILESTONE_SUBDIR):
             if mirror(step, self.cold_run / MILESTONE_SUBDIR / step.name):
                 done.append(f"cold: milestone {step.name} mirrored")
+                if not final:
+                    break  # one per poll: the supervisor's guards wait while it copies
         due = self.fullstate_due(final)
         if due is not None and mirror(due, self.cold_run / FULLSTATE_SUBDIR / due.name):
             done.append(f"cold: full-state checkpoint {due.name} copied"
@@ -196,7 +223,7 @@ class ColdTier:
             return None
         newest = rolling[-1]
         copies = finalized_steps(self.cold_run / FULLSTATE_SUBDIR)
-        if any(c.name == newest.name for c in copies):
+        if any(c.name == newest.name and same_checkpoint(c, newest) for c in copies):
             return None
         if final:
             return newest
@@ -214,10 +241,16 @@ class ColdTier:
             free = self._ssd_free_gb()
             if free >= self.keep_free_gb:
                 break
-            if same_bytes(step, self.cold_run / MILESTONE_SUBDIR / step.name):
+            copy = self.cold_run / MILESTONE_SUBDIR / step.name
+            if same_bytes(step, copy):
                 self._remove_mirrored_milestone(step)
                 done.append(f"cold: milestone {step.name} removed from the SSD ({free:.1f}GB free, "
                             f"keeping {self.keep_free_gb:g}GB); its copy is on the cold tier")
+            elif same_checkpoint(step, copy):
+                # The same save, different bytes: a torn copy. Out of the way, so the
+                # next tick copies it again, and said, so it is not silent.
+                done.append(f"cold: the copy of milestone {step.name} differs from the SSD's; "
+                            f"set aside as {set_aside(copy).name}, to be copied again")
         return done
 
     def _remove_mirrored_milestone(self, step: pathlib.Path) -> None:

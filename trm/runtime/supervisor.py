@@ -676,7 +676,7 @@ class Supervisor:
         try:
             for line in self.cold.tick(final=final):
                 self.record(f"{_stamp()} {line}")
-        except (OSError, ValueError) as exc:  # ValueError: a removal the cold tier refused
+        except Exception as exc:  # whatever it is, supervision of the run goes on
             if str(exc) != self._cold_error:
                 self.announce(f"{_stamp()} ⚠ cold tier: {exc} — training goes on, nothing is pruned")
             self._cold_error = str(exc)
@@ -791,8 +791,9 @@ def main(argv=None) -> int:
     ap.add_argument("--spec", type=pathlib.Path, default=None,
                     help="the pre-registered base-run spec (#294): milestones get a CPU yardstick, "
                          "completion gets the full yardstick, the referee's verdict and a model card")
-    ap.add_argument("--cold-root", type=pathlib.Path, default=local_location("COLD_ROOT"),
-                    help="the HDD directory this run mirrors to (#458; default: COLD_ROOT). Milestones "
+    ap.add_argument("--cold-root", type=pathlib.Path, default=None,
+                    help="the HDD directory this run mirrors to (#458; `make launch` passes COLD_ROOT, "
+                         "so a resume replays the tier the run launched with; unset, none). Milestones "
                          "are mirrored, full state copied once per the spec's stall window and at the "
                          "end, and mirrored milestones pruned to keep SSD_KEEP_FREE_GB free")
     ap.add_argument("--skip-fit-gate", action="store_true",

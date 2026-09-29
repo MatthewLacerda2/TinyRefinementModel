@@ -127,13 +127,34 @@ def test_the_commit_time_travels_with_the_copy(tmp_path):
 
 # --- a tick ---------------------------------------------------------------------------
 
-def test_a_tick_mirrors_every_milestone_and_the_newest_full_state(ssd):
+def test_a_tick_mirrors_one_milestone_per_poll_and_the_newest_full_state(ssd):
+    """One milestone per tick: the copy runs inside the supervisor's poll, and a resumed
+    run's backlog (16 x ~550MB) must not hold its guards for minutes."""
     tier = _tier(ssd, free=lambda: 100.0)
-    done = tier.tick()
+    assert len(tier.tick()) == 2, "milestone 60 and the full state"
+    for _ in range(3):
+        assert len(tier.tick()) == 1
     assert [p.name for p in finalized_steps(tier.cold_run / MILESTONE_SUBDIR)] == ["60", "121", "243", "487"]
     assert [p.name for p in finalized_steps(tier.cold_run / FULLSTATE_SUBDIR)] == ["767"]
-    assert len(done) == 5
     assert tier.tick() == [], "nothing new, nothing done"
+
+
+def test_a_rewound_run_saving_a_step_again_replaces_its_copy_and_keeps_the_old_one(ssd):
+    """`python -m trm.runtime.rewind` sets checkpoints aside and the resumed run saves
+    the same step numbers again, as other saves. The cold copy must follow the live
+    run, or a decay branched from it starts from the abandoned state."""
+    tier = _tier(ssd, free=lambda: 100.0)
+    tier.tick(final=True)
+    ckpts = tier.run_dir / "checkpoints"
+    for d in (ckpts / "767", ckpts / MILESTONE_SUBDIR / "487"):
+        shutil.rmtree(d)
+    _step(ckpts, 767, hours=40, payload=b"retrained")
+    _step(ckpts / MILESTONE_SUBDIR, 487, hours=39, payload=b"retrained")
+    tier.tick(final=True)
+    for kind, live in ((FULLSTATE_SUBDIR, ckpts / "767"), (MILESTONE_SUBDIR, ckpts / MILESTONE_SUBDIR / "487")):
+        assert _tree(tier.cold_run / kind / live.name) == _tree(live)
+        stale = tier.cold_run / kind / f".{live.name}.superseded-0"
+        assert (stale / "model" / "shard").read_bytes() == b"weights" * 100, "the abandoned save, kept aside"
 
 
 def test_full_state_is_copied_once_per_stall_window_and_at_the_end(ssd):
@@ -176,7 +197,7 @@ def test_pruning_never_removes_a_rolling_or_best_checkpoint_nor_the_only_copy(ss
     free = [100.0]
     tier = _tier(ssd, free=lambda: free[0])
     milestones = tier.run_dir / "checkpoints" / MILESTONE_SUBDIR
-    tier.tick()  # mirrors 60, 121, 243, 487 with room to spare
+    tier.tick(final=True)  # mirrors 60, 121, 243, 487 with room to spare
     _step(milestones, 975)  # a new milestone, not yet mirrored...
     _step(milestones, 1951)  # ...and the newest
     (tier.cold_run / MILESTONE_SUBDIR / "243" / "model" / "shard").write_bytes(b"torn")  # a copy gone bad
@@ -185,15 +206,20 @@ def test_pruning_never_removes_a_rolling_or_best_checkpoint_nor_the_only_copy(ss
     tier.prune()
 
     assert [p.name for p in finalized_steps(milestones)] == ["243", "975", "1951"]
+    assert not (tier.cold_run / MILESTONE_SUBDIR / "243").exists(), "the torn copy set aside, to redo"
+    free[0] = 100.0
+    tier.tick(final=True)
+    assert _tree(tier.cold_run / MILESTONE_SUBDIR / "243") == _tree(milestones / "243")
     for name in ("60", "121", "487"):
         assert (tier.cold_run / MILESTONE_SUBDIR / name / MARKER).is_file(), "removed only with a copy"
     assert {p: p.read_bytes() for p in kept} == kept, "rolling, best and runs/data/ untouched"
 
 
 def test_pruning_stops_at_the_margin(ssd):
-    free = iter([5.0, 12.0, 25.0, 25.0])
+    free = iter([100.0, 5.0, 12.0, 25.0, 25.0])
     tier = _tier(ssd, free=lambda: next(free))
-    tier.tick()
+    tier.tick(final=True)
+    tier.prune()
     assert [p.name for p in finalized_steps(tier.run_dir / "checkpoints" / MILESTONE_SUBDIR)] == ["243", "487"]
 
 
@@ -256,11 +282,12 @@ def test_nothing_else_in_the_cold_tier_deletes():
                         and node.func.attr in deleting):
                     found.append((fn.name, node.func.attr))
     assert found and {name for name, _ in found} <= allowed, found
-    # os.rename moves a finished copy into a name that does not exist yet, on the cold side.
+    # os.rename moves a copy on the cold side only: a finished copy into its step's
+    # name, or a superseded one out of it.
     renames = [fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
                for node in ast.walk(fn) if isinstance(node, ast.Call)
                and isinstance(node.func, ast.Attribute) and node.func.attr == "rename"]
-    assert renames == ["mirror"]
+    assert sorted(renames) == ["mirror", "set_aside"]
 
 
 # --- in the supervisor ------------------------------------------------------------------
