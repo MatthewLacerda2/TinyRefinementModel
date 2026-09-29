@@ -90,6 +90,9 @@ if __name__ == "__main__":
         # The number itself lands in the LR horizon banner a few lines into startup;
         # what this says is where it came from.
         print("🗓️ Recovered TRAIN_TOKEN_BUDGET from the resumed run's own metadata (#197)")
+    # Resolved before anything is written: a mixture that does not parse or a budget
+    # inside the warmup refuses here, not after a run folder exists.
+    decay_steps = Schedules.of(config).decay_steps
 
     # A checkpoint from the retired SFT phase is refused here, before the session
     # below appends to run_metadata.json (#323). load_or_create_checkpoint repeats
@@ -103,7 +106,7 @@ if __name__ == "__main__":
 
     # A budget set explicitly to something other than the run's is not replaced
     # above; it is refused here, where the run directory is known (#197).
-    complaint = horizon_mismatch(run_tracker.run_dir, Schedules.of(config).decay_steps)
+    complaint = horizon_mismatch(run_tracker.run_dir, decay_steps)
     if complaint is not None:
         raise SystemExit(f"❌ {complaint}")
 
