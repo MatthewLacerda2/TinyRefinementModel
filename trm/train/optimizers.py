@@ -32,14 +32,23 @@ def _weight_decay(config):
     return optax.constant_schedule(config.WEIGHT_DECAY)
 
 
-def _adamw(config, learning_rate):
-    # Every numeric knob passed by name, none left to optax's defaults (#358).
+def _embedding_decay(config):
+    """config.EMBED_WEIGHT_DECAY per opt step at the peak (#360). optax.adamw multiplies
+    its coefficient by lr(t), so dividing by the peak leaves EMBED_WEIGHT_DECAY x
+    lr(t)/PEAK_LR: the schedule's shape without its scale."""
+    return optax.constant_schedule(config.EMBED_WEIGHT_DECAY / config.PEAK_LR)
+
+
+def _adamw(config, learning_rate, weight_decay=None):
+    # Every numeric knob passed by name, none left to optax's defaults (#358). The decay
+    # (config.WEIGHT_DECAY unless given) stays a schedule on every call site, so the
+    # optimizer state keeps one tree shape: a checkpoint from before #360 still resumes.
     return optax.adamw(
         learning_rate=learning_rate,
         b1=config.ADAM_B1,
         b2=config.ADAM_B2,
         eps=config.ADAM_EPS,
-        weight_decay=_weight_decay(config),
+        weight_decay=_weight_decay(config) if weight_decay is None else weight_decay,
         mask=weight_decay_mask,
         # Store Adam's first moment in bf16 (upcast to f32 for the update math).
         # Storage-only, Turing-safe — tensor cores never see bf16. Frees ~2 bytes/
@@ -54,7 +63,10 @@ def _adamw(config, learning_rate):
 
 
 def _muon(config, learning_rate, lr_mult=None):
-    """Muon on the matrices at its own LR, the same AdamW as today on the rest.
+    """Muon on the matrices at its own LR, AdamW on the rest.
+
+    The rest decays by EMBED_WEIGHT_DECAY, not WEIGHT_DECAY (#360): the only >=2-D
+    leaves that reach Adam are the lookup tables (trm/settings.py says why that value).
 
     Not optax.contrib.muon(): that helper hands ONE learning rate to both
     partitions, and Muon's orthogonalized update needs a far larger one than
@@ -84,7 +96,7 @@ def _muon(config, learning_rate, lr_mult=None):
                 optax.add_decayed_weights(_weight_decay(config), mask=weight_decay_mask),
                 optax.scale_by_learning_rate(lambda step: learning_rate(step) * lr_mult),
             ),
-            "adam": _adamw(config, learning_rate),
+            "adam": _adamw(config, learning_rate, weight_decay=_embedding_decay(config)),
         },
         muon_partition,
     )

@@ -60,7 +60,7 @@ def test_the_run_records_every_knob():
     from trm.runtime.run_tracker import RunTracker
 
     recorded = RunTracker.get_hyperparameters(CONFIG)
-    for knob in ("ADAM_B1", "ADAM_B2", "ADAM_EPS", "WEIGHT_DECAY", "CLIP_NORM",
+    for knob in ("ADAM_B1", "ADAM_B2", "ADAM_EPS", "WEIGHT_DECAY", "EMBED_WEIGHT_DECAY", "CLIP_NORM",
                  "MUON_BETA", "MUON_NS_STEPS", "MUON_EPS", "MUON_NESTEROV"):
         assert recorded[knob] == getattr(CONFIG, knob), knob
 

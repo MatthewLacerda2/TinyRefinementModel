@@ -18,6 +18,7 @@ TODAYS_DEFAULTS = {
     "TIME_SIGNAL": "sinusoidal", "REFINER_ENCODER_LAYERS": 7, "INFERENCE_DEPTH": 6,
     "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 16.666667,
     "ADAM_B1": 0.9, "ADAM_B2": 0.999, "ADAM_EPS": 1e-8, "WEIGHT_DECAY": 1e-2, "CLIP_NORM": 1.0,
+    "EMBED_WEIGHT_DECAY": 6e-5,  # moved by #360: the one default here no earlier run trained on
     "MUON_BETA": 0.95, "MUON_NS_STEPS": 5, "MUON_EPS": 1e-8, "MUON_NESTEROV": True,
     "LOSS_SCALE_GROWTH_INTERVAL": 256,
     "BATCH_SIZE": 2, "ACCUMULATION_STEPS": 64, "TOKENS_PER_OPT_STEP": 131072,

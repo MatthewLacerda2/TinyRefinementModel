@@ -190,8 +190,16 @@ class Config(BaseSettings):
     ADAM_B1: float = 0.9
     ADAM_B2: float = 0.999
     ADAM_EPS: float = 1e-8
-    # Decoupled weight decay on the >=2-D params, multiplied by the LR (so coupled to it, #360).
+    # Weight decay on the >=2-D params, multiplied by the LR (so coupled to it): under muon the
+    # matrices only, under adamw every >=2-D param, the embedding included.
     WEIGHT_DECAY: float = 1e-2
+    # The token embedding's decay under muon (#360): per opt step at the peak LR, then following
+    # the schedule's shape but not its scale (lr/PEAK_LR, Wortsman et al. 2023), so a PEAK_LR
+    # change does not move it. 6e-5 is nanoGPT/GPT-3's 0.1 x their 6e-4 peak; WEIGHT_DECAY x LR
+    # gave the table 6e-6, ten times less. 6e-6 restores the recipe before #360 at a 6e-4 peak.
+    # It is Adam's partition that takes it: the >=2-D leaves Muon leaves to Adam, which are the
+    # lookup tables (and the retired reasoner's shared_token); norms and biases stay undecayed.
+    EMBED_WEIGHT_DECAY: float = 6e-5
     # The global-norm clip on the accumulation window's MEAN gradient. The trainer logs that
     # norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
     CLIP_NORM: float = 1.0
