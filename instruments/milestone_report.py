@@ -115,18 +115,20 @@ def section_transcripts(fwd_args, quick_args, timeout):
 def section_val_ce(checkpoint_path):
     from trm.config import resolve_root
     from trm.runtime.restore import restore_model
-    from trm.train.validation import VAL_FIXED_DEPTH, VAL_ROWS, VAL_SKIP_SAMPLES, ValidationProbe
+    from trm.settings import CONFIG
+    from trm.train.validation import VAL_FIXED_DEPTH, ValidationProbe
 
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         return "skipped: DATA_ROOT is not set — no held-out data to score"
     model, _ = restore_model(checkpoint_path)
-    val_ce = ValidationProbe(resolve_root(data_root)).run(model)
+    probe = ValidationProbe.of(CONFIG, resolve_root(data_root))
+    val_ce = probe.run(model)
     if val_ce is None:
         return f"no held-out validation data under {data_root}"
     return (f"validation CE: {val_ce:.4f} nats "
-            f"(fixed depth {VAL_FIXED_DEPTH}, {VAL_ROWS} rows, "
-            f"skip {VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
+            f"(fixed depth {VAL_FIXED_DEPTH}, {probe.rows} rows, "
+            f"skip {probe.skip:,} — same probe the training loop logs)")
 
 
 def main(argv=None):

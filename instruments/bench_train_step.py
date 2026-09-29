@@ -82,7 +82,7 @@ def main():
 
     def micro_step(i, sync):
         loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, jnp.array(i), args.depth, doc_boundary=no_boundary
+            model, batch, jnp.array(i // ACCUMULATION_STEPS), args.depth, doc_boundary=no_boundary
         )
         apply_grads(optimizer, grads, model)
         if sync:

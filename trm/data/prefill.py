@@ -9,8 +9,8 @@ import glob
 import time
 import threading
 import queue
-from trm.config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
-from trm.settings import location
+from trm.config import TOKENIZER_NAME, resolve_root
+from trm.settings import CONFIG, location
 from dotenv import load_dotenv
 
 # Shard order (#364, measured by reading the code below, not assumed): each source is
@@ -206,11 +206,11 @@ def tokenize_buffer(pool, buffer):
     return np.array([t for sub in token_lists for t in sub], dtype=np.int32)
 
 
-def write_chunk(save_path, file_idx, token_acc):
-    """Saves accumulated tokens as a stride-aligned chunk. Returns the next chunk
-    index and the unaligned remainder (carried into the next chunk)."""
+def write_chunk(save_path, file_idx, token_acc, stride):
+    """Saves accumulated tokens as a chunk aligned to `stride` (a row: two MAX_SEQ_LEN
+    windows and the target after them). Returns the next chunk index and the
+    unaligned remainder (carried into the next chunk)."""
     chunk_data = np.concatenate(token_acc)
-    stride = 2 * MAX_SEQ_LEN + 1
     valid_len = (len(chunk_data) // stride) * stride
     if valid_len == 0:
         return file_idx, token_acc
@@ -223,7 +223,7 @@ def write_chunk(save_path, file_idx, token_acc):
     return file_idx + 1, [remainder] if len(remainder) > 0 else []
 
 
-def process_dataset(pool, ds_cfg):
+def process_dataset(pool, ds_cfg, stride):
     name = ds_cfg.get('alias') or ds_cfg['path'].split('/')[-1]
     target = ds_cfg['target_tokens']
     save_path = os.path.join(OUTPUT_DIR, ds_cfg['folder'], name)
@@ -275,7 +275,7 @@ def process_dataset(pool, ds_cfg):
             sys.stdout.flush()
 
             if sum(len(x) for x in token_acc) >= TOKENS_PER_FILE:
-                file_idx, token_acc = write_chunk(save_path, file_idx, token_acc)
+                file_idx, token_acc = write_chunk(save_path, file_idx, token_acc, stride)
                 save_progress(save_path, file_idx, total_tokens_ds, items_processed)
 
             if total_tokens_ds >= target:
@@ -302,7 +302,7 @@ def process_dataset(pool, ds_cfg):
             total_tokens_ds += len(flat_batch)
             items_processed += len(buffer)
         if token_acc:
-            file_idx, _ = write_chunk(save_path, file_idx, token_acc)
+            file_idx, _ = write_chunk(save_path, file_idx, token_acc, stride)
             save_progress(save_path, file_idx, total_tokens_ds, items_processed)
             print(f"\n🏁 Finished {name}. Total: {total_tokens_ds/1e9:.2f}B tokens")
 
@@ -314,7 +314,7 @@ def run_prefill():
 
     with Pool(num_workers) as pool:
         for ds_cfg in MIXTURE:
-            process_dataset(pool, ds_cfg)
+            process_dataset(pool, ds_cfg, 2 * CONFIG.MAX_SEQ_LEN + 1)
 
 
 if __name__ == "__main__":

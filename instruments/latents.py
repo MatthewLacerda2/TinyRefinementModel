@@ -171,10 +171,11 @@ def _main(argv=None):
     load_env()
 
     from trm.runtime.restore import load_eval_batches, restore_arch
+    from trm.settings import CONFIG
 
     model, _ = restore_arch(MODEL_ARCH, args.checkpoint_path, step=args.step)
     # load_eval_batches yields input rows, not (input, target) pairs.
-    for i, row in enumerate(load_eval_batches(args.source, num_rows=args.rows)):
+    for i, row in enumerate(load_eval_batches(CONFIG, args.source, num_rows=args.rows)):
         traj = capture(model, jnp.asarray(row[:, :MAX_SEQ_LEN]), args.depth)
         if not traj.ok:
             print(f"row {i}: {traj.nonfinite} non-finite values — skipped (#229/#233)")

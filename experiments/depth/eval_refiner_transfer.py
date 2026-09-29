@@ -26,11 +26,12 @@ import argparse
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import jax.numpy as jnp
+import numpy as np
 import optax
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, PAD_TOKEN_ID, resolve_root
+from trm.config import DATA_SEED, LATENT_DIM, MAX_SEQ_LEN, PAD_TOKEN_ID, resolve_root
 from trm.model.refiner_lm import RefinerForTraining
 from trm.data.loaders import TextDataGenerator
 from trm.runtime.checkpoints import discover_latest_checkpoint_run
@@ -85,7 +86,8 @@ def load_domain_batches(source, num_rows, skip):
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set (try DATA_ROOT=runs/data).")
-    gen = TextDataGenerator(f"{resolve_root(data_root)}/{source}")
+    gen = TextDataGenerator(f"{resolve_root(data_root)}/{source}", max_seq_len=MAX_SEQ_LEN,
+                            rng=np.random.default_rng(DATA_SEED))
     gen.skip_count = skip
     batches = []
     while len(batches) < num_rows:

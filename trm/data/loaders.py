@@ -1,13 +1,17 @@
 import numpy as np
 import jax.numpy as jnp
 import fsspec
-from trm.config import MAX_SEQ_LEN, DATA_SEED, VOCAB_SIZE
+from trm.config import VOCAB_SIZE
 
 class TextDataGenerator:
-    def __init__(self, directory, max_seq_len=MAX_SEQ_LEN, rng=None):
+    """Reads one corpus's rows (two `max_seq_len` windows and the target after them)
+    in file order. `rng` draws each new file's start offset: the run's is seeded with
+    DATA_SEED (trm/settings.py)."""
+
+    def __init__(self, directory, *, max_seq_len, rng):
         self.max_seq_len = max_seq_len
         self.directory = directory
-        self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
+        self.rng = rng
 
         self.fs, _ = fsspec.core.url_to_fs(directory)
 
@@ -136,7 +140,10 @@ class TextDataGenerator:
         return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
 
 class DataMixer:
-    def __init__(self, sources, weights, rng=None, names=None):
+    """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the
+    run's is seeded with DATA_SEED (trm/settings.py)."""
+
+    def __init__(self, sources, weights, *, rng, names=None):
         self.sources = list(sources)
         # What each source is called, in the same order (#439): the buckets of the
         # run's DATA_MIXTURE. Saved with the state, so a resume can tell whether it
@@ -147,7 +154,7 @@ class DataMixer:
         # Every source by its original index, alive or not: what `state()` saves.
         self._all = list(sources)
         self.weights = list(weights)
-        self.rng = rng if rng is not None else np.random.default_rng(DATA_SEED)
+        self.rng = rng
         # Original index of each surviving source, so full-length weight lists
         # supplied via set_weights can be mapped after sources exhaust.
         self._alive = list(range(len(self.sources)))

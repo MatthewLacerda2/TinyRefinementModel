@@ -92,7 +92,7 @@ def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):
     shard[100] = VOCAB_SIZE + 1
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    gen = TextDataGenerator(str(tmp_path))
+    gen = TextDataGenerator(str(tmp_path), max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="exceeds VOCAB_SIZE"):
         gen.get_batch(1)
 
@@ -105,5 +105,6 @@ def test_the_loader_accepts_an_ordinary_shard(tmp_path):
     shard = np.full(4 * MAX_SEQ_LEN + 8, VOCAB_SIZE - 1, dtype=np.int32)
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    rows, _ = TextDataGenerator(str(tmp_path)).get_batch(1)
+    rows, _ = TextDataGenerator(str(tmp_path), max_seq_len=MAX_SEQ_LEN,
+                                rng=np.random.default_rng(0)).get_batch(1)
     assert rows is not None and rows.shape[0] == 1

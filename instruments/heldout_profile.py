@@ -178,7 +178,8 @@ def main(argv=None):
     load_env()
     from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, resolve_root
     from trm.runtime.restore import restore_arch
-    from trm.train.validation import VAL_ROWS, VAL_SKIP_SAMPLES, ValidationProbe
+    from trm.settings import CONFIG
+    from trm.train.validation import ValidationProbe
 
     model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
     nbytes = token_bytes(VOCAB_SIZE)
@@ -187,8 +188,7 @@ def main(argv=None):
            "commit": git_head(short=False), "when": datetime.datetime.now(datetime.timezone.utc).isoformat(),
            "sources": {}}
     for source in args.sources.split(","):
-        probe = ValidationProbe(data_root, rows=args.rows or VAL_ROWS,
-                                skip=VAL_SKIP_SAMPLES if source == "fineweb-edu" else None, source=source)
+        probe = ValidationProbe.of(CONFIG, data_root, source=source, **({"rows": args.rows} if args.rows else {}))
         rows = probe.load_rows()
         if not rows:
             continue

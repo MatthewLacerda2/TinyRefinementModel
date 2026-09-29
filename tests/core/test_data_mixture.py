@@ -119,7 +119,7 @@ def _corpus(root, name, base):
 def _mixer(tmp_path, names=("web", "code")):
     from trm.data.loaders import DataMixer, TextDataGenerator
     dirs = [_corpus(tmp_path, "web", 0), _corpus(tmp_path, "code", 20000)]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [0.6, 0.4], rng=np.random.default_rng(11), names=names)
 
 
@@ -169,7 +169,7 @@ def _branch_mixer(tmp_path, names):
     from trm.data.loaders import DataMixer, TextDataGenerator
     bases = {"web": 0, "code": 20000, "math": 40000}
     dirs = [_corpus(tmp_path, name, bases[name]) for name in names]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [1.0 / len(names)] * len(names), rng=np.random.default_rng(11), names=list(names))
 
 

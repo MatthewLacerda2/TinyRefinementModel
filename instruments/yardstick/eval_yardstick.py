@@ -104,9 +104,10 @@ def heldout_perplexity(model):
         print("⚠️ Held-out ppl skipped: DATA_ROOT is not set (try DATA_ROOT=runs/data).")
         return None
     from trm.config import resolve_root
+    from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
 
-    ce = ValidationProbe(resolve_root(data_root)).run(model)
+    ce = ValidationProbe.of(CONFIG, resolve_root(data_root)).run(model)
     if ce is None:
         return None
     return {"val_ce": ce, "ppl": float(np.exp(ce))}

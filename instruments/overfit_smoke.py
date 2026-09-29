@@ -92,7 +92,8 @@ def main():
         batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     else:
         from trm.runtime.restore import load_eval_batches
-        batch = load_eval_batches(num_rows=1, skip=0)[0]
+        from trm.settings import CONFIG
+        batch = load_eval_batches(CONFIG, num_rows=1, skip=0)[0]
 
     ces = []
     for step in range(args.steps):

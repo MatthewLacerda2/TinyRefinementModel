@@ -196,14 +196,14 @@ def _main(argv=None):
 
     load_env()
     from trm.runtime.restore import load_eval_batches, restore_model
-    from trm.train.validation import VAL_SKIP_SAMPLES
+    from trm.settings import CONFIG
 
     model, _ = restore_model(args.checkpoint_path)
     names = [c.strip() for c in args.corpora.split(",") if c.strip()]
     # Each seed walks a disjoint block of documents: rows*2 apart, so two seeds
     # cannot overlap even at the largest --rows this is run with.
-    skip = (VAL_SKIP_SAMPLES if args.skip is None else args.skip) + args.seed * args.rows * 2
-    corpora = {n: load_eval_batches(n, num_rows=args.rows, skip=skip) for n in names}
+    skip = (CONFIG.VAL_SKIP_SAMPLES if args.skip is None else args.skip) + args.seed * args.rows * 2
+    corpora = {n: load_eval_batches(CONFIG, n, num_rows=args.rows, skip=skip) for n in names}
 
     print(f"paired: depth {args.treatment_depth} (treatment) vs depth "
           f"{args.control_depth} (control); positive = treatment better\n")

@@ -66,7 +66,6 @@ import sys
 from dataclasses import dataclass
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS, SSD_KEEP_FREE_GB
 from trm.runtime.run_budget import BUDGET_ENV
 from trm.runtime.gpu_lock import GpuLock, _pid_alive
 from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
@@ -79,8 +78,7 @@ TERMINAL = (*DELIBERATE, GAVE_UP)
 _OUTCOME_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ([A-Z_]+):")
 
 
-def stop_step_for(budget_tokens: int, tokens_per_opt_step: int,
-                  checkpoint_every: int = CHECKPOINT_EVERY_OPT_STEPS) -> int:
+def stop_step_for(budget_tokens: int, tokens_per_opt_step: int, checkpoint_every: int) -> int:
     """The first checkpoint boundary at or past the budget.
 
     The supervisor stops the run once metrics.csv reaches this step, and the
@@ -101,11 +99,13 @@ class Plan:
     stdout_path: pathlib.Path
 
 
-def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: int | None = None,
+def plan(budget_tokens: int, config, *, run_id: str, issue: int | None = None,
          spec: pathlib.Path | None = None, cold_root: pathlib.Path | None = None,
          runs_dir: pathlib.Path = RUNS_DIR, python: str = sys.executable) -> Plan:
+    """The supervised launch of a `budget_tokens` run of `config` (its tokens per opt
+    step and checkpoint cadence set where the run stops)."""
     run_dir = runs_dir / run_id
-    stop = stop_step_for(budget_tokens, tokens_per_opt_step)
+    stop = stop_step_for(budget_tokens, config.TOKENS_PER_OPT_STEP, config.CHECKPOINT_EVERY_OPT_STEPS)
     argv = [python, "-m", "trm.runtime.supervisor",
             "--stop-step", str(stop),
             "--run-dir", str(run_dir),
@@ -235,17 +235,17 @@ def main(argv: list[str] | None = None) -> int:
         if why:
             raise SystemExit(f"refusing to launch: COLD_ROOT {why}")
 
-    from trm.config import TOKENS_PER_OPT_STEP
+    from trm.settings import CONFIG
     run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue, spec=args.spec.resolve(),
+    p = plan(int(args.budget), CONFIG, run_id=run_id, issue=args.issue, spec=args.spec.resolve(),
              cold_root=cold_root)
     print(f"run:        {p.run_dir}")
     print(f"budget:     {int(args.budget):,} tokens -> stop at opt step {p.stop_step:,} "
-          f"({p.stop_step * TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
+          f"({p.stop_step * CONFIG.TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
     print(f"command:    {' '.join(f'{k}={v}' for k, v in p.env.items())} {' '.join(p.argv)}")
     print(f"supervisor: stdout -> {p.stdout_path}; heartbeats -> runs/{run_id}.supervisor.log")
     print("cold tier:  " + describe_cold(cold_root and ColdTier(
-        run_dir=p.run_dir, cold_root=cold_root, keep_free_gb=SSD_KEEP_FREE_GB,
+        run_dir=p.run_dir, cold_root=cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
         fullstate_every_hours=stall_window_hours(args.spec))))
     if args.dry_run:
         return 0

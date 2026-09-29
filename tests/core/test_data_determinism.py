@@ -33,8 +33,11 @@ def _source_dir():
 def test_same_seed_yields_identical_batch_stream():
     from trm.data.loaders import TextDataGenerator
 
-    gen_a = TextDataGenerator(_source_dir())
-    gen_b = TextDataGenerator(_source_dir())
+    from trm.settings import CONFIG
+
+    # Two readers the way the trainer builds one: the same seed, each its own stream.
+    gen_a, gen_b = (TextDataGenerator(_source_dir(), max_seq_len=CONFIG.MAX_SEQ_LEN,
+                                      rng=np.random.default_rng(CONFIG.DATA_SEED)) for _ in range(2))
 
     for _ in range(4):
         batch_a, bound_a = gen_a.get_batch(2)

@@ -21,9 +21,10 @@ import argparse
 import statistics
 
 from instruments._common import add_checkpoint_argument, load_env
-from trm.config import EVAL_ROWS, resolve_root
+from trm.config import resolve_root
 from trm.runtime.restore import restore_model
-from trm.train.validation import VAL_SKIP_SAMPLES, ValidationProbe
+from trm.settings import CONFIG
+from trm.train.validation import ValidationProbe
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -38,7 +39,7 @@ ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the
 CONFIG_DIVERGENCES = {}
 
 
-def slice_offsets(rows, slices, skip=VAL_SKIP_SAMPLES):
+def slice_offsets(rows, slices, skip):
     """Disjoint slices of `rows` rows starting at the trainer's own slice."""
     return [skip + i * rows for i in range(slices)]
 
@@ -47,7 +48,7 @@ def main(argv=None):
     load_env()
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     add_checkpoint_argument(ap)
-    ap.add_argument("--rows", type=int, nargs="+", default=[4, EVAL_ROWS], help="probe widths to compare")
+    ap.add_argument("--rows", type=int, nargs="+", default=[4, CONFIG.EVAL_ROWS], help="probe widths to compare")
     ap.add_argument("--slices", type=int, default=6, help="disjoint slices per width")
     args = ap.parse_args(argv)
     data_root = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
@@ -55,8 +56,8 @@ def main(argv=None):
     print(f"checkpoint step {step}; {args.slices} disjoint slices per width")
     for rows in args.rows:
         readings = []
-        for skip in slice_offsets(rows, args.slices):
-            ce = ValidationProbe(data_root, rows=rows, skip=skip).run(model)
+        for skip in slice_offsets(rows, args.slices, CONFIG.VAL_SKIP_SAMPLES):
+            ce = ValidationProbe.of(CONFIG, data_root, rows=rows, skip=skip).run(model)
             if ce is None:
                 break
             readings.append(ce)

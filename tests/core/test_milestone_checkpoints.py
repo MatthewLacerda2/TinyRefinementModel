@@ -9,10 +9,16 @@ import orbax.checkpoint as ocp
 import jax.numpy as jnp
 
 from trm.runtime.checkpoints import make_milestone_manager, milestone_due, milestone_thresholds
-from trm.runtime.layout import (MILESTONE_FIRST_TOKENS, MILESTONE_MAX_COUNT, MILESTONE_RATIO,
-                                MILESTONE_SUBDIR)
+from trm.runtime.layout import MILESTONE_SUBDIR
+from trm.settings import Config
 
 TOKENS_PER_OPT_STEP = 131_072
+DEFAULTS = Config.from_env({})
+
+
+def todays_marks():
+    return milestone_thresholds(DEFAULTS.MILESTONE_FIRST_TOKENS, DEFAULTS.MILESTONE_RATIO,
+                                DEFAULTS.MILESTONE_MAX_COUNT)
 
 
 def crossings(marks, run_opt_steps, tokens_per_opt_step=TOKENS_PER_OPT_STEP):
@@ -21,15 +27,15 @@ def crossings(marks, run_opt_steps, tokens_per_opt_step=TOKENS_PER_OPT_STEP):
 
 
 def test_the_schedule_doubles_and_stops_at_the_cap():
-    marks = milestone_thresholds()
-    assert marks[0] == MILESTONE_FIRST_TOKENS and len(marks) == MILESTONE_MAX_COUNT
-    assert all(b == int(a * MILESTONE_RATIO) for a, b in zip(marks, marks[1:]))
+    marks = todays_marks()
+    assert marks[0] == DEFAULTS.MILESTONE_FIRST_TOKENS and len(marks) == DEFAULTS.MILESTONE_MAX_COUNT
+    assert all(b == int(a * DEFAULTS.MILESTONE_RATIO) for a, b in zip(marks, marks[1:]))
 
 
 def test_disk_grows_with_the_logarithm_of_the_run():
     """The point of the doubling (#394): ten times the run buys three more saves,
     where the old fixed 500M cadence bought ten times as many."""
-    marks = milestone_thresholds()
+    marks = todays_marks()
     kept = lambda tokens: sum(1 for m in marks if m <= tokens)  # noqa: E731
     assert kept(1_000_000_000) == 7      # 8M..512M
     assert kept(10_000_000_000) == 11
@@ -37,7 +43,7 @@ def test_disk_grows_with_the_logarithm_of_the_run():
 
 
 def test_a_milestone_lands_once_per_threshold_and_at_the_step_that_crosses_it():
-    marks = milestone_thresholds()
+    marks = todays_marks()
     due = crossings(marks, 30_518)  # the 4B run
     assert len(due) == sum(1 for m in marks if m <= 30_518 * TOKENS_PER_OPT_STEP) == 9
     for step, mark in zip(due, marks):
@@ -48,18 +54,17 @@ def test_the_early_ones_are_denser_than_the_rolling_cadence():
     """Why the trainer checks every optimizer step: the first milestones fall
     between rolling boundaries, and one that waited for the next boundary would
     not be the point in training it claims to be."""
-    from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS
-    first = milestone_thresholds()[0] // TOKENS_PER_OPT_STEP
-    assert first < CHECKPOINT_EVERY_OPT_STEPS
+    first = todays_marks()[0] // TOKENS_PER_OPT_STEP
+    assert first < DEFAULTS.CHECKPOINT_EVERY_OPT_STEPS
 
 
 def test_a_short_pair_still_keeps_a_few():
     """The other half of #394's complaint: at 500M tokens a 67M-token pair kept none."""
-    assert len(crossings(milestone_thresholds(), 512)) >= 3
+    assert len(crossings(todays_marks(), 512)) >= 3
 
 
 def test_milestones_can_be_turned_off():
-    assert milestone_thresholds(first=0) == ()
+    assert milestone_thresholds(0, DEFAULTS.MILESTONE_RATIO, DEFAULTS.MILESTONE_MAX_COUNT) == ()
     assert not any(milestone_due(s, s - 1, TOKENS_PER_OPT_STEP, ()) for s in range(1, 10_000))
 
 

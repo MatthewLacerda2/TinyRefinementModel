@@ -10,6 +10,7 @@ import pytest
 
 from trm.runtime import rewind as rw
 from trm.runtime.layout import BEST_SUBDIR
+from trm.settings import CONFIG
 
 ACCUM = 128
 
@@ -147,6 +148,6 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True))
-    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), "run_x")
+    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
-        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), "run_x")
+        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
