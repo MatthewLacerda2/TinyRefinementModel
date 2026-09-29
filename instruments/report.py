@@ -84,8 +84,8 @@ def _mean(values):
 
 def _arch_line(arch):
     if arch == "plain":
-        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
-                f"{CONFIG.PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}")
+        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads / {CONFIG.NUM_KV_HEADS} KV "
+                f"(head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), {CONFIG.PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}")
     if arch == "refiner":
         return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
                 f"{CONFIG.REFINER_ENCODER_LAYERS} encoder layers + 1 shared refine block looped "

@@ -16,7 +16,8 @@ Field name = environment variable = the key in run_metadata.json.
 import os
 from typing import Annotated, Literal
 
-from pydantic import BeforeValidator, PositiveInt, ValidationError, computed_field, field_validator
+from pydantic import (BeforeValidator, PositiveInt, ValidationError, computed_field, field_validator,
+                      model_validator)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -83,6 +84,29 @@ class Config(BaseSettings):
     # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
     # asserts pass (dim%heads==0, head_dim even for RoPE).
     NUM_HEADS: int = 15
+    # Key/value heads for the plain stack's attention (GQA): NUM_HEADS / NUM_KV_HEADS
+    # query heads share each K/V head. Unset means one per query head (MHA), resolved to
+    # NUM_HEADS before it is recorded, so the recorded value is always the real one.
+    # #433 adopts SmolLM2-135M's 9 heads / 3 KV heads with 30 layers x 576; the
+    # knobs that shape it are LATENT_DIM, NUM_HEADS, NUM_KV_HEADS and PLAIN_LAYERS (the
+    # block's 8/3 FFN rounding already gives SmolLM2's 1536 at 576). The retired
+    # arches do not read it.
+    NUM_KV_HEADS: PositiveInt = 15
+
+    @model_validator(mode="before")
+    @classmethod
+    def _kv_heads_default_to_heads(cls, data):
+        if isinstance(data, dict) and "NUM_KV_HEADS" not in data:
+            data = {**data, "NUM_KV_HEADS": data.get("NUM_HEADS", cls.model_fields["NUM_HEADS"].default)}
+        return data
+
+    @field_validator("NUM_KV_HEADS")
+    @classmethod
+    def _kv_heads_divide_heads(cls, value, info):
+        heads = info.data.get("NUM_HEADS")
+        if heads is not None and heads % value:
+            raise ValueError(f"must divide NUM_HEADS ({heads}): each KV head serves a whole group")
+        return value
 
     # Architecture selector, chosen at launch rather than by a code edit:
     #   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence.

@@ -59,7 +59,7 @@ _PLAIN_ARENA_PEAKS_MIB = {8: 4112, 9: 4437, 10: 4762}   # trm/config.py, the PLA
 MEASURED_PEAKS = (
     MeasuredPeak("refiner", {"dim": 960, "encoder_layers": 7, "batch": 1}, 5.0,
                  "runs/run_20260813_214725 (#157), nvidia-smi on the 6GB RTX 2060", "card"),
-    *(MeasuredPeak("plain", {"dim": 960, "num_heads": 15, "num_layers": layers, "post_norm": False,
+    *(MeasuredPeak("plain", {"dim": 960, "num_heads": 15, "num_kv_heads": 15, "num_layers": layers, "post_norm": False,
                              "batch": 1}, mib * MIB / 1e9,
                    f"instruments.vram_headroom_smoke 2026-09-13: {mib} MiB allocator arena peak "
                    f"under cuda_async (trm/config.py, PLAIN_LAYERS)", "arena")
@@ -96,10 +96,13 @@ def _reasoner_mlp_hidden(dim):
     return int(256 * ((dim * 8 / 3 + 255) // 256))
 
 
-def _refiner_block(dim, num_heads):
-    """refiner.Block: MHA (RoPE + q/k norms) + SwiGLU MLP + two RMSNorms."""
+def _refiner_block(dim, num_heads, num_kv_heads=None):
+    """refiner.Block: attention (RoPE + q/k norms; K/V on num_kv_heads heads, MHA
+    when None) + SwiGLU MLP + two RMSNorms."""
     head_dim = dim // num_heads
-    attention = 4 * _linear(dim, dim) + 2 * _rmsnorm(head_dim)   # q, k, v, o
+    kv_features = (num_heads if num_kv_heads is None else num_kv_heads) * head_dim
+    attention = (2 * _linear(dim, dim) + 2 * _linear(dim, kv_features)   # q, o; k, v
+                 + 2 * _rmsnorm(head_dim))
     hidden = _refiner_mlp_hidden(dim)
     mlp = 2 * _linear(dim, hidden) + _linear(hidden, dim)        # gate, up, down
     return attention + 2 * _rmsnorm(dim) + mlp
@@ -121,9 +124,9 @@ def _reasoner_block(dim, num_heads, num_groups):
     return attention + 2 * _rmsnorm(dim) + mlp
 
 
-def _plain_block(dim, num_heads, post_norm):
+def _plain_block(dim, num_heads, num_kv_heads, post_norm):
     """plain.py reuses refiner.Block; post-norm adds an RMSNorm on each residual branch."""
-    return _refiner_block(dim, num_heads) + (2 * _rmsnorm(dim) if post_norm else 0)
+    return _refiner_block(dim, num_heads, num_kv_heads) + (2 * _rmsnorm(dim) if post_norm else 0)
 
 
 # ── Config resolution ────────────────────────────────────────────────────────
@@ -133,6 +136,8 @@ def _plain_defaults():
         "dim": CONFIG.LATENT_DIM,
         "vocab_size": VOCAB_SIZE,
         "num_heads": CONFIG.NUM_HEADS,
+        # None: resolved in _resolve by PlainTransformer's rule, once num_heads is known.
+        "num_kv_heads": None,
         "num_layers": CONFIG.PLAIN_LAYERS,
         "max_seq_len": CONFIG.MAX_SEQ_LEN,
         "post_norm": CONFIG.POST_NORM,
@@ -181,6 +186,10 @@ def _resolve(arch, overrides):
             f"accepted: {sorted(config)}"
         )
     config.update(overrides)
+    if arch == "plain" and config["num_kv_heads"] is None:
+        # PlainTransformer's rule: the config's KV heads at the config's head count,
+        # else one per head (MHA).
+        config["num_kv_heads"] = CONFIG.NUM_KV_HEADS if config["num_heads"] == CONFIG.NUM_HEADS else config["num_heads"]
     return config
 
 
@@ -198,7 +207,8 @@ def param_breakdown(arch=CONFIG.MODEL_ARCH, **overrides):
     if arch == "plain":
         return {
             "embeddings & tied head": _embed(config["vocab_size"], dim),
-            "blocks": config["num_layers"] * _plain_block(dim, config["num_heads"], config["post_norm"]),
+            "blocks": config["num_layers"] * _plain_block(dim, config["num_heads"], config["num_kv_heads"],
+                                                          config["post_norm"]),
             "heads & norms": _rmsnorm(dim),   # out_norm
         }
     if arch == "refiner":
