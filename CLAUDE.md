@@ -31,9 +31,13 @@ Push back when it's earned:
   suppress a novel idea just because it's unproven. The line is "documented to fail"
   versus "simply not yet tried."
 - The other side of the same line: **what the literature settled *in favour* and we
-  don't have yet is work to do**, not research to re-run. Its pair asks how much it
-  gains *here* and that it breaks nothing, not whether it works — and "settled" means
-  settled in the literature's setting: re-ask it when ours differs.
+  don't have yet is work to do**, not research to re-run. Say so up front — "adopt X,
+  expect ~Y, source Z" — and land it behind a smoke check that it breaks nothing, not
+  a matched pair asking whether it works. "Settled" means settled in the literature's
+  setting; where ours differs (f16, a 6GB card, batch 2), measure *only that part* — a
+  throughput bench for a shape the paper judged in tokens — never the whole question
+  again. Muon's three pairs and an LR sweep to GPT-3's own table value are what
+  forgetting this costs (#26, #287, #382).
 
 Align before building. The user must have a clear, defined idea of what he's trying to
 say. If the idea isn't yet clear — to him or to you — **stop**: don't plan, don't
@@ -255,10 +259,12 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    tool only when it genuinely makes sense — usually when it's small. The label means
    *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
    the model with a known method (the document separator masked as pad, #373) is a
-   **`bug`**, even though it changes what the model is; the matched pair still judges
-   it before a base run adopts it, but nobody is wondering whether to do it. Such a bug
+   **`bug`**, even though it changes what the model is; nobody is wondering whether to
+   do it, so a smoke check that it breaks nothing gates it, not a pair. Such a bug
    still carries `ideas` as its *type*, the tier where model and trainer work sits, so
-   the queue can place it; `bug` is what says it is not a question.
+   the queue can place it; `bug` is what says it is not a question. **Before filing an
+   `ideas` issue, ask whether the literature settled it.** If it did, it is a `bug`
+   from birth: title it "Adopt X", and put the source and expected effect in the body.
 5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
