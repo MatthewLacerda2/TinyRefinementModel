@@ -38,6 +38,7 @@ import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -47,7 +48,7 @@ from dataclasses import dataclass, field
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight
-from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_JOURNAL  # jax-free
+from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
 from trm.runtime.rewind import unresumable  # jax-free
 from trm.settings import CONFIG, Config, location
 
@@ -562,6 +563,34 @@ def scored_milestones(run_dir: pathlib.Path) -> set[str]:
     return steps
 
 
+def is_scorer(pid: int) -> bool:
+    """Whether `pid` is a live yardstick scorer: alive and running instruments.base_run.
+    A pid alone would do while it lives, but after a reboot (#384) the pid in an old
+    claim can belong to anything, and a claim held by a stranger would keep its
+    milestone from ever being scored. A zombie's cmdline is empty, so it reads as done."""
+    try:
+        return b"instruments.base_run" in pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+    except (OSError, ValueError):
+        return False
+
+
+def live_claims(run_dir: pathlib.Path) -> set[str]:
+    """The milestone steps some scorer, this supervisor's or a predecessor's, is
+    working on now (#506). A claim whose scorer is gone is deleted on sight."""
+    live = set()
+    claims = run_dir / YARDSTICK_CLAIMS
+    for claim in (claims.iterdir() if claims.is_dir() else ()):
+        try:
+            pid = int(claim.read_text())
+        except (OSError, ValueError):
+            pid = -1
+        if is_scorer(pid):
+            live.add(claim.name)
+        else:
+            claim.unlink(missing_ok=True)
+    return live
+
+
 # --- the loop -----------------------------------------------------------------
 
 @dataclass
@@ -613,7 +642,7 @@ class Supervisor:
     # command resumes nothing.
     checkpoint_dir: pathlib.Path | None = None
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
-    _scorers: list = field(default_factory=list)  # their handles, pruned of finished ones each poll
+    _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -689,10 +718,10 @@ class Supervisor:
                 continue
             if decision.action in (STOP, KILL):
                 self.stop(proc)
-                self.tend_cold_tier(final=True)
+                self.end()
                 return decision.outcome
             if decision.action == GIVE_UP:
-                self.tend_cold_tier(final=True)
+                self.end()
                 return decision.outcome
             if decision.action in (RELAUNCH, RESTART):
                 if decision.action == RESTART:
@@ -719,40 +748,87 @@ class Supervisor:
             self.announce(f"{_stamp()} cold tier back: {self.cold.cold_run}")
         self._cold_error = None
 
+    def end(self) -> None:
+        """What every terminal outcome owes before the supervisor returns: the cold
+        tier's last copy, and a word on every milestone still unscored (#506)."""
+        self.tend_cold_tier(final=True)
+        if self.spec is not None:
+            self.announce_unscored_milestones()
+
+    def scorer_argv(self, step: str) -> list[str]:
+        """The command that scores milestone `step` on the CPU, run from REPO_ROOT."""
+        run_dir = self.metrics_csv.parent
+        return [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                "--checkpoint-dir", str(run_dir / "checkpoints" / MILESTONE_SUBDIR), "--step", step,
+                "--limit", str(self.milestone_limit), "--cpu"]
+
+    def unscored_milestones(self) -> tuple[list[str], set[str]]:
+        """(the run's finalized milestones with no score in its journal and no scorer on
+        them, oldest first; the steps scorers are on now). The scorers counted are this
+        supervisor's and any a predecessor left running, seen through their claims (#506).
+        Reaps this supervisor's finished scorers and drops their claims on the way."""
+        run_dir = self.metrics_csv.parent
+        for step, proc in list(self._scorers.items()):
+            if proc.poll() is not None:  # poll() reaps it
+                del self._scorers[step]
+                (run_dir / YARDSTICK_CLAIMS / step).unlink(missing_ok=True)
+        running = set(self._scorers) | live_claims(run_dir)
+        done = scored_milestones(run_dir) | running
+        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
+        unscored = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
+                           if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
+                          key=int)
+        return unscored, running
+
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, oldest
-        first, at most MILESTONE_SCORERS of this supervisor's at a time: the card stays the trainer's, and a
+        first, at most MILESTONE_SCORERS at a time: the card stays the trainer's, and a
         scorer that outlives this poll is fine — the journal is append-only.
 
-        What is already scored comes from the run's journal, not from memory, so the
-        fresh supervisor a resume makes does not score every milestone again; and the
-        cap leaves the rest for a later poll. Both at once is how a relaunch spawned
-        nine 1.5 GB scorers in one poll and OOM-killed the run (#471).
+        What is already scored comes from the run's journal, and what is being scored
+        from the claim each scorer leaves in <run-dir>/yardstick_claims, not from
+        memory: so the fresh supervisor a resume or a restart makes neither scores every
+        milestone again (#471) nor starts a duplicate beside a scorer its predecessor
+        left running, and the cap counts those too (#506). Nine 1.5 GB scorers at once
+        is how a relaunch OOM-killed a run (#471).
 
         The scorer is told the milestone's own dir and step (#328). Left to itself it
         scored the newest rolling checkpoint, which is not the milestone, and which
         rolling retention can evict while a slow CPU pass is still restoring it;
         milestones are the one kind nothing evicts."""
         run_dir = self.metrics_csv.parent
-        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
-        if not milestones.is_dir():
+        if not (run_dir / "checkpoints" / MILESTONE_SUBDIR).is_dir():
             return
-        self._scorers = [p for p in self._scorers if p.poll() is None]  # poll() reaps the finished
-        done = self._scored | scored_milestones(run_dir)
-        owed = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
-                       if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
-                      key=int)
-        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(self._scorers))]):
+        unscored, running = self.unscored_milestones()
+        # One this supervisor already tried, whose scorer failed, waits for the next
+        # supervisor rather than being retried every poll.
+        owed = [step for step in unscored if step not in self._scored]
+        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(running))]):
             self._scored.add(step)
             waiting = len(owed) - i - 1
             self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU"
                           + (f" ({waiting} more wait for a free scorer)" if waiting else ""))
-            self._scorers.append(subprocess.Popen(
-                [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
-                 "--checkpoint-dir", str(milestones), "--step", step,
-                 "--limit", str(self.milestone_limit), "--cpu"],
-                cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+            proc = subprocess.Popen(
+                self.scorer_argv(step), cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._scorers[step] = proc
+            (run_dir / YARDSTICK_CLAIMS).mkdir(exist_ok=True)
+            (run_dir / YARDSTICK_CLAIMS / step).write_text(str(proc.pid))
+
+    def announce_unscored_milestones(self) -> None:
+        """At run end, name each milestone that has no score and no scorer, with the
+        command that scores it (#506). Usually the last one: nothing polls after the
+        run ends, so it would otherwise go unscored and unsaid. Scorers still running
+        are left to finish; their lines land in the journal."""
+        unscored, running = self.unscored_milestones()
+        if not unscored:
+            return
+        self.announce(
+            f"{_stamp()} ⚠ the run ended with {len(unscored)} milestone(s) unscored: {', '.join(unscored)}"
+            + (f" (scorers still running on {', '.join(sorted(running, key=int))})" if running else "")
+            + ". Score each with:\n" + "\n".join(
+                f"    cd {shlex.quote(str(REPO_ROOT))} && {shlex.join(self.scorer_argv(step))}"
+                for step in unscored))
 
     def record(self, message: str) -> None:
         """Append one line to the heartbeat file, opened and closed per line so no

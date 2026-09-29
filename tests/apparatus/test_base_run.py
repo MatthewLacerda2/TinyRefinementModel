@@ -1,7 +1,10 @@
 """The base run is pre-registered, scored and judged like every other experiment (#294)."""
 
 import json
+import os
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -10,6 +13,7 @@ from instruments.verdict import INCONCLUSIVE, KEEP, KILL
 from trm.settings import Config
 
 DEFAULTS = Config.from_env({})
+FAKE_PID = 2 ** 22 + 1  # above Linux's largest pid_max: never a live process
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SPEC = REPO / "experiments/base/specs/001-plain-base.toml"
@@ -110,7 +114,7 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
         (run / "checkpoints" / "milestones" / step).mkdir(parents=True)
         (run / "checkpoints" / "milestones" / step / "_CHECKPOINT_METADATA").write_text("{}")
     launched = []
-    monkeypatch.setattr(sup_mod.subprocess, "Popen", lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0})())
+    monkeypatch.setattr(sup_mod.subprocess, "Popen", lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0, "pid": FAKE_PID})())
     sup = Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
                      metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None, config=DEFAULTS)
     sup.score_new_milestones()
@@ -128,7 +132,7 @@ def _fake_scorers(monkeypatch, launched, running):
     """Popen replaced by a scorer that is still running while `running[0]` is true."""
     from trm.runtime import supervisor as sup_mod
     monkeypatch.setattr(sup_mod.subprocess, "Popen", lambda argv, **kw: launched.append(argv) or type(
-        "P", (), {"poll": lambda s: None if running[0] else 0})())
+        "P", (), {"poll": lambda s: None if running[0] else 0, "pid": FAKE_PID})())
 
 
 def _steps(launched):
@@ -202,6 +206,83 @@ def test_the_supervisor_runs_one_scorer_at_a_time_oldest_first(tmp_path, monkeyp
     assert _steps(launched) == ["3967", "7871"]
 
 
+def test_a_live_claim_from_a_predecessor_blocks_a_duplicate_and_a_dead_one_does_not(tmp_path, monkeypatch):
+    """#506: a restarted supervisor could not see the scorer its predecessor left
+    running, and started a second one on the same step (~1.5 GB, a duplicate journal
+    line) — the cap was per supervisor. A claim is honoured while its pid is a live
+    scorer; a dead one, or a pid that is now some other process, is not."""
+    from trm.runtime.layout import YARDSTICK_CLAIMS
+    from trm.runtime.supervisor import Limits, Supervisor
+
+    run = tmp_path / "run_k"
+    _milestones(run, (100, 200))
+    (run / YARDSTICK_CLAIMS).mkdir()
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "instruments.base_run"])
+    try:
+        (run / YARDSTICK_CLAIMS / "100").write_text(str(foreign.pid))
+        launched = []
+        _fake_scorers(monkeypatch, launched, [False])
+
+        def fresh(scorers):
+            return Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
+                              metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None,
+                              config=Config.from_env({"MILESTONE_SCORERS": str(scorers)}))
+
+        fresh(1).score_new_milestones()
+        assert launched == [], "the predecessor's live scorer fills the cap of one"
+        fresh(2).score_new_milestones()
+        assert _steps(launched) == ["200"], "a second slot, and never a duplicate of 100"
+    finally:
+        foreign.kill()
+        foreign.wait()
+
+    launched.clear()
+    (run / YARDSTICK_CLAIMS / "200").write_text(str(os.getpid()))  # alive, but not a scorer
+    fresh(2).score_new_milestones()
+    assert _steps(launched) == ["100", "200"]
+
+
+def test_the_run_end_names_each_milestone_left_unscored_with_its_command(tmp_path, monkeypatch):
+    """#506: milestones still queued when run() ends were never scored, and nothing
+    said so. The run stops at its first poll with 100 being scored and 200 waiting
+    for the one slot; the end names 200 and the exact command, and leaves 100 to its
+    running scorer."""
+    import shlex
+    import textwrap
+
+    from trm.runtime import supervisor as sup_mod
+    from trm.runtime.supervisor import BUDGET_COMPLETE, Limits, Supervisor
+
+    run = tmp_path / "run_e"
+    _milestones(run, (100, 200))
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent(f"""
+        import pathlib, time
+        pathlib.Path({str(run / "metrics.csv")!r}).write_text("step,ce\\n50,3.0\\n")
+        time.sleep(60)
+    """))
+    real_popen, launched = sup_mod.subprocess.Popen, []
+
+    def popen(argv, **kw):
+        if "instruments.base_run" not in argv:
+            return real_popen(argv, **kw)  # the trainer stand-in
+        launched.append(argv)
+        return type("P", (), {"poll": lambda s: None, "pid": FAKE_PID})()
+
+    monkeypatch.setattr(sup_mod.subprocess, "Popen", popen)
+    reported = []
+    sup = Supervisor(command=(sys.executable, str(child)), limits=Limits(stop_step=10), log_path=tmp_path / "t.log",
+                     metrics_csv=run / "metrics.csv", spec=SPEC, report=reported.append, config=DEFAULTS,
+                     poll_seconds=0.5)
+
+    assert sup.run() == BUDGET_COMPLETE
+    assert _steps(launched) == ["100"]
+    (end,) = [line for line in reported if "unscored" in line]
+    assert "unscored: 200" in end and "still running on 100" in end
+    assert shlex.join(sup.scorer_argv("200")) in end
+    assert "--step 100" not in end
+
+
 def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tmp_path, monkeypatch):
     """#328: the scorer named no checkpoint, so base_run scored the newest rolling one.
     That is not the milestone, and rolling retention (3) can evict it mid-restore. Here
@@ -222,7 +303,7 @@ def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tm
 
     launched = []
     monkeypatch.setattr(sup_mod.subprocess, "Popen",
-                        lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0})())
+                        lambda argv, **kw: launched.append(argv) or type("P", (), {"poll": lambda s: 0, "pid": FAKE_PID})())
     Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
                metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None, config=DEFAULTS).score_new_milestones()
     assert len(launched) == 1, "one milestone; the orbax tmp dir beside it is not one"
