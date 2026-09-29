@@ -23,7 +23,6 @@ import pytest
 from flax import nnx
 
 from trm import infer
-from trm.config import MAX_SEQ_LEN
 from trm.settings import CONFIG
 
 # Deliberately tiny: the defect lives in the jit cache key, not in the model, so
@@ -34,7 +33,7 @@ TOY_VOCAB = 37
 TOY_HEADS = 4
 # generate_text pads to the model's own window, so this could shrink too; it stays at
 # MAX_SEQ_LEN so the generation loop runs at the shape it serves.
-TOY_SEQ_LEN = MAX_SEQ_LEN
+TOY_SEQ_LEN = CONFIG.MAX_SEQ_LEN
 TOY_PAD = TOY_VOCAB - 1
 TOY_DEPTH = 2
 TOY_TOP_K = 8          # must not exceed TOY_VOCAB

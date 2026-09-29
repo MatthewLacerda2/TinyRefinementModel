@@ -27,7 +27,6 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
 from trm.settings import CONFIG
 
@@ -39,13 +38,13 @@ TOY_PAD = TOY_VOCAB - 1
 def toy():
     return PlainTransformer(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
 @pytest.fixture(scope="module")
 def clean():
     return jax.random.randint(
-        jax.random.PRNGKey(0), (1, MAX_SEQ_LEN), 0, TOY_PAD, dtype=jnp.int32)
+        jax.random.PRNGKey(0), (1, CONFIG.MAX_SEQ_LEN), 0, TOY_PAD, dtype=jnp.int32)
 
 
 @pytest.mark.parametrize("bad_id", [TOY_VOCAB, 50256, 2**30])
@@ -89,13 +88,13 @@ def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):
     from trm.config import VOCAB_SIZE
     from trm.data.loaders import TextDataGenerator
 
-    shard = np.full(4 * MAX_SEQ_LEN + 8, 5, dtype=np.int32)
+    shard = np.full(4 * CONFIG.MAX_SEQ_LEN + 8, 5, dtype=np.int32)
     # One impossible id per MAX_SEQ_LEN * 2 tokens, so the first row holds one wherever
     # the reader's random start offset (under one row) lands.
-    shard[100::2 * MAX_SEQ_LEN] = VOCAB_SIZE + 1
+    shard[100::2 * CONFIG.MAX_SEQ_LEN] = VOCAB_SIZE + 1
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    gen = TextDataGenerator(str(tmp_path), max_seq_len=MAX_SEQ_LEN, rng=np.random.default_rng(0))
+    gen = TextDataGenerator(str(tmp_path), max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="exceeds VOCAB_SIZE"):
         gen.get_batch(1)
 
@@ -105,9 +104,9 @@ def test_the_loader_accepts_an_ordinary_shard(tmp_path):
     from trm.config import VOCAB_SIZE
     from trm.data.loaders import TextDataGenerator
 
-    shard = np.full(4 * MAX_SEQ_LEN + 8, VOCAB_SIZE - 1, dtype=np.int32)
+    shard = np.full(4 * CONFIG.MAX_SEQ_LEN + 8, VOCAB_SIZE - 1, dtype=np.int32)
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    rows, _ = TextDataGenerator(str(tmp_path), max_seq_len=MAX_SEQ_LEN,
+    rows, _ = TextDataGenerator(str(tmp_path), max_seq_len=CONFIG.MAX_SEQ_LEN,
                                 rng=np.random.default_rng(0)).get_batch(1)
     assert rows is not None and rows.shape[0] == 1

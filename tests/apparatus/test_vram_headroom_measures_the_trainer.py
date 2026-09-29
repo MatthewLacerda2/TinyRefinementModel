@@ -23,11 +23,10 @@ def test_it_uses_the_production_optimizer_not_its_own():
 
 
 def test_the_default_run_crosses_an_optimizer_apply():
-    parser_defaults = {kw.value.left.id if isinstance(kw.value, ast.BinOp) else None
-                       for call in ast.walk(TREE) if isinstance(call, ast.Call)
+    parser_defaults = {ast.unparse(kw.value) for call in ast.walk(TREE) if isinstance(call, ast.Call)
                        and call.args and getattr(call.args[0], "value", None) == "--micro-steps"
                        for kw in call.keywords if kw.arg == "default"}
-    assert parser_defaults == {"ACCUMULATION_STEPS"}, "default must be ACCUMULATION_STEPS + 1"
+    assert parser_defaults == {"CONFIG.ACCUMULATION_STEPS + 1"}, "default must be ACCUMULATION_STEPS + 1"
 
 
 class _Arch:

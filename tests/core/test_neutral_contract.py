@@ -20,7 +20,6 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.model.contract import LanguageModel
 from trm.settings import CONFIG
@@ -48,7 +47,7 @@ def _tiny_refiner():
 
     return RefinerForTraining(
         128, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4,
-        encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+        encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN,
     )
 
 
@@ -59,7 +58,7 @@ def test_both_arches_train_through_the_identical_call(arch, make_reasoner_model)
     that does neither."""
     model = _tiny_refiner() if arch == "refiner" else make_reasoner_model(seed=5)
     rng = np.random.default_rng(11)
-    batch = jnp.asarray(rng.integers(1, 37, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = jnp.asarray(rng.integers(1, 37, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
 
     loss, out, grads, grad_norm = compute_grad_step(
         model, batch, opt_step=0, depth=2, doc_boundary=True)

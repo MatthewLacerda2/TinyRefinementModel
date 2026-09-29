@@ -17,7 +17,6 @@ import pytest
 from flax import nnx
 
 from instruments.invariants import F16_MAX, row_violations
-from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
 from trm.settings import CONFIG
 
@@ -27,12 +26,12 @@ TOY_VOCAB, TOY_PAD = 37, 36
 @pytest.fixture(scope="module")
 def toy():
     return PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
-                            num_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+                            num_layers=3, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
 @pytest.fixture(scope="module")
 def tokens():
-    t = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    t = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     return t.at[0, :6].set(jnp.arange(1, 7, dtype=jnp.int32))
 
 
@@ -51,7 +50,7 @@ def test_it_is_the_peak_not_the_average(toy, tokens):
     seven multiplied by ~794 in #235, and an average over blocks would have hidden
     it."""
     scaled = PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
-                              num_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+                              num_layers=3, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     scaled.embed.embedding.value = scaled.embed.embedding.value * 100.0
 
     calm = float(toy(tokens, depth=1, training=True).diag["act_max"])

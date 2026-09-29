@@ -252,8 +252,8 @@ class RunLog:
         mis-scaled by this; `run_metadata.json` records what the run actually
         used, and report.py cross-checks it.
         """
-        from trm.config import TOKENS_PER_OPT_STEP  # jax-heavy; only this property needs it
-        return self.last_step * TOKENS_PER_OPT_STEP
+        from trm.settings import CONFIG  # this process's recipe, for runs that recorded none
+        return self.last_step * CONFIG.TOKENS_PER_OPT_STEP
 
     @property
     def params(self):

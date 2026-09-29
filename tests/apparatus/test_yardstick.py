@@ -171,13 +171,12 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
 
     from instruments.arch import build
     from instruments.yardstick import eval_yardstick
-    from trm.config import MODEL_ARCH
     from trm.runtime import checkpoints as ck
     from trm.runtime.monitor import LossMonitor
     from trm.runtime.restore import restore_arch
 
-    if not arch_flag and MODEL_ARCH != "plain":
-        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {MODEL_ARCH}")
+    if not arch_flag and CONFIG.MODEL_ARCH != "plain":
+        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {CONFIG.MODEL_ARCH}")
 
     saved = build("plain", **TINY_PLAIN)
     mngr = ocp.CheckpointManager(str(tmp_path / "checkpoints"), item_names=ck.CHECKPOINT_ITEMS,

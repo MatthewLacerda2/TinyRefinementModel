@@ -14,9 +14,10 @@ scheme fails loudly instead of silently shifting where slots get keyed.
 
 import numpy as np
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT, SHARED_SLOTS
+from trm.config import MAX_STEPS_LIMIT, SHARED_SLOTS
+from trm.settings import CONFIG
 
-CACHE_LEN = MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS
+CACHE_LEN = CONFIG.MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS
 
 
 def test_decoder_slot_reads_land_on_full_depth_write_positions():
@@ -25,7 +26,7 @@ def test_decoder_slot_reads_land_on_full_depth_write_positions():
     read_pos = CACHE_LEN + np.arange(-SHARED_SLOTS, 0)
 
     # reasoner.py _reasoning_loop: step i writes at MAX_SEQ_LEN + i*SHARED_SLOTS ...
-    final_step_write_pos = MAX_SEQ_LEN + (MAX_STEPS_LIMIT - 1) * SHARED_SLOTS + np.arange(SHARED_SLOTS)
+    final_step_write_pos = CONFIG.MAX_SEQ_LEN + (MAX_STEPS_LIMIT - 1) * SHARED_SLOTS + np.arange(SHARED_SLOTS)
 
     np.testing.assert_array_equal(
         read_pos, final_step_write_pos,
@@ -36,8 +37,8 @@ def test_decoder_slot_reads_land_on_full_depth_write_positions():
 
 
 def test_rope_cache_covers_every_position_used():
-    deepest_write = MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS - 1
-    slot_kv_home = MAX_SEQ_LEN + SHARED_SLOTS - 1  # base_shared_pos in the reasoning context
+    deepest_write = CONFIG.MAX_SEQ_LEN + MAX_STEPS_LIMIT * SHARED_SLOTS - 1
+    slot_kv_home = CONFIG.MAX_SEQ_LEN + SHARED_SLOTS - 1  # base_shared_pos in the reasoning context
     assert deepest_write < CACHE_LEN
     assert slot_kv_home < CACHE_LEN
-    assert MAX_SEQ_LEN - 1 < CACHE_LEN
+    assert CONFIG.MAX_SEQ_LEN - 1 < CACHE_LEN

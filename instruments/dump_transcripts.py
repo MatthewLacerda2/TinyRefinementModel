@@ -242,7 +242,7 @@ def main(argv=None):
     select_device(args.device, args.force)
 
     import tiktoken
-    from trm.config import ACCUMULATION_STEPS, MODEL_ARCH, TOKENIZER_NAME, TOKENS_PER_OPT_STEP
+    from trm.config import TOKENIZER_NAME
     from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     from trm.runtime.restore import restore_model
@@ -258,7 +258,7 @@ def main(argv=None):
             run_dir = os.path.join("runs", run_id)
 
     model, ckpt_step = restore_model(CONFIG, args.checkpoint_path)
-    opt_step = opt_step_from_checkpoint(ckpt_step, ACCUMULATION_STEPS)
+    opt_step = opt_step_from_checkpoint(ckpt_step, CONFIG.ACCUMULATION_STEPS)
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
     train_ce = val_ce = model_commit = model_dirty = None
@@ -315,17 +315,17 @@ def main(argv=None):
         "standard_prompts": standard,
         "step": opt_step,
         "checkpoint_step": ckpt_step,
-        "tokens": opt_step * TOKENS_PER_OPT_STEP,
+        "tokens": opt_step * CONFIG.TOKENS_PER_OPT_STEP,
         "train_ce": None if train_ce is None else round(train_ce, 4),
         "val_ce": None if val_ce is None else round(val_ce, 4),
         # Only a looped arch has a depth to record (None is omitted from the frontmatter).
-        "depth": None if MODEL_ARCH in DEPTHLESS_ARCHES else CONFIG.INFERENCE_DEPTH,
-        "val_ce_depth": None if MODEL_ARCH in DEPTHLESS_ARCHES else _val_depth(),
+        "depth": None if CONFIG.MODEL_ARCH in DEPTHLESS_ARCHES else CONFIG.INFERENCE_DEPTH,
+        "val_ce_depth": None if CONFIG.MODEL_ARCH in DEPTHLESS_ARCHES else _val_depth(),
         "device": args.device,
         "seed": args.seed,
         "temperature": temperature,
         "max_new_tokens": args.max_new_tokens,
-        "model_arch": MODEL_ARCH,
+        "model_arch": CONFIG.MODEL_ARCH,
         "model_commit": model_commit,
         "model_commit_dirty": model_dirty,
         "tool_commit": tool_commit,

@@ -41,7 +41,8 @@ from flax import nnx
 import optax
 
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, NUM_HEADS, resolve_root
+from trm.config import resolve_root
+from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -97,8 +98,8 @@ def model_size(arch, dim, heads):
     """Constructor kwargs for --dim/--heads. The reasoner takes no num_heads (it reads
     NUM_HEADS from config itself), so a --heads it would ignore is refused, not dropped."""
     if arch == "reasoner":
-        if heads != NUM_HEADS:
-            raise SystemExit(f"--arch reasoner has no heads knob (it uses config NUM_HEADS={NUM_HEADS}); "
+        if heads != CONFIG.NUM_HEADS:
+            raise SystemExit(f"--arch reasoner has no heads knob (it uses config NUM_HEADS={CONFIG.NUM_HEADS}); "
                              f"drop --heads {heads}")
         return {"dim": dim}
     return {"dim": dim, "num_heads": heads}
@@ -112,7 +113,7 @@ def run(mu_dtype, batches, depth, steps, batch, lr, arch, size):
     losses = []
     for s in range(steps):
         b = batches[s * batch:(s + 1) * batch]
-        loss, _o, grads, _gn = compute_grad_step(model, b, s // ACCUMULATION_STEPS, depth, doc_boundary)
+        loss, _o, grads, _gn = compute_grad_step(model, b, s // CONFIG.ACCUMULATION_STEPS, depth, doc_boundary)
         apply_grads(opt, grads, model)
         losses.append(float(loss))
     return losses, dtype_histogram(opt)
@@ -121,19 +122,19 @@ def run(mu_dtype, batches, depth, steps, batch, lr, arch, size):
 def main():
     ap = argparse.ArgumentParser(description="#18 bf16-mu correctness smoke")
     ap.add_argument("--steps", type=int, default=120)
-    ap.add_argument("--batch", type=int, default=BATCH_SIZE)
+    ap.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE)
     ap.add_argument("--depth", type=int, default=6, help="fixed refinement depth for a clean A/B")
     ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--dim", type=int, default=LATENT_DIM,
+    ap.add_argument("--dim", type=int, default=CONFIG.LATENT_DIM,
                     help="model width (default: config LATENT_DIM). The recorded 0.06%% result was at 512, "
                          "and dim 960 in f32 compute may not fit 6 GB")
-    ap.add_argument("--heads", type=int, default=NUM_HEADS,
+    ap.add_argument("--heads", type=int, default=CONFIG.NUM_HEADS,
                     help="attention heads (default: config NUM_HEADS; the recorded result used 16)")
     add_arch_argument(ap)
     args = ap.parse_args()
     size = model_size(args.arch, args.dim, args.heads)
 
-    stride = 2 * MAX_SEQ_LEN + 1
+    stride = 2 * CONFIG.MAX_SEQ_LEN + 1
     batches = load_batches(stride, args.steps * args.batch)
 
     f32_losses, f32_hist = run(jnp.float32, batches, args.depth, args.steps, args.batch, args.lr, args.arch, size)

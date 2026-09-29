@@ -44,7 +44,6 @@ import pytest
 from flax import nnx
 
 from trm import settings
-from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
 from trm.train.grad_step import apply_grads, compute_grad_step
 
@@ -65,7 +64,7 @@ def _losses():
         wrt=nnx.Param,
     )
     rng = np.random.default_rng(21)
-    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * settings.CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
 
     losses = []
     for step in range(CONFIG["steps"]):

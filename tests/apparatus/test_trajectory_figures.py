@@ -49,13 +49,12 @@ def test_collect_reads_a_plain_model_without_its_pad_positions(layers):
     from flax import nnx
 
     from instruments.trajectory_figures import collect
-    from trm.config import MAX_SEQ_LEN
     from trm.model.plain import PlainTransformer
 
     pad = 36
     model = PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4, num_layers=layers,
-                             max_seq_len=MAX_SEQ_LEN, pad_token_id=pad)
-    row = jnp.full((1, MAX_SEQ_LEN), pad, dtype=jnp.int32).at[0, :10].set(jnp.arange(1, 11))
+                             max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=pad)
+    row = jnp.full((1, CONFIG.MAX_SEQ_LEN), pad, dtype=jnp.int32).at[0, :10].set(jnp.arange(1, 11))
 
     states, gaps = collect(model, [row], pad)
     assert states.shape == (layers + 1, 10, 32), "only the ten real tokens"

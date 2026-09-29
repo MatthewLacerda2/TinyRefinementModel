@@ -37,21 +37,8 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import argparse
 import math
 
-from trm.config import (
-    ACCUMULATION_STEPS,
-    BATCH_SIZE,
-    INFERENCE_DEPTH,
-    LATENT_DIM,
-    MAX_SEQ_LEN,
-    MAX_STEPS_LIMIT,
-    NUM_HEADS,
-    PLAIN_LAYERS,
-    REFINER_ENCODER_LAYERS,
-    TIME_SIGNAL,
-    TOKENS_PER_OPT_STEP,
-    TRAIN_TOKEN_BUDGET,
-    VOCAB_SIZE,
-)
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.settings import CONFIG
 from instruments import model_stats, runlog
 from instruments.arch import add_arch_argument
 from instruments.invariants import clean_column, describe, suspect_rows
@@ -97,16 +84,16 @@ def _mean(values):
 
 def _arch_line(arch):
     if arch == "plain":
-        return (f"dim {LATENT_DIM}, {NUM_HEADS} heads (head_dim {LATENT_DIM // NUM_HEADS}), "
-                f"{PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {MAX_SEQ_LEN}")
+        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
+                f"{CONFIG.PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}")
     if arch == "refiner":
-        return (f"dim {LATENT_DIM}, {NUM_HEADS} heads (head_dim {LATENT_DIM // NUM_HEADS}), "
-                f"{REFINER_ENCODER_LAYERS} encoder layers + 1 shared refine block looped "
-                f"<= {MAX_STEPS_LIMIT}, vocab {VOCAB_SIZE:,}, seq {MAX_SEQ_LEN}, "
-                f"time signal '{TIME_SIGNAL}'")
-    return (f"dim {LATENT_DIM}, {NUM_HEADS} heads, encoder/decoder stacks + 1 shared "
+        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
+                f"{CONFIG.REFINER_ENCODER_LAYERS} encoder layers + 1 shared refine block looped "
+                f"<= {MAX_STEPS_LIMIT}, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}, "
+                f"time signal '{CONFIG.TIME_SIGNAL}'")
+    return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads, encoder/decoder stacks + 1 shared "
             f"reasoning block looped <= {MAX_STEPS_LIMIT}, vocab {VOCAB_SIZE:,}, "
-            f"seq {MAX_SEQ_LEN}")
+            f"seq {CONFIG.MAX_SEQ_LEN}")
 
 
 def print_parameters(arch):
@@ -173,8 +160,8 @@ def _tokens_per_opt_step(log):
     """
     recorded = runlog.recorded_tokens_per_opt_step(log.params)
     if recorded is None:
-        return TOKENS_PER_OPT_STEP, True
-    return recorded, recorded == TOKENS_PER_OPT_STEP
+        return CONFIG.TOKENS_PER_OPT_STEP, True
+    return recorded, recorded == CONFIG.TOKENS_PER_OPT_STEP
 
 
 def _learning_rate(log, step):
@@ -235,11 +222,11 @@ def print_run(log):
           + (f", {log.torn_rows} torn dropped" if log.torn_rows else ""))
     if not recipe_matches:
         print(f"  ! this run used {tokens_per_step:,} tokens/opt-step; today's config says "
-              f"{TOKENS_PER_OPT_STEP:,} — token counts below use the run's own recipe.")
+              f"{CONFIG.TOKENS_PER_OPT_STEP:,} — token counts below use the run's own recipe.")
 
     print(f"  step {step:,}  ->  {tokens:,} tokens ({tokens / 1e9:.3f}B)   [measured]")
 
-    budget = log.params.get("TRAIN_TOKEN_BUDGET") or TRAIN_TOKEN_BUDGET
+    budget = log.params.get("TRAIN_TOKEN_BUDGET") or CONFIG.TRAIN_TOKEN_BUDGET
     wall = log.wall_seconds
     throughput = tokens / wall if wall else None
     if budget:
@@ -334,9 +321,9 @@ def main():
     parser.add_argument("--log", default=None,
                         help="metrics.csv or a run dir (default: the latest run under runs/)")
     add_arch_argument(parser)
-    parser.add_argument("--batch", type=int, default=BATCH_SIZE, help="batch size for the VRAM lines")
+    parser.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE, help="batch size for the VRAM lines")
     parser.add_argument("--train-depth", type=int, default=MAX_STEPS_LIMIT)
-    parser.add_argument("--infer-depth", type=int, default=INFERENCE_DEPTH)
+    parser.add_argument("--infer-depth", type=int, default=CONFIG.INFERENCE_DEPTH)
     parser.add_argument("--model-only", action="store_true",
                         help="skip the run summary (no metrics.csv needed)")
     args = parser.parse_args()
@@ -361,7 +348,7 @@ def main():
     print("[measured] recorded by the run · [sampled] measured on a subsample · "
           "[estimated] derived from constants")
     print("Accumulation is 1 opt step = "
-          f"{ACCUMULATION_STEPS} micro-steps x {BATCH_SIZE} x 2 windows x {MAX_SEQ_LEN} tokens.")
+          f"{CONFIG.ACCUMULATION_STEPS} micro-steps x {CONFIG.BATCH_SIZE} x 2 windows x {CONFIG.MAX_SEQ_LEN} tokens.")
 
 
 if __name__ == "__main__":

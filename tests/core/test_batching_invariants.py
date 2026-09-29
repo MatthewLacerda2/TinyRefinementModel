@@ -23,12 +23,10 @@ from trm.runtime.monitor import LossMonitor
 from trm.settings import CONFIG
 from trm.runtime.resume_state import ResumeState
 
-from trm import config
 
 import trm.train.trainer as trainer_mod
 from trm.train import validation
 
-from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, EVAL_ROWS, MAX_SEQ_LEN
 from trm.runtime import restore
 from experiments.depth import eval_refiner_transfer as depth_transfer
 from trm.train.trainer import samples_from_micro_steps, split_samples
@@ -38,10 +36,10 @@ def test_tokens_per_opt_step_is_the_batching_invariant():
     """The product is the contract: BATCH_SIZE x ACCUMULATION_STEPS is what the
     LR horizon and TRAIN_TOKEN_BUDGET are denominated in. Changing one without
     the other silently rescales the whole schedule."""
-    assert config.TOKENS_PER_OPT_STEP == ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
+    assert CONFIG.TOKENS_PER_OPT_STEP == CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE * 2 * CONFIG.MAX_SEQ_LEN
     # 131072 is the value every recorded run and every DECAY_STEPS was computed
     # against. If this must change, it is a new run, not a resume.
-    assert config.TOKENS_PER_OPT_STEP == 131072
+    assert CONFIG.TOKENS_PER_OPT_STEP == 131072
 
 
 class _FakeGen:
@@ -82,10 +80,10 @@ def test_eval_probe_collects_exactly_eval_rows():
     BATCH_SIZE."""
     gen = _FakeGen()
     batches = []
-    while len(batches) < EVAL_ROWS:
+    while len(batches) < CONFIG.EVAL_ROWS:
         row, _ = gen.get_batch(1)
         batches.append(row)
-    assert gen.calls == [1] * EVAL_ROWS
+    assert gen.calls == [1] * CONFIG.EVAL_ROWS
     assert all(b.shape[0] == 1 for b in batches)
 
 
@@ -114,10 +112,10 @@ def test_resume_skip_scales_with_batch_size(batch_size):
 def test_resume_skip_without_the_batch_factor_under_skips():
     """The exact defect, stated: counting micro-steps as samples. It re-feeds the
     model 1/BATCH_SIZE of its own history, and nothing crashes."""
-    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=BATCH_SIZE))
+    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=CONFIG.BATCH_SIZE))
     buggy = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=1))
-    assert correct == pytest.approx(buggy * BATCH_SIZE, rel=0.01)
-    if BATCH_SIZE > 1:
+    assert correct == pytest.approx(buggy * CONFIG.BATCH_SIZE, rel=0.01)
+    if CONFIG.BATCH_SIZE > 1:
         assert correct > buggy
 
 

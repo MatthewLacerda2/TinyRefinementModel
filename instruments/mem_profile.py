@@ -41,7 +41,8 @@ import jax.numpy as jnp
 
 from instruments._common import param_count
 from instruments.arch import add_arch_argument, build
-from trm.config import VOCAB_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, LATENT_DIM, NUM_HEADS
+from trm.config import VOCAB_SIZE, MAX_STEPS_LIMIT
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -87,12 +88,12 @@ def main():
 
     # Shared selector (instruments/arch.py), not a private branch: a private one is
     # how this file kept building the refiner after the default stopped being it.
-    model = build(args.arch, dim=LATENT_DIM)
+    model = build(args.arch, dim=CONFIG.LATENT_DIM)
     n_params = param_count(model)
-    print(f"arch={args.arch}  dim={LATENT_DIM}  heads={NUM_HEADS}  "
-          f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
+    print(f"arch={args.arch}  dim={CONFIG.LATENT_DIM}  heads={CONFIG.NUM_HEADS}  "
+          f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={CONFIG.MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
 
-    batch = jax.random.randint(jax.random.PRNGKey(0), (1, 2 * MAX_SEQ_LEN + 1), 0, VOCAB_SIZE, dtype=jnp.int32)
+    batch = jax.random.randint(jax.random.PRNGKey(0), (1, 2 * CONFIG.MAX_SEQ_LEN + 1), 0, VOCAB_SIZE, dtype=jnp.int32)
     doc_boundary = jnp.zeros((1,), dtype=bool)
     step = jnp.array(0)
 

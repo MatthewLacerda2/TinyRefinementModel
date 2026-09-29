@@ -11,7 +11,7 @@ file within a measured tolerance instead of exactly (#322).
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step
 
 
@@ -19,7 +19,7 @@ def _one_step(make_tiny_model):
     # The arch a run would train, at the shared tiny config (#322).
     model = make_tiny_model(seed=5)
     rng = np.random.default_rng(11)
-    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
     loss, out, grads, grad_norm = compute_grad_step(model, batch, opt_step=0, depth=1)
     return float(loss), float(grad_norm)
 

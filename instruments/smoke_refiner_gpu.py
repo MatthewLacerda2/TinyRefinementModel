@@ -39,7 +39,7 @@ from flax import nnx
 
 from instruments._common import F16_MAX, param_count
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
@@ -131,10 +131,10 @@ def load_batch(rng):
             if rows:
                 (row,) = rows
                 print(f"📚 real tokens from {source} (the distribution that stresses f16)")
-                return jnp.asarray(row[:, :2 * MAX_SEQ_LEN + 1].astype(np.int32))
+                return jnp.asarray(row[:, :2 * CONFIG.MAX_SEQ_LEN + 1].astype(np.int32))
     print("🎲 random tokens — DATA_ROOT unset, so the corpus-specific overflow "
           "(#235) CANNOT be caught by this run")
-    return jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    return jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
 
 def main():
@@ -147,7 +147,7 @@ def main():
     assert jax.default_backend() == "gpu", "smoke must run on GPU (unset JAX_PLATFORMS / FORCE_F32_COMPUTE)"
 
     refuse_untraced(args.arch)  # before building 138M params for nothing
-    model = arch_build(args.arch, dim=LATENT_DIM, seed=42)
+    model = arch_build(args.arch, dim=CONFIG.LATENT_DIM, seed=42)
     print(f"📐 {args.arch}: {param_count(model) / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as
     # in training — the peak that matters is grad step + resident optimizer state.
@@ -172,7 +172,7 @@ def main():
     # Headroom BEFORE the grad steps: this is a property of the weights and the
     # tokens, and reading it first means a doomed run is refused before it spends
     # anything. Measured on one window, the shape the stack actually sees.
-    peaks, worst, headroom = block_headroom(model, batch[:, :MAX_SEQ_LEN], args.arch)
+    peaks, worst, headroom = block_headroom(model, batch[:, :CONFIG.MAX_SEQ_LEN], args.arch)
     stack = "block" if args.arch == "plain" else "encoder block"
     print(f"📏 activation peak per {stack}: "
           + "  ".join(f"{v:,.0f}" for v in peaks))

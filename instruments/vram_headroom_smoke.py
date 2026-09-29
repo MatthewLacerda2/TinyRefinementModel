@@ -56,8 +56,7 @@ from flax import nnx
 from instruments import results
 from instruments._common import gpu_memory_used_mib, param_count
 from instruments.arch import add_arch_argument, build
-from trm.config import (ACCUMULATION_STEPS, BATCH_SIZE, LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT,
-                        NUM_HEADS, PLAIN_LAYERS, REFINER_ENCODER_LAYERS, VOCAB_SIZE)
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import apply_grads, compute_grad_step
 from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
@@ -114,17 +113,17 @@ def depth_schedule(model, micro_steps, max_depth=MAX_STEPS_LIMIT):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     add_arch_argument(ap)
-    ap.add_argument("--dim", type=int, default=LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
-    ap.add_argument("--heads", type=int, default=NUM_HEADS)
-    ap.add_argument("--layers", type=int, default=PLAIN_LAYERS, help="block count for --arch plain")
-    ap.add_argument("--encoder-layers", type=int, default=REFINER_ENCODER_LAYERS, help="for --arch refiner")
-    ap.add_argument("--batch", type=int, default=BATCH_SIZE, help="micro-batch (per accumulation step)")
+    ap.add_argument("--dim", type=int, default=CONFIG.LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
+    ap.add_argument("--heads", type=int, default=CONFIG.NUM_HEADS)
+    ap.add_argument("--layers", type=int, default=CONFIG.PLAIN_LAYERS, help="block count for --arch plain")
+    ap.add_argument("--encoder-layers", type=int, default=CONFIG.REFINER_ENCODER_LAYERS, help="for --arch refiner")
+    ap.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE, help="micro-batch (per accumulation step)")
     ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
                     help="deepest sampled depth; the run compiles one program per depth 1..DEPTH, "
                          "following depth_schedule. Until #316 the trainer compiled one program per "
                          "sampled depth for plain too, so there --depth 1 measures one program where "
                          "such a launch holds MAX_STEPS_LIMIT of them")
-    ap.add_argument("--micro-steps", type=int, default=ACCUMULATION_STEPS + 1,
+    ap.add_argument("--micro-steps", type=int, default=CONFIG.ACCUMULATION_STEPS + 1,
                     help="default crosses one optimizer apply (ACCUMULATION_STEPS + 1)")
     args = ap.parse_args(argv)
     if args.dim % args.heads:
@@ -140,14 +139,14 @@ def main(argv=None):
           f"{param_count(model) / 1e6:.1f}M params, allocator {os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']}")
 
     optimizer = nnx.Optimizer(model, optimizer_chain(CONFIG, Schedules.of(CONFIG).learning_rate), wrt=nnx.Param)
-    batch = jax.random.randint(jax.random.PRNGKey(0), (args.batch, 2 * MAX_SEQ_LEN + 1), 0, VOCAB_SIZE,
+    batch = jax.random.randint(jax.random.PRNGKey(0), (args.batch, 2 * CONFIG.MAX_SEQ_LEN + 1), 0, VOCAB_SIZE,
                                dtype=jnp.int32)
     doc_boundary = jnp.zeros((args.batch,), dtype=bool)
     device = jax.local_devices()[0]
 
     with CardSampler() as card:
         for step, depth in enumerate(depth_schedule(model, args.micro_steps, args.depth)):
-            loss, _out, grads, _gn = compute_grad_step(model, batch, step // ACCUMULATION_STEPS, depth,
+            loss, _out, grads, _gn = compute_grad_step(model, batch, step // CONFIG.ACCUMULATION_STEPS, depth,
                                                        doc_boundary)
             apply_grads(optimizer, grads, model)
         float(loss)
@@ -163,7 +162,7 @@ def main(argv=None):
           f"({arena_mib / limit_mib:.1%}) — headroom {limit_mib - arena_mib:.0f} MiB")
     print(f"outside arena (sampled): {outside_mib:6.0f} MiB (context + driver graph buffers; "
           f"{CARD_MIB - card.peak_mib:.0f} MiB of the card never touched)")
-    print(f"crossed {args.micro_steps // ACCUMULATION_STEPS} optimizer apply(s) and one validation probe")
+    print(f"crossed {args.micro_steps // CONFIG.ACCUMULATION_STEPS} optimizer apply(s) and one validation probe")
     if args.arch == "plain":
         print(f"note: plain compiled {min(args.depth, args.micro_steps)} depth program(s) here; until #316 "
               f"the trainer compiled one program per sampled depth for plain too. The plain peaks "

@@ -105,14 +105,15 @@ def last_step(metrics_csv: pathlib.Path) -> int:
 
 
 def parse_knobs(pairs):
-    """{KNOB: value} from --set KNOB=VALUE, refusing any name trm/config.py does not
-    define: the env var would be read by nothing, and the arm would run as the control."""
-    import trm.config as config
+    """{KNOB: value} from --set KNOB=VALUE, refusing any name that is not a knob (a
+    field of trm.settings.Config): the env var would be read by nothing, and the arm
+    would run as the control."""
+    from trm.settings import Config
     knobs = {}
     for pair in pairs:
         name, sep, value = pair.partition("=")
-        if not sep or not name.isupper() or not hasattr(config, name):
-            raise SystemExit(f"--set {pair!r}: not KNOB=VALUE with KNOB a trm/config.py constant")
+        if not sep or not name.isupper() or name not in Config.model_fields:
+            raise SystemExit(f"--set {pair!r}: not KNOB=VALUE with KNOB a trm.settings.Config field")
         knobs[name] = value
     return knobs
 
@@ -144,14 +145,14 @@ def main(argv=None) -> int:
                     help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
                          "Unset leaves the historical 50256.")
     ap.add_argument("--set", action="append", default=[], metavar="KNOB=VALUE",
-                    help="any other trm/config.py knob for this arm, e.g. ADAM_B2=0.95 (#359). "
-                         "Repeatable. A name config.py does not define is refused, so a typo "
+                    help="any other knob (a trm.settings.Config field) for this arm, e.g. ADAM_B2=0.95 "
+                         "(#359). Repeatable. A name that is not a knob is refused, so a typo "
                          "cannot run as a silent control.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
     knobs = parse_knobs(args.set)
 
-    from trm.config import TOKENS_PER_OPT_STEP
+    from trm.settings import CONFIG
     name = (f"run_{args.tag}_{args.optimizer}"
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
@@ -168,7 +169,7 @@ def main(argv=None) -> int:
         "PYTHONPATH": str(REPO),
         "TRM_OPTIMIZER": args.optimizer,
         "MODEL_SEED": str(args.seed), "DATA_SEED": str(args.seed),
-        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * TOKENS_PER_OPT_STEP),
+        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * CONFIG.TOKENS_PER_OPT_STEP),
         "WARMUP_STEPS": str(args.warmup),
         "VAL_EVERY_OPT_STEPS": str(args.val_every),
         "CHECKPOINT_EVERY_OPT_STEPS": "256",
@@ -213,7 +214,7 @@ def main(argv=None) -> int:
         print(f"{name}: already at the cap, reading the recorded run", flush=True)
 
     tokens_m, final, reached, aligned = tokens_to_target(metrics, args.target_ce, args.opt_steps,
-                                                         TOKENS_PER_OPT_STEP)
+                                                         CONFIG.TOKENS_PER_OPT_STEP)
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
     results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),

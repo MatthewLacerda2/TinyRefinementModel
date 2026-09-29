@@ -112,10 +112,10 @@ def main(argv=None) -> int:
     ap.add_argument("--tag", default="489")
     args = ap.parse_args(argv)
 
-    from trm.config import ACCUMULATION_STEPS, TOKENS_PER_OPT_STEP
+    from trm.settings import CONFIG
     run_dir = REPO / "runs" / f"run_{args.tag}_{args.arm}_s{args.seed}"
     ckpts = run_dir / "checkpoints"
-    final = ckpts / step_name(args.stop_step, ACCUMULATION_STEPS)
+    final = ckpts / step_name(args.stop_step, CONFIG.ACCUMULATION_STEPS)
     scored = run_dir / "yardstick_endpoint.json"
     env = {
         **os.environ,
@@ -123,7 +123,7 @@ def main(argv=None) -> int:
         "PYTHONUNBUFFERED": "1",  # train.log is read live; a ~10 h arm must not buffer it
         "DATA_MIXTURE": args.mixture,
         "DATA_SEED": str(args.seed), "MODEL_SEED": str(args.seed),
-        "TRAIN_TOKEN_BUDGET": str(args.stop_step * TOKENS_PER_OPT_STEP),
+        "TRAIN_TOKEN_BUDGET": str(args.stop_step * CONFIG.TOKENS_PER_OPT_STEP),
         "LR_SCHEDULE": "wsd",
         "WSD_DECAY_START": str(args.decay_start),
         "MILESTONE_FIRST_TOKENS": "0",
@@ -132,7 +132,7 @@ def main(argv=None) -> int:
     if not scored.exists():
         if not final.is_dir():
             # Orbax finds a step by its dir name, so the copy is named by the step it holds.
-            copy = ckpts / step_name(args.branch_step, ACCUMULATION_STEPS)
+            copy = ckpts / step_name(args.branch_step, CONFIG.ACCUMULATION_STEPS)
             if latest_step(ckpts) is None:
                 ckpts.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(args.branch_from, copy)

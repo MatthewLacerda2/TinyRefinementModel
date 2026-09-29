@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
+from trm.config import MAX_STEPS_LIMIT
 from trm.model.plain import PlainTransformer
 from trm.train.grad_step import compute_grad_step
 from trm.settings import CONFIG
@@ -45,13 +45,13 @@ class _CountingPlain(PlainTransformer):
 def plain():
     TRACES.clear()
     return _CountingPlain(32, nnx.Rngs(0), vocab_size=37, num_heads=4, num_layers=1,
-                          max_seq_len=MAX_SEQ_LEN, pad_token_id=36)
+                          max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=36)
 
 
 def _run(model, depths):
     """The trainer's call, micro-step by micro-step; returns how many grad-step traces
     happened (each trace runs the forward twice, once per window)."""
-    batch = jnp.ones((1, 2 * MAX_SEQ_LEN + 1), dtype=jnp.int32)
+    batch = jnp.ones((1, 2 * CONFIG.MAX_SEQ_LEN + 1), dtype=jnp.int32)
     doc_boundary = jnp.zeros((1,), dtype=bool)
     for step, depth in enumerate(depths):
         compute_grad_step(model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,

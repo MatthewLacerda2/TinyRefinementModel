@@ -113,7 +113,7 @@ def score_rows(model, rows):
     import jax.numpy as jnp
     from flax import nnx
 
-    from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID
+    from trm.settings import CONFIG
     from trm.train.validation import VAL_FIXED_DEPTH, heldout_targets
 
     @nnx.jit(static_argnames=["new_document"])
@@ -129,10 +129,10 @@ def score_rows(model, rows):
             model.reset_state()
             row = jnp.asarray(row)
             for w, new_document in ((0, True), (1, False)):
-                tokens = row[:, w * MAX_SEQ_LEN:(w + 1) * MAX_SEQ_LEN]
-                targets = heldout_targets(row[:, w * MAX_SEQ_LEN + 1:(w + 1) * MAX_SEQ_LEN + 1], PAD_TOKEN_ID)
+                tokens = row[:, w * CONFIG.MAX_SEQ_LEN:(w + 1) * CONFIG.MAX_SEQ_LEN]
+                targets = heldout_targets(row[:, w * CONFIG.MAX_SEQ_LEN + 1:(w + 1) * CONFIG.MAX_SEQ_LEN + 1], CONFIG.PAD_TOKEN_ID)
                 nll, top_prob, correct = window(model, tokens, targets, new_document)
-                keep = np.asarray(targets != PAD_TOKEN_ID)
+                keep = np.asarray(targets != CONFIG.PAD_TOKEN_ID)
                 for key, value in (("nll", nll), ("top_prob", top_prob), ("correct", correct),
                                    ("context_len", np.broadcast_to(np.arange(1, tokens.shape[1] + 1), keep.shape)),
                                    ("target", targets)):
@@ -176,7 +176,7 @@ def main(argv=None):
         raise SystemExit(f"only {available:.1f} GiB available (< {MIN_AVAILABLE_GIB}); not starting beside a trainer")
 
     load_env()
-    from trm.config import MAX_SEQ_LEN, VOCAB_SIZE, resolve_root
+    from trm.config import VOCAB_SIZE, resolve_root
     from trm.runtime.restore import restore_arch
     from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
@@ -194,7 +194,7 @@ def main(argv=None):
             continue
         scored = score_rows(model, rows)
         result = profile(scored["nll"], scored["top_prob"], scored["correct"],
-                         scored["context_len"], nbytes[scored["target"]], window=MAX_SEQ_LEN)
+                         scored["context_len"], nbytes[scored["target"]], window=CONFIG.MAX_SEQ_LEN)
         row["sources"][source] = result
         print(f"\n{source}: {result['targets']} targets  CE {result['ce']:.4f}  bpb {result['bpb']:.4f}  "
               f"top-1 {result['top1_accuracy']:.3f}  ECE {result['ece']:.4f}")

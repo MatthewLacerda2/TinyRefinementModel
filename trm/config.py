@@ -1,13 +1,12 @@
 # The compute policy and the constants that are not knobs. The knobs (every value a
-# launch can set from the environment) are the fields of trm.settings.Config, read once
-# and recorded whole (#475); the names further down re-export this process's CONFIG for
-# the modules that still import knobs as constants, until each takes a Config instead.
+# launch can set from the environment) are the fields of trm.settings.Config, read once,
+# recorded whole and passed down (#475); nothing here re-exports one.
 # Keep (most) values powers of 2 if you know what's good for you.
 
 import os
 import jax.numpy as jnp
 
-from trm.settings import CONFIG, DEFAULT_DATA_MIXTURE  # noqa: F401  (DEFAULT_DATA_MIXTURE: re-exported)
+from trm.settings import CONFIG
 
 # Dtype policy: training runs on an RTX 2060 (Turing), which has no bfloat16
 # support — float16 compute is the deliberate, permanent policy here.
@@ -71,42 +70,3 @@ SHARED_SLOTS = 32  # reasoner
 # The deepest sampled training depth, for the arches that have one: since #316 the
 # trainer asks the model for its depth, and plain answers None.
 MAX_STEPS_LIMIT = 8
-
-# ── The launching process's knobs, as constants (what each one is: trm/settings.py) ──
-LATENT_DIM = CONFIG.LATENT_DIM
-MAX_SEQ_LEN = CONFIG.MAX_SEQ_LEN
-NUM_HEADS = CONFIG.NUM_HEADS
-MODEL_ARCH = CONFIG.MODEL_ARCH
-POST_NORM = CONFIG.POST_NORM
-PLAIN_LAYERS = CONFIG.PLAIN_LAYERS
-TIME_SIGNAL = CONFIG.TIME_SIGNAL
-REFINER_ENCODER_LAYERS = CONFIG.REFINER_ENCODER_LAYERS
-INFERENCE_DEPTH = CONFIG.INFERENCE_DEPTH
-
-TRM_OPTIMIZER = CONFIG.TRM_OPTIMIZER
-MUON_LR_MULT = CONFIG.MUON_LR_MULT
-ADAM_B1 = CONFIG.ADAM_B1
-ADAM_B2 = CONFIG.ADAM_B2
-ADAM_EPS = CONFIG.ADAM_EPS
-WEIGHT_DECAY = CONFIG.WEIGHT_DECAY
-CLIP_NORM = CONFIG.CLIP_NORM
-MUON_BETA = CONFIG.MUON_BETA
-MUON_NS_STEPS = CONFIG.MUON_NS_STEPS
-MUON_EPS = CONFIG.MUON_EPS
-MUON_NESTEROV = CONFIG.MUON_NESTEROV
-LOSS_SCALE_GROWTH_INTERVAL = CONFIG.LOSS_SCALE_GROWTH_INTERVAL
-
-BATCH_SIZE = CONFIG.BATCH_SIZE
-ACCUMULATION_STEPS = CONFIG.ACCUMULATION_STEPS
-TOKENS_PER_OPT_STEP = CONFIG.TOKENS_PER_OPT_STEP
-EVAL_ROWS = CONFIG.EVAL_ROWS
-PLATEAU_MIN_DELTA = CONFIG.PLATEAU_MIN_DELTA
-PLATEAU_PATIENCE = CONFIG.PLATEAU_PATIENCE
-TRAIN_TOKEN_BUDGET = CONFIG.TRAIN_TOKEN_BUDGET
-PAD_TOKEN_ID = CONFIG.PAD_TOKEN_ID
-DATA_SEED = CONFIG.DATA_SEED
-MODEL_SEED = CONFIG.MODEL_SEED
-DATA_MIXTURE = CONFIG.DATA_MIXTURE
-MIXTURE_RAMP_FRACTION = CONFIG.MIXTURE_RAMP_FRACTION
-DATA_BRANCH = CONFIG.DATA_BRANCH
-DATA_BRANCH_SEED_STRIDE = CONFIG.DATA_BRANCH_SEED_STRIDE
