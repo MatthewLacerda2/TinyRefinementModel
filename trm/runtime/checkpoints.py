@@ -9,6 +9,7 @@ from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_FIRST_T
                                 MILESTONE_ITEMS, MILESTONE_MAX_COUNT, MILESTONE_RATIO,
                                 MILESTONE_SUBDIR, ROLLING_KEEP)
 from trm.runtime.monitor import LossMonitor
+from trm.runtime.resume_state import ResumeState
 from trm.runtime.rewind import refuse_sft_phase_resume
 
 def discover_latest_run(runs_root="runs"):
@@ -95,24 +96,7 @@ def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None
 
 def _monitor_state(monitor, run_id):
     """The JSON side of a save: everything a resume rebuilds the run from."""
-    return {
-        "ce_history": list(monitor.ce_history),
-        "best_ce": monitor.best_ce,
-        "best_loss": monitor.best_loss,
-        "best_avg_ce": monitor.best_avg_ce,
-        "best_val_ce": monitor.best_val_ce,
-        "last_improvement_step": monitor.last_improvement_step,
-        "run_id": run_id,
-        # Samples actually consumed, counted as they were served rather
-        # than re-derived (#24). Resume rebuilds the data position from
-        # this; computing it as step x BATCH_SIZE would mis-seek exactly
-        # the run that needs it — one resumed at a different batch size
-        # than it was trained at, whose history spans both.
-        "samples_seen": monitor.samples_seen,
-        # Where the data stream is, exactly (#424). A fresh dict per batch
-        # that nothing mutates afterwards, so handing it over is safe.
-        "data_state": monitor.data_state,
-    }
+    return ResumeState.of(monitor, run_id).saved()
 
 
 def save_milestone(mngr, step, model, monitor, run_id, wait=False):
@@ -298,19 +282,8 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
         # don't. Absent reads as pretraining, and an SFT-phase one is refused.
         refuse_sft_phase_resume(m_state, latest_step, checkpoint_path)
-        monitor.ce_history = m_state.get("ce_history", [])
-        monitor.best_ce = m_state.get("best_ce", float("inf"))
-        monitor.best_loss = m_state.get("best_loss", float("inf"))
-        monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
-        # Absent before #222: the first val probe after resume sets a new best.
-        monitor.best_val_ce = m_state.get("best_val_ce", float("inf"))
-        monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
-        # Checkpoints written before #24 have no samples_seen; every one of them
-        # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
-        # value, not a guess.
-        monitor.samples_seen = m_state.get("samples_seen", restored["step"])
-        # Absent before #424: the resume then estimates the data position.
-        monitor.data_state = m_state.get("data_state")
+        ResumeState.load(m_state, f"checkpoint step {latest_step} in {checkpoint_path}").restore(
+            monitor, micro_step=restored["step"])
 
         print(f"✅ Resuming from step {start_step} "
               f"({monitor.samples_seen:,} samples consumed)")
