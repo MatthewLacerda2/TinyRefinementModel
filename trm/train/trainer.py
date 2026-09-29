@@ -157,7 +157,7 @@ def init_model_and_optimizer(config):
               f"max_depth={MAX_STEPS_LIMIT})...")
     else:
         print(f"🚀 Initializing UniversalReasoner, the control baseline (Dim={config.LATENT_DIM})...")
-    model = build_model(config.MODEL_ARCH, config.LATENT_DIM, nnx.Rngs(config.MODEL_SEED))
+    model = build_model(config, nnx.Rngs(config.MODEL_SEED))
 
     print(f"📐 Architecture '{config.MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
           f"(MODEL_SEED={config.MODEL_SEED}, DATA_SEED={config.DATA_SEED})")

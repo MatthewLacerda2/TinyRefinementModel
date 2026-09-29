@@ -17,6 +17,8 @@ from trm.model.layers import RotaryAttention, apply_rope
 
 HEADS, GROUPS, DIM = 4, 2, 64
 HEAD_DIM = DIM // HEADS
+# Rope rows the layer precomputes: past every position used below (the slots sit at 100+).
+POSITIONS = 1024
 
 
 def _reference_attention(attn, x, context=None, bias=None, q_pos=None, kv_pos=None, is_causal=True):
@@ -53,7 +55,7 @@ def _reference_attention(attn, x, context=None, bias=None, q_pos=None, kv_pos=No
 
 
 def test_causal_self_attention_matches_naive_reference():
-    attn = RotaryAttention(HEADS, DIM, num_groups=GROUPS, rngs=nnx.Rngs(0))
+    attn = RotaryAttention(HEADS, DIM, num_groups=GROUPS, rngs=nnx.Rngs(0), max_positions=POSITIONS)
     x = jax.random.normal(jax.random.PRNGKey(1), (2, 10, DIM), dtype=jnp.float32)
 
     module_out = attn(x)
@@ -71,7 +73,7 @@ def test_causal_self_attention_matches_naive_reference():
 def test_cross_attention_with_bias_matches_naive_reference():
     """Mirrors the reasoning-loop usage: non-causal cross-attention with a float
     bias mask and explicit slot-style positions."""
-    attn = RotaryAttention(HEADS, DIM, num_groups=GROUPS, rngs=nnx.Rngs(0))
+    attn = RotaryAttention(HEADS, DIM, num_groups=GROUPS, rngs=nnx.Rngs(0), max_positions=POSITIONS)
     slots = jax.random.normal(jax.random.PRNGKey(2), (2, 4, DIM), dtype=jnp.float32)
     ctx = jax.random.normal(jax.random.PRNGKey(3), (2, 12, DIM), dtype=jnp.float32)
 

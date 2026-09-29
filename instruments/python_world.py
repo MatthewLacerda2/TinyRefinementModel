@@ -37,6 +37,7 @@ from instruments.arch import add_arch_argument
 from instruments.results import emit
 from trm.config import TOKENIZER_NAME
 from trm.rl import sandbox, tasks
+from trm.settings import CONFIG
 
 # Where a completion stops being the function. A model that has finished the body
 # keeps going — into a second definition, a print, a comment, whatever the training
@@ -166,7 +167,7 @@ def main(argv=None):
     if not args.reference:
         from trm.config import INFERENCE_DEPTH
         from trm.runtime.restore import restore_arch
-        model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
+        model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
         enc = tiktoken.get_encoding(TOKENIZER_NAME)
         depth = INFERENCE_DEPTH if args.depth is None else args.depth
         print(f"📐 {args.arch} at step {step}, depth {depth}, temperature {args.temperature}")

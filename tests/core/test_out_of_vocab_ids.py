@@ -29,6 +29,7 @@ from flax import nnx
 
 from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
+from trm.settings import CONFIG
 
 TOY_DIM, TOY_VOCAB, TOY_HEADS, TOY_LAYERS = 32, 37, 4, 3
 TOY_PAD = TOY_VOCAB - 1
@@ -37,7 +38,7 @@ TOY_PAD = TOY_VOCAB - 1
 @pytest.fixture(scope="module")
 def toy():
     return PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 

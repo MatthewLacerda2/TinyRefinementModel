@@ -24,15 +24,7 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from trm.config import (
-    COMPUTE_DTYPE,
-    MAX_SEQ_LEN,
-    NUM_HEADS,
-    PAD_TOKEN_ID,
-    PLAIN_LAYERS,
-    POST_NORM,
-    VOCAB_SIZE,
-)
+from trm.config import COMPUTE_DTYPE, VOCAB_SIZE
 from trm.model.contract import LMOutput, LanguageModel
 from trm.model.refiner import Block
 
@@ -40,14 +32,20 @@ from trm.model.refiner import Block
 class PlainTransformer(LanguageModel):
     """N distinct causal blocks, a tied LM head, and nothing else.
 
-    Every architecture knob is overridable so a test can build a tiny instance
-    without monkeypatching config — the same arrangement RefinerForTraining uses.
+    Shaped by `config` (NUM_HEADS, PLAIN_LAYERS, MAX_SEQ_LEN, PAD_TOKEN_ID, POST_NORM).
+    Each is overridable by keyword, so a test can build a tiny instance of any
+    config — the same arrangement RefinerForTraining uses.
     """
 
-    def __init__(self, latent_dim, rngs, *, vocab_size=VOCAB_SIZE, num_heads=NUM_HEADS,
-                 num_layers=PLAIN_LAYERS, max_seq_len=MAX_SEQ_LEN,
-                 pad_token_id=PAD_TOKEN_ID, dtype=COMPUTE_DTYPE,
-                 post_norm=POST_NORM):
+    def __init__(self, latent_dim, rngs, config, *, vocab_size=VOCAB_SIZE, num_heads=None,
+                 num_layers=None, max_seq_len=None, pad_token_id=None, dtype=COMPUTE_DTYPE,
+                 post_norm=None):
+        num_heads = config.NUM_HEADS if num_heads is None else num_heads
+        num_layers = config.PLAIN_LAYERS if num_layers is None else num_layers
+        max_seq_len = config.MAX_SEQ_LEN if max_seq_len is None else max_seq_len
+        pad_token_id = config.PAD_TOKEN_ID if pad_token_id is None else pad_token_id
+        post_norm = config.POST_NORM if post_norm is None else post_norm
+        self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
         self.latent_dim = latent_dim
         self.dtype = dtype

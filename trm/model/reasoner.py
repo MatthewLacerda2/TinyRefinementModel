@@ -7,12 +7,8 @@ from flax import nnx
 from trm.config import (
     NUM_BLOCKS,
     SHARED_SLOTS,
-    MAX_SEQ_LEN,
     VOCAB_SIZE,
     MAX_STEPS_LIMIT,
-    BATCH_SIZE,
-    PAD_TOKEN_ID,
-    NUM_HEADS,
     COMPUTE_DTYPE,
 )
 from trm.model.layers import (
@@ -21,7 +17,6 @@ from trm.model.layers import (
     calculate_slot_stability_loss,
 )
 from trm.model.contract import LMOutput, LanguageModel
-from trm.settings import CONFIG
 from trm.train.schedules import sample_reasoning_depth
 
 # The weights of this model's two auxiliary objectives, by opt step. They live here,
@@ -35,27 +30,43 @@ from trm.train.schedules import sample_reasoning_depth
 # behavior made explicit rather than silently stretched.
 LAMBDA_DECAY_STEPS = 15000
 
-forget_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0,
-    peak_value=0.05,
-    warmup_steps=CONFIG.WARMUP_STEPS,
-    decay_steps=LAMBDA_DECAY_STEPS,
-    end_value=0.001
-)
 
-diversity_lambda_schedule = optax.warmup_cosine_decay_schedule(
-    init_value=0.0,
-    peak_value=1.0,
-    warmup_steps=CONFIG.WARMUP_STEPS,
-    decay_steps=LAMBDA_DECAY_STEPS,
-    end_value=0.1
-)
+def forget_lambda_schedule(warmup_steps):
+    """The forget cost's weight by opt step; it warms up over the run's WARMUP_STEPS."""
+    return optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=0.05,
+        warmup_steps=warmup_steps,
+        decay_steps=LAMBDA_DECAY_STEPS,
+        end_value=0.001
+    )
+
+
+def diversity_lambda_schedule(warmup_steps):
+    """The diversity cost's weight by opt step; it warms up over the run's WARMUP_STEPS."""
+    return optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=1.0,
+        warmup_steps=warmup_steps,
+        decay_steps=LAMBDA_DECAY_STEPS,
+        end_value=0.1
+    )
 
 class UniversalReasoner(LanguageModel):
-    def __init__(self, latent_dim, rngs, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True, batch_size=BATCH_SIZE):
+    """The control baseline, shaped by `config` (NUM_HEADS, MAX_SEQ_LEN, PAD_TOKEN_ID;
+    BATCH_SIZE sizes the hunch cache, and is overridable). Its depth draws replay
+    from DATA_SEED and its λ anneals warm up over WARMUP_STEPS, both `config`'s."""
+
+    def __init__(self, latent_dim, rngs, config, num_blocks=NUM_BLOCKS, dtype=jnp.float32, use_forget=True,
+                 batch_size=None):
+        batch_size = config.BATCH_SIZE if batch_size is None else batch_size
         self.latent_dim = latent_dim
+        self.max_seq_len = config.MAX_SEQ_LEN
         # The id masked out of attention and scoring, as the other arches carry it.
-        self.pad_token_id = PAD_TOKEN_ID
+        self.pad_token_id = config.PAD_TOKEN_ID
+        self.depth_seed = config.DATA_SEED
+        self.lambda_warmup_steps = config.WARMUP_STEPS
+        num_heads = config.NUM_HEADS
         self.embed = nnx.Embed(VOCAB_SIZE, latent_dim, dtype=dtype, rngs=rngs)
         self.time_embed = nnx.Embed(MAX_STEPS_LIMIT + 1, latent_dim, dtype=dtype, rngs=rngs)
 
@@ -76,9 +87,12 @@ class UniversalReasoner(LanguageModel):
         # these stacks un-remat'd. The reasoning stack stays False — its scan-level
         # jax.checkpoint in _reasoning_loop already bounds it (per-block remat
         # inside that was measured as double-checkpointing overhead).
-        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
-        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
-        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=NUM_HEADS, rngs=rngs, dtype=dtype, share_weights=True, use_remat=False)
+        self.encoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=num_heads, max_seq_len=self.max_seq_len,
+                                        rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
+        self.decoder_stack = BlockStack(num_blocks // 2, latent_dim, num_heads=num_heads, max_seq_len=self.max_seq_len,
+                                        rngs=rngs, dtype=dtype, share_weights=False, use_remat=True)
+        self.reasoning_stack = BlockStack(num_blocks, latent_dim, num_heads=num_heads, max_seq_len=self.max_seq_len,
+                                          rngs=rngs, dtype=dtype, share_weights=True, use_remat=False)
 
         self.meta_proj = nnx.Linear(2, latent_dim, rngs=rngs, dtype=dtype)
 
@@ -127,7 +141,7 @@ class UniversalReasoner(LanguageModel):
         # Fixed base positions for slot KV keys in the cross-attention context.
         # These stay constant across iterations — slots always appear at the same
         # position as memory keys. Only query positions advance with the iteration.
-        base_shared_pos = jnp.arange(MAX_SEQ_LEN, MAX_SEQ_LEN + SHARED_SLOTS)
+        base_shared_pos = jnp.arange(self.max_seq_len, self.max_seq_len + SHARED_SLOTS)
         shared_kv_pos = jnp.concatenate([seq_pos, base_shared_pos])
 
         # Precompute per-step slot query positions at trace time (Python loop).
@@ -135,7 +149,7 @@ class UniversalReasoner(LanguageModel):
         # XLA sees static integer constants rather than a dynamic gather/arithmetic,
         # which significantly reduces compilation time.
         all_step_shared_pos = jnp.array([
-            list(range(MAX_SEQ_LEN + i * SHARED_SLOTS, MAX_SEQ_LEN + (i + 1) * SHARED_SLOTS))
+            list(range(self.max_seq_len + i * SHARED_SLOTS, self.max_seq_len + (i + 1) * SHARED_SLOTS))
             for i in range(depth)
         ])  # [depth, SHARED_SLOTS]
 
@@ -330,7 +344,7 @@ class UniversalReasoner(LanguageModel):
     def training_depth(self, micro_step):
         """Reasoning-scan steps for this micro-step: uniform in [1, MAX_STEPS_LIMIT],
         replayed exactly on resume (#316)."""
-        return sample_reasoning_depth(micro_step)
+        return sample_reasoning_depth(micro_step, self.depth_seed)
 
     def grade_aux(self, window_aux, opt_step):
         """Both regularizers, summed over windows and weighted by their schedules.
@@ -344,8 +358,8 @@ class UniversalReasoner(LanguageModel):
             return sum(aux[key] for aux in window_aux)
 
         return {
-            'diversity': diversity_lambda_schedule(opt_step) * over_windows('diversity'),
-            'forget': forget_lambda_schedule(opt_step) * over_windows('forget'),
+            'diversity': diversity_lambda_schedule(self.lambda_warmup_steps)(opt_step) * over_windows('diversity'),
+            'forget': forget_lambda_schedule(self.lambda_warmup_steps)(opt_step) * over_windows('forget'),
         }
 
     def reset_state(self):

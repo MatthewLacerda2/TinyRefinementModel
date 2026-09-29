@@ -207,7 +207,7 @@ class TestARealRunOfMain:
         monkeypatch.setattr(tiktoken, "get_encoding", lambda name: Enc())
         monkeypatch.setattr(trm.infer, "generate_text", generate)
         monkeypatch.setattr(trm.runtime.restore, "restore_model",
-                            lambda path: events.append(("restore", path)) or ("model", 1279))
+                            lambda config, path: events.append(("restore", path)) or ("model", 1279))
         monkeypatch.setattr(tool, "git_head", lambda: events.append(("commit",)) or "abc1234")
         real_load = runlog.load
         monkeypatch.setattr(runlog, "load", lambda path: events.append(("run log", path)) or real_load(path))

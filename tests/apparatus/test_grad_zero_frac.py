@@ -16,6 +16,7 @@ import pytest
 from flax import nnx
 
 from trm.train.grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
+from trm.settings import CONFIG
 
 
 def _fracs(tree):
@@ -82,7 +83,7 @@ def test_real_adapter_groups_and_interpretation_caveats():
     # time_signal pinned to "table": the time_embed caveat this test documents
     # (unsampled-depth rows read as structural zeros) only exists in table mode.
     # The base-run default (sinusoidal, #86) is pinned by the companion test below.
-    m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=vocab, num_heads=4,
+    m = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=vocab, num_heads=4,
                            encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
                            time_signal="table")
     rng = np.random.default_rng(3)
@@ -121,7 +122,7 @@ def test_sinusoidal_adapter_groups_have_no_time_embed():
     from trm.config import MAX_SEQ_LEN
     from trm.model.refiner_lm import RefinerForTraining
 
-    m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
+    m = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
                            encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
                            time_signal="sinusoidal")
     rng = np.random.default_rng(3)

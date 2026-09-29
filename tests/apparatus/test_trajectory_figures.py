@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from trm.settings import CONFIG
 
 
 def _states(blocks=4, positions=60, dim=16, seed=0):
@@ -52,7 +53,7 @@ def test_collect_reads_a_plain_model_without_its_pad_positions(layers):
     from trm.model.plain import PlainTransformer
 
     pad = 36
-    model = PlainTransformer(32, nnx.Rngs(0), vocab_size=37, num_heads=4, num_layers=layers,
+    model = PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4, num_layers=layers,
                              max_seq_len=MAX_SEQ_LEN, pad_token_id=pad)
     row = jnp.full((1, MAX_SEQ_LEN), pad, dtype=jnp.int32).at[0, :10].set(jnp.arange(1, 11))
 

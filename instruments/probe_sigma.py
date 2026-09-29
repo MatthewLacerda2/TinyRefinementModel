@@ -52,7 +52,7 @@ def main(argv=None):
     ap.add_argument("--slices", type=int, default=6, help="disjoint slices per width")
     args = ap.parse_args(argv)
     data_root = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
-    model, step = restore_model(args.checkpoint_path)
+    model, step = restore_model(CONFIG, args.checkpoint_path)
     print(f"checkpoint step {step}; {args.slices} disjoint slices per width")
     for rows in args.rows:
         readings = []

@@ -21,6 +21,7 @@ from trm.runtime.checkpoints import restore_tolerating_legacy
 from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step, apply_grads
 from trm.model.refiner_lm import RefinerForTraining
+from trm.settings import CONFIG
 
 DIM = 64
 VOCAB = 37
@@ -28,7 +29,7 @@ VOCAB = 37
 
 def _tiny_adapter(seed=0):
     return RefinerForTraining(
-        DIM, nnx.Rngs(seed), vocab_size=VOCAB, num_heads=4,
+        DIM, nnx.Rngs(seed), CONFIG, vocab_size=VOCAB, num_heads=4,
         encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
     )
 
@@ -197,13 +198,13 @@ def test_adapter_honors_time_signal():
     launch environment says."""
     from trm import config
 
-    sin = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+    sin = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
                              encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
                              time_signal="sinusoidal")
-    tab = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+    tab = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
                              encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
                              time_signal="table")
-    default = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
+    default = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
                                  encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
     assert "time_embed" not in nnx.state(sin.refiner, nnx.Param)
     assert "time_embed" in nnx.state(tab.refiner, nnx.Param)

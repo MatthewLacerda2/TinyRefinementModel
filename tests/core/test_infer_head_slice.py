@@ -23,6 +23,7 @@ from flax import nnx
 
 from trm import infer
 from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -42,7 +43,7 @@ def toy_refiner():
     from trm.model.refiner_lm import RefinerForTraining
 
     return RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
 
@@ -112,11 +113,10 @@ def test_the_jitted_sampling_step_reads_the_row_it_asked_for(toy_refiner, padded
 
 
 
-def test_generation_still_produces_a_reproducible_sequence(toy_refiner, monkeypatch, in_vocab_encoder):
+def test_generation_still_produces_a_reproducible_sequence(toy_refiner, in_vocab_encoder):
     """End to end. Seeded, so it also pins that the change did not disturb the
     sampling stream — a shifted RNG would be a silent behaviour change even if
     every individual row were correct."""
-    monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
     enc = in_vocab_encoder(TOY_VOCAB)  # why real ids break a toy model: tests/conftest.py
 
     def run():
@@ -133,7 +133,7 @@ def test_the_control_baseline_agrees_with_itself_too():
     it does not get to skip the correctness gate just because it is not live."""
     from trm.model.reasoner import UniversalReasoner
 
-    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1, batch_size=1)
+    model = UniversalReasoner(60, nnx.Rngs(0), CONFIG, num_blocks=1, batch_size=1)
     tokens = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32).at[0, :4].set(
         jnp.array(PROMPT, dtype=jnp.int32))
 

@@ -19,6 +19,7 @@ import pytest
 from flax import nnx
 
 from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -33,7 +34,7 @@ def toy_refiner():
     from trm.model.refiner_lm import RefinerForTraining
 
     return RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
 
@@ -111,7 +112,7 @@ def test_an_architecture_without_a_refine_loop_refuses():
     pointed at a model that has no depth to begin with."""
     from trm.model.reasoner import UniversalReasoner
 
-    model = UniversalReasoner(60, nnx.Rngs(0), num_blocks=1, batch_size=1)
+    model = UniversalReasoner(60, nnx.Rngs(0), CONFIG, num_blocks=1, batch_size=1)
     toks = jnp.zeros((1, MAX_SEQ_LEN), dtype=jnp.int32)
 
     with pytest.raises(NotImplementedError, match="no trajectory to capture"):
@@ -127,7 +128,7 @@ TOY_LAYERS = 3
 def toy_plain():
     from trm.model.plain import PlainTransformer
 
-    return PlainTransformer(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+    return PlainTransformer(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
                             num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 

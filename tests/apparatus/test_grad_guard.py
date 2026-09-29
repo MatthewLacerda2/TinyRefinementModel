@@ -19,6 +19,7 @@ import pytest
 from trm.config import MAX_SEQ_LEN
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.grad_step import compute_grad_step
+from trm.settings import CONFIG
 
 
 def _settled(norm=10.0, warmup=8, **kwargs):
@@ -125,7 +126,7 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
     from trm.model.refiner_lm import RefinerForTraining
     from flax import nnx
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
+    model = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
                                encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
     batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
@@ -152,7 +153,7 @@ def test_an_infinite_ceiling_is_exactly_todays_behaviour():
     from trm.model.refiner_lm import RefinerForTraining
     from flax import nnx
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
+    model = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
                                encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
     batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))

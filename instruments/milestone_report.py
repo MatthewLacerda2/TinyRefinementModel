@@ -121,7 +121,7 @@ def section_val_ce(checkpoint_path):
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         return "skipped: DATA_ROOT is not set — no held-out data to score"
-    model, _ = restore_model(checkpoint_path)
+    model, _ = restore_model(CONFIG, checkpoint_path)
     probe = ValidationProbe.of(CONFIG, resolve_root(data_root))
     val_ce = probe.run(model)
     if val_ce is None:

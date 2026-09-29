@@ -181,7 +181,7 @@ def main(argv=None):
     from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
 
-    model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
+    model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
     nbytes = token_bytes(VOCAB_SIZE)
     data_root = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
     row = {"step": int(step), "arch": args.arch, "checkpoint": str(args.checkpoint_path),

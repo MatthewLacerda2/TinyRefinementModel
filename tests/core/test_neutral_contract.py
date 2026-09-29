@@ -23,6 +23,7 @@ from flax import nnx
 from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.model.contract import LanguageModel
+from trm.settings import CONFIG
 
 
 def test_contract_defaults_describe_a_plain_stateless_lm():
@@ -46,7 +47,7 @@ def _tiny_refiner():
     from trm.model.refiner_lm import RefinerForTraining
 
     return RefinerForTraining(
-        128, nnx.Rngs(0), vocab_size=37, num_heads=4,
+        128, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4,
         encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
     )
 

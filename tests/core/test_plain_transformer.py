@@ -15,6 +15,7 @@ from flax import nnx
 
 from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -27,7 +28,7 @@ PROMPT = [1, 2, 3, 4, 5, 6]
 @pytest.fixture(scope="module")
 def toy():
     return PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
@@ -118,7 +119,7 @@ def test_a_later_token_cannot_change_an_earlier_prediction(toy):
 def test_layer_count_is_the_only_depth_knob(toy, n_params):
     assert len(toy.blocks) == TOY_LAYERS
     deeper = PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         num_layers=TOY_LAYERS + 2, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
     assert n_params(deeper) > n_params(toy), "more layers must mean more parameters"

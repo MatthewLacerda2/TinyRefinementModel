@@ -43,6 +43,7 @@ import os
 # Module-level names on purpose: select_device and main look them up here, which is
 # also where a test replaces them.
 from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -256,7 +257,7 @@ def main(argv=None):
         if discovered is not None:
             run_dir = os.path.join("runs", run_id)
 
-    model, ckpt_step = restore_model(args.checkpoint_path)
+    model, ckpt_step = restore_model(CONFIG, args.checkpoint_path)
     opt_step = opt_step_from_checkpoint(ckpt_step, ACCUMULATION_STEPS)
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 

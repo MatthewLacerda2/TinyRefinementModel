@@ -53,6 +53,7 @@ from instruments.arch import add_arch_argument
 from instruments.plots import AQUA, BLUE, GRID, INK, INK_DIM, ORANGE, STYLE, _note
 from instruments.results import emit
 from instruments.runlog import checkpoint_steps, recorded_tokens_per_opt_step
+from trm.settings import CONFIG
 
 REPORTS = {
     "separation, anisotropy, rms": ("measured", "the checkpoint's own embedding rows for the "
@@ -340,7 +341,7 @@ def main(argv=None):
         raise SystemExit(f"no checkpoints under {args.checkpoint_path}")
     embeddings = []
     for step in steps:
-        model, _ = restore_arch(args.arch, args.checkpoint_path, step=step)
+        model, _ = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=step)
         # Index first, cast second: the whole table in f64 is 386 MB, and this runs
         # beside a trainer on a box where this session is what the OOM killer picks.
         embeddings.append(np.asarray(model.embed.embedding[...])[ids].astype(np.float64))

@@ -19,13 +19,14 @@ from flax import nnx
 from instruments.invariants import F16_MAX, row_violations
 from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
+from trm.settings import CONFIG
 
 TOY_VOCAB, TOY_PAD = 37, 36
 
 
 @pytest.fixture(scope="module")
 def toy():
-    return PlainTransformer(32, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+    return PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
                             num_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
@@ -49,7 +50,7 @@ def test_it_is_the_peak_not_the_average(toy, tokens):
     """A mean would understate exactly the quantity being guarded: one block out of
     seven multiplied by ~794 in #235, and an average over blocks would have hidden
     it."""
-    scaled = PlainTransformer(32, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
+    scaled = PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
                               num_layers=3, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     scaled.embed.embedding.value = scaled.embed.embedding.value * 100.0
 
