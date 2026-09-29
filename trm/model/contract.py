@@ -40,7 +40,11 @@ class LMOutput:
 
 
 class LanguageModel(nnx.Module):
-    """Base class carrying the neutral defaults. Subclass and override as needed."""
+    """Base class carrying the neutral defaults. Subclass and override as needed.
+
+    Every model also carries `pad_token_id` (the id it masks out of attention, which
+    the loss and the probe mask as targets) and `max_seq_len` (its window, which
+    generation pads to), set from its Config (#475)."""
 
     def __call__(self, tokens, depth, training=False, new_document=True,
                  logits_at=None) -> LMOutput:

@@ -32,8 +32,8 @@ from trm.settings import CONFIG
 TOY_DIM = 32
 TOY_VOCAB = 37
 TOY_HEADS = 4
-# Sequence length is the one knob that cannot shrink: generate_text pads to the
-# config's MAX_SEQ_LEN, so a toy model has to agree with it. Everything else does.
+# generate_text pads to the model's own window, so this could shrink too; it stays at
+# MAX_SEQ_LEN so the generation loop runs at the shape it serves.
 TOY_SEQ_LEN = MAX_SEQ_LEN
 TOY_PAD = TOY_VOCAB - 1
 TOY_DEPTH = 2
