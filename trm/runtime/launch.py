@@ -67,7 +67,7 @@ from dataclasses import dataclass
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.run_budget import BUDGET_ENV
-from trm.runtime.gpu_lock import GpuLock, _pid_alive
+from trm.runtime.gpu_lock import GpuLock
 from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
                                     read_progress)
 
@@ -146,8 +146,8 @@ def refusal(p: Plan) -> str | None:
     """Why this launch must not happen, or None."""
     if p.run_dir.exists():
         return f"{p.run_dir} already exists — a launch never reuses a run directory"
-    holder = GpuLock().holder()
-    if holder and _pid_alive(holder[0]):
+    holder = GpuLock().live_holder()
+    if holder:
         return f"the GPU is held by pid {holder[0]} ({holder[1] or 'unlabelled'})"
     return None
 
@@ -185,9 +185,7 @@ def resume(active: pathlib.Path = ACTIVE_RUN) -> int:
     heartbeat = run_dir.parent / f"{state['run_id']}.supervisor.log"
     text = heartbeat.read_text(errors="replace") if heartbeat.exists() else ""
     step, _ = read_progress(run_dir / "metrics.csv")
-    holder = GpuLock().holder()
-    why, over = resume_refusal(state, last_outcome(text), step,
-                               holder if holder and _pid_alive(holder[0]) else None)
+    why, over = resume_refusal(state, last_outcome(text), step, GpuLock().live_holder())
     if why:
         print(f"resume: not resuming — {why}")
         if over:

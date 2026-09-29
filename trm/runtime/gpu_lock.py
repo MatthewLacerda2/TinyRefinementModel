@@ -66,7 +66,11 @@ class GpuLock:
 
     A stale lock — the holder died without releasing — is taken over rather than
     respected. A lock nobody can clear is worse than no lock: it turns one crash
-    into a card that stays idle until a human notices.
+    into a card that stays idle until a human notices. "Died" means the holder *and*
+    every child it named (`name_child`): a supervisor killed outright leaves its
+    trainer on the card, and that card is not free (#516).
+
+    The file is `<holder pid> <label>`, then one `child <pid>` line per named child.
     """
 
     def __init__(self, path: pathlib.Path = GPU_LOCK, label: str = ""):
@@ -74,30 +78,71 @@ class GpuLock:
         self.label = label
         self.held = False
 
-    def holder(self) -> tuple[int, str] | None:
-        if not self.path.exists():
-            return None
+    def _read(self) -> tuple[int, str, list[int]] | None:
+        """(holder pid, label, named child pids); None when there is no lock, or an
+        unreadable one — which is a stale one."""
         try:
-            pid_text, _, label = self.path.read_text().strip().partition(" ")
-            return int(pid_text), label
-        except ValueError:
-            return None  # unreadable lock is a stale lock
+            first, *rest = self.path.read_text().strip().splitlines()
+            pid_text, _, label = first.partition(" ")
+            children = [int(line.split()[1]) for line in rest if line.startswith("child ")]
+            return int(pid_text), label, children
+        except (FileNotFoundError, ValueError, IndexError):
+            return None
+
+    def _write(self, text: str) -> None:
+        """Replace the file in one step: a reader never sees it half-written, which
+        would read as unreadable, so stale, and be taken over under a live run."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        partial = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        partial.write_text(text)
+        os.replace(partial, self.path)
+
+    def holder(self) -> tuple[int, str] | None:
+        """(pid, label) of whoever took the lock, alive or not."""
+        read = self._read()
+        return None if read is None else read[:2]
+
+    def live_holder(self) -> tuple[int, str] | None:
+        """(pid, label) of the live process that keeps the card taken — the holder,
+        or a child it named that outlived it — or None when the card is free."""
+        read = self._read()
+        if read is None:
+            return None
+        pid, label, children = read
+        if _pid_alive(pid):
+            return pid, label
+        for child in children:
+            if _pid_alive(child):
+                return child, f"child of dead pid {pid}" + (f", {label}" if label else "")
+        return None
+
+    def _ours(self) -> bool:
+        if not self.held:
+            return False
+        current = self.holder()
+        return current is not None and current[0] == os.getpid()
 
     def acquire(self) -> None:
-        current = self.holder()
-        if current and _pid_alive(current[0]):
+        current = self.live_holder()
+        if current:
             raise Preflight(
                 f"the GPU is held by pid {current[0]} ({current[1] or 'unlabelled'}) — "
                 f"one run at a time on this card")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{os.getpid()} {self.label}\n")
+        self._write(f"{os.getpid()} {self.label}\n")
         self.held = True
+
+    def name_child(self, pid: int) -> None:
+        """Name `pid`, a process we put on the card, in our lock (#516). A holder
+        killed outright (SIGKILL, the OOM killer) runs no cleanup; its lock then keeps
+        the card taken for as long as the child lives. One child at a time: each call
+        replaces the last, since the one before it is gone or stopped."""
+        if self._ours():
+            self._write(f"{os.getpid()} {self.label}\nchild {pid}\n")
 
     def release(self) -> None:
         """Only ever removes our own lock — a supervisor that took over a stale
         lock must not delete whatever replaced it."""
-        current = self.holder()
-        if self.held and current and current[0] == os.getpid():
+        if self._ours():
             self.path.unlink(missing_ok=True)
         self.held = False
 
@@ -105,9 +150,8 @@ class GpuLock:
         """Hand our lock to `pid`, a process on the card this one could not stop
         (#512). The card stays taken while it lives; once it dies, the lock is stale
         and the next launch takes it over."""
-        current = self.holder()
-        if self.held and current and current[0] == os.getpid():
-            self.path.write_text(f"{pid} {self.label} (left behind by pid {os.getpid()})\n")
+        if self._ours():
+            self._write(f"{pid} {self.label} (left behind by pid {os.getpid()})\n")
         self.held = False
 
     def __enter__(self):
