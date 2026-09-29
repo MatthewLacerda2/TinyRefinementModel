@@ -38,6 +38,8 @@ from trm.config import (
     LOSS_SCALE_GROWTH_INTERVAL,
     DATA_MIXTURE,
     MIXTURE_RAMP_FRACTION,
+    DATA_BRANCH,
+    DATA_BRANCH_SEED_STRIDE,
 )
 from trm.runtime.layout import VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
 from trm.train.schedules import (
@@ -197,6 +199,9 @@ class RunTracker:
             "CURRICULUM_STEPS": CURRICULUM_STEPS,
             "DATA_MIXTURE": DATA_MIXTURE,
             "MIXTURE_RAMP_FRACTION": MIXTURE_RAMP_FRACTION,
+            # A branch onto another mixture, and how far each seed skips (#489).
+            "DATA_BRANCH": DATA_BRANCH,
+            "DATA_BRANCH_SEED_STRIDE": DATA_BRANCH_SEED_STRIDE,
             # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
             "LR_SCHEDULE": LR_SCHEDULE,
             "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,

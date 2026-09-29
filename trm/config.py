@@ -352,3 +352,16 @@ DATA_MIXTURE = os.environ.get("DATA_MIXTURE", DEFAULT_DATA_MIXTURE)
 # third of the way in, the shape the 4B champion trained with (10,000 of 30,518
 # steps). Budget-relative, so a short pair inherits the shape of the run it informs.
 MIXTURE_RAMP_FRACTION = float(os.environ.get("MIXTURE_RAMP_FRACTION", 10000 / 30518))
+
+# Branching a checkpoint onto another mixture (#489). An exact resume refuses a data
+# state written for a different DATA_MIXTURE (#439); a branch keeps the weights, the
+# optimizer and the step, and rebuilds the stream instead: every bucket the checkpoint
+# read continues where it stopped (nothing repeats), a bucket it never read starts at
+# its beginning, the mixer's draws restart from DATA_SEED, and every reader then skips
+# DATA_SEED x DATA_BRANCH_SEED_STRIDE rows. A branch starts every seed from the same
+# weights, so without that skip two seeds would read the same rows and their spread
+# would measure almost nothing. The stride is 80k rows (~82M tokens per bucket): more
+# than a bucket at 25% reads in a 2,048-step branch (65k rows), and small enough that
+# three seeds fit the 254M-token general-web bucket #489 reads. Off: a resume is exact.
+DATA_BRANCH = os.environ.get("DATA_BRANCH", "0") == "1"
+DATA_BRANCH_SEED_STRIDE = int(os.environ.get("DATA_BRANCH_SEED_STRIDE", "80000"))

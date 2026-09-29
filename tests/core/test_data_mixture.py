@@ -162,3 +162,79 @@ def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
     resumed.load_state(legacy)
     for want in expected[3:]:
         np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)[0]), np.asarray(want))
+
+
+# ── branching onto another mixture (#489) ────────────────────────────────────
+
+def _branch_mixer(tmp_path, names):
+    from trm.data.loaders import DataMixer, TextDataGenerator
+    bases = {"web": 0, "code": 20000, "math": 40000}
+    dirs = [_corpus(tmp_path, name, bases[name]) for name in names]
+    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+                     [1.0 / len(names)] * len(names), rng=np.random.default_rng(11), names=list(names))
+
+
+def _first_row(source):
+    return np.asarray(source.get_batch(1)[0])[0]
+
+
+def test_a_branch_continues_each_bucket_it_read_and_starts_a_new_one_fresh(tmp_path):
+    """The point of a branch: the buckets the checkpoint read resume where they
+    stopped, so nothing is trained on twice, and a bucket it never read starts at
+    its first row."""
+    parent = _branch_mixer(tmp_path, ("web", "code"))
+    for _ in range(4):
+        parent.get_batch(1)
+    state = json.loads(json.dumps(parent.state()))
+    expected = {name: _first_row(source) for name, source in zip(parent.names, parent._all)}
+
+    child = _branch_mixer(tmp_path, ("web", "math", "code"))
+    child.branch_state(state, legacy_names=())
+    web, math, code = child._all
+    np.testing.assert_array_equal(_first_row(web), expected["web"])
+    np.testing.assert_array_equal(_first_row(code), expected["code"])
+    # A fresh file opens at a random offset under one stride (the loader's boundary
+    # augmentation), so "its beginning" is its first stride.
+    assert 40000 <= _first_row(math)[0] < 40000 + STRIDE, "a bucket never read starts at its beginning"
+
+
+def test_a_state_without_names_is_read_by_the_legacy_mixture(tmp_path):
+    """The base run's checkpoints predate bucket names (#439); the default mixture's
+    order names their readers."""
+    parent = _branch_mixer(tmp_path, ("web", "code"))
+    for _ in range(3):
+        parent.get_batch(1)
+    state = json.loads(json.dumps(parent.state()))
+    del state["names"]
+    expected = _first_row(parent._all[1])
+
+    child = _branch_mixer(tmp_path, ("code",))
+    child.branch_state(state, legacy_names=("web", "code"))
+    np.testing.assert_array_equal(_first_row(child._all[0]), expected)
+
+
+def test_seeds_skip_to_disjoint_rows(tmp_path):
+    """Every seed branches from the same weights, so the data is the only thing that
+    can make two seeds differ; each reader skips `skip` rows first."""
+    state = json.loads(json.dumps(_branch_mixer(tmp_path, ("web",)).state()))
+    rows = []
+    for skip in (1, 3):
+        child = _branch_mixer(tmp_path, ("web",))
+        child.branch_state(state, legacy_names=(), skip=skip)
+        rows.append(_first_row(child._all[0]))
+    assert rows[1][0] - rows[0][0] == 2 * STRIDE
+
+
+def test_a_state_that_cannot_name_its_readers_is_refused(tmp_path):
+    state = json.loads(json.dumps(_branch_mixer(tmp_path, ("web", "code")).state()))
+    del state["names"]
+    with pytest.raises(ValueError, match="which reader"):
+        _branch_mixer(tmp_path, ("web",)).branch_state(state, legacy_names=("web",))
+
+
+def test_the_run_records_whether_it_branched():
+    from trm.config import DATA_BRANCH, DATA_BRANCH_SEED_STRIDE
+    from trm.runtime.run_tracker import RunTracker
+    recorded = RunTracker.get_hyperparameters()
+    assert recorded["DATA_BRANCH"] == DATA_BRANCH
+    assert recorded["DATA_BRANCH_SEED_STRIDE"] == DATA_BRANCH_SEED_STRIDE

@@ -59,6 +59,18 @@ MIXTURE = [
         "alias": "finemath"
     },
     {
+        # General web, the slice the first base run lacked (#489). Streamed in the same
+        # order the modded-nanogpt speedrun reads it, so its FIRST 100M tokens ARE the
+        # speedrun FineWeb val shard that instruments/yardstick/fineweb_val scores: after
+        # a prefill, move chunk_0.npy (125M tokens) out of the bucket, or a run trains
+        # on its own yardstick. What the #489 pair read is chunk_1 and chunk_2.
+        "path": "HuggingFaceFW/fineweb",
+        "config": "sample-10BT",
+        "target_tokens": 500_000_000,
+        "folder": "pretrain",
+        "alias": "fineweb"
+    },
+    {
         "path": "HuggingFaceH4/ultrachat_200k",
         "split": "train_sft",
         "target_tokens": 350_000_000,

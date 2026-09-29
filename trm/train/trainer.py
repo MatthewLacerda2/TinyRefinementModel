@@ -20,7 +20,10 @@ from trm.config import (
     MODEL_ARCH,
     REFINER_ENCODER_LAYERS,
     MAX_STEPS_LIMIT,
+    DATA_BRANCH,
+    DATA_BRANCH_SEED_STRIDE,
     DATA_SEED,
+    DEFAULT_DATA_MIXTURE,
     MODEL_SEED,
     PLAIN_LAYERS,
     TOKENS_PER_OPT_STEP,
@@ -56,6 +59,7 @@ from trm.train.schedules import (
     WARMUP_STEPS,
     get_curriculum_weights,
     get_average_curriculum_weights,
+    parse_mixture,
 )
 from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
 from trm.runtime.metrics import MetricsLogger
@@ -221,7 +225,20 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
     pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
     pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS, names=PRETRAIN_SOURCES)
 
-    if start_step > 0 and data_state is not None:
+    if DATA_BRANCH and start_step == 0:
+        # A branch that found no checkpoint would train a fresh model on the arm's
+        # mixture and report it as the branch.
+        raise SystemExit("DATA_BRANCH=1 but no checkpoint was restored: a branch starts from one (#489)")
+    if start_step > 0 and DATA_BRANCH:
+        # A branch onto this run's mixture (#489): the weights continue, the stream
+        # is rebuilt, and each seed reads its own rows.
+        if data_state is None:
+            raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
+        pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
+                                    skip=DATA_SEED * DATA_BRANCH_SEED_STRIDE)
+        print(f"🌿 Data stream branched onto {', '.join(PRETRAIN_SOURCES)}: "
+              f"seed {DATA_SEED} skips {DATA_SEED * DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
+    elif start_step > 0 and data_state is not None:
         # Exact (#424): the reader and mixer state saved with the last batch the
         # checkpointed run consumed, so the next row is the one it would have read.
         pretrain_mixer.load_state(data_state)
@@ -507,7 +524,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 curr_weights = get_curriculum_weights(opt_step)
                 print(
                     f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
-                    f"Weights (Web/Code/Math): {curr_weights[0]:.3f} / {curr_weights[1]:.3f} / {curr_weights[2]:.3f}"
+                    f"Weights: {mixture_label(PRETRAIN_SOURCES, curr_weights)}"
                 )
 
                 # Periodically update session duration to capture active timings
