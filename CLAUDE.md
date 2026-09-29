@@ -35,6 +35,12 @@ Push back when it's earned:
   gains *here* and that it breaks nothing, not whether it works — and "settled" means
   settled in the literature's setting: re-ask it when ours differs.
 
+**No rule here is beyond question.** Rules exist to guide the work and make it
+predictable and programmatic, so any session handles the same situation the same way.
+When one stops serving that, or costs more than it returns, say so and change it in a
+PR; never quietly work around it. A rule that is followed but not believed rots faster
+than one that is argued with.
+
 Align before building. The user must have a clear, defined idea of what he's trying to
 say. If the idea isn't yet clear — to him or to you — **stop**: don't plan, don't
 implement. Get the idea defined for both of you first. Alignment of understanding comes
@@ -276,6 +282,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   the env/config knobs that make them hit the changed code), what counts as pass
   against what baseline, and the pre-named fallback if it fails — finishing must need
   only the card, never this conversation's memory. (Template case: PR #98 / #84.)
+- **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
+  session without them (a cloud session) cannot finish it. Orthogonal to lane: a
+  `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
 - **`base-gate`** — must land before the next base run (the test under "Before a base run
   launches", below). Orthogonal to type: an optimization, a telemetry tool and a model
   bug can all carry it.
@@ -315,6 +324,12 @@ to waste; see "measure there" above) — and says so where they stop deciding (w
 tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed, an issue with no type label. When the rules
 here change, the tool changes in the same PR; prose and command must not drift.
+
+**Cloud sessions are the exception.** The project is built for this machine: its
+card, its corpus, its weights. A session without them (no `runs/data/`) takes work
+from `python -m instruments.queue --cloud`, which drops the `gpu`-only lane and
+everything `local`. It builds and tests; it does not measure. A GPU tail becomes a
+draft PR with its resume protocol, and the measurement runs here.
 
 **What Claude may do without asking (the owner's standing permission).**
 - **Start any job that takes under 48 hours to compute**, and as many of them as a

@@ -4,7 +4,7 @@ Built from fixtures, not from `gh`: what is under test is the reading of the
 rules, and a test that needed the network would test GitHub's uptime instead.
 """
 
-from instruments.queue import Card, blockers_named, build_queue, claimed_by_pr
+from instruments.queue import CLOUD_CARD, Card, blockers_named, build_queue, claimed_by_pr
 
 FREE, BUSY = Card(True, "free"), Card(False, "held by a run")
 
@@ -174,3 +174,18 @@ def test_a_browsers_gpu_process_does_not_hold_the_card():
     assert blocking == ["226159, /mnt/d_drive/models/.venv-kokoro/bin/python",
                         "1170676, /home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python3.14"]
     assert other == ["208451, /usr/lib/chromium/chromium"]
+
+
+def test_a_cloud_session_gets_neither_the_card_nor_this_machines_files():
+    """#492: a cloud session can finish neither a gpu-only item nor one that needs the
+    weights, corpus or HDD here; it keeps the cpu half of a partial-cpu issue."""
+    issues = [issue(1, "tools", "cpu"), issue(2, "tools", "gpu"), issue(3, "tools", "cpu", "gpu"),
+              issue(4, "tools", "cpu", "local"), issue(5, "ideas", "cpu", "gpu", "local")]
+    q = build_queue(issues, [], CLOUD_CARD, cloud=True)
+    assert ranked(q) == {"tools": [1, 3]}
+    assert excluded(q) == {2, 4, 5}
+
+
+def test_local_means_nothing_to_a_session_on_this_machine():
+    q = build_queue([issue(1, "tools", "cpu", "local")], [], FREE)
+    assert ranked(q) == {"tools": [1]}
