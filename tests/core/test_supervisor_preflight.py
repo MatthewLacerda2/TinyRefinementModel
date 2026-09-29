@@ -288,3 +288,24 @@ def test_main_leaves_the_lock_to_a_survivor_instead_of_releasing_it(tmp_path, mo
                          "--min-free-gb", "0", "--skip-fit-gate"])
     assert code == 1
     assert GpuLock(lock_path).holder()[0] == Stub.survivor, "the card stays held by the trainer that would not die"
+
+
+def test_a_budget_run_whose_trainer_would_not_die_is_not_scored_on_its_card(tmp_path, monkeypatch):
+    """The final yardstick runs on the card; with the trainer still on it, it would
+    only fail. Skipped, said, and the exit is non-zero, as for a failed yardstick."""
+    class Stub:
+        survivor = 424242
+
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            return sup_mod.BUDGET_COMPLETE
+
+    def no_instrument(*a, **k):
+        raise AssertionError("nothing may score onto a card a trainer still holds")
+    monkeypatch.setattr(sup_mod, "Supervisor", Stub)
+    monkeypatch.setattr(sup_mod.subprocess, "run", no_instrument)
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0", "--skip-fit-gate", "--no-gpu-lock", "--spec", str(tmp_path / "spec.toml")])
+    assert code == 1

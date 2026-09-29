@@ -649,7 +649,7 @@ class Supervisor:
     stop_grace_seconds: float = 60.0
     kill_wait_seconds: float = 30.0
     # The pid of a child that outlived stop(); main() leaves it the GPU lock (#512).
-    survivor: int | None = None
+    survivor: int | None = field(default=None, init=False)
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
@@ -1029,13 +1029,18 @@ def main(argv=None) -> int:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     finally:
-        # Never released under a live trainer (#512): one stop() could not end keeps it.
+        # A trainer stop() could not end keeps the card (#512). An exception out of
+        # run() still releases it under a live one: #516.
         if supervisor.survivor is not None:
             lock.leave_to(supervisor.survivor)
         else:
             lock.release()
 
     print(f"outcome: {outcome}")
+    if args.spec is not None and outcome == BUDGET_COMPLETE and supervisor.survivor is not None:
+        print(f"yardstick skipped: pid {supervisor.survivor} outlived SIGKILL and still holds the card; "
+              f"score the final checkpoint once it is gone", file=sys.stderr)
+        return 1
     if args.spec is not None and outcome == BUDGET_COMPLETE:
         # The referee and the card live in instruments/, which trm/ never imports
         # (tests/core/test_package_layout.py); they are run as commands.
