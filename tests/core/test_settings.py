@@ -108,7 +108,9 @@ def test_the_constants_modules_still_import_are_this_process_config():
     exported = {(m.__name__, name): getattr(m, name)
                 for m in modules for name in Config.model_fields | Config.model_computed_fields
                 if hasattr(m, name)}
-    # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported.
-    assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"}
+    # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported. Knobs
+    # added since #475 are read from a Config handed down, so the bridge never grows.
+    passed_down = {"MILESTONE_SCORERS"}
+    assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"} - passed_down
     drift = {key: value for key, value in exported.items() if value != getattr(CONFIG, key[1])}
     assert not drift, drift
