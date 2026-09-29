@@ -45,12 +45,14 @@ import sys
 import time
 from dataclasses import dataclass, field
 
+from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight
 from trm.runtime.layout import (  # jax-free, so the supervisor stays jax-free
     ACT_MAX_ALARM,
     LOG_REAL_STEPS,
     LOSS_SCALE_FLOOR_ALARM,
     MILESTONE_SUBDIR,
+    SSD_KEEP_FREE_GB,
     VRAM_HEADROOM_ALARM_MIB,
     YARDSTICK_JOURNAL,
     ZERO_GRAD_ALARM,
@@ -275,6 +277,18 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
 
 # --- preflight ----------------------------------------------------------------
 
+def local_location(name: str) -> pathlib.Path | None:
+    """A machine-local path (trm.settings.LOCATIONS) from the environment or, failing
+    that, the repo's .env, resolved against the repo root; None when unset or remote."""
+    value = location(name)
+    if not value:
+        from dotenv import dotenv_values
+        value = dotenv_values(REPO_ROOT / ".env").get(name)
+    if not value or "://" in value:
+        return None
+    return (REPO_ROOT / value).resolve()
+
+
 def check_disk_headroom(path: pathlib.Path, min_free_gb: float) -> float:
     """Refuse to launch onto a nearly-full disk.
 
@@ -361,15 +375,12 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
     run_dir = work / "runs" / "run_fitgate"
     log_path = work / "fitgate.log"
     run_dir.mkdir(parents=True)
-    data_root = location("DATA_ROOT")
-    if not data_root:
-        # The trainer would find it in .env and resolve it against ITS cwd, which is
-        # the probe dir. Read only this one key; nothing else in .env is touched.
-        from dotenv import dotenv_values
-        data_root = dotenv_values(REPO_ROOT / ".env").get("DATA_ROOT")
+    # The trainer would find DATA_ROOT in .env and resolve it against ITS cwd, which is
+    # the probe dir. Read only this one key; nothing else in .env is touched.
+    data_root = local_location("DATA_ROOT")
     env = {**os.environ, **FIT_GATE_ENV, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1"}
-    if data_root and "://" not in data_root:
-        env["DATA_ROOT"] = str((REPO_ROOT / data_root).resolve())  # the probe runs from another cwd
+    if data_root is not None:
+        env["DATA_ROOT"] = str(data_root)  # the probe runs from another cwd
     argv = command or [sys.executable, "-m", "trm.train.start",
                        *_without_path_flags(trainer_args),
                        "--checkpoint-path", str(run_dir / "checkpoints")]
@@ -590,6 +601,10 @@ class Supervisor:
     spec: pathlib.Path | None = None
     milestone_limit: int = 1000
     config: Config = CONFIG  # the knobs it reads: MILESTONE_SCORERS
+    # The run's cold tier (#458): mirrors and prunes each poll, and takes a last
+    # full-state copy when the run ends. None when no COLD_ROOT is set.
+    cold: ColdTier | None = None
+    _cold_error: str | None = None
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: list = field(default_factory=list)  # their handles, pruned of finished ones each poll
 
@@ -642,6 +657,8 @@ class Supervisor:
         while True:
             time.sleep(self.poll_seconds)
             polls += 1
+            # Before the observation: room pruning frees must count before the disk guard reads.
+            self.tend_cold_tier()
             obs = self.observe(proc, started)
             decision = decide(obs, self.limits, state)
             for change in margin_changes(raised, obs.margins):
@@ -662,8 +679,10 @@ class Supervisor:
                 continue
             if decision.action in (STOP, KILL):
                 self.stop(proc)
+                self.tend_cold_tier(final=True)
                 return decision.outcome
             if decision.action == GIVE_UP:
+                self.tend_cold_tier(final=True)
                 return decision.outcome
             if decision.action in (RELAUNCH, RESTART):
                 if decision.action == RESTART:
@@ -671,6 +690,24 @@ class Supervisor:
                 proc = self.launch()
                 started = time.time()
                 self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
+
+    def tend_cold_tier(self, final: bool = False) -> None:
+        """One cold-tier tick (trm/runtime/cold.py). Never fatal: an unmounted HDD must
+        not stop a training run, so a failure is announced once, and training goes on
+        with nothing pruned until the cold root is back."""
+        if self.cold is None:
+            return
+        try:
+            for line in self.cold.tick(final=final):
+                self.record(f"{_stamp()} {line}")
+        except Exception as exc:  # whatever it is, supervision of the run goes on
+            if str(exc) != self._cold_error:
+                self.announce(f"{_stamp()} ⚠ cold tier: {exc} — training goes on, nothing is pruned")
+            self._cold_error = str(exc)
+            return
+        if self._cold_error is not None:
+            self.announce(f"{_stamp()} cold tier back: {self.cold.cold_run}")
+        self._cold_error = None
 
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, oldest
@@ -726,6 +763,23 @@ def _stamp() -> str:
     return datetime.datetime.now().strftime("%F %T")
 
 
+def protected_roots() -> tuple[pathlib.Path, ...]:
+    """What cold-tier pruning may never reach into: the tokenized corpus, sacred by
+    CLAUDE.md, both where the repo keeps it and wherever DATA_ROOT points."""
+    data_root = local_location("DATA_ROOT")
+    return (RUNS_DIR / "data", *([data_root] if data_root is not None else []))
+
+
+def describe_cold(cold: ColdTier | None) -> str:
+    """The cold tier in one line, for a launch banner."""
+    if cold is None:
+        return "none (COLD_ROOT unset): nothing leaves the SSD"
+    every = (f"every {cold.fullstate_every_hours:g}h (the spec's stall window) and at the end"
+             if cold.fullstate_every_hours else "at the end only (no [stall] window in the spec)")
+    return (f"{cold.cold_run} — milestones mirrored; full state copied {every}; mirrored "
+            f"milestones pruned to keep {cold.keep_free_gb:g}GB free on the SSD")
+
+
 def github_reporter(issue: int):
     """Heartbeat into a pinned issue, so state lives where CLAUDE.md says it does.
 
@@ -768,6 +822,11 @@ def main(argv=None) -> int:
     ap.add_argument("--spec", type=pathlib.Path, default=None,
                     help="the pre-registered base-run spec (#294): milestones get a CPU yardstick, "
                          "completion gets the full yardstick, the referee's verdict and a model card")
+    ap.add_argument("--cold-root", type=pathlib.Path, default=None,
+                    help="the HDD directory this run mirrors to (#458; `make launch` passes COLD_ROOT, "
+                         "so a resume replays the tier the run launched with; unset, none). Milestones "
+                         "are mirrored, full state copied once per the spec's stall window and at the "
+                         "end, and mirrored milestones pruned to keep SSD_KEEP_FREE_GB free")
     ap.add_argument("--skip-fit-gate", action="store_true",
                     help="launch without first proving the config survives an apply, a probe and a "
                          "checkpoint (#168) — only when you know it fits")
@@ -787,6 +846,18 @@ def main(argv=None) -> int:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     print(f"preflight: {free:.1f}GB free")
+    cold = None
+    if args.cold_root is not None:
+        # A warning here, not a refusal: `make launch` refuses a bad cold root, and a
+        # resume after a reboot (#384) must not stay down because the HDD mounted late.
+        # Each tick asks again and copies nothing until the problem is gone.
+        problem = cold_root_problem(args.cold_root, RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT)
+        if problem:
+            print(f"preflight: ⚠ cold tier waits — {problem}", file=sys.stderr)
+        cold = ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=SSD_KEEP_FREE_GB,
+                        fullstate_every_hours=stall_window_hours(args.spec),
+                        protected=protected_roots())
+    print(f"cold tier: {describe_cold(cold)}")
 
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
@@ -796,6 +867,7 @@ def main(argv=None) -> int:
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
         spec=args.spec,
+        cold=cold,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),

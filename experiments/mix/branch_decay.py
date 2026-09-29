@@ -5,7 +5,7 @@
 
 Copies the branch checkpoint (a full-state step dir: weights, optimizer, data state)
 into a fresh run dir. It resumes the real trainer there with DATA_BRANCH=1 on the arm's
-mixture, and re-runs a WSD decay from --decay-start to --stop-step. Then it scores the
+mixture (only from that copy: a relaunch resumes the arm's own stream), and re-runs a WSD decay from --decay-start to --stop-step. Then it scores the
 endpoint weights on the yardstick. Every arm starts from the same weights and optimizer
 state, so the mixture is the only thing that differs; each seed reads its own rows (see
 DATA_BRANCH in trm/config.py).
@@ -62,6 +62,22 @@ def last_by_source(metrics_csv: pathlib.Path) -> dict[str, float]:
     return {k: float(v) for k, v in last.items()}
 
 
+def latest_step(ckpts: pathlib.Path) -> int | None:
+    """The step dir the trainer would resume from, or None for a run with no checkpoint."""
+    steps = [int(d.name) for d in ckpts.iterdir() if d.is_dir() and d.name.isdigit()] if ckpts.is_dir() else []
+    return max(steps, default=None)
+
+
+def resume_env(ckpts: pathlib.Path, copy: pathlib.Path, env: dict) -> dict:
+    """`env` plus DATA_BRANCH=1 only when the trainer resumes from the branch copy itself.
+
+    The trainer re-branches the data stream on every restore under DATA_BRANCH, so a
+    relaunch from a later checkpoint would replay the rows the arm already trained on and
+    unmatch the pair; that checkpoint already holds the arm's own stream (#489).
+    """
+    return {**env, "DATA_BRANCH": "1"} if latest_step(ckpts) == int(copy.name) else env
+
+
 def train(run_dir: pathlib.Path, env: dict, final: pathlib.Path) -> None:
     """Resume the trainer in `run_dir` and stop it once the final step's checkpoint exists."""
     log = (run_dir / "train.log").open("a")
@@ -106,7 +122,6 @@ def main(argv=None) -> int:
         "PYTHONPATH": str(REPO),
         "PYTHONUNBUFFERED": "1",  # train.log is read live; a ~10 h arm must not buffer it
         "DATA_MIXTURE": args.mixture,
-        "DATA_BRANCH": "1",
         "DATA_SEED": str(args.seed), "MODEL_SEED": str(args.seed),
         "TRAIN_TOKEN_BUDGET": str(args.stop_step * TOKENS_PER_OPT_STEP),
         "LR_SCHEDULE": "wsd",
@@ -118,10 +133,10 @@ def main(argv=None) -> int:
         if not final.is_dir():
             # Orbax finds a step by its dir name, so the copy is named by the step it holds.
             copy = ckpts / step_name(args.branch_step, ACCUMULATION_STEPS)
-            if not copy.exists():
+            if latest_step(ckpts) is None:
                 ckpts.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(args.branch_from, copy)
-            train(run_dir, env, final)
+            train(run_dir, resume_env(ckpts, copy, env), final)
         subprocess.run([sys.executable, "-m", "instruments.yardstick.eval_yardstick", "--arch", "plain",
                         "--checkpoint-path", str(ckpts), "--step", final.name,
                         "--fineweb-tokens", str(args.fineweb_tokens), "--json-out", str(scored)],

@@ -411,6 +411,14 @@ class Config(BaseSettings):
     # anything this card can train.
     MILESTONE_MAX_COUNT: int = 16
 
+    # ── The cold tier (the supervisor's, #458; trm/runtime/cold.py) ───────────
+    # With COLD_ROOT set, the SSD is kept at least this free by removing milestones
+    # whose byte-identical copy is on the HDD; the owner's "margin of error, not a
+    # rule" (2026-09-20). It sits well above the supervisor's mid-run KILLED_DISK
+    # floor (the next checkpoint write plus 2GB, ~4.6GB at dim 960), so pruning acts
+    # long before that stop would, and equals the launch precheck's min_free_gb.
+    SSD_KEEP_FREE_GB: float = 20.0
+
     # ── f16 margin alarms (the supervisor's, #368) ────────────────────────────
     # Crossing one is an alarm, announced and recorded, never a kill: a margin is a
     # warning of the failure #235 found only after a 10-day run (the champion finished
@@ -435,7 +443,9 @@ class Config(BaseSettings):
 # Where things are, not how the run trains: machine-local paths, usually from the
 # repo's .env, which the entry points load at run time (after this module's import),
 # so they are read when asked for rather than frozen into CONFIG.
-LOCATIONS = ("DATA_ROOT", "CHECKPOINT_ROOT")
+# COLD_ROOT is the HDD directory runs mirror to (trm/runtime/cold.py); unset, nothing
+# leaves the SSD.
+LOCATIONS = ("DATA_ROOT", "CHECKPOINT_ROOT", "COLD_ROOT")
 
 
 def location(name, default=None, environ=os.environ):
