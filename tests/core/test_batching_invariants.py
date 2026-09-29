@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 
 from trm.runtime import checkpoints
+from trm.runtime.monitor import LossMonitor
+from trm.runtime.resume_state import ResumeState
 
 from trm import config
 
@@ -136,11 +138,12 @@ def test_samples_seen_is_counted_not_derived():
     """The consumed-sample counter must accumulate actual batch rows. Deriving it
     at save time as step x BATCH_SIZE is wrong for the one run that needs it: a
     resume whose history spans two different batch sizes."""
-    # _monitor_state builds the JSON side of every save — full state and
-    # weights-only milestones alike (#394).
-    save_src = inspect.getsource(checkpoints._monitor_state)
-    assert '"samples_seen": monitor.samples_seen' in save_src
-    assert "step * BATCH_SIZE" not in save_src
+    # ResumeState.of builds the JSON side of every save — full state and
+    # weights-only milestones alike (#394, #477).
+    save_src = inspect.getsource(ResumeState.of)
+    assert "samples_seen=monitor.samples_seen" in save_src
+    assert "BATCH_SIZE" not in save_src
+    assert "ResumeState.of(monitor, run_id)" in inspect.getsource(checkpoints._monitor_state)
     assert "_monitor_state(monitor, run_id)" in inspect.getsource(checkpoints.save_checkpoint)
     assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
 
@@ -148,5 +151,9 @@ def test_samples_seen_is_counted_not_derived():
 def test_pre_24_checkpoints_resume_exactly():
     """A checkpoint with no samples_seen was written at BATCH_SIZE=1, so one
     sample per micro-step is its exact position — not an approximation."""
-    restore_src = inspect.getsource(checkpoints.load_or_create_checkpoint)
-    assert 'm_state.get("samples_seen", restored["step"])' in restore_src
+    pre_24 = {"run_id": "r", "ce_history": [], "best_ce": 3.0, "best_loss": 3.0,
+              "best_avg_ce": 3.0, "last_improvement_step": 0}
+    monitor = LossMonitor()
+    ResumeState.load(pre_24, "a pre-#24 checkpoint").restore(monitor, micro_step=1000)
+    assert monitor.samples_seen == 1000
+    assert "micro_step=restored[\"step\"]" in inspect.getsource(checkpoints.load_or_create_checkpoint)
