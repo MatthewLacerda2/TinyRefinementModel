@@ -19,21 +19,25 @@ from trm.model.rope import rope_tables, apply_rope
 
 
 class CausalAttention(nnx.Module):
-    """Multi-head self-attention, RoPE, causal mask folded into an additive bias."""
+    """Multi-head self-attention, causal mask folded into an additive bias.
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32):
+    `rope` rotates q and k by position; without it (NoPE, #444) the causal mask is the
+    only thing that tells one position from another."""
+
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, rope=True):
         assert dim % num_heads == 0, "dim must divide num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        assert self.head_dim % 2 == 0, "head_dim must be even for RoPE"
+        self.rope = rope
         self.q = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.k = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.v = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.o = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
-        cos, sin = rope_tables(max_pos, self.head_dim)
-        self.cos, self.sin = cos, sin
+        if rope:
+            assert self.head_dim % 2 == 0, "head_dim must be even for RoPE"
+            self.cos, self.sin = rope_tables(max_pos, self.head_dim)
 
     def __call__(self, x, pad_bias=None):
         b, s, d = x.shape
@@ -41,10 +45,11 @@ class CausalAttention(nnx.Module):
         k = self.k_norm(self.k(x).reshape(b, s, self.num_heads, self.head_dim))
         v = self.v(x).reshape(b, s, self.num_heads, self.head_dim)
 
-        cos = self.cos[:s, None, :]
-        sin = self.sin[:s, None, :]
-        q = apply_rope(q, cos, sin)
-        k = apply_rope(k, cos, sin)
+        if self.rope:
+            cos = self.cos[:s, None, :]
+            sin = self.sin[:s, None, :]
+            q = apply_rope(q, cos, sin)
+            k = apply_rope(k, cos, sin)
 
         # q_norm/k_norm run in f32 for stability, so q/k come out f32 while v is in
         # the compute dtype. Cast q/k back so all three match (dot_product_attention
@@ -70,8 +75,8 @@ class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
     def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32,
-                 post_norm=False):
-        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
+                 post_norm=False, rope=True):
+        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, rope=rope)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         # Post-norm on each residual branch (#235). norm1/norm2 bound the branch

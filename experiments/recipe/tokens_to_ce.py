@@ -129,7 +129,7 @@ def main(argv=None) -> int:
     ap.add_argument("--peak-lr", type=float, default=None,
                     help="PEAK_LR: the value the cosine warms up to (#287). The whole schedule "
                          "scales with it (init = peak/10, end = peak/100), so a sweep moves one "
-                         "variable — the LR scale — not three. Unset leaves the shipped 1e-4.")
+                         "variable — the LR scale — not three. Unset: the Config default.")
     ap.add_argument("--val-every", type=int, default=16,
                     help="VAL_EVERY_OPT_STEPS. The metric cannot resolve finer than this: every "
                          "seed inside one probe interval reports the same token count, which is "
@@ -138,12 +138,12 @@ def main(argv=None) -> int:
                     help="PLAIN_LAYERS for this arm (#385), overriding the spec's env. Unset: the env's.")
     ap.add_argument("--batch", type=int, default=None,
                     help="BATCH_SIZE (#385): micro-batch rows; accumulation follows so tokens per "
-                         "opt step stay fixed. Unset: 1.")
+                         "opt step stay fixed. Unset: the Config default.")
     ap.add_argument("--lr-schedule", choices=("cosine", "wsd"), default=None,
-                    help="LR_SCHEDULE (#386): the cosine, or warmup-stable-decay. Unset: cosine.")
+                    help="LR_SCHEDULE (#386): the cosine, or warmup-stable-decay. Unset: the Config default.")
     ap.add_argument("--pad-token-id", type=int, default=None,
                     help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
-                         "Unset leaves the historical 50256.")
+                         "Unset: the Config default.")
     ap.add_argument("--set", action="append", default=[], metavar="KNOB=VALUE",
                     help="any other knob (a trm.settings.Config field) for this arm, e.g. ADAM_B2=0.95 "
                          "(#359). Repeatable. A name that is not a knob is refused, so a typo "

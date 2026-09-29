@@ -74,6 +74,14 @@ def test_a_plain_resume_with_a_different_layer_count_refuses(tmp_path):
     assert _resume_with(tmp_path, PLAIN_LAYERS=PLAIN.PLAIN_LAYERS + 1) == "refused"
 
 
+def test_a_plain_resume_that_switches_position_encoding_refuses(tmp_path):
+    """#444: NoPE adds and removes no parameter, so the param tree alone does not tell
+    the arms apart; the restore would refuse later, on RoPE's saved tables, with a far
+    less readable orbax error. This refuses first, naming the knob."""
+    other = "nope" if PLAIN.POSITION_ENCODING == "rope" else "rope"
+    assert _resume_with(tmp_path, POSITION_ENCODING=other) == "refused"
+
+
 def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch):
     """#324: a library method raises; the message names the mismatch and the ways out,
     and a string SystemExit left uncaught still exits the trainer with code 1."""

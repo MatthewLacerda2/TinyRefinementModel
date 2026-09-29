@@ -14,6 +14,7 @@ from trm.settings import CONFIG, DEFAULT_DATA_MIXTURE, Config
 TODAYS_DEFAULTS = {
     "FORCE_F32_COMPUTE": False,
     "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15, "MODEL_ARCH": "plain",
+    "POSITION_ENCODING": "rope",
     "POST_NORM": False, "PLAIN_LAYERS": 8,
     "TIME_SIGNAL": "sinusoidal", "REFINER_ENCODER_LAYERS": 7, "INFERENCE_DEPTH": 6,
     "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 16.666667,
@@ -69,12 +70,24 @@ def test_flags():
     ("MODEL_ARCH", "refnier"), ("TIME_SIGNAL", "sinsuoidal"), ("TRM_OPTIMIZER", "adam"),
     ("LR_SCHEDULE", "linear"), ("BATCH_SIZE", "3"), ("BATCH_SIZE", "0"), ("PAD_TOKEN_ID", "0"),
     ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"), ("MILESTONE_SCORERS", "0"),
+    ("POSITION_ENCODING", "none"),
 ])
 def test_a_bad_knob_refuses_to_start_and_says_which(knob, value):
     """Fail closed (#104): a typo must not silently train a different run."""
     with pytest.raises(SystemExit) as refused:
         Config.from_env({knob: value})
     assert f"{knob}={value!r}" in str(refused.value.code)
+
+
+@pytest.mark.parametrize("arch", ["refiner", "reasoner"])
+def test_nope_refuses_an_arch_that_would_ignore_it(arch):
+    """#444: only the plain stack reads POSITION_ENCODING. A refiner launched with
+    "nope" would train RoPE under a record that says otherwise."""
+    with pytest.raises(SystemExit) as refused:
+        Config.from_env({"MODEL_ARCH": arch, "POSITION_ENCODING": "nope"})
+    assert "POSITION_ENCODING='nope'" in str(refused.value.code)
+    assert Config.from_env({"MODEL_ARCH": arch}).POSITION_ENCODING == "rope"
+    assert Config.from_env({"POSITION_ENCODING": "nope"}).POSITION_ENCODING == "nope"
 
 
 def test_every_bad_knob_is_named_at_once():

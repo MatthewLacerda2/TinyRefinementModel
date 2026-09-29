@@ -184,7 +184,7 @@ def _weights_sha(checkpoints_dir) -> tuple[str, str]:
 # its card. An arch the run did not record gets every key, since any of them may apply.
 _COMMON_CARD_KEYS = ["LATENT_DIM", "NUM_HEADS", "MAX_SEQ_LEN", "BATCH_SIZE", "ACCUMULATION_STEPS", "DECAY_STEPS"]
 _ARCH_CARD_KEYS = {
-    "plain": ["PLAIN_LAYERS"],
+    "plain": ["PLAIN_LAYERS", "POSITION_ENCODING"],
     "refiner": ["REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL"],
     "reasoner": ["NUM_BLOCKS", "MAX_STEPS_LIMIT"],
 }
