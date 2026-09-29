@@ -223,6 +223,22 @@ def test_pruning_stops_at_the_margin(ssd):
     assert [p.name for p in finalized_steps(tier.run_dir / "checkpoints" / MILESTONE_SUBDIR)] == ["243", "487"]
 
 
+def test_a_milestone_the_caller_keeps_survives_a_prune_under_the_margin(ssd):
+    """The pass bar of #515, at the tier: a mirrored milestone still owed a score stays;
+    a mirrored one not kept goes. The hold is said once, not every poll."""
+    free = [100.0]
+    tier = _tier(ssd, free=lambda: free[0])
+    tier.tick(final=True)  # mirrors all four with room to spare
+    free[0] = 1.0
+    keep = frozenset({"60", "243"})
+    first = tier.prune(keep)
+    again = tier.prune(keep)
+
+    assert [p.name for p in finalized_steps(tier.run_dir / "checkpoints" / MILESTONE_SUBDIR)] == ["60", "243", "487"]
+    assert sum("stays on the SSD" in line for line in first) == 2
+    assert not any("stays on the SSD" in line for line in again)
+
+
 def test_nothing_is_pruned_while_the_cold_root_is_gone(ssd):
     tier = _tier(ssd, free=lambda: 1.0)
     tier.tick()
@@ -333,3 +349,45 @@ def test_an_unmounted_cold_tier_is_announced_once_and_the_run_goes_on(ssd):
     sup, reported = _supervised(ssd, _tier(ssd))
     assert sup.run() == BUDGET_COMPLETE
     assert sum("cold tier" in line for line in reported) == 1, reported
+
+
+def _scored_run_supervisor(root, tier, spec):
+    from trm.runtime.supervisor import Limits, Supervisor
+    from trm.settings import Config
+
+    return Supervisor(command=(), limits=Limits(stop_step=1), log_path=root / "t.log",
+                      metrics_csv=tier.run_dir / "metrics.csv", config=Config.from_env({}),
+                      report=lambda m: None, cold=tier, spec=spec)
+
+
+def test_the_supervisor_keeps_every_milestone_still_owed_a_score(ssd):
+    """The pass bar of #515, end to end: under the margin, a mirrored milestone with no
+    score in the journal (queued, claimed or failed) survives the tick; a scored,
+    unclaimed one is removed. Its scorer reads the SSD copy, so a pruned one would
+    never be scored, and the run's end would not name it."""
+    from trm.runtime.layout import YARDSTICK_JOURNAL
+
+    free = [100.0]
+    tier = _tier(ssd, free=lambda: free[0])
+    tier.tick(final=True)
+    (tier.run_dir / YARDSTICK_JOURNAL).write_text(
+        json.dumps({"source": "milestone", "step": 60, "lambada_acc": 0.1}) + "\n"
+        + json.dumps({"source": "milestone", "step": 243, "error": "killed"}) + "\n")
+    sup = _scored_run_supervisor(ssd, tier, spec=ssd / "spec.toml")
+    free[0] = 1.0
+    sup.tend_cold_tier()
+
+    assert sup.owed_milestones() == {"121", "243", "487"}
+    assert [p.name for p in finalized_steps(tier.run_dir / "checkpoints" / MILESTONE_SUBDIR)] == ["121", "243", "487"]
+
+
+def test_a_run_nobody_scores_owes_nothing_and_prunes_as_before(ssd):
+    free = [100.0]
+    tier = _tier(ssd, free=lambda: free[0])
+    tier.tick(final=True)
+    sup = _scored_run_supervisor(ssd, tier, spec=None)
+    free[0] = 1.0
+    sup.tend_cold_tier()
+
+    assert sup.owed_milestones() == frozenset()
+    assert [p.name for p in finalized_steps(tier.run_dir / "checkpoints" / MILESTONE_SUBDIR)] == ["487"]
