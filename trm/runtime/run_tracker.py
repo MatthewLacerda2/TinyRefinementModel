@@ -5,8 +5,8 @@ import time
 import datetime
 import subprocess
 
-from trm.config import CONFIG, MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
-from trm.train.schedules import CURRICULUM_STEPS, DECAY_STEPS
+from trm.config import MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
+from trm.train.schedules import Schedules
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -20,7 +20,12 @@ TREE_KEYS = {
 }
 
 class RunTracker:
-    def __init__(self, runs_root="runs"):
+    """A run's folder and its run_metadata.json. `config` is the run's Config, the one
+    the trainer is handed (#475): what the metadata records and what a resume is
+    checked against."""
+
+    def __init__(self, config, runs_root="runs"):
+        self.config = config
         self.runs_root = runs_root
         self.run_id = None
         self.run_dir = None
@@ -55,7 +60,7 @@ class RunTracker:
         return metadata
 
     @staticmethod
-    def capture_environment_snapshot(run_dir):
+    def capture_environment_snapshot(run_dir, model_arch):
         """Freeze everything a revival (instruments.timemachine) needs beyond the commit
         SHA: the dirty working tree, the pinned Python libs, and the host it assumed.
 
@@ -83,7 +88,7 @@ class RunTracker:
         #    surface (driver is a shared passthrough) but invaluable for debugging a
         #    failed revival. MODEL_ARCH also rides in run_metadata.json, machine-readable.
         lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}",
-                 f"MODEL_ARCH {CONFIG.MODEL_ARCH}"]
+                 f"MODEL_ARCH {model_arch}"]
         try:
             smi = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version,name",
@@ -129,12 +134,13 @@ class RunTracker:
             print(f"⚠️ Could not list untracked files ({e}).")
 
     @staticmethod
-    def get_hyperparameters():
-        """What run_metadata.json records as the run's parameters: every knob the launch
-        read, whole (trm.settings.Config, so none can be left out: #358, #475), plus
-        what a reader cannot recover from the knobs alone."""
+    def get_hyperparameters(config):
+        """What run_metadata.json records as the run's parameters: every knob of its
+        Config, whole (so none can be left out: #358, #475), plus what a reader cannot
+        recover from the knobs alone."""
+        schedules = Schedules.of(config)
         return {
-            **CONFIG.model_dump(),
+            **config.model_dump(),
             # Constants, not knobs, that shape a retired arch's param tree (TREE_KEYS).
             "VOCAB_SIZE": VOCAB_SIZE,
             "NUM_BLOCKS": NUM_BLOCKS,
@@ -142,8 +148,8 @@ class RunTracker:
             "MAX_STEPS_LIMIT": MAX_STEPS_LIMIT,
             # The horizons resolved from the budget: the LR anneal's (#83) and the
             # mixture ramp's (#362). A resume checks the first against the run's (#197).
-            "DECAY_STEPS": DECAY_STEPS,
-            "CURRICULUM_STEPS": CURRICULUM_STEPS,
+            "DECAY_STEPS": schedules.decay_steps,
+            "CURRICULUM_STEPS": schedules.curriculum_steps,
         }
 
     def _check_compatibility(self, metadata_path):
@@ -155,7 +161,7 @@ class RunTracker:
                 old_meta = json.load(f)
 
             old_params = old_meta.get("parameters", {})
-            current_params = self.get_hyperparameters()
+            current_params = self.get_hyperparameters(self.config)
 
             # A key the run's metadata predates is skipped, not refused.
             mismatches = [
@@ -194,7 +200,7 @@ class RunTracker:
             "git_commit": git_meta["commit"],
             "git_branch": git_meta["branch"],
             "git_dirty": git_meta["dirty"],
-            "parameters": self.get_hyperparameters(),
+            "parameters": self.get_hyperparameters(self.config),
             "sections": [],
         }
 
@@ -218,7 +224,7 @@ class RunTracker:
             metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = 0
             self.save_metadata(metadata)
-            self.capture_environment_snapshot(self.run_dir)
+            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
             print(f"📁 Created new training run folder: {self.run_dir}")
         else:
             # Resume existing run
@@ -247,7 +253,7 @@ class RunTracker:
             self.save_metadata(metadata)
             # Snapshot on resume too (#173): each session describes its own commit
             # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
-            self.capture_environment_snapshot(self.run_dir)
+            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 
         return self.run_id

@@ -10,6 +10,7 @@ of them to the library again, and pin the values to what every run so far used.
 import optax
 
 import trm.config as config
+from trm.settings import CONFIG
 from trm.train import optimizers
 
 
@@ -27,7 +28,7 @@ def _captured(monkeypatch, target, name):
 
 def test_adamw_gets_every_knob_by_name(monkeypatch):
     calls = _captured(monkeypatch, optax, "adamw")
-    optimizers._adamw(1e-4)
+    optimizers._adamw(CONFIG, 1e-4)
 
     (kwargs,) = calls
     assert (kwargs["b1"], kwargs["b2"], kwargs["eps"]) == (config.ADAM_B1, config.ADAM_B2, config.ADAM_EPS)
@@ -36,7 +37,7 @@ def test_adamw_gets_every_knob_by_name(monkeypatch):
 
 def test_muon_gets_every_knob_by_name(monkeypatch):
     calls = _captured(monkeypatch, optax.contrib, "scale_by_muon")
-    optimizers._muon(lambda step: 1e-4)
+    optimizers._muon(CONFIG, lambda step: 1e-4)
 
     (kwargs,) = calls
     for knob, value in (("ns_steps", config.MUON_NS_STEPS), ("beta", config.MUON_BETA),
@@ -59,7 +60,7 @@ def test_the_run_records_every_knob():
     the optimizer needs."""
     from trm.runtime.run_tracker import RunTracker
 
-    recorded = RunTracker.get_hyperparameters()
+    recorded = RunTracker.get_hyperparameters(CONFIG)
     for knob in ("ADAM_B1", "ADAM_B2", "ADAM_EPS", "WEIGHT_DECAY", "CLIP_NORM",
                  "MUON_BETA", "MUON_NS_STEPS", "MUON_EPS", "MUON_NESTEROV"):
         assert recorded[knob] == getattr(config, knob), knob
@@ -74,5 +75,5 @@ def test_the_loss_scaler_growth_interval_is_named_and_unchanged():
     from trm.train import loss_scale, trainer
 
     assert config.LOSS_SCALE_GROWTH_INTERVAL == 256 == loss_scale.LOSS_SCALE_GROWTH_INTERVAL
-    assert "DynamicLossScale(growth_interval=LOSS_SCALE_GROWTH_INTERVAL)" in inspect.getsource(trainer)
-    assert RunTracker.get_hyperparameters()["LOSS_SCALE_GROWTH_INTERVAL"] == 256
+    assert "DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL)" in inspect.getsource(trainer)
+    assert RunTracker.get_hyperparameters(CONFIG)["LOSS_SCALE_GROWTH_INTERVAL"] == 256

@@ -113,7 +113,7 @@ def test_resume_skip_scales_with_batch_size(batch_size):
 def test_resume_skip_without_the_batch_factor_under_skips():
     """The exact defect, stated: counting micro-steps as samples. It re-feeds the
     model 1/BATCH_SIZE of its own history, and nothing crashes."""
-    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS))
+    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=BATCH_SIZE))
     buggy = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=1))
     assert correct == pytest.approx(buggy * BATCH_SIZE, rel=0.01)
     if BATCH_SIZE > 1:

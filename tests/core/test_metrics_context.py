@@ -13,7 +13,11 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 
 from trm.runtime.metrics import MetricsLogger
-from trm.train.trainer import PRETRAIN_SOURCES, mixture_label
+from trm.settings import CONFIG
+from trm.train.schedules import Schedules
+from trm.train.trainer import mixture_label
+
+PRETRAIN_SOURCES = Schedules.of(CONFIG).sources
 
 
 def _log_one(tmp_path, **overrides):
@@ -81,8 +85,7 @@ def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
 
 
 def test_the_mixture_label_covers_every_source_the_mixer_serves():
-    from trm.train.schedules import CURRICULUM_START_WEIGHTS
-    assert len(PRETRAIN_SOURCES) == len(CURRICULUM_START_WEIGHTS)
+    assert len(PRETRAIN_SOURCES) == len(Schedules.of(CONFIG).start_weights)
 
 
 def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):

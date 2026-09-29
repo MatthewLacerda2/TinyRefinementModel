@@ -16,6 +16,6 @@ def test_seeds_default_and_override(import_config_under):
 
 def test_seeds_recorded_in_run_metadata():
     from trm.runtime.run_tracker import RunTracker
-    params = RunTracker().get_hyperparameters()
-    assert params["MODEL_SEED"] == 42
-    assert params["DATA_SEED"] == 42
+    from trm.settings import Config
+    params = RunTracker.get_hyperparameters(Config.from_env({"MODEL_SEED": "7", "DATA_SEED": "1234"}))
+    assert (params["MODEL_SEED"], params["DATA_SEED"]) == (7, 1234)
