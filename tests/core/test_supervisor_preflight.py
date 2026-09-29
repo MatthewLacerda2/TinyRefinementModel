@@ -313,6 +313,38 @@ def test_a_budget_run_whose_trainer_would_not_die_is_not_scored_on_its_card(tmp_
     assert code == 1
 
 
+def test_the_final_yardstick_scores_while_the_lock_still_names_this_supervisor(tmp_path, monkeypatch):
+    """#523: the full-set score runs on the card. Released before it, the lock read
+    free for those minutes and a second job could launch onto the card beside it."""
+    lock_path = tmp_path / "gpu.lock"
+    calls = []
+
+    class Stub:
+        survivor = None
+
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            return sup_mod.BUDGET_COMPLETE
+
+        def announce(self, text):
+            pass
+
+    def instrument(cmd, **kw):
+        calls.append(cmd[3])
+        assert GpuLock(lock_path).holder()[0] == os.getpid(), f"{cmd[3]} ran on a card the lock calls free"
+        return subprocess.CompletedProcess(cmd, 0, stdout="KEEP\n", stderr="")
+    monkeypatch.setattr(sup_mod, "Supervisor", Stub)
+    monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
+    monkeypatch.setattr(sup_mod.subprocess, "run", instrument)
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0", "--skip-fit-gate", "--spec", str(tmp_path / "spec.toml")])
+    assert code == 0
+    assert calls == ["score", "verdict", "card"]
+    assert not lock_path.exists(), "and it is released once the yardstick is done"
+
+
 # --- an abnormal supervisor exit never leaves its trainer under a free card (#516) ---
 
 def _main_argv(tmp_path):
