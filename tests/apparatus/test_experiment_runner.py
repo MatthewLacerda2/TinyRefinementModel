@@ -656,3 +656,29 @@ def test_a_cpu_only_spec_can_say_so(tmp_path, monkeypatch, card_lock):
 
     assert experiment.main([str(spec_path), "--no-gate", "--no-gpu-lock"]) == 0
     assert lock.read_text().startswith(str(os.getpid())), "and it leaves the holder alone"
+
+
+# --- the OOM rerun (#524) lives at the command line, never in main() ------------
+
+def test_main_never_reruns_itself_under_systemd(tmp_path, monkeypatch):
+    """Tests call main() in-process; a rerun there would escape their fixtures onto the
+    real card lock and runs/ on a box whose shell sits at oom_score_adj 200."""
+    def escape(*a, **k):
+        raise AssertionError("main() must not rerun itself")
+    monkeypatch.setattr(experiment, "rerun_protected", escape)
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+
+
+def test_the_command_line_reruns_protected_and_returns_its_exit(monkeypatch):
+    seen = []
+    monkeypatch.setattr(experiment, "rerun_protected", lambda argv, *a, **k: seen.append(argv) or 7)
+    monkeypatch.setattr(experiment, "main", lambda argv: pytest.fail("the rerun does the sweep"))
+    monkeypatch.setattr(experiment.sys, "argv", ["experiment.py", "spec.toml"])
+    assert experiment.cli() == 7
+    assert seen == [[experiment.sys.executable, "-m", "instruments.experiment", "spec.toml"]]
+    monkeypatch.setattr(experiment, "main", lambda argv: 0)
+    monkeypatch.setattr(experiment.sys, "argv", ["experiment.py", "spec.toml", "--dry-run"])
+    assert experiment.cli() == 0 and len(seen) == 1, "a dry run launches nothing, so it needs no rerun"

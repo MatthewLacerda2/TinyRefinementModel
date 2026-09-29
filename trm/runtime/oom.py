@@ -49,7 +49,9 @@ def user_manager_problem() -> str | None:
                                text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return f"systemctl --user did not answer ({exc})"
-    return None if state in ("running", "degraded") else f"systemd --user is {state or 'unreachable'}"
+    # "starting" too: the boot-time resume (#384) runs inside a oneshot whose own start
+    # job holds the manager there, and it can start units all the same.
+    return None if state in ("running", "degraded", "starting") else f"systemd --user is {state or 'unreachable'}"
 
 
 def systemd_run(argv: list[str], env: dict[str, str], cwd: pathlib.Path, unit: str, *,

@@ -580,14 +580,6 @@ def main(argv=None) -> int:
                   f"{holder[1] or 'unlabelled'})")
         return 0
 
-    # Arms started from a Claude shell inherit oom_score_adj 200 and are the kernel's
-    # first OOM victim (#524): the whole sweep reruns under the user manager at 100.
-    rerun = rerun_protected([sys.executable, "-m", "instruments.experiment",
-                             *(sys.argv[1:] if argv is None else argv)],
-                            dict(os.environ), REPO_ROOT, label=spec.id)
-    if rerun is not None:
-        return rerun
-
     if not args.no_gate:
         run_gate(REPO_ROOT)
 
@@ -620,5 +612,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def cli() -> int:
+    """The command line. Arms started from a Claude shell inherit oom_score_adj 200 and
+    are the kernel's first OOM victim (#524), so a sweep first reruns itself under the
+    user manager at 100. Here and not in main(), which tests call in-process: a rerun
+    there would escape their fixtures onto the real card lock and runs/."""
+    argv = sys.argv[1:]
+    if not {"--dry-run", "--new", "-h", "--help"} & set(argv):
+        rerun = rerun_protected([sys.executable, "-m", "instruments.experiment", *argv],
+                                dict(os.environ), pathlib.Path.cwd(), label="experiment")
+        if rerun is not None:
+            return rerun
+    return main(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())
