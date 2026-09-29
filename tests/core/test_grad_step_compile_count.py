@@ -44,7 +44,7 @@ class _CountingPlain(PlainTransformer):
 @pytest.fixture
 def plain():
     TRACES.clear()
-    return _CountingPlain(32, nnx.Rngs(0), vocab_size=37, num_heads=4, num_layers=1,
+    return _CountingPlain(32, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4, num_layers=1,
                           max_seq_len=MAX_SEQ_LEN, pad_token_id=36)
 
 
