@@ -268,9 +268,10 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
     started = time.time()
     captured: list[str] = []
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    proc = None
     try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
         if card is not None:
             card.name_child(proc.pid)
         for line in proc.stdout:
@@ -278,7 +279,7 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
             sys.stdout.write(line)
         proc.wait()
     except BaseException:
-        if not stop_arm(proc) and card is not None:
+        if proc is not None and not stop_arm(proc) and card is not None:
             print(f"⚠ pid {proc.pid} is still alive after SIGKILL; the GPU lock is left to it",
                   file=sys.stderr, flush=True)
             card.leave_to(proc.pid)

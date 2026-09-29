@@ -708,7 +708,8 @@ def _runner_with_an_arm(tmp_path, card_lock):
         if "\nchild " in text:
             return proc, int(text.split("\nchild ")[1].split()[0])
         time.sleep(0.1)
-    proc.kill()
+    proc.terminate()  # the runner stops whatever arm it did launch
+    proc.wait(timeout=120)
     raise AssertionError("the runner never named its arm in the lock")
 
 
