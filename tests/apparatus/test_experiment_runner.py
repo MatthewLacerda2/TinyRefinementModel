@@ -658,6 +658,101 @@ def test_a_cpu_only_spec_can_say_so(tmp_path, monkeypatch, card_lock):
     assert lock.read_text().startswith(str(os.getpid())), "and it leaves the holder alone"
 
 
+# --- a runner that goes down mid-arm never leaves the arm under a free card (#519) ---
+
+_RUNNER_SCRIPT = """
+import pathlib, sys
+from instruments import experiment
+from trm.runtime.gpu_lock import GpuLock
+experiment.GpuLock = lambda label="": GpuLock(pathlib.Path({lock!r}), label)
+experiment.RUNS_DIR = pathlib.Path({runs!r})
+sys.exit(experiment.main([{spec!r}, "--no-gate"]))
+"""
+
+
+def _gone(pid):
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    # A zombie still answers kill(0); it is off the card all the same.
+    try:
+        return pathlib.Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] == "Z"
+    except FileNotFoundError:
+        return True
+
+
+def _runner_with_an_arm(tmp_path, card_lock):
+    """(a real runner process, the pid of the arm it launched and named in the lock)."""
+    import os
+    import subprocess
+    import time
+
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time; time.sleep(600)\n")
+    spec_path = write_spec(tmp_path, textwrap.dedent(f"""
+        [execution]
+        command = ["{sys.executable}", "{sleeper}"]
+        seeds = [0]
+        seed_flag = "--seed"
+    """))
+    script = tmp_path / "run.py"
+    script.write_text(_RUNNER_SCRIPT.format(lock=str(card_lock), runs=str(tmp_path / "runs"), spec=str(spec_path)))
+    proc = subprocess.Popen([sys.executable, str(script)], cwd=REPO_ROOT,
+                            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        text = card_lock.read_text() if card_lock.exists() else ""
+        if "\nchild " in text:
+            return proc, int(text.split("\nchild ")[1].split()[0])
+        time.sleep(0.1)
+    proc.terminate()  # the runner stops whatever arm it did launch
+    proc.wait(timeout=120)
+    raise AssertionError("the runner never named its arm in the lock")
+
+
+def _clean_up(runner, arm):
+    import os
+    import signal
+    runner.kill()
+    runner.wait()
+    if not _gone(arm):
+        os.kill(arm, signal.SIGKILL)
+
+
+def test_a_runner_killed_outright_leaves_the_card_to_its_arm(tmp_path, card_lock):
+    """SIGKILL runs no handler: the arm keeps training, and the lock names it, so
+    nothing launches beside it while it lives."""
+    from trm.runtime.gpu_lock import GpuLock, Preflight
+
+    runner, arm = _runner_with_an_arm(tmp_path, card_lock)
+    try:
+        runner.kill()
+        runner.wait(timeout=30)
+        assert not _gone(arm), "the orphaned arm is still on the card"
+        with pytest.raises(Preflight, match=rf"held by pid {arm} \(child of dead pid {runner.pid}"):
+            GpuLock(card_lock, label="next").acquire()
+    finally:
+        _clean_up(runner, arm)
+
+
+def test_a_sigterm_to_the_runner_stops_its_arm_and_frees_the_card(tmp_path, card_lock):
+    """Python's default TERM ran no `finally`: the lock stayed naming a dead pid and
+    the next acquire took it over beside an arm still training."""
+    import signal
+
+    runner, arm = _runner_with_an_arm(tmp_path, card_lock)
+    try:
+        runner.send_signal(signal.SIGTERM)
+        assert runner.wait(timeout=60) == 128 + signal.SIGTERM
+        assert _gone(arm), "the arm goes with its runner"
+        assert not card_lock.exists()
+    finally:
+        _clean_up(runner, arm)
+
+
 # --- the OOM rerun (#524) lives at the command line, never in main() ------------
 
 def test_main_never_reruns_itself_under_systemd(tmp_path, monkeypatch):
