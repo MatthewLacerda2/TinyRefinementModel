@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
-from trm.runtime.gpu_lock import GpuLock, Preflight
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
 from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
 from trm.runtime.rewind import unresumable  # jax-free
 from trm.settings import CONFIG, Config, location
@@ -917,16 +917,6 @@ def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path 
     return run_dir / "checkpoints"
 
 
-def exit_on_sigterm():
-    """Turn SIGTERM into SystemExit, so a supervisor stopped from outside unwinds:
-    run() stops its trainer and main() leaves the GPU lock right (#516). Returns the
-    handler it replaced. The trainer does the same (`exit_cleanly_on_sigterm`)."""
-    def _raise(signum, _frame):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: a second must not abort the stop
-        raise SystemExit(128 + signum)
-    return signal.signal(signal.SIGTERM, _raise)
-
-
 def _stamp() -> str:
     return datetime.datetime.now().strftime("%F %T")
 
@@ -1068,6 +1058,12 @@ def main(argv=None) -> int:
                   + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
                   flush=True)
         outcome = supervisor.run()
+        print(f"outcome: {outcome}")
+        if args.spec is not None and outcome == BUDGET_COMPLETE:
+            # Inside the try: the final yardstick runs on the card, so the lock is held
+            # through it and released after, never before (#523).
+            return final_yardstick(args, supervisor, outcome)
+        return 0 if outcome in DELIBERATE else 1
     except Preflight as exc:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
@@ -1080,31 +1076,34 @@ def main(argv=None) -> int:
             lock.release()
         signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
 
-    print(f"outcome: {outcome}")
-    if args.spec is not None and outcome == BUDGET_COMPLETE and supervisor.survivor is not None:
+
+def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
+    """Score a completed budget run's final checkpoint on the full LAMBADA set, then
+    judge it and draft its model card. Called while main() still holds the card."""
+    if supervisor.survivor is not None:
         print(f"yardstick skipped: pid {supervisor.survivor} outlived SIGKILL and still holds the card; "
               f"score the final checkpoint once it is gone", file=sys.stderr)
         return 1
-    if args.spec is not None and outcome == BUDGET_COMPLETE:
-        # The referee and the card live in instruments/, which trm/ never imports
-        # (tests/core/test_package_layout.py); they are run as commands.
-        def instrument(*what):
-            proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
-                                   "--spec", str(args.spec), "--run", str(args.run_dir)],
-                                  cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                                  capture_output=True, text=True)
-            return proc.returncode, (proc.stdout + proc.stderr).strip()
-        print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
-        code, out = instrument("score")
-        if code != 0:
-            print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
-            return 1
-        code, verdict_text = instrument("verdict")
-        supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
-        print(verdict_text)
-        code, card = instrument("card")
-        print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
-    return 0 if outcome in DELIBERATE else 1
+
+    # The referee and the card live in instruments/, which trm/ never imports
+    # (tests/core/test_package_layout.py); they are run as commands.
+    def instrument(*what):
+        proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
+                               "--spec", str(args.spec), "--run", str(args.run_dir)],
+                              cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                              capture_output=True, text=True)
+        return proc.returncode, (proc.stdout + proc.stderr).strip()
+    print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
+    code, out = instrument("score")
+    if code != 0:
+        print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
+        return 1
+    code, verdict_text = instrument("verdict")
+    supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
+    print(verdict_text)
+    code, card = instrument("card")
+    print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
+    return 0
 
 
 if __name__ == "__main__":
