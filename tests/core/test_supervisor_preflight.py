@@ -169,3 +169,143 @@ def test_the_checkpoint_dir_a_relaunch_resumes_is_read_from_the_trainer_args(tmp
     assert resumed_checkpoint_dir(["--checkpoint-path=runs/r/ck"], run) == sup_mod.REPO_ROOT / "runs/r/ck"
     assert resumed_checkpoint_dir([], run) == run / "checkpoints"
     assert resumed_checkpoint_dir(["--new-run", "--checkpoint-path", str(absolute)], run) is None
+
+
+# --- the lock is never released under a live trainer (#512) ---------------------
+
+def _gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+def test_giving_up_on_a_wedged_trainer_stops_it_first(tmp_path):
+    """The pass bar of #512: a child alive but stuck, with no relaunch left, is
+    GAVE_UP, and it is gone by then — even one that ignores SIGTERM."""
+    metrics = tmp_path / "metrics.csv"
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent(f"""
+        import pathlib, signal, time
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        pathlib.Path({str(metrics)!r}).write_text("step,ce\\n5,3.0\\n")
+        time.sleep(600)
+    """))
+    reported = []
+    sup = Supervisor(command=(sys.executable, str(child)), limits=Limits(stop_step=10_000, stall_polls=1, max_retries=0),
+                     log_path=tmp_path / "t.log", metrics_csv=metrics, config=Config.from_env({}),
+                     poll_seconds=0.2, report=reported.append, stop_grace_seconds=0.5)
+    pids = []
+    launch = sup.launch
+
+    def launch_and_note_pid():
+        proc = launch()
+        pids.append(proc.pid)
+        return proc
+    sup.launch = launch_and_note_pid
+
+    assert sup.run() == sup_mod.GAVE_UP
+    assert len(pids) == 1 and _gone(pids[0]), "the wedged trainer must not outlive the supervisor's verdict"
+    assert sup.survivor is None
+
+
+class _Unkillable:
+    """A child stuck in the driver: SIGTERM and SIGKILL both land, neither ends it."""
+    pid = 424242
+
+    def poll(self):
+        return None
+
+    def send_signal(self, sig):
+        pass
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        raise subprocess.TimeoutExpired("trainer", timeout)
+
+
+def _unkillable_supervisor(tmp_path, **limits):
+    reported = []
+    sup = Supervisor(command=(), limits=Limits(stop_step=10_000, **limits), log_path=tmp_path / "t.log",
+                     metrics_csv=tmp_path / "metrics.csv", config=Config.from_env({}), poll_seconds=0.01,
+                     report=reported.append, stop_grace_seconds=0, kill_wait_seconds=0)
+    return sup, reported
+
+
+def test_a_trainer_that_outlives_sigkill_is_named_not_forgotten(tmp_path):
+    sup, reported = _unkillable_supervisor(tmp_path)
+    assert sup.stop(_Unkillable()) is False
+    assert sup.survivor == _Unkillable.pid
+    assert any(f"pid {_Unkillable.pid} is still alive after SIGKILL" in line for line in reported)
+
+
+def test_a_restart_is_not_launched_beside_a_trainer_that_would_not_die(tmp_path):
+    """RESTART stops the wedged child and launches another; if the first will not go,
+    the second would only OOM on its card."""
+    sup, reported = _unkillable_supervisor(tmp_path, stall_polls=1, max_retries=2)
+    launches = []
+    sup.launch = lambda: launches.append(1) or _Unkillable()
+
+    assert sup.run() == sup_mod.GAVE_UP
+    assert launches == [1], "never a second trainer beside one still alive"
+    assert sup.survivor == _Unkillable.pid
+
+
+def test_a_lock_left_to_a_survivor_holds_the_card_until_it_dies(tmp_path):
+    path = tmp_path / "gpu.lock"
+    lock = GpuLock(path, label="run-a")
+    lock.acquire()
+    survivor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    try:
+        lock.leave_to(survivor.pid)
+        assert lock.holder()[0] == survivor.pid
+        with pytest.raises(Preflight, match=f"held by pid {survivor.pid}"):
+            GpuLock(path, label="run-b").acquire()
+    finally:
+        survivor.kill()
+        survivor.wait()
+    GpuLock(path, label="run-b").acquire()  # stale now, so taken over
+
+
+def test_main_leaves_the_lock_to_a_survivor_instead_of_releasing_it(tmp_path, monkeypatch):
+    lock_path = tmp_path / "gpu.lock"
+
+    class Stub:
+        survivor = 424242
+
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            return sup_mod.GAVE_UP
+
+    monkeypatch.setattr(sup_mod, "Supervisor", Stub)
+    monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0", "--skip-fit-gate"])
+    assert code == 1
+    assert GpuLock(lock_path).holder()[0] == Stub.survivor, "the card stays held by the trainer that would not die"
+
+
+def test_a_budget_run_whose_trainer_would_not_die_is_not_scored_on_its_card(tmp_path, monkeypatch):
+    """The final yardstick runs on the card; with the trainer still on it, it would
+    only fail. Skipped, said, and the exit is non-zero, as for a failed yardstick."""
+    class Stub:
+        survivor = 424242
+
+        def __init__(self, **kw):
+            pass
+
+        def run(self):
+            return sup_mod.BUDGET_COMPLETE
+
+    def no_instrument(*a, **k):
+        raise AssertionError("nothing may score onto a card a trainer still holds")
+    monkeypatch.setattr(sup_mod, "Supervisor", Stub)
+    monkeypatch.setattr(sup_mod.subprocess, "run", no_instrument)
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0", "--skip-fit-gate", "--no-gpu-lock", "--spec", str(tmp_path / "spec.toml")])
+    assert code == 1

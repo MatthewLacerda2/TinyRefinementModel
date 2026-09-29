@@ -71,6 +71,8 @@ def test_a_refused_gate_stops_the_launch_and_releases_the_card(tmp_path, monkeyp
     launched = []
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             pass
 
