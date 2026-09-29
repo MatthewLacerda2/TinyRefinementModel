@@ -47,6 +47,11 @@ a oneshot unit without it tears down its whole cgroup when ExecStart returns, ki
 the supervisor it just started. The unit then reports success while the run stays
 down, which is exactly what the power cut of 2026-09-24 produced.
 
+Both a launch and a resume start the supervisor through `trm.runtime.oom.detach`:
+under `systemd-run --user -p OOMScoreAdjust=100` where a user manager runs, so a run
+started from a Claude shell is not the kernel's first OOM victim (#524), and the
+banner prints the supervisor's `oom_score_adj`.
+
 The data position after a resume is an estimate (fine for a base run, not for a
 matched pair), and what a cut costs is the steps since the last checkpoint,
 CHECKPOINT_EVERY_OPT_STEPS at most.
@@ -68,6 +73,7 @@ from dataclasses import dataclass
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.run_budget import BUDGET_ENV
 from trm.runtime.gpu_lock import GpuLock
+from trm.runtime.oom import banner, detach
 from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
                                     read_progress)
 
@@ -194,10 +200,10 @@ def resume(active: pathlib.Path = ACTIVE_RUN) -> int:
     stamp = datetime.datetime.now().strftime("%F %T")
     with heartbeat.open("a") as fh:
         fh.write(f"{stamp} resumed after a reboot at opt step {step:,} (#384)\n")
-    with pathlib.Path(state["stdout_path"]).open("a") as out:
-        proc = subprocess.Popen(state["argv"], env={**os.environ, **state["env"]}, stdout=out,
-                                stderr=subprocess.STDOUT, cwd=RUNS_DIR.parent, start_new_session=True)
-    print(f"resume: {state['run_id']} from opt step {step:,}, supervisor pid {proc.pid}")
+    pid = detach(state["argv"], {**os.environ, **state["env"]}, RUNS_DIR.parent,
+                 pathlib.Path(state["stdout_path"]), label=state["run_id"])
+    print(f"resume: {state['run_id']} from opt step {step:,}, supervisor pid {pid}")
+    print(banner(pid))
     return 0
 
 
@@ -252,10 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"refusing to launch: {why}")
 
     p.stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with p.stdout_path.open("a") as out:
-        proc = subprocess.Popen(p.argv, env={**os.environ, **p.env}, stdout=out, stderr=subprocess.STDOUT,
-                                cwd=RUNS_DIR.parent, start_new_session=True)
-    print(f"launched:   supervisor pid {proc.pid}, detached")
+    pid = detach(p.argv, {**os.environ, **p.env}, RUNS_DIR.parent, p.stdout_path, label=p.run_id)
+    print(f"launched:   supervisor pid {pid}, detached")
+    print(banner(pid))
     ACTIVE_RUN.write_text(json.dumps({
         "run_id": p.run_id, "run_dir": str(p.run_dir), "stop_step": p.stop_step,
         "argv": p.argv, "env": p.env, "stdout_path": str(p.stdout_path),

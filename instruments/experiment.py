@@ -36,6 +36,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
 import signal
@@ -50,6 +51,7 @@ from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
 from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
+from trm.runtime.oom import rerun_protected
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -653,5 +655,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def cli() -> int:
+    """The command line. Arms started from a Claude shell inherit oom_score_adj 200 and
+    are the kernel's first OOM victim (#524), so a sweep first reruns itself under the
+    user manager at 100. Here and not in main(), which tests call in-process: a rerun
+    there would escape their fixtures onto the real card lock and runs/."""
+    argv = sys.argv[1:]
+    if not {"--dry-run", "--new", "-h", "--help"} & set(argv):
+        rerun = rerun_protected([sys.executable, "-m", "instruments.experiment", *argv],
+                                dict(os.environ), pathlib.Path.cwd(), label="experiment")
+        if rerun is not None:
+            return rerun
+    return main(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())
