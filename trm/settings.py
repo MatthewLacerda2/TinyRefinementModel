@@ -16,7 +16,7 @@ Field name = environment variable = the key in run_metadata.json.
 import os
 from typing import Annotated, Literal
 
-from pydantic import BeforeValidator, ValidationError, computed_field, field_validator
+from pydantic import BeforeValidator, PositiveInt, ValidationError, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -424,6 +424,12 @@ class Config(BaseSettings):
     ZERO_GRAD_ALARM: float = 0.05
     #   arena headroom under this: no room left for the next allocation spike.
     VRAM_HEADROOM_ALARM_MIB: float = 150.0
+
+    # ── Milestone scoring (the supervisor's, #471) ────────────────────────────
+    # CPU LAMBADA scorers the supervisor keeps alive at once; the rest wait for a
+    # later poll. One scorer is ~1.5 GB of RAM and ~40 min of CPU on a 15 GB box
+    # the trainer also needs; nine at once is the OOM that killed a run (#471).
+    MILESTONE_SCORERS: PositiveInt = 1
 
 
 # Where things are, not how the run trains: machine-local paths, usually from the

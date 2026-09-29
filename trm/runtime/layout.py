@@ -44,3 +44,7 @@ BEST_SUBDIR = "best_val_ce"
 
 # Sibling subdir holding milestone checkpoints, which nothing evicts (#187).
 MILESTONE_SUBDIR = "milestones"
+
+# The run's yardstick journal, one JSON line per scoring pass, appended by
+# instruments.base_run and read by the supervisor to know what is already scored (#471).
+YARDSTICK_JOURNAL = "yardstick.jsonl"

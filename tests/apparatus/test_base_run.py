@@ -115,6 +115,90 @@ def test_the_supervisor_scores_each_milestone_once_on_the_cpu(tmp_path, monkeypa
     assert len(launched) == 2 and all("--cpu" in a and "--limit" in a for a in launched)
 
 
+def _milestones(run, steps):
+    for step in steps:
+        (run / "checkpoints" / "milestones" / str(step)).mkdir(parents=True)
+        (run / "checkpoints" / "milestones" / str(step) / "_CHECKPOINT_METADATA").write_text("{}")
+
+
+def _fake_scorers(monkeypatch, launched, running):
+    """Popen replaced by a scorer that is still running while `running[0]` is true."""
+    from trm.runtime import supervisor as sup_mod
+    monkeypatch.setattr(sup_mod.subprocess, "Popen", lambda argv, **kw: launched.append(argv) or type(
+        "P", (), {"poll": lambda s: None if running[0] else 0})())
+
+
+def _steps(launched):
+    return [argv[argv.index("--step") + 1] for argv in launched]
+
+
+def test_a_resumed_supervisor_scores_only_what_the_journal_lacks(tmp_path, monkeypatch):
+    """#471: every resume makes a fresh supervisor, and it re-scored every milestone on
+    disk. The journal says which are scored; its lines here come from base_run's own
+    writer. 100, 200 and 300 are scored; 400's yardstick was OOM-killed, which leaves an
+    error line and a milestone still owed a pass; a torn last line is not a score."""
+    from trm.runtime.layout import MILESTONE_SUBDIR
+    from trm.runtime.supervisor import Limits, Supervisor
+
+    run = tmp_path / "run_r"
+    _milestones(run, (100, 200, 300, 400))
+
+    def fake_yardstick(cmd, **kw):
+        if cmd[cmd.index("--step") + 1] == "400":
+            return type("Proc", (), {"returncode": -9, "stderr": "Killed", "stdout": ""})()
+        pathlib.Path(cmd[cmd.index("--json-out") + 1]).write_text(
+            json.dumps({"lambada": {"lambada_acc": 0.25, "lambada_ppl": 80.0, "num_examples": 2}}))
+        return type("Proc", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr(base_run.subprocess, "run", fake_yardstick)
+    for step in (100, 200, 300, 400):
+        base_run.score_checkpoint(run, run / "checkpoints" / MILESTONE_SUBDIR, step=step,
+                                  limit=1000, on_cpu=True, arch="plain")
+    with (run / base_run.JOURNAL).open("a") as fh:
+        fh.write('{"step": 500, "source": "milest')
+
+    launched = []
+    _fake_scorers(monkeypatch, launched, [False])
+    Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
+               metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None).score_new_milestones()
+    assert _steps(launched) == ["400"]
+
+
+def test_the_supervisor_runs_one_scorer_at_a_time_oldest_first(tmp_path, monkeypatch):
+    """#471: nine scorers spawned in one poll, ~1.5 GB each, OOM-killed the run. Five
+    unscored milestones get one scorer while it runs, oldest step first (the incident's
+    steps, which sort differently as text), and the next once it has finished."""
+    from trm.runtime.supervisor import Limits, Supervisor
+    from trm.settings import Config
+
+    run = tmp_path / "run_c"
+    _milestones(run, (500031, 62527, 31295, 7871, 3967))
+    launched, running = [], [True]
+    _fake_scorers(monkeypatch, launched, running)
+    sup = Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
+                     metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None,
+                     config=Config.from_env({}))
+    sup.score_new_milestones()
+    sup.score_new_milestones()
+    assert _steps(launched) == ["3967"], "one live scorer by default, and it is still running"
+    running[0] = False
+    sup.score_new_milestones()
+    assert _steps(launched) == ["3967", "7871"]
+    for _ in range(5):
+        sup.score_new_milestones()
+    assert _steps(launched) == ["3967", "7871", "31295", "62527", "500031"]
+
+    # The knob raises the cap: a second scorer runs beside the first.
+    launched.clear()
+    running[0] = True
+    sup = Supervisor(command=(), limits=Limits(stop_step=1), log_path=tmp_path / "t.log",
+                     metrics_csv=run / "metrics.csv", spec=SPEC, report=lambda m: None,
+                     config=Config.from_env({"MILESTONE_SCORERS": "2"}))
+    sup.score_new_milestones()
+    sup.score_new_milestones()
+    assert _steps(launched) == ["3967", "7871"]
+
+
 def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tmp_path, monkeypatch):
     """#328: the scorer named no checkpoint, so base_run scored the newest rolling one.
     That is not the milestone, and rolling retention (3) can evict it mid-restore. Here

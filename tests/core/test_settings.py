@@ -31,7 +31,7 @@ TODAYS_DEFAULTS = {
     "VAL_EVERY_OPT_STEPS": 64, "CHECKPOINT_EVERY_OPT_STEPS": 64, "VAL_BY_SOURCE_EVERY_OPT_STEPS": 128,
     "MILESTONE_FIRST_TOKENS": 8_000_000, "MILESTONE_RATIO": 2.0, "MILESTONE_MAX_COUNT": 16,
     "ACT_MAX_ALARM": 16376.0, "LOSS_SCALE_FLOOR_ALARM": 4.0, "ZERO_GRAD_ALARM": 0.05,
-    "VRAM_HEADROOM_ALARM_MIB": 150.0,
+    "VRAM_HEADROOM_ALARM_MIB": 150.0, "MILESTONE_SCORERS": 1,
 }
 
 
@@ -68,7 +68,7 @@ def test_flags():
 @pytest.mark.parametrize("knob, value", [
     ("MODEL_ARCH", "refnier"), ("TIME_SIGNAL", "sinsuoidal"), ("TRM_OPTIMIZER", "adam"),
     ("LR_SCHEDULE", "linear"), ("BATCH_SIZE", "3"), ("BATCH_SIZE", "0"), ("PAD_TOKEN_ID", "0"),
-    ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"),
+    ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"), ("MILESTONE_SCORERS", "0"),
 ])
 def test_a_bad_knob_refuses_to_start_and_says_which(knob, value):
     """Fail closed (#104): a typo must not silently train a different run."""
