@@ -3,8 +3,8 @@
 Saved beside the weights as orbax's `monitor_state` item and checked on load: an
 unknown key or a wrong type fails naming the field, instead of resuming with a
 default (#477). The trainer and the supervisor ask the same question of the files
-on disk before a launch (`rewind.unresumable`, #505). A field has a default only because checkpoints older than it lack
-it, and names the issue that added it.
+on disk before a launch (`rewind.unresumable`, #505). A field has a default only
+because checkpoints older than it lack it, and names the issue that added it.
 
 Jax-free, like `trm/settings.py`.
 """

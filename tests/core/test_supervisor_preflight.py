@@ -131,7 +131,7 @@ def test_the_supervisor_refuses_an_unresumable_checkpoint_once_before_launching(
     monkeypatch.setattr(sup_mod, "preflight_fit", no_launch)
 
     code = sup_mod.main(["--stop-step", "10", "--run-dir", str(run_dir), "--log", str(tmp_path / "t.log"),
-                         "--no-gpu-lock", "--", "--checkpoint-path", str(run_dir / "checkpoints")])
+                         "--min-free-gb", "0", "--no-gpu-lock", "--", "--checkpoint-path", str(run_dir / "checkpoints")])
 
     assert code == 1
     heartbeat = (tmp_path / "run_20990101_000000.supervisor.log").read_text()
