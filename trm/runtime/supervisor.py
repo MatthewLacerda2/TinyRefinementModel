@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import json
 import math
 import os
 import pathlib
@@ -50,11 +51,13 @@ from trm.runtime.layout import (  # jax-free, so the supervisor stays jax-free
     ACT_MAX_ALARM,
     LOG_REAL_STEPS,
     LOSS_SCALE_FLOOR_ALARM,
+    MILESTONE_SUBDIR,
     SSD_KEEP_FREE_GB,
     VRAM_HEADROOM_ALARM_MIB,
+    YARDSTICK_JOURNAL,
     ZERO_GRAD_ALARM,
 )
-from trm.settings import location
+from trm.settings import CONFIG, Config, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
@@ -537,6 +540,26 @@ def oom_in(text: str) -> bool:
     return any(marker in text for marker in OOM_MARKERS)
 
 
+def scored_milestones(run_dir: pathlib.Path) -> set[str]:
+    """The milestone steps the run's yardstick journal holds a score for (#471).
+
+    Only a line with a score counts. An error line is what a scorer leaves when the
+    kernel OOM-kills its yardstick, and that milestone is still owed a pass; a torn
+    last line, from a scorer killed mid-write, is skipped."""
+    path = run_dir / YARDSTICK_JOURNAL
+    if not path.exists():
+        return set()
+    steps = set()
+    for line in path.read_text().splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("source") == "milestone" and "lambada_acc" in entry:
+            steps.add(str(entry["step"]))
+    return steps
+
+
 # --- the loop -----------------------------------------------------------------
 
 @dataclass
@@ -577,12 +600,13 @@ class Supervisor:
     # and the journal line lands in <run-dir>/yardstick.jsonl.
     spec: pathlib.Path | None = None
     milestone_limit: int = 1000
+    config: Config = CONFIG  # the knobs it reads: MILESTONE_SCORERS
     # The run's cold tier (#458): mirrors and prunes each poll, and takes a last
     # full-state copy when the run ends. None when no COLD_ROOT is set.
     cold: ColdTier | None = None
     _cold_error: str | None = None
-    _scored: set = field(default_factory=set)
-    _scorers: list = field(default_factory=list)
+    _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
+    _scorers: list = field(default_factory=list)  # their handles, pruned of finished ones each poll
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -686,26 +710,33 @@ class Supervisor:
         self._cold_error = None
 
     def score_new_milestones(self) -> None:
-        """Every finalized milestone gets one CPU yardstick pass, detached, never
-        two: the card stays the trainer's, and a scorer that outlives this poll
-        is fine — the journal is append-only.
+        """Every finalized milestone gets one CPU yardstick pass, detached, oldest
+        first, at most MILESTONE_SCORERS of this supervisor's at a time: the card stays the trainer's, and a
+        scorer that outlives this poll is fine — the journal is append-only.
+
+        What is already scored comes from the run's journal, not from memory, so the
+        fresh supervisor a resume makes does not score every milestone again; and the
+        cap leaves the rest for a later poll. Both at once is how a relaunch spawned
+        nine 1.5 GB scorers in one poll and OOM-killed the run (#471).
 
         The scorer is told the milestone's own dir and step (#328). Left to itself it
         scored the newest rolling checkpoint, which is not the milestone, and which
         rolling retention can evict while a slow CPU pass is still restoring it;
         milestones are the one kind nothing evicts."""
-        from trm.runtime.layout import MILESTONE_SUBDIR  # jax-free
-
         run_dir = self.metrics_csv.parent
         milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
         if not milestones.is_dir():
             return
-        for marker in sorted(milestones.glob("*/_CHECKPOINT_METADATA")):
-            step = marker.parent.name
-            if not step.isdigit() or step in self._scored:  # an orbax tmp dir is not a milestone
-                continue
+        self._scorers = [p for p in self._scorers if p.poll() is None]  # poll() reaps the finished
+        done = self._scored | scored_milestones(run_dir)
+        owed = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
+                       if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
+                      key=int)
+        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(self._scorers))]):
             self._scored.add(step)
-            self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU")
+            waiting = len(owed) - i - 1
+            self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU"
+                          + (f" ({waiting} more wait for a free scorer)" if waiting else ""))
             self._scorers.append(subprocess.Popen(
                 [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
                  "--checkpoint-dir", str(milestones), "--step", step,

@@ -25,9 +25,8 @@ import sys
 from instruments import runlog
 from instruments import verdict as referee
 from instruments._common import REPO_ROOT, module_env
-from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
+from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR, YARDSTICK_JOURNAL as JOURNAL
 
-JOURNAL = "yardstick.jsonl"
 # What a journal line says it scored, named by the checkpoint dir it came from.
 SOURCES = {MILESTONE_SUBDIR: "milestone", BEST_SUBDIR: "best"}
 

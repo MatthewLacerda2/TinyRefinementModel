@@ -31,7 +31,7 @@ TODAYS_DEFAULTS = {
     "VAL_EVERY_OPT_STEPS": 64, "CHECKPOINT_EVERY_OPT_STEPS": 64, "VAL_BY_SOURCE_EVERY_OPT_STEPS": 128,
     "MILESTONE_FIRST_TOKENS": 8_000_000, "MILESTONE_RATIO": 2.0, "MILESTONE_MAX_COUNT": 16,
     "ACT_MAX_ALARM": 16376.0, "LOSS_SCALE_FLOOR_ALARM": 4.0, "ZERO_GRAD_ALARM": 0.05,
-    "VRAM_HEADROOM_ALARM_MIB": 150.0, "SSD_KEEP_FREE_GB": 20.0,
+    "VRAM_HEADROOM_ALARM_MIB": 150.0, "SSD_KEEP_FREE_GB": 20.0, "MILESTONE_SCORERS": 1,
 }
 
 
@@ -68,7 +68,7 @@ def test_flags():
 @pytest.mark.parametrize("knob, value", [
     ("MODEL_ARCH", "refnier"), ("TIME_SIGNAL", "sinsuoidal"), ("TRM_OPTIMIZER", "adam"),
     ("LR_SCHEDULE", "linear"), ("BATCH_SIZE", "3"), ("BATCH_SIZE", "0"), ("PAD_TOKEN_ID", "0"),
-    ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"),
+    ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"), ("MILESTONE_SCORERS", "0"),
 ])
 def test_a_bad_knob_refuses_to_start_and_says_which(knob, value):
     """Fail closed (#104): a typo must not silently train a different run."""
@@ -108,7 +108,9 @@ def test_the_constants_modules_still_import_are_this_process_config():
     exported = {(m.__name__, name): getattr(m, name)
                 for m in modules for name in Config.model_fields | Config.model_computed_fields
                 if hasattr(m, name)}
-    # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported.
-    assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"}
+    # FORCE_F32_COMPUTE is read once, into COMPUTE_DTYPE, and not re-exported. Knobs
+    # added since #475 are read from a Config handed down, so the bridge never grows.
+    passed_down = {"MILESTONE_SCORERS"}
+    assert {name for _, name in exported} == set(TODAYS_DEFAULTS) - {"FORCE_F32_COMPUTE"} - passed_down
     drift = {key: value for key, value in exported.items() if value != getattr(CONFIG, key[1])}
     assert not drift, drift
