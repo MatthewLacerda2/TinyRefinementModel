@@ -45,13 +45,14 @@ import time
 from dataclasses import dataclass, field
 
 from trm.runtime.gpu_lock import GpuLock, Preflight
-from trm.runtime.layout import (  # standard library only: the supervisor stays jax-free
+from trm.runtime.layout import (  # jax-free, so the supervisor stays jax-free
     ACT_MAX_ALARM,
     LOG_REAL_STEPS,
     LOSS_SCALE_FLOOR_ALARM,
     VRAM_HEADROOM_ALARM_MIB,
     ZERO_GRAD_ALARM,
 )
+from trm.settings import location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
@@ -357,7 +358,7 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
     run_dir = work / "runs" / "run_fitgate"
     log_path = work / "fitgate.log"
     run_dir.mkdir(parents=True)
-    data_root = os.environ.get("DATA_ROOT")
+    data_root = location("DATA_ROOT")
     if not data_root:
         # The trainer would find it in .env and resolve it against ITS cwd, which is
         # the probe dir. Read only this one key; nothing else in .env is touched.
@@ -656,7 +657,7 @@ class Supervisor:
         scored the newest rolling checkpoint, which is not the milestone, and which
         rolling retention can evict while a slow CPU pass is still restoring it;
         milestones are the one kind nothing evicts."""
-        from trm.runtime.layout import MILESTONE_SUBDIR  # standard library only
+        from trm.runtime.layout import MILESTONE_SUBDIR  # jax-free
 
         run_dir = self.metrics_csv.parent
         milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR

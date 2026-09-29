@@ -36,7 +36,7 @@ import argparse
 import subprocess
 
 from instruments import runlog
-from trm.runtime.layout import LOG_REAL_STEPS  # standard library only
+from trm.runtime.layout import LOG_REAL_STEPS  # jax-free
 from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.

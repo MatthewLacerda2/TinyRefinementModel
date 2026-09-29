@@ -11,15 +11,14 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from trm.config import EOT_TOKEN_ID, EVAL_ROWS, MAX_SEQ_LEN, PAD_TOKEN_ID
+from trm.config import CONFIG, EOT_TOKEN_ID, EVAL_ROWS, MAX_SEQ_LEN, PAD_TOKEN_ID
 from trm.data.loaders import TextDataGenerator
 from trm.train.losses import chunked_cross_entropy_rows
 
 VAL_ROWS = EVAL_ROWS
 VAL_FIXED_DEPTH = 4
-# Far past any plausible training consumption (an 8k-opt-step run consumes
-# under 1M fineweb samples; fineweb holds 4.3M) so the slice stays held out.
-VAL_SKIP_SAMPLES = int(os.environ.get("VAL_SKIP_SAMPLES", "3000000"))
+# Where the fineweb slice starts, past any plausible training consumption (trm/settings.py).
+VAL_SKIP_SAMPLES = CONFIG.VAL_SKIP_SAMPLES
 # The other corpora the trainer probes (#363), each read from its own tail: the last
 # VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus. The
 # shipped end-mix is 40% code and 25% math, and a probe that reads prose alone cannot
