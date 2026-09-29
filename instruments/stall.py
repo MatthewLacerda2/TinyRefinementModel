@@ -7,8 +7,9 @@ The default prints the rule's reading now: each quantity's held-out CE gain over
 last `windows` windows of `window_hours`, against its bar, and STALLED when every
 window of every quantity gains less than its bar. `--floor` prints what a bar has to
 clear, measured from a finished run's own log: reading-to-reading noise and window
-gains in the first and last third after the ramp, for every quantity the rule could
-read. That is how 001's 0.01 was set from the champion (the spec's notes).
+gains in the first and last third after the ramp and before `--until-step` (where a
+WSD decay starts), for every quantity the rule could read. That is how 001's 0.01 was
+set from the champion (the spec's notes).
 
 What `reads` can be — the three options of #468:
 
@@ -229,8 +230,13 @@ def main(argv=None) -> int:
     ap.add_argument("--spec", required=True, help="a base-run spec with a [stall] table")
     ap.add_argument("--run", default=None, help="the run directory (default: the newest under runs/)")
     ap.add_argument("--floor", action="store_true", help="print the noise and gains a bar must clear")
+    ap.add_argument("--until-step", type=int, default=None,
+                    help="read only rows before this opt step: a floor stops where the decay starts, "
+                         "or its last third measures the decay's gains, not a plateau's")
     args = ap.parse_args(argv)
     rule, log = load_rule(args.spec), runlog.load(args.run)
+    if args.until_step is not None:
+        log.metrics = [row for row in log.metrics if row["step"] < args.until_step]
     print("\n".join(report_floor(rule, log) if args.floor else report_check(rule, log)))
     return 0
 

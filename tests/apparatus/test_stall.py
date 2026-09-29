@@ -19,14 +19,16 @@ END_MIX = "fineweb-edu=0.350 codeparrot=0.400 finemath=0.250"
 HEADER = "step,val_ce,val_step,val_by_source,wall_clock,mix"
 
 
-def write_run(tmp_path, web, code, math, ramp_hours=10, hours=72):
+def write_run(tmp_path, web, code, math, ramp_hours=10, hours=72, decay_hour=None):
     """One held-out reading an hour. The ramp moves the mix and drops every CE fast;
-    after it each source follows its own slope (nats per hour)."""
+    after it each source follows its own slope (nats per hour), and from `decay_hour`
+    on every CE falls a further 0.01 an hour, as a WSD decay does."""
     rows = [HEADER]
     for h in range(hours + 1):
         ramp = h < ramp_hours
         mix = f"fineweb-edu={0.85 - 0.05 * h:.3f} codeparrot=0.100 finemath=0.050" if ramp else END_MIX
         drop = 0.1 * min(h, ramp_hours)   # large ramp gains the rule must not read
+        drop += 0.01 * max(h - decay_hour, 0) if decay_hour is not None else 0.0
         ce = {s: base - drop - slope * max(h - ramp_hours, 0)
               for s, base, slope in (("web", 4.0, web), ("code", 2.0, code), ("math", 3.5, math))}
         when = (T0 + datetime.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -126,3 +128,18 @@ def test_the_cli_reads_the_committed_spec(tmp_path, capsys):
     run = write_run(tmp_path, web=0.0, code=0.0, math=0.0).run_dir
     assert stall.main(["--spec", str(SPEC_001), "--run", run]) == 0
     assert "STALLED" in capsys.readouterr().out
+
+
+def test_a_floor_can_stop_where_the_decay_starts(tmp_path, capsys):
+    """A WSD run's last fifth is its decay: read through it, the last third's gains
+    are the decay's (0.12 per 12h here), not the plateau's (0)."""
+    run = write_run(tmp_path, web=0.0, code=0.0, math=0.0, hours=96, decay_hour=80).run_dir
+
+    def last_third_median():
+        out = capsys.readouterr().out
+        return next(line.split()[4] for line in out.splitlines() if line.startswith("fineweb-edu ")  # name, "last", "third", noise, median
+                    and "last third" in line)
+    stall.main(["--spec", str(SPEC_001), "--run", run, "--floor"])
+    assert last_third_median() != "+0.0000"
+    stall.main(["--spec", str(SPEC_001), "--run", run, "--floor", "--until-step", "8000"])
+    assert last_third_median() == "+0.0000"
