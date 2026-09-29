@@ -49,6 +49,9 @@ from trm.train.grad_step import apply_grads, compute_grad_step
 
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "golden", "train_step_losses.json")
 CONFIG = {"arch": "plain", "dim": 60, "num_layers": 2, "seed": 9, "steps": 10}
+# The head count the golden file was recorded at, pinned rather than read from the Config
+# so that moving the default shape (#433) does not move the golden run.
+HEADS = 15
 NOISE_FLOOR = 1.8e-7  # max relative loss difference, this box vs CI runs (#330)
 # The CPU models that floor was sampled on. Outside them, the floor is an assumption.
 FLOOR_CPUS = ("AMD Ryzen 5 3400G", "AMD EPYC 7763", "AMD EPYC 9V45", "AMD EPYC 9V74")
@@ -57,7 +60,7 @@ RTOL = 10 * NOISE_FLOOR
 
 def _losses():
     model = PlainTransformer(CONFIG["dim"], nnx.Rngs(CONFIG["seed"]), settings.CONFIG,
-                             num_layers=CONFIG["num_layers"])
+                             num_heads=HEADS, num_layers=CONFIG["num_layers"])
     optimizer = nnx.Optimizer(
         model,
         optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(1e-3)),

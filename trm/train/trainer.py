@@ -150,7 +150,8 @@ class LogWindow:
 
 def init_model_and_optimizer(config):
     if config.MODEL_ARCH == "plain":
-        print(f"🚀 Initializing PlainTransformer (Dim={config.LATENT_DIM}, layers={config.PLAIN_LAYERS})...")
+        print(f"🚀 Initializing PlainTransformer (Dim={config.LATENT_DIM}, layers={config.PLAIN_LAYERS}, "
+              f"heads={config.NUM_HEADS}/{config.NUM_KV_HEADS} KV)...")
     elif config.MODEL_ARCH == "refiner":
         print(f"🚀 Initializing Plan A CausalRefiner "
               f"(Dim={config.LATENT_DIM}, encoder_layers={config.REFINER_ENCODER_LAYERS}, "

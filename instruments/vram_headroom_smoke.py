@@ -115,6 +115,9 @@ def main(argv=None):
     add_arch_argument(ap)
     ap.add_argument("--dim", type=int, default=CONFIG.LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
     ap.add_argument("--heads", type=int, default=CONFIG.NUM_HEADS)
+    ap.add_argument("--kv-heads", type=int, default=None,
+                    help="NUM_KV_HEADS for --arch plain (GQA, #433); default: the config's when --heads "
+                         "is the config's, else one per head (MHA)")
     ap.add_argument("--layers", type=int, default=CONFIG.PLAIN_LAYERS, help="block count for --arch plain")
     ap.add_argument("--encoder-layers", type=int, default=CONFIG.REFINER_ENCODER_LAYERS, help="for --arch refiner")
     ap.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE, help="micro-batch (per accumulation step)")
@@ -129,11 +132,11 @@ def main(argv=None):
     if args.dim % args.heads:
         raise SystemExit(f"--dim {args.dim} not divisible by --heads {args.heads}")
 
-    overrides = {"plain": {"num_heads": args.heads, "num_layers": args.layers},
+    overrides = {"plain": {"num_heads": args.heads, "num_layers": args.layers, "num_kv_heads": args.kv_heads},
                  "refiner": {"num_heads": args.heads, "encoder_layers": args.encoder_layers},
                  "reasoner": {}}[args.arch]
     model = build(args.arch, dim=args.dim, **overrides)
-    shape = {"plain": f"{args.layers} layers", "refiner": f"{args.encoder_layers} encoder + loop to depth {args.depth}",
+    shape = {"plain": f"{args.layers} layers" + (f", {args.kv_heads} KV heads" if args.kv_heads else ""), "refiner": f"{args.encoder_layers} encoder + loop to depth {args.depth}",
              "reasoner": "reasoner"}[args.arch]
     print(f"sizing {args.arch} ({shape}) at dim {args.dim}, {args.heads} heads, batch {args.batch}, "
           f"{param_count(model) / 1e6:.1f}M params, allocator {os.environ['XLA_PYTHON_CLIENT_ALLOCATOR']}")

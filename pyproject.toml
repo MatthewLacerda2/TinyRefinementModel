@@ -41,4 +41,4 @@ ignore_names = [
     "model_config", "settings_customise_sources",
 ]
 # Pydantic calls a validator through its decorator; nothing references it by name.
-ignore_decorators = ["@field_validator"]
+ignore_decorators = ["@field_validator", "@model_validator"]

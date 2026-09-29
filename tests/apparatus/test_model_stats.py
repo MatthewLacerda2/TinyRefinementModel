@@ -263,15 +263,16 @@ def test_plain_formula_matches_the_real_model():
         gc.collect()
 
 
-@pytest.mark.parametrize("dim,num_heads,num_layers,post_norm",
-                         [(128, 4, 1, False), (192, 4, 3, True), (240, 6, 2, False)])
-def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_norm):
+@pytest.mark.parametrize("dim,num_heads,num_kv_heads,num_layers,post_norm",
+                         [(128, 4, None, 1, False), (192, 4, None, 3, True), (240, 6, None, 2, False),
+                          (192, 6, 2, 2, False), (128, 4, 1, 1, True)])
+def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_kv_heads, num_layers, post_norm):
     from trm.model.plain import PlainTransformer
 
     model = PlainTransformer(dim, nnx.Rngs(0), CONFIG, vocab_size=97, num_heads=num_heads,
-                             num_layers=num_layers, post_norm=post_norm)
+                             num_kv_heads=num_kv_heads, num_layers=num_layers, post_norm=post_norm)
     _assert_matches("plain", model, PLAIN_GROUPS, dim=dim, vocab_size=97, num_heads=num_heads,
-                    num_layers=num_layers, post_norm=post_norm)
+                    num_kv_heads=num_kv_heads, num_layers=num_layers, post_norm=post_norm)
 
 
 def test_the_plain_parameter_count_is_reproduced():
@@ -282,6 +283,9 @@ def test_the_plain_parameter_count_is_reproduced():
     # (+39% tok/s, #385). The count is the formula's; test_plain_formula_matches_the_real_model
     # ties the formula to the instantiated tree, so this pins the default's size, not a measurement.
     assert CONFIG.PLAIN_LAYERS == 8
+    # #433's deep-narrow shape (SmolLM2-135M's): the same budget spent on depth.
+    assert model_stats.total_params("plain", dim=576, num_heads=9, num_kv_heads=3, num_layers=30,
+                                    post_norm=False) == 135_337_920
 
 
 REPORT_ARCHES = ("plain", "refiner", "reasoner")

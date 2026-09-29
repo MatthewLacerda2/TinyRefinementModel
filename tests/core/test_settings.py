@@ -13,7 +13,7 @@ from trm.settings import CONFIG, DEFAULT_DATA_MIXTURE, Config
 # every run so far, the golden run and every recorded recipe pair trained on these.
 TODAYS_DEFAULTS = {
     "FORCE_F32_COMPUTE": False,
-    "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15, "MODEL_ARCH": "plain",
+    "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15, "NUM_KV_HEADS": 15, "MODEL_ARCH": "plain",
     "POST_NORM": False, "PLAIN_LAYERS": 8,
     "TIME_SIGNAL": "sinusoidal", "REFINER_ENCODER_LAYERS": 7, "INFERENCE_DEPTH": 6,
     "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 16.666667,
@@ -69,6 +69,7 @@ def test_flags():
     ("MODEL_ARCH", "refnier"), ("TIME_SIGNAL", "sinsuoidal"), ("TRM_OPTIMIZER", "adam"),
     ("LR_SCHEDULE", "linear"), ("BATCH_SIZE", "3"), ("BATCH_SIZE", "0"), ("PAD_TOKEN_ID", "0"),
     ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"), ("MILESTONE_SCORERS", "0"),
+    ("NUM_KV_HEADS", "4"), ("NUM_KV_HEADS", "0"),
 ])
 def test_a_bad_knob_refuses_to_start_and_says_which(knob, value):
     """Fail closed (#104): a typo must not silently train a different run."""

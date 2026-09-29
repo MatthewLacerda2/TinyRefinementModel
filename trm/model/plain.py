@@ -32,15 +32,19 @@ from trm.model.refiner import Block
 class PlainTransformer(LanguageModel):
     """N distinct causal blocks, a tied LM head, and nothing else.
 
-    Shaped by `config` (NUM_HEADS, PLAIN_LAYERS, MAX_SEQ_LEN, PAD_TOKEN_ID, POST_NORM).
+    Shaped by `config` (NUM_HEADS, NUM_KV_HEADS, PLAIN_LAYERS, MAX_SEQ_LEN, PAD_TOKEN_ID, POST_NORM).
     Each is overridable by keyword, so a test can build a tiny instance of any
     config — the same arrangement RefinerForTraining uses.
     """
 
     def __init__(self, latent_dim, rngs, config, *, vocab_size=VOCAB_SIZE, num_heads=None,
                  num_layers=None, max_seq_len=None, pad_token_id=None, dtype=COMPUTE_DTYPE,
-                 post_norm=None):
+                 post_norm=None, num_kv_heads=None):
         num_heads = config.NUM_HEADS if num_heads is None else num_heads
+        # A num_heads override without its own num_kv_heads is MHA at that head count,
+        # as the Config resolves an unset NUM_KV_HEADS.
+        if num_kv_heads is None:
+            num_kv_heads = config.NUM_KV_HEADS if num_heads == config.NUM_HEADS else num_heads
         num_layers = config.PLAIN_LAYERS if num_layers is None else num_layers
         max_seq_len = config.MAX_SEQ_LEN if max_seq_len is None else max_seq_len
         pad_token_id = config.PAD_TOKEN_ID if pad_token_id is None else pad_token_id
@@ -52,7 +56,7 @@ class PlainTransformer(LanguageModel):
         self.embed = nnx.Embed(vocab_size, latent_dim, rngs=rngs, dtype=dtype)
         self.blocks = nnx.List([
             Block(latent_dim, num_heads, max_seq_len, rngs, dtype,
-                  post_norm=post_norm)
+                  post_norm=post_norm, num_kv_heads=num_kv_heads)
             for _ in range(num_layers)
         ])
         self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)

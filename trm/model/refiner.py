@@ -19,16 +19,24 @@ from trm.model.rope import rope_tables, apply_rope
 
 
 class CausalAttention(nnx.Module):
-    """Multi-head self-attention, RoPE, causal mask folded into an additive bias."""
+    """Multi-head self-attention, RoPE, causal mask folded into an additive bias.
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32):
+    `num_kv_heads` below `num_heads` is grouped-query attention (#433): K and V are
+    projected to fewer heads, each shared by a group of query heads, and
+    dot_product_attention does the grouping. None is one per query head (MHA), the
+    same param tree and init draws as before the knob existed."""
+
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32, num_kv_heads=None):
         assert dim % num_heads == 0, "dim must divide num_heads"
         self.num_heads = num_heads
+        self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
+        assert num_heads % self.num_kv_heads == 0, "num_kv_heads must divide num_heads"
         self.head_dim = dim // num_heads
         assert self.head_dim % 2 == 0, "head_dim must be even for RoPE"
+        kv_dim = self.num_kv_heads * self.head_dim
         self.q = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
-        self.k = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
-        self.v = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
+        self.k = nnx.Linear(dim, kv_dim, rngs=rngs, dtype=dtype)
+        self.v = nnx.Linear(dim, kv_dim, rngs=rngs, dtype=dtype)
         self.o = nnx.Linear(dim, dim, rngs=rngs, dtype=dtype)
         self.q_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
         self.k_norm = nnx.RMSNorm(self.head_dim, epsilon=1e-6, rngs=rngs, dtype=jnp.float32)
@@ -38,8 +46,8 @@ class CausalAttention(nnx.Module):
     def __call__(self, x, pad_bias=None):
         b, s, d = x.shape
         q = self.q_norm(self.q(x).reshape(b, s, self.num_heads, self.head_dim))
-        k = self.k_norm(self.k(x).reshape(b, s, self.num_heads, self.head_dim))
-        v = self.v(x).reshape(b, s, self.num_heads, self.head_dim)
+        k = self.k_norm(self.k(x).reshape(b, s, self.num_kv_heads, self.head_dim))
+        v = self.v(x).reshape(b, s, self.num_kv_heads, self.head_dim)
 
         cos = self.cos[:s, None, :]
         sin = self.sin[:s, None, :]
@@ -70,8 +78,8 @@ class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
     def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32,
-                 post_norm=False):
-        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
+                 post_norm=False, num_kv_heads=None):
+        self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype, num_kv_heads=num_kv_heads)
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
         # Post-norm on each residual branch (#235). norm1/norm2 bound the branch
