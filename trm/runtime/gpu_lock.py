@@ -101,6 +101,15 @@ class GpuLock:
             self.path.unlink(missing_ok=True)
         self.held = False
 
+    def leave_to(self, pid: int) -> None:
+        """Hand our lock to `pid`, a process on the card this one could not stop
+        (#512). The card stays taken while it lives; once it dies, the lock is stale
+        and the next launch takes it over."""
+        current = self.holder()
+        if self.held and current and current[0] == os.getpid():
+            self.path.write_text(f"{pid} {self.label} (left behind by pid {os.getpid()})\n")
+        self.held = False
+
     def __enter__(self):
         self.acquire()
         return self

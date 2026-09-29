@@ -645,6 +645,11 @@ class Supervisor:
     # The checkpoints a relaunch resumes (resumed_checkpoint_dir); None when the
     # command resumes nothing.
     checkpoint_dir: pathlib.Path | None = None
+    # How long stop() waits for the child after SIGTERM, then after SIGKILL.
+    stop_grace_seconds: float = 60.0
+    kill_wait_seconds: float = 30.0
+    # The pid of a child that outlived stop(); main() leaves it the GPU lock (#512).
+    survivor: int | None = None
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
@@ -659,17 +664,27 @@ class Supervisor:
         return subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
                                 stdout=log, stderr=subprocess.STDOUT)
 
-    def stop(self, proc: subprocess.Popen, grace: float = 60.0) -> None:
-        """TERM, then KILL. The grace period is for the trainer to finish writing
-        a checkpoint — killing it mid-write is how a run loses its last hour."""
+    def stop(self, proc: subprocess.Popen) -> bool:
+        """TERM, then KILL; whether the child is gone. The grace period is for the
+        trainer to finish writing a checkpoint — killing it mid-write is how a run
+        loses its last hour. A child that outlives even the KILL (stuck in the driver,
+        uninterruptible) is named in `survivor`, and the GPU lock is left to it (#512)."""
         if proc.poll() is not None:
-            return
+            return True
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=grace)
+            proc.wait(timeout=self.stop_grace_seconds)
+            return True
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=30)
+        try:
+            proc.wait(timeout=self.kill_wait_seconds)
+            return True
+        except subprocess.TimeoutExpired:
+            self.survivor = proc.pid
+            self.announce(f"{_stamp()} ⚠ pid {proc.pid} is still alive after SIGKILL; "
+                          f"the GPU lock is left to it, so nothing launches onto its card")
+            return False
 
     def observe(self, proc: subprocess.Popen, started: float) -> Observation:
         step, ce = read_progress(self.metrics_csv)
@@ -720,16 +735,20 @@ class Supervisor:
 
             if decision.action == CONTINUE:
                 continue
-            if decision.action in (STOP, KILL):
+            # GIVE_UP stops the child too: it is the wedged one when it is alive,
+            # and the run is over either way (#512).
+            if decision.action in (STOP, KILL, GIVE_UP):
                 self.stop(proc)
                 self.end()
                 return decision.outcome
-            if decision.action == GIVE_UP:
-                self.end()
-                return decision.outcome
             if decision.action in (RELAUNCH, RESTART):
-                if decision.action == RESTART:
-                    self.stop(proc)  # wedged, so it is still up and has to go
+                # A wedged child is still up and has to go; one that outlives SIGKILL
+                # still holds the card, and a relaunch beside it would only OOM.
+                if decision.action == RESTART and not self.stop(proc):
+                    self.announce(f"{_stamp()} {GAVE_UP}: pid {proc.pid} could not be stopped, "
+                                  f"so the run cannot be relaunched")
+                    self.end()
+                    return GAVE_UP
                 proc = self.launch()
                 started = time.time()
                 self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
@@ -1010,7 +1029,11 @@ def main(argv=None) -> int:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     finally:
-        lock.release()
+        # Never released under a live trainer (#512): one stop() could not end keeps it.
+        if supervisor.survivor is not None:
+            lock.leave_to(supervisor.survivor)
+        else:
+            lock.release()
 
     print(f"outcome: {outcome}")
     if args.spec is not None and outcome == BUDGET_COMPLETE:
