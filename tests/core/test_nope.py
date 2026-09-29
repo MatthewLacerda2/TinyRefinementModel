@@ -23,9 +23,11 @@ PAD = VOCAB - 1
 
 
 def _toy(position_encoding, *, dim=DIM, layers=LAYERS, seed=0):
+    # f32 on every lane, so the tolerances below hold under RUN_TESTS_ON_GPU too; the
+    # f16 path is the GPU smoke in the pair's resume protocol (#444).
     return PlainTransformer(dim, nnx.Rngs(seed), CONFIG, vocab_size=VOCAB, num_heads=HEADS,
                             num_layers=layers, max_seq_len=SEQ, pad_token_id=PAD,
-                            position_encoding=position_encoding)
+                            dtype=jnp.float32, position_encoding=position_encoding)
 
 
 def _tokens(seed=0):
