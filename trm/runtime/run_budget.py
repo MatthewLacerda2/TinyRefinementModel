@@ -1,6 +1,6 @@
 """The LR horizon belongs to the run, not to the shell that relaunched it.
 
-`TRAIN_TOKEN_BUDGET` is read from the environment by `trm.config` and resolved into
+`TRAIN_TOKEN_BUDGET` is read from the environment by `trm.settings` and resolved into
 `schedules.DECAY_STEPS` at import time. That is right for a first launch, where a
 human types the budget on the command line. It is wrong for a *resume*: there the
 environment is whatever the relaunching process happened to inherit, and when it
@@ -20,8 +20,9 @@ module reads it back, so resume is restored from the run rather than from the sh
 — the same correction #183 made for the environment snapshot.
 
 Stdlib only, deliberately: it must be importable from `trm.train.start` *before*
-`trm.config` is, because DECAY_STEPS is resolved at import time and cannot be
-changed afterwards.
+`trm.settings` is, because DECAY_STEPS is resolved at import time and cannot be
+changed afterwards. The one module in `trm/` besides `trm.settings` that reads a knob
+from the environment, and only to write it back (tests/core/test_config_read_once.py).
 """
 
 import json
@@ -74,7 +75,7 @@ def adopt_recorded_budget(checkpoint_path, environ=None):
     metadata, or a run that genuinely had no budget). Uses setdefault semantics: an
     explicit `TRAIN_TOKEN_BUDGET` in the shell still wins, so a deliberate override
     — extending a run's horizon on purpose — behaves as before. Must be called
-    before `trm.config` is imported.
+    before `trm.settings` is imported.
     """
     environ = os.environ if environ is None else environ
     if environ.get(BUDGET_ENV):

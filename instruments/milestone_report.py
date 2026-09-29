@@ -38,7 +38,7 @@ import time
 import traceback
 
 from instruments._common import REPO_ROOT, add_checkpoint_argument, git_head, module_env
-from trm.runtime.layout import CHECKPOINT_ITEMS  # standard library only, so --help stays instant
+from trm.runtime.layout import CHECKPOINT_ITEMS  # jax-free, so --help stays instant
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # assembles other tools' sections; each number is declared by the tool that produced it

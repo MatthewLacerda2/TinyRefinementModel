@@ -13,6 +13,7 @@ from trm.config import LATENT_DIM, MODEL_ARCH, resolve_root
 from trm.model import build_model
 from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
 from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.settings import location
 from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
@@ -88,7 +89,7 @@ def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_
     (#24): the eval slice must not move when a training throughput knob does, or
     every recorded yardstick number stops being comparable. Batch-1 is also the
     shape every stored checkpoint of both arches was written at."""
-    data_root = os.environ.get("DATA_ROOT", "")
+    data_root = location("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set.")
     source_dir = f"{resolve_root(data_root)}/{source}"

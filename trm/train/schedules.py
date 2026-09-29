@@ -1,23 +1,13 @@
-import os
-
 import numpy as np
 import optax
 
-from trm.config import (DATA_MIXTURE, DATA_SEED, MAX_STEPS_LIMIT, MIXTURE_RAMP_FRACTION,
+from trm.config import (CONFIG, DATA_MIXTURE, DATA_SEED, MAX_STEPS_LIMIT, MIXTURE_RAMP_FRACTION,
                         TOKENS_PER_OPT_STEP, TRAIN_TOKEN_BUDGET, WEIGHT_DECAY)
 
-# Warmup is absolute: it stabilizes the optimizer's first moments, a fixed-cost
-# phase that does not grow with the run. Env-overridable for one purpose: a
-# short matched pair (#26 stage 2, ~500 opt steps) cannot spend 1000 of them
-# warming up. A base run leaves it alone.
-WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "1000"))
-
-# The peak the schedule warms up to. 6e-4 since 2026-09-19 (#388): 1e-4 was chosen once
-# and never compared against anything; #287 measured 3e-4 at 2.25x fewer tokens and
-# 6e-4 at 1.24x fewer again (docs/findings/2026-09-18-the-lr-curve-flattens-6e-4-beats-3e-4-by-1-24x.md).
-# Env-overridable so a matched pair can sweep it. The golden run has its own optimizer
-# and LR, so it does not move with this.
-PEAK_LR = float(os.environ.get("PEAK_LR", "6e-4"))
+# The schedule's knobs (what each is and why this value: trm/settings.py), as the
+# constants this module's defaults and importers read.
+WARMUP_STEPS = CONFIG.WARMUP_STEPS
+PEAK_LR = CONFIG.PEAK_LR
 
 # The LR anneal's horizon must match the run length (#83). DECAY_STEPS derives
 # from the planned token budget (config.TRAIN_TOKEN_BUDGET); with no budget set
@@ -73,12 +63,9 @@ def build_learning_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK
 #   WSD_DECAY_START      an explicit opt step to start the decay at, for a branch
 #                        resumed from a checkpoint; unset, the decay starts at
 #                        (1 - WSD_DECAY_FRACTION) x DECAY_STEPS.
-LR_SCHEDULE = os.environ.get("LR_SCHEDULE", "wsd")
-if LR_SCHEDULE not in ("cosine", "wsd"):
-    raise SystemExit(f"LR_SCHEDULE={LR_SCHEDULE!r}: use cosine or wsd (#386)")
-WSD_DECAY_FRACTION = float(os.environ.get("WSD_DECAY_FRACTION", "0.2"))
-_WSD_DECAY_START_ENV = os.environ.get("WSD_DECAY_START")
-WSD_DECAY_START = int(_WSD_DECAY_START_ENV) if _WSD_DECAY_START_ENV else None
+LR_SCHEDULE = CONFIG.LR_SCHEDULE
+WSD_DECAY_FRACTION = CONFIG.WSD_DECAY_FRACTION
+WSD_DECAY_START = CONFIG.WSD_DECAY_START
 
 
 def build_wsd_schedule(decay_steps, warmup_steps=WARMUP_STEPS, peak_lr=PEAK_LR,

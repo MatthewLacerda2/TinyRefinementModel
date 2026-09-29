@@ -41,6 +41,7 @@ from trm.config import (
     resolve_root,
 )
 from trm.model import build_model
+from trm.settings import location
 from trm.runtime.layout import (CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS,
                                 VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS)
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
@@ -77,7 +78,7 @@ MAX_NONFINITE_STREAK = 50
 # print on every one of them and bury the rest of the log.
 PLATEAU_NOTICE_EVERY = 200
 
-DATA_ROOT = os.environ.get("DATA_ROOT", "")
+DATA_ROOT = location("DATA_ROOT", "")
 if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
 

@@ -67,9 +67,10 @@ def param_count(model):
 def load_env():
     """Load the repo's `.env` into the environment (DATA_ROOT and friends).
 
-    Where it is called decides what `.env` may set. trm.config reads MODEL_ARCH,
-    TIME_SIGNAL and the rest once, at import: called before that import, `.env` can
-    set them; called after, only what is read at run time (DATA_ROOT) takes effect,
+    Where it is called decides what `.env` may set. trm.settings reads MODEL_ARCH,
+    TIME_SIGNAL and the rest once, when anything in trm first imports it: called
+    before that, `.env` can set them; called after, only the locations read at run
+    time (DATA_ROOT, CHECKPOINT_ROOT) take effect,
     which is what a tool that wants config knobs set in the shell does on purpose.
     Values already in the environment win either way."""
     from dotenv import load_dotenv

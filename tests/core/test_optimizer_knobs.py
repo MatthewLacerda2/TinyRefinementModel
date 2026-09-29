@@ -54,15 +54,15 @@ def test_the_defaults_are_what_every_run_so_far_trained_with():
 
 
 def test_the_run_records_every_knob():
-    """A model card must be able to rebuild the optimizer from run_metadata.json."""
-    import inspect
+    """A model card must be able to rebuild the optimizer from run_metadata.json.
+    Every Config field is recorded (tests/core/test_settings.py); these are the ones
+    the optimizer needs."""
+    from trm.runtime.run_tracker import RunTracker
 
-    from trm.runtime import run_tracker
-
-    source = inspect.getsource(run_tracker)
+    recorded = RunTracker.get_hyperparameters()
     for knob in ("ADAM_B1", "ADAM_B2", "ADAM_EPS", "WEIGHT_DECAY", "CLIP_NORM",
                  "MUON_BETA", "MUON_NS_STEPS", "MUON_EPS", "MUON_NESTEROV"):
-        assert f'"{knob}": {knob}' in source, knob
+        assert recorded[knob] == getattr(config, knob), knob
 
 
 def test_the_loss_scaler_growth_interval_is_named_and_unchanged():
@@ -70,9 +70,9 @@ def test_the_loss_scaler_growth_interval_is_named_and_unchanged():
     run so far used (the class default stays the same number)."""
     import inspect
 
-    from trm.runtime import run_tracker
+    from trm.runtime.run_tracker import RunTracker
     from trm.train import loss_scale, trainer
 
     assert config.LOSS_SCALE_GROWTH_INTERVAL == 256 == loss_scale.LOSS_SCALE_GROWTH_INTERVAL
     assert "DynamicLossScale(growth_interval=LOSS_SCALE_GROWTH_INTERVAL)" in inspect.getsource(trainer)
-    assert '"LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL' in inspect.getsource(run_tracker)
+    assert RunTracker.get_hyperparameters()["LOSS_SCALE_GROWTH_INTERVAL"] == 256

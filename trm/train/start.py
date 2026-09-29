@@ -29,10 +29,11 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 import sys
 
 # A resumed run's LR horizon has to come from the run, not from whichever shell
-# relaunched it (#197) — and it has to be settled *here*, because trm.config bakes
-# TRAIN_TOKEN_BUDGET into schedules.DECAY_STEPS the moment it is imported below.
-# run_budget is stdlib-only for exactly that reason: nothing it touches can pull
-# config in early. An explicit env var still wins.
+# relaunched it (#197) — and it has to be settled *here*, because trm.settings reads
+# TRAIN_TOKEN_BUDGET once, when trm.config imports it below, and schedules bakes it into
+# DECAY_STEPS. run_budget is stdlib-only for exactly that reason: nothing it touches can
+# pull the config in early. An explicit env var still wins. Retires once start builds
+# its Config and hands it down (#475).
 from trm.runtime.run_budget import adopt_recorded_budget, checkpoint_path_from_argv, horizon_mismatch
 
 if adopt_recorded_budget(checkpoint_path_from_argv(sys.argv)):

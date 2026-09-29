@@ -5,52 +5,8 @@ import time
 import datetime
 import subprocess
 
-from trm.config import (
-    LATENT_DIM,
-    NUM_BLOCKS,
-    SHARED_SLOTS,
-    MAX_SEQ_LEN,
-    VOCAB_SIZE,
-    MAX_STEPS_LIMIT,
-    BATCH_SIZE,
-    ACCUMULATION_STEPS,
-    PAD_TOKEN_ID,
-    NUM_HEADS,
-    DATA_SEED,
-    MODEL_SEED,
-    TRAIN_TOKEN_BUDGET,
-    MODEL_ARCH,
-    PLAIN_LAYERS,
-    POST_NORM,
-    REFINER_ENCODER_LAYERS,
-    TIME_SIGNAL,
-    TRM_OPTIMIZER,
-    MUON_LR_MULT,
-    ADAM_B1,
-    ADAM_B2,
-    ADAM_EPS,
-    WEIGHT_DECAY,
-    CLIP_NORM,
-    MUON_BETA,
-    MUON_NS_STEPS,
-    MUON_EPS,
-    MUON_NESTEROV,
-    LOSS_SCALE_GROWTH_INTERVAL,
-    DATA_MIXTURE,
-    MIXTURE_RAMP_FRACTION,
-    DATA_BRANCH,
-    DATA_BRANCH_SEED_STRIDE,
-)
-from trm.runtime.layout import VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
-from trm.train.schedules import (
-    CURRICULUM_STEPS,
-    DECAY_STEPS,
-    LR_SCHEDULE,
-    PEAK_LR,
-    WARMUP_STEPS,
-    WSD_DECAY_FRACTION,
-    WSD_DECAY_START,
-)
+from trm.config import CONFIG, MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
+from trm.train.schedules import CURRICULUM_STEPS, DECAY_STEPS
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -127,7 +83,7 @@ class RunTracker:
         #    surface (driver is a shared passthrough) but invaluable for debugging a
         #    failed revival. MODEL_ARCH also rides in run_metadata.json, machine-readable.
         lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}",
-                 f"MODEL_ARCH {MODEL_ARCH}"]
+                 f"MODEL_ARCH {CONFIG.MODEL_ARCH}"]
         try:
             smi = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version,name",
@@ -174,66 +130,20 @@ class RunTracker:
 
     @staticmethod
     def get_hyperparameters():
+        """What run_metadata.json records as the run's parameters: every knob the launch
+        read, whole (trm.settings.Config, so none can be left out: #358, #475), plus
+        what a reader cannot recover from the knobs alone."""
         return {
-            # Which arch built the param tree — the two arches are not
-            # checkpoint-compatible, so a faithful revival (instruments.timemachine)
-            # must rebuild the same skeleton. Recorded machine-readably here.
-            "MODEL_ARCH": MODEL_ARCH,
-            "LATENT_DIM": LATENT_DIM,
+            **CONFIG.model_dump(),
+            # Constants, not knobs, that shape a retired arch's param tree (TREE_KEYS).
+            "VOCAB_SIZE": VOCAB_SIZE,
             "NUM_BLOCKS": NUM_BLOCKS,
             "SHARED_SLOTS": SHARED_SLOTS,
-            "MAX_SEQ_LEN": MAX_SEQ_LEN,
-            "VOCAB_SIZE": VOCAB_SIZE,
             "MAX_STEPS_LIMIT": MAX_STEPS_LIMIT,
-            "BATCH_SIZE": BATCH_SIZE,
-            "ACCUMULATION_STEPS": ACCUMULATION_STEPS,
-            "PAD_TOKEN_ID": PAD_TOKEN_ID,
-            "NUM_HEADS": NUM_HEADS,
-            "DATA_SEED": DATA_SEED,
-            "MODEL_SEED": MODEL_SEED,
-            # The run's recipe horizon (#83): budget in, resolved anneal out.
-            "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
+            # The horizons resolved from the budget: the LR anneal's (#83) and the
+            # mixture ramp's (#362). A resume checks the first against the run's (#197).
             "DECAY_STEPS": DECAY_STEPS,
-            # The mixture ramp's resolved horizon, budget-relative since #362, and the
-            # mixture itself (#439): which buckets, at which weights, start to end.
             "CURRICULUM_STEPS": CURRICULUM_STEPS,
-            "DATA_MIXTURE": DATA_MIXTURE,
-            "MIXTURE_RAMP_FRACTION": MIXTURE_RAMP_FRACTION,
-            # A branch onto another mixture, and how far each seed skips (#489).
-            "DATA_BRANCH": DATA_BRANCH,
-            "DATA_BRANCH_SEED_STRIDE": DATA_BRANCH_SEED_STRIDE,
-            # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
-            "LR_SCHEDULE": LR_SCHEDULE,
-            "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,
-            "WSD_DECAY_START": WSD_DECAY_START,
-            # Env knobs a reader cannot recover from anything else (#305). Every
-            # one of these is read from *this process's* environment at import, so
-            # a tool that reads them from its own config describes itself, not the
-            # run: the plotter crashed rebuilding a 512-step arm's LR schedule with
-            # a 1000-step warmup, and labelled a plain run with the refiner's depth.
-            "WARMUP_STEPS": WARMUP_STEPS,
-            "PEAK_LR": PEAK_LR,
-            "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
-            "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
-            "PLAIN_LAYERS": PLAIN_LAYERS,
-            # Tree-shaping knobs the resume check compares (#317); runs recorded
-            # before them skip the comparison.
-            "POST_NORM": POST_NORM,
-            "REFINER_ENCODER_LAYERS": REFINER_ENCODER_LAYERS,
-            "TIME_SIGNAL": TIME_SIGNAL,
-            "TRM_OPTIMIZER": TRM_OPTIMIZER,
-            "MUON_LR_MULT": MUON_LR_MULT,
-            # The rest of the optimizer, so a model card can rebuild it (#358).
-            "ADAM_B1": ADAM_B1,
-            "ADAM_B2": ADAM_B2,
-            "ADAM_EPS": ADAM_EPS,
-            "WEIGHT_DECAY": WEIGHT_DECAY,
-            "CLIP_NORM": CLIP_NORM,
-            "MUON_BETA": MUON_BETA,
-            "MUON_NS_STEPS": MUON_NS_STEPS,
-            "MUON_EPS": MUON_EPS,
-            "MUON_NESTEROV": MUON_NESTEROV,
-            "LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL,
         }
 
     def _check_compatibility(self, metadata_path):

@@ -48,11 +48,16 @@ def test_resuming_appends_a_session_rather_than_replacing_the_record(tmp_path):
 
 # --- the resume check compares what the selected arch's tree is built from (#317) ---
 
+def _as_plain(monkeypatch):
+    """This process's config, as a plain run whatever MODEL_ARCH the shell set."""
+    from trm.runtime import run_tracker
+    monkeypatch.setattr(run_tracker, "CONFIG", run_tracker.CONFIG.model_copy(update={"MODEL_ARCH": "plain"}))
+
+
 def _resume_with(tmp_path, monkeypatch, **recorded):
     """'refused' or 'resumed': a plain resume onto a run whose metadata recorded
     today's parameters with `recorded` changed (None: the key was never recorded)."""
-    from trm.runtime import run_tracker
-    monkeypatch.setattr(run_tracker, "MODEL_ARCH", "plain")
+    _as_plain(monkeypatch)
     params = {**RunTracker.get_hyperparameters(), **recorded}
     path = tmp_path / "run_metadata.json"
     path.write_text(json.dumps({"parameters": {k: v for k, v in params.items() if v is not None}}))
@@ -78,7 +83,7 @@ def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch)
     import pytest
     from trm.config import PLAIN_LAYERS
     from trm.runtime import run_tracker
-    monkeypatch.setattr(run_tracker, "MODEL_ARCH", "plain")
+    _as_plain(monkeypatch)
     monkeypatch.setattr(run_tracker.sys, "exit", lambda *a: pytest.fail("sys.exit called"))
     path = tmp_path / "run_metadata.json"
     path.write_text(json.dumps({"parameters": {**RunTracker.get_hyperparameters(),

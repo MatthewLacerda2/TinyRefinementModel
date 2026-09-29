@@ -21,6 +21,7 @@ from trm.config import (
 from trm.model import build_model
 from trm.model.contract import LanguageModel
 from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.settings import location
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -264,8 +265,9 @@ def run_inference(argv=None):
     # CHECKPOINT_ROOT names a checkpoint dir; without it, the latest checkpointed run
     # under runs/ is served. There is no third, default path: the old one
     # (`orbax_checkpoints`) pointed at a directory nothing writes.
-    if os.environ.get("CHECKPOINT_ROOT") is not None:
-        active_checkpoint_dir = resolve_root(os.environ["CHECKPOINT_ROOT"])
+    checkpoint_root = location("CHECKPOINT_ROOT")
+    if checkpoint_root is not None:
+        active_checkpoint_dir = resolve_root(checkpoint_root)
     else:
         from trm.runtime.checkpoints import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()

@@ -7,6 +7,9 @@ orbax-checkpoint==0.11.32
 tiktoken==0.12.0
 datasets==4.5.0
 python-dotenv==1.2.2
+# The run's knobs: trm.settings.Config (#475).
+pydantic==2.13.5
+pydantic-settings==2.15.0
 matplotlib==3.10.8
 numpy==2.3.5
 hf-transfer==0.1.9

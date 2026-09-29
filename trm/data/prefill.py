@@ -10,6 +10,7 @@ import time
 import threading
 import queue
 from trm.config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
+from trm.settings import location
 from dotenv import load_dotenv
 
 # Shard order (#364, measured by reading the code below, not assumed): each source is
@@ -22,7 +23,7 @@ load_dotenv()
 
 # Config
 ENC_NAME = TOKENIZER_NAME
-OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
+OUTPUT_DIR = resolve_root(location("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
