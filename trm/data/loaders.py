@@ -81,6 +81,20 @@ class TextDataGenerator:
             print(f"📖 Memory-mapping {path} (resuming at token {self.pointer:,})...")
             self.data = np.load(path, mmap_mode='r')
 
+    def advance(self, samples):
+        """Skip `samples` rows forward from wherever this reader is (#489): the seed
+        offset of a branch. Within the open file it moves the pointer; past it, the
+        rest is left to the file-skipping `skip_count` already does on load."""
+        stride = 2 * self.max_seq_len + 1
+        if self.data is not None:
+            left = (len(self.data) - self.pointer) // stride
+            if samples < left:
+                self.pointer += samples * stride
+                return
+            samples -= left
+            self.data = None
+        self.skip_count += samples
+
     def get_batch(self, batch_size):
         if self.exhausted:
             return None, None
@@ -173,6 +187,26 @@ class DataMixer:
         self._alive = list(state["alive"])
         self.sources = [self._all[i] for i in self._alive]
         self.weights = list(state["weights"])
+
+    def branch_state(self, state, legacy_names, skip=0):
+        """Continue a checkpoint's readers on this mixer's buckets (#489).
+
+        Each bucket the state carries, matched by name, continues from its saved
+        position; a bucket it does not carry starts at its beginning; then every
+        reader skips `skip` rows. The mixer's own draw stream is NOT restored: it
+        stays the one DATA_SEED gave this mixer, so seeds differ in their draws too.
+        A state saved before #439 carries no names; every run then read the default
+        mixture, so `legacy_names` (its buckets, in order) names them."""
+        names = state.get("names") or list(legacy_names)
+        if len(names) != len(state["sources"]):
+            raise ValueError(f"data state has {len(state['sources'])} sources for "
+                             f"{len(names)} names: cannot tell which reader is which")
+        saved = dict(zip(names, state["sources"]))
+        for name, source in zip(self.names, self._all):
+            if name in saved:
+                source.load_state(saved[name])
+            if skip:
+                source.advance(skip)
 
     def set_weights(self, weights):
         """Update mixture weights with a full-length list (one weight per
