@@ -79,3 +79,34 @@ def test_the_banner_is_loud_above_100(monkeypatch):
 def test_unit_names_are_valid_and_carry_the_label():
     name = oom.unit_name("run_20260929 x/y")
     assert name.startswith("trm-run_20260929-x-y-") and name.endswith(".service")
+
+
+def test_a_term_to_the_waiting_runner_stops_its_unit(monkeypatch, tmp_path):
+    """#519's TERM handling lives inside the unit; the waiting outer runner forwards
+    a TERM as `systemctl --user stop`, or the sweep would stay on the card."""
+    import signal
+    import subprocess
+    import threading
+    monkeypatch.setattr(oom, "oom_score_adj", lambda pid="self": 200)
+    monkeypatch.setattr(oom, "user_manager_problem", lambda: None)
+    monkeypatch.setattr(oom, "systemd_run", lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"])
+    stopped, real_run = [], subprocess.run
+    popen = subprocess.Popen
+
+    def fake_popen(cmd, *a, **k):
+        fake_popen.proc = popen(cmd, *a, **k)
+        return fake_popen.proc
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:3] == ["systemctl", "--user", "stop"]:
+            stopped.append(cmd[3])
+            fake_popen.proc.terminate()
+            return subprocess.CompletedProcess(cmd, 0)
+        return real_run(cmd, *a, **k)
+    monkeypatch.setattr(oom.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(oom.subprocess, "run", fake_run)
+    before = signal.getsignal(signal.SIGTERM)
+    threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGTERM)).start()
+    code = oom.rerun_protected(ARGV, {}, tmp_path, "spec")
+    assert code == -signal.SIGTERM and len(stopped) == 1 and stopped[0].startswith("trm-spec-")
+    assert signal.getsignal(signal.SIGTERM) is before, "the runner's own handler is restored"

@@ -18,6 +18,7 @@ from __future__ import annotations
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import time
 
@@ -115,7 +116,24 @@ def rerun_protected(argv: list[str], env: dict[str, str], cwd: pathlib.Path, lab
         return None
     print(f"OOM: oom_score_adj {current} inherited; rerunning under systemd --user at {OOM_SCORE_ADJ} (#524)",
           flush=True)
-    return subprocess.run(systemd_run(argv, {**env, RERUN_MARKER: "1"}, cwd, unit_name(label))).returncode
+    unit = unit_name(label)
+    proc = subprocess.Popen(systemd_run(argv, {**env, RERUN_MARKER: "1"}, cwd, unit))
+
+    # A TERM or Ctrl-C meant for this runner stops the unit, so the rerun's own TERM
+    # handling (#519: stop the arm, then free the card) still runs; killing only this
+    # waiting process would leave the sweep on the card.
+    def stop_unit(*_):
+        subprocess.run(["systemctl", "--user", "stop", unit], capture_output=True)
+
+    previous = signal.signal(signal.SIGTERM, stop_unit)
+    try:
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                stop_unit()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def banner(pid: int | None) -> str:
