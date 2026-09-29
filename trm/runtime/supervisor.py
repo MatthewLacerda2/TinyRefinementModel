@@ -674,7 +674,7 @@ class Supervisor:
 
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, oldest
-        first, at most MILESTONE_SCORERS at a time: the card stays the trainer's, and a
+        first, at most MILESTONE_SCORERS of this supervisor's at a time: the card stays the trainer's, and a
         scorer that outlives this poll is fine — the journal is append-only.
 
         What is already scored comes from the run's journal, not from memory, so the
