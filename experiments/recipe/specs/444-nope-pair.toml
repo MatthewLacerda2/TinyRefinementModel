@@ -1,0 +1,128 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "444-nope"
+status = "open"
+title = "NoPE vs RoPE on the plain stack: tokens to held-out CE 4.0"
+hypothesis = """
+A decoder-only stack with a causal mask already knows position without being told:
+position 0 attends to one key, position 1 to two, and so on, so the network can learn
+positional structure from the mask alone (Kazemnejad et al. 2023; Haviv et al. 2022).
+Deleting RoPE (POSITION_ENCODING=nope) removes the rotation of q and k and nothing else:
+no parameter changes, the init is identical (tests/core/test_nope.py). The question is
+whether, on the shipped recipe (plain, 8 x 960, batch 2, Muon x16.667 on a 6e-4 WSD
+schedule, pad 50257, f16), the model reaches held-out CE 4.0 in fewer tokens without
+it, in more, or in about the same.
+
+The published evidence is mostly algorithmic length generalization, not language-model
+CE at a fixed 512-token window; Haviv et al. is the LM datapoint, and there NoPE came
+close to but behind positional encodings in perplexity, the gap narrowing with scale.
+Kimi K3 is the first frontier model to use NoPE everywhere. Nobody has measured it at
+138M with QK-norm, Muon and f16, so the outcome is genuinely open.
+
+Prediction registered: INCONCLUSIVE, leaning NoPE behind. NoPE needs ~5% more tokens to
+4.0 (range 0 to +12%), not clear of 2 sigma and the 8M-token bar together; KILL is the
+next most likely branch, KEEP the least. Calibration: my four predictions on depth
+recurrence (#238/#242/#246) all credited the mechanism too much, while four recipe
+predictions (#287 twice, #382, #373) were too timid. This is a deletion, and I have
+tried to give the deleted part (RoPE) no more credit than the literature does. If I am
+wrong, I expect parity rather than a NoPE win.
+"""
+issue = 444
+
+[protocol]
+floor_note = """
+No floor arm: the metric is tokens to a target, and the target is itself the floor
+check. An arm that never reaches CE 4.0 inside the cap reports the cap, and two
+capped arms tie as INCONCLUSIVE, never as parity or a win. CE 4.0 is far above chance
+(ln 50304 = 10.8) and below a unigram model (~7.5), so an arm that reaches it has
+learned context. The seed spread is the noise floor: sigma_pooled over three seeds per
+arm, as the referee computes it. Seeds vary init (MODEL_SEED) and a sub-1,025-token
+data offset (DATA_SEED), not document order (#378), so sigma is a lower bound on the
+real noise.
+"""
+cap = 268.435456
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 4.0 (lower is better)"
+matched = "same seed => same init (bit-identical parameters in both arms) and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only POSITION_ENCODING differs"
+notes = """
+The architecture tier (CLAUDE.md): 2,048 opt steps (268M tokens) per arm-seed, the WSD
+schedule completing in-run (decay over the last 20%), warmup 100, the mixture ramp
+budget-relative (#362), val every 16 opt steps on 64 rows (resolution 2.1M tokens),
+val_step-aligned (#351). At the #385 smoke's 6,149 tok/s that is ~12-13 h per
+arm-seed, ~75 h of serial card for the six runs; each run is under 48 h.
+Everything else is the default at the committing commit: 8 layers, batch 2, pad 50257,
+the default mixture. Both arms are new runs.
+Target 4.0 is the one #385 pre-registered for the same horizon and shape. The control
+is expected to reach it well inside the cap (~130-180M tokens); if it does not, the
+seeds that did not are capped and the audit's control-reached-target rule says so.
+min_delta = 8.0M tokens: about 5% of the control's expected tokens and four probe
+intervals. A smaller difference is not worth changing what the base run trains.
+Caveat, stated before the numbers: the first base run (run_20260920_191351) missed its
+LAMBADA gate (0.204 against 0.3256), and CLAUDE.md reads an architecture pair on a
+base below the gate as possibly measuring one mush against another. #489 is testing
+whether the miss is the mixture. This pair runs at the owner's sequencing (#444,
+2026-09-22), and its verdict is read with that caveat.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "4.0", "--opt-steps", "2048", "--val-every", "16",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4", "--tag", "444"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = {}
+
+[arms.rope]
+role = "control"
+flags = []
+
+[arms.nope]
+role = "treatment"
+flags = ["--set", "POSITION_ENCODING=nope"]
+
+# Tokens: LOWER is better, so NoPE winning is RoPE's number being larger.
+[criteria.nope_needs_fewer_tokens]
+rule = "beats"
+treatment = "rope"
+control = "nope"
+sigmas = 2.0
+min_delta = 8.0
+points = ["run"]
+require = "all"
+
+[criteria.nope_needs_more_tokens]
+rule = "loses"
+treatment = "rope"
+control = "nope"
+sigmas = 2.0
+min_delta = 8.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["nope_needs_fewer_tokens"]
+kill_if = ["nope_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers:
+- KEEP: novel at this scale (a NoPE win on LM CE at 138M / 512 tokens is not in the
+  literature). A dated docs/findings/ entry citing this spec, and the PR recording it
+  flips POSITION_ENCODING's default to "nope" for the next base run. rope.py stays: the
+  refiner and reasoner read it.
+- INCONCLUSIVE: RoPE stays the default. A ROADMAP graveyard line ("parity at 138M/512,
+  no reason to switch") linking the PR, and per rule 6 the knob and tests/core/test_nope.py
+  go with it, unless #435 (context length) asks to keep NoPE for length extrapolation,
+  which is the owner's call.
+- KILL: not novel (Haviv et al. 2022 found NoPE behind in LM perplexity). A graveyard
+  line linking the PR; the knob and its tests are deleted in the same diff (rule 6).
+Readouts, no weight: final_val_ce at the cap (the end of both WSD decays);
+minutes_to_target (NoPE skips two rotations per attention call, expected under 1%
+faster); CE by context position on the final checkpoints (instruments.heldout_profile,
+the readout most likely to show WHERE the arms differ: NoPE is expected to be weakest
+at the earliest positions); the per-block act_max/RMS (#392) and the f16 margins; arena
+peak, expected identical. LAMBADA on the finished arms if card time allows. Every
+readout of a nope checkpoint needs POSITION_ENCODING=nope in its environment; without
+it the restore refuses (RoPE's tables are saved state), it does not score it as RoPE.
+"""

@@ -81,7 +81,8 @@ class Config(BaseSettings):
     # 15 heads → head_dim = 960/15 = 64, the tensor-core-clean size on Turing f16.
     # (16 heads would give head_dim 60, not a multiple of 8 → XLA pads to 64: you pay
     # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
-    # asserts pass (dim%heads==0, head_dim even for RoPE).
+    # asserts pass (dim%heads==0, head_dim even for RoPE; POSITION_ENCODING=nope drops
+    # the second).
     NUM_HEADS: int = 15
 
     # Architecture selector, chosen at launch rather than by a code edit:
@@ -107,6 +108,25 @@ class Config(BaseSettings):
     # outside the three refuses to start (#104): the selector would otherwise fall
     # through to a default, the one failure a launch banner does not reliably catch.
     MODEL_ARCH: Literal["plain", "refiner", "reasoner"] = "plain"
+
+    # Where attention gets token position from (#444):
+    #   "rope" — rotary embedding on q and k (trm/model/rope.py). The default: every run
+    #            so far trained with it.
+    #   "nope" — no positional encoding at all. The causal mask is the only source of
+    #            position (Kazemnejad et al. 2023; Kimi K3 uses it everywhere).
+    # No parameter depends on it (same tree, same init); RoPE's cos/sin tables are saved
+    # state, so a checkpoint still refuses to restore across the two, and a resume that
+    # switches is refused earlier by run_tracker.TREE_KEYS. Only the plain stack reads
+    # it; another arch refuses "nope" rather than quietly running RoPE (#104).
+    # Judged by experiments/recipe/specs/444-nope-pair.toml.
+    POSITION_ENCODING: Literal["rope", "nope"] = "rope"
+
+    @field_validator("POSITION_ENCODING")
+    @classmethod
+    def _nope_is_read_only_by_plain(cls, value, info):
+        if value != "rope" and info.data.get("MODEL_ARCH") != "plain":
+            raise ValueError("only MODEL_ARCH=plain reads it; the other arches always use RoPE")
+        return value
 
     # Normalize each residual BRANCH's output before it is added back ("sandwich" /
     # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the

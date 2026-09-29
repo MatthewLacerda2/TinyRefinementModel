@@ -14,7 +14,7 @@ from trm.train.schedules import Schedules
 # resume — and PLAIN_LAYERS used to pass unchecked while retired-arch knobs were checked.
 _SHARED_TREE_KEYS = ("MODEL_ARCH", "LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN")
 TREE_KEYS = {
-    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM"),
+    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM", "POSITION_ENCODING"),
     "refiner": (*_SHARED_TREE_KEYS, "REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL", "POST_NORM"),
     "reasoner": (*_SHARED_TREE_KEYS, "NUM_BLOCKS", "SHARED_SLOTS", "MAX_STEPS_LIMIT"),
 }
