@@ -227,8 +227,10 @@ runs, ablations, smoke tests. The 1TB HDD (`/mnt/d_drive`, under `TRM_cold/`) is
 *cold* tier — mirror artifacts there once they're old or done (champion weights, and the
 tokenized corpus, which is regenerable but cost ~a day to build). Treat the HDD as dumb
 blob storage (copy files); don't train off it or rely on its symlinks/permissions. This
-also keeps the near-full SSD from filling. The tokenized corpus in `runs/data/` is
-sacred — never delete it to free space; archive or surface it instead.
+also keeps the near-full SSD from filling. A run launched with `COLD_ROOT` set does its
+own share (`trm/runtime/cold.py`): milestones mirrored, a full-state copy per stall
+window, mirrored milestones pruned from the SSD to a margin. The tokenized corpus in
+`runs/data/` is sacred — never delete it to free space; archive or surface it instead.
 
 ## How work is tracked — issues, labels, priority
 
