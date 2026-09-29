@@ -104,6 +104,10 @@ def test_sigterm_unwinds_so_a_pending_write_can_finish(tmp_path):
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(30)
         finally:
+            # A second TERM (a session-wide one, then the supervisor's stop, #516)
+            # must not abort the unwinding the first one started.
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)
             open({str(marker)!r}, "w").write("yes")
     """))
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

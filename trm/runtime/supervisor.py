@@ -352,7 +352,7 @@ def _without_path_flags(trainer_args):
 
 
 def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout_s=1800.0, poll_s=5.0,
-                  workroot: pathlib.Path = RUNS_DIR) -> FitResult:
+                  workroot: pathlib.Path = RUNS_DIR, on_launch=lambda pid: None) -> FitResult:
     """Run the real trainer until its first metrics row, then throw it away (#168).
 
     Every launch that died on 2026-08-13 died of memory, at an optimizer apply, a
@@ -365,7 +365,8 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
     It runs from its own directory under runs/, whose relative `runs/` holds the
     probe's run dir and checkpoints, so nothing it writes is where a real resume or
     `discover_latest_checkpoint_run` would look; the directory is removed however
-    the gate ends.
+    the gate ends. `on_launch(pid)` is told the probe's pid (main() names it in the
+    GPU lock, #516).
     """
     if command is None and "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("the fit gate would launch the real trainer inside a test "
@@ -392,6 +393,7 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
     try:
         with log_path.open("w") as log:
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
+        on_launch(proc.pid)
         while True:
             text = read_log_since(log_path)
             if oom_in(text):
@@ -650,6 +652,10 @@ class Supervisor:
     kill_wait_seconds: float = 30.0
     # The pid of a child that outlived stop(); main() leaves it the GPU lock (#512).
     survivor: int | None = field(default=None, init=False)
+    # Told each trainer's pid as it launches; main() names it in the GPU lock, so a
+    # supervisor killed outright leaves a lock its orphaned trainer still holds (#516).
+    on_launch: object = lambda pid: None
+    _child: subprocess.Popen | None = field(default=None, init=False)  # the latest launch(); run() stops it on the way out
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
@@ -661,8 +667,10 @@ class Supervisor:
         self.log_offset = self.log_path.stat().st_size if self.log_path.exists() else 0
         env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1", **self.env}
         log = self.log_path.open("a")
-        return subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
-                                stdout=log, stderr=subprocess.STDOUT)
+        proc = self._child = subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
+                                              stdout=log, stderr=subprocess.STDOUT)
+        self.on_launch(proc.pid)
+        return proc
 
     def stop(self, proc: subprocess.Popen) -> bool:
         """TERM, then KILL; whether the child is gone. The grace period is for the
@@ -705,6 +713,19 @@ class Supervisor:
 
     def run(self) -> str:
         """Supervise to a terminal outcome, relaunching after real crashes only."""
+        try:
+            return self._supervise()
+        except BaseException as exc:
+            # Whatever ends the loop undecided — a bug escaping observe(), a SIGTERM
+            # main() turned into SystemExit, Ctrl-C — the trainer goes first, while
+            # main() still holds the card (#516). One that will not go is `survivor`.
+            if self._child is not None:
+                gone = self.stop(self._child)
+                self.record(f"{_stamp()} ⚠ supervisor exiting on {type(exc).__name__}: pid {self._child.pid} "
+                            + ("stopped first" if gone else "would not stop and keeps the GPU lock"))
+            raise
+
+    def _supervise(self) -> str:
         state = State()
         proc = self.launch()
         started = time.time()
@@ -896,6 +917,16 @@ def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path 
     return run_dir / "checkpoints"
 
 
+def exit_on_sigterm():
+    """Turn SIGTERM into SystemExit, so a supervisor stopped from outside unwinds:
+    run() stops its trainer and main() leaves the GPU lock right (#516). Returns the
+    handler it replaced. The trainer does the same (`exit_cleanly_on_sigterm`)."""
+    def _raise(signum, _frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)  # once: a second must not abort the stop
+        raise SystemExit(128 + signum)
+    return signal.signal(signal.SIGTERM, _raise)
+
+
 def _stamp() -> str:
     return datetime.datetime.now().strftime("%F %T")
 
@@ -997,6 +1028,7 @@ def main(argv=None) -> int:
     print(f"cold tier: {describe_cold(cold)}")
 
     checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
+    lock = GpuLock(label=f"stop_step={args.stop_step}")
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
@@ -1009,6 +1041,7 @@ def main(argv=None) -> int:
         cold=cold,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
         checkpoint_dir=checkpoint_dir,
+        on_launch=lock.name_child,
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
     )
@@ -1020,13 +1053,14 @@ def main(argv=None) -> int:
         supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
         return 1
 
-    lock = GpuLock(label=f"stop_step={args.stop_step}")
+    previous_sigterm = exit_on_sigterm()
     try:
         if not args.no_gpu_lock:
             lock.acquire()
         if not args.skip_fit_gate:
             print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
-            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP)
+            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP,
+                                on_launch=lock.name_child)
             if not fit.ok:
                 raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
             print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
@@ -1038,12 +1072,13 @@ def main(argv=None) -> int:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     finally:
-        # A trainer stop() could not end keeps the card (#512). An exception out of
-        # run() still releases it under a live one: #516.
+        # run() has stopped its trainer however it ended (#516); one stop() could not
+        # end keeps the card (#512).
         if supervisor.survivor is not None:
             lock.leave_to(supervisor.survivor)
         else:
             lock.release()
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
     print(f"outcome: {outcome}")
     if args.spec is not None and outcome == BUDGET_COMPLETE and supervisor.survivor is not None:

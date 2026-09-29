@@ -3,9 +3,11 @@ card a serial queue. Split out of test_supervisor.py (#325)."""
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -309,3 +311,121 @@ def test_a_budget_run_whose_trainer_would_not_die_is_not_scored_on_its_card(tmp_
     code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
                          "--min-free-gb", "0", "--skip-fit-gate", "--no-gpu-lock", "--spec", str(tmp_path / "spec.toml")])
     assert code == 1
+
+
+# --- an abnormal supervisor exit never leaves its trainer under a free card (#516) ---
+
+def _main_argv(tmp_path):
+    return ["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+            "--min-free-gb", "0", "--skip-fit-gate", "--poll-seconds", "0.2", "--stall-polls", "100000"]
+
+
+class _Sleeper(Supervisor):
+    """The real Supervisor, launching a stand-in trainer that only sleeps."""
+    def __init__(self, **kw):
+        super().__init__(**{**kw, "command": (sys.executable, "-c", "import time; time.sleep(600)")})
+
+
+def test_an_exception_out_of_run_stops_the_trainer_before_the_lock_goes(tmp_path, monkeypatch):
+    """The first pass bar of #516: a bug escaping the loop used to propagate to
+    main(), whose `finally` freed the card under a trainer still running."""
+    lock_path = tmp_path / "gpu.lock"
+    children, gone_at_release = [], []
+
+    class WatchedLock(GpuLock):
+        def name_child(self, pid):
+            children.append(pid)
+            super().name_child(pid)
+
+        def release(self):
+            gone_at_release.append(all(_gone(pid) for pid in children))
+            super().release()
+
+    class Faulty(_Sleeper):
+        def observe(self, proc, started):
+            assert f"child {proc.pid}" in lock_path.read_text(), "the trainer is named in the lock"
+            raise RuntimeError("a bug escaping observe()")
+
+    monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": WatchedLock(lock_path, label))
+    monkeypatch.setattr(sup_mod, "Supervisor", Faulty)
+    with pytest.raises(RuntimeError, match="escaping observe"):
+        sup_mod.main(_main_argv(tmp_path))
+    assert len(children) == 1 and gone_at_release == [True], "the trainer goes before the card is freed"
+    assert not lock_path.exists()
+    assert "exiting on RuntimeError" in (tmp_path / "run_x.supervisor.log").read_text()
+
+
+_SUPERVISOR_SCRIPT = """
+import pathlib, sys
+from trm.runtime import supervisor as sup_mod
+from trm.runtime.gpu_lock import GpuLock
+sup_mod.GpuLock = lambda label="": GpuLock(pathlib.Path({lock!r}), label)
+class Sleeper(sup_mod.Supervisor):
+    def __init__(self, **kw):
+        super().__init__(**{{**kw, "command": (sys.executable, "-c", "import time; time.sleep(600)")}})
+sup_mod.Supervisor = Sleeper
+sys.exit(sup_mod.main({argv!r}))
+"""
+
+
+def _supervisor_with_a_trainer(tmp_path):
+    """(a real supervisor process, the pid of the trainer it launched and named in the lock)."""
+    lock_path = tmp_path / "gpu.lock"
+    script = tmp_path / "supervise.py"
+    script.write_text(_SUPERVISOR_SCRIPT.format(lock=str(lock_path), argv=_main_argv(tmp_path)))
+    root = str(sup_mod.REPO_ROOT)
+    proc = subprocess.Popen([sys.executable, str(script)], cwd=root, env={**os.environ, "PYTHONPATH": root},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        text = lock_path.read_text() if lock_path.exists() else ""
+        if "\nchild " in text:
+            return proc, int(text.split("\nchild ")[1].split()[0])
+        time.sleep(0.1)
+    proc.kill()
+    raise AssertionError("the supervisor never named its trainer in the lock")
+
+
+def _clean_up(supervisor, trainer):
+    supervisor.kill()
+    supervisor.wait()
+    if not _gone(trainer):
+        os.kill(trainer, signal.SIGKILL)
+
+
+def test_a_sigterm_to_the_supervisor_stops_its_trainer_and_frees_the_card(tmp_path):
+    """Python's default TERM ran no `finally`: the lock stayed, naming a dead pid, and
+    the next launch took it over beside a trainer still on the card."""
+    supervisor, trainer = _supervisor_with_a_trainer(tmp_path)
+    try:
+        supervisor.send_signal(signal.SIGTERM)
+        assert supervisor.wait(timeout=60) == 128 + signal.SIGTERM
+        assert _gone(trainer), "the trainer goes with its supervisor"
+        assert not (tmp_path / "gpu.lock").exists()
+    finally:
+        _clean_up(supervisor, trainer)
+
+
+def test_a_supervisor_killed_outright_leaves_the_card_to_its_trainer(tmp_path):
+    """The second pass bar of #516. SIGKILL runs no handler, so nothing is stopped;
+    the lock names the trainer, and nothing launches beside it while it lives."""
+    supervisor, trainer = _supervisor_with_a_trainer(tmp_path)
+    try:
+        supervisor.kill()
+        supervisor.wait(timeout=30)
+        assert not _gone(trainer), "the orphaned trainer is still on the card"
+        assert GpuLock(tmp_path / "gpu.lock").live_holder()[0] == trainer
+        with pytest.raises(Preflight, match=rf"held by pid {trainer} \(child of dead pid {supervisor.pid}"):
+            GpuLock(tmp_path / "gpu.lock", label="run-b").acquire()
+    finally:
+        _clean_up(supervisor, trainer)
+
+
+def test_a_lock_whose_holder_and_named_child_both_died_is_stale(tmp_path):
+    dead = [subprocess.Popen([sys.executable, "-c", "pass"]) for _ in range(2)]
+    for proc in dead:
+        proc.wait()
+    path = tmp_path / "gpu.lock"
+    path.write_text(f"{dead[0].pid} run-a\nchild {dead[1].pid}\n")
+    GpuLock(path, label="run-b").acquire()
+    assert GpuLock(path).holder() == (os.getpid(), "run-b")
