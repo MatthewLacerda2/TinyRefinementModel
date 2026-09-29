@@ -217,9 +217,14 @@ def test_a_live_claim_from_a_predecessor_blocks_a_duplicate_and_a_dead_one_does_
     run = tmp_path / "run_k"
     _milestones(run, (100, 200))
     (run / YARDSTICK_CLAIMS).mkdir()
-    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", "instruments.base_run"])
+    # A scorer as the supervisor spawns one: the argv carries the module, --run and --step.
+    foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)",
+                                "instruments.base_run", "score", "--run", str(run), "--step", "100"])
     try:
         (run / YARDSTICK_CLAIMS / "100").write_text(str(foreign.pid))
+        # The same live scorer, claimed for a step it is not on: a stale claim whose
+        # pid a different scorer reused. Not honoured, and deleted.
+        (run / YARDSTICK_CLAIMS / "300").write_text(str(foreign.pid))
         launched = []
         _fake_scorers(monkeypatch, launched, [False])
 
@@ -230,6 +235,7 @@ def test_a_live_claim_from_a_predecessor_blocks_a_duplicate_and_a_dead_one_does_
 
         fresh(1).score_new_milestones()
         assert launched == [], "the predecessor's live scorer fills the cap of one"
+        assert sorted(p.name for p in (run / YARDSTICK_CLAIMS).iterdir()) == ["100"], "300's claim is not its scorer's"
         fresh(2).score_new_milestones()
         assert _steps(launched) == ["200"], "a second slot, and never a duplicate of 100"
     finally:

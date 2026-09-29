@@ -563,15 +563,19 @@ def scored_milestones(run_dir: pathlib.Path) -> set[str]:
     return steps
 
 
-def is_scorer(pid: int) -> bool:
-    """Whether `pid` is a live yardstick scorer: alive and running instruments.base_run.
-    A pid alone would do while it lives, but after a reboot (#384) the pid in an old
-    claim can belong to anything, and a claim held by a stranger would keep its
-    milestone from ever being scored. A zombie's cmdline is empty, so it reads as done."""
+def is_scorer(pid: int, run_dir: pathlib.Path, step: str) -> bool:
+    """Whether `pid` is a live yardstick scorer of this run's milestone `step`: alive,
+    and running instruments.base_run with that --run and --step. A pid alone would do
+    while it lives, but after a reboot (#384) the pid in an old claim can belong to
+    anything, and a claim held by a stranger would keep its milestone waiting on
+    someone else's work. A zombie's cmdline is empty, so it reads as done."""
     try:
-        return b"instruments.base_run" in pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except (OSError, ValueError):
         return False
+    return (b"instruments.base_run" in argv and b"--run" in argv and b"--step" in argv
+            and argv[argv.index(b"--run") + 1] == str(run_dir).encode()
+            and argv[argv.index(b"--step") + 1] == step.encode())
 
 
 def live_claims(run_dir: pathlib.Path) -> set[str]:
@@ -584,7 +588,7 @@ def live_claims(run_dir: pathlib.Path) -> set[str]:
             pid = int(claim.read_text())
         except (OSError, ValueError):
             pid = -1
-        if is_scorer(pid):
+        if is_scorer(pid, run_dir, claim.name):
             live.add(claim.name)
         else:
             claim.unlink(missing_ok=True)
@@ -812,8 +816,12 @@ class Supervisor:
                 self.scorer_argv(step), cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             self._scorers[step] = proc
-            (run_dir / YARDSTICK_CLAIMS).mkdir(exist_ok=True)
-            (run_dir / YARDSTICK_CLAIMS / step).write_text(str(proc.pid))
+            try:
+                (run_dir / YARDSTICK_CLAIMS).mkdir(exist_ok=True)
+                (run_dir / YARDSTICK_CLAIMS / step).write_text(str(proc.pid))
+            except OSError as exc:  # a full disk: this supervisor still counts it, and the run goes on
+                self.announce(f"{_stamp()} ⚠ milestone {step}: no claim written ({exc}); "
+                              f"a restarted supervisor may score it twice")
 
     def announce_unscored_milestones(self) -> None:
         """At run end, name each milestone that has no score and no scorer, with the
