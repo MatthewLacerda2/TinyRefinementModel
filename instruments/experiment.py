@@ -572,7 +572,7 @@ def main(argv=None) -> int:
     if args.dry_run:
         for leg, arm, seed in planned:
             print(f"$ {' '.join(execution.argv(leg, arm, seed))}")
-        holder = GpuLock().holder()
+        holder = GpuLock().live_holder()
         if holder:
             print(f"\n(the card is currently claimed by pid {holder[0]} "
                   f"{holder[1] or 'unlabelled'})")

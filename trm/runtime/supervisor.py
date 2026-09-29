@@ -1078,7 +1078,7 @@ def main(argv=None) -> int:
             lock.leave_to(supervisor.survivor)
         else:
             lock.release()
-        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
 
     print(f"outcome: {outcome}")
     if args.spec is not None and outcome == BUDGET_COMPLETE and supervisor.survivor is not None:
