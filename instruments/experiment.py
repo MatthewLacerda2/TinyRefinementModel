@@ -36,6 +36,7 @@ import contextlib
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -49,6 +50,7 @@ from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
 from trm.runtime.gpu_lock import GpuLock, Preflight
+from trm.runtime.oom import rerun_protected
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -577,6 +579,14 @@ def main(argv=None) -> int:
             print(f"\n(the card is currently claimed by pid {holder[0]} "
                   f"{holder[1] or 'unlabelled'})")
         return 0
+
+    # Arms started from a Claude shell inherit oom_score_adj 200 and are the kernel's
+    # first OOM victim (#524): the whole sweep reruns under the user manager at 100.
+    rerun = rerun_protected([sys.executable, "-m", "instruments.experiment",
+                             *(sys.argv[1:] if argv is None else argv)],
+                            dict(os.environ), REPO_ROOT, label=spec.id)
+    if rerun is not None:
+        return rerun
 
     if not args.no_gate:
         run_gate(REPO_ROOT)
