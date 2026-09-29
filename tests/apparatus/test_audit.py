@@ -151,6 +151,54 @@ def test_no_floor_declared_is_not_applicable(repo):
     assert audit.floor_both_arms(load(repo, spec_text())).state == NA
 
 
+AGAINST_THE_FLOOR = """\
+[experiment]
+id = "001-toy"
+status = "open"
+title = "a single run against a published reference, the base spec's shape"
+hypothesis = "Prediction registered: 0.29."
+issue = 999
+
+[protocol]
+metric_key = "acc"
+
+[execution]
+command = ["python", "-m", "x"]
+seeds = [0]
+
+[arms.run]
+role = "treatment"
+flags = []
+
+[arms.reference]
+role = "floor"
+constant = true
+
+[results.p]
+reference = { mean = 0.3256, sigma = 0.0, n = 1 }
+run = [0.2036]
+
+[criteria.misses]
+rule = "loses"
+treatment = "run"
+control = "reference"
+sigmas = 0.0
+min_delta = 0.05
+points = ["p"]
+
+[verdict]
+kill_if = ["misses"]
+"""
+
+
+def test_a_kill_measured_against_the_floor_arm_is_not_a_shared_failure(repo):
+    """The base run's gate compares one run with a constant reference declared as its
+    floor. Missing it by 0.12 is the verdict, not both arms failing together."""
+    a = load(repo, AGAINST_THE_FLOOR)
+    assert a.verdict.outcome == "KILL"
+    assert audit.floor_both_arms(a).state == GREEN
+
+
 # --- seeds-complete -------------------------------------------------------------------
 
 def test_a_missing_seed_is_red_until_marked_void(repo):

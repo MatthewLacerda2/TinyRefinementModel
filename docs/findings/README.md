@@ -40,6 +40,7 @@ things, it doesn't go in this folder.
 - `2026-09-18-the-lr-curve-flattens-6e-4-beats-3e-4-by-1-24x.md` — #287 stage 2: peak 6e-4 reaches CE 5.85 in 1.24x fewer tokens than 3e-4 (which beat 1e-4 by 2.25x), scaler and logits flat but the largest activation nearly doubles; #26 stage 3's control is stale (KEEP)
 - `2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md` — #382: Muon (x16.667 on a 6e-4 schedule) reaches CE 5.85 in 1.32x fewer tokens than AdamW at its best peak 6e-4; its lead went 2.1x → 1.42x → 1.32x as the baseline was tuned, at +4.8% per step and 380 MiB less arena (KEEP)
 - `2026-09-21-a-warmup-clip-enlarges-adams-steps-for-thousands-of-steps-after-it-stops.md` — #447: clip_by_global_norm(1.0) in front of Muon+AdamW turns Muon's matrix update while it binds (cosine 0.87–0.90 in steps 0–100) and leaves AdamW's steps 1.6x larger at steps 1000–1300, after it has stopped binding, through v's memory — decaying to 1.1x by step 4,000 (KEEP)
+- `2026-09-28-the-first-finished-base-model-misses-lambada-by-its-mix.md` — base run 001: the first model trained to its budget (5B tokens) beats GPT-2 124M on its own FineWeb-Edu held-out by 0.44 nats and misses the LAMBADA gate, 0.204 vs 0.3256 (KILL); 0.48 nats behind on the open web — read as a data-mix gap, tested by #489
 
 ## Entry template
 
