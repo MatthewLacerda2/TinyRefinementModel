@@ -2,7 +2,7 @@
 
 [experiment]
 id = "489-general-web"
-status = "open"
+status = "recorded"
 title = "General web in the decay mix: does the LAMBADA miss come from the mixture?"
 hypothesis = """
 The first base run (run_20260920_191351, 5B tokens) missed its gate: LAMBADA 0.204 against
@@ -96,6 +96,7 @@ points = ["run"]
 require = "all"
 
 [verdict]
+recorded = "KEEP"
 keep_if = ["general_web_lifts_lambada"]
 kill_if = ["general_web_lowers_lambada"]
 
@@ -115,3 +116,8 @@ Readouts, no weight: fineweb_ce (open web, predicted the clearest mover), heldou
 trend, not a level) and math_ce, lambada_ppl. The control arm's endpoint against the base
 run's 0.204 says what a 3.7x shorter decay costs, which the INCONCLUSIVE reading needs.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = lambada_acc) ---
+[results.run]
+control = [0.2043, 0.2020, 0.2001]
+general_web = [0.2451, 0.2381, 0.2305]
