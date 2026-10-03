@@ -324,7 +324,7 @@ class HotPath:
     back the module objects brought up to date, and anything done through them (a
     checkpoint, validation, `reset_state`) is picked up by the next call.
     Bit-identical to compute_grad_step + apply_grads, on the CPU and on the card
-    (tests/core/test_hot_path.py; the card check is in #474).
+    (tests/core/test_hot_path.py; on the card, tests/expensive/test_gpu_identity.py, #540).
     """
 
     def __init__(self, model, opt, *, z_loss_weight):
