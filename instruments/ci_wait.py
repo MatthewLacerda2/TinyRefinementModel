@@ -13,6 +13,9 @@ commits. So this never trusts whatever check set happens to exist: a run GitHub 
 `skipped` is the draft guard firing and is never selected, and in `--ready` mode only a
 run that did not exist before the undraft counts.
 
+When the PR's branch is checked out, the head waited on is the local commit, not
+whatever GitHub reports in the seconds after a push (it can still be the previous one).
+
 Exit status: 0 when every selected run's jobs ended success/skipped/neutral, 1 when any
 failed, 2 when no run appeared (a markdown-only diff skips CI by `paths-ignore`).
 """
@@ -72,9 +75,32 @@ def gh(*args: str) -> str:
 
 
 def pr_head(pr: int) -> tuple[str, bool]:
-    """(head sha, is draft), through REST, which every session can reach."""
-    pull = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"))
-    return pull["head"]["sha"], pull["draft"]
+    """(head sha, is draft), through REST, which every session can reach.
+
+    Right after a push GitHub can still report the previous head for a few seconds, and
+    waiting on that SHA reads its finished runs as this push's. So when the PR's branch
+    is the one checked out here, the head to wait on is the local commit, and this
+    waits until GitHub reports it."""
+    start = time.monotonic()
+    while True:
+        pull = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"))
+        local = expected_head(pull["head"]["ref"], git("rev-parse", "--abbrev-ref", "HEAD"), git("rev-parse", "HEAD"))
+        if local in (None, pull["head"]["sha"]) or time.monotonic() - start > APPEAR_S:
+            return local or pull["head"]["sha"], pull["draft"]
+        print(f"GitHub still reports {pull['head']['sha'][:10]} as #{pr}'s head; waiting for {local[:10]}", flush=True)
+        time.sleep(POLL_S)
+
+
+def expected_head(pr_branch: str, local_branch: str | None, local_sha: str | None) -> str | None:
+    """The local commit when the PR's branch is checked out here, else None (trust GitHub)."""
+    return local_sha if local_branch == pr_branch else None
+
+
+def git(*args: str) -> str | None:
+    try:
+        return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def run_list(sha: str) -> list[dict]:

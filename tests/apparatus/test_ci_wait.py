@@ -7,7 +7,7 @@ and a pair from a later event on the same SHA.
 
 import pytest
 
-from instruments.ci_wait import select_runs, verdict
+from instruments.ci_wait import expected_head, select_runs, verdict
 
 # Needs neither jax, numpy nor tests/conftest.py: CI runs it in the seconds-long
 # lint job instead of the jax-heavy pytest job (#325).
@@ -66,3 +66,11 @@ def test_verdict_fails_on_any_failed_job_and_passes_skipped_ones():
     bad = dict(ok, **{"Review Gate": [{"name": "review", "conclusion": "failure"}]})
     passed, lines = verdict(bad)
     assert not passed and any("FAILED" in line for line in lines)
+
+
+def test_after_a_push_the_local_commit_is_the_head_to_wait_on():
+    # The first real use of `ci-wait` right after a push read the previous head's finished
+    # runs: GitHub had not yet moved the PR's head to the pushed commit.
+    assert expected_head("tools/x", "tools/x", "new") == "new"
+    assert expected_head("tools/x", "main", "other") is None  # not this PR's branch: trust GitHub
+    assert expected_head("tools/x", None, None) is None  # not in a checkout
