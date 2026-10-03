@@ -14,6 +14,7 @@ Field name = environment variable = the key in run_metadata.json.
 """
 
 import os
+import pathlib
 from typing import Annotated, Literal
 
 from pydantic import BeforeValidator, PositiveInt, ValidationError, computed_field, field_validator
@@ -480,6 +481,31 @@ def location(name, default=None, environ=os.environ):
     """A path from the environment, read now; `default` when unset."""
     assert name in LOCATIONS, f"{name} is not a location; a knob belongs on Config"
     return environ.get(name, default)
+
+
+# The checkout this code runs from: its .env is the only one ever read (#541).
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def env_file(root=REPO_ROOT):
+    """`root/.env` as a dict, a relative location resolved against `root`; {} without one.
+
+    Never searches upward: python-dotenv's default walks to parent directories, so a
+    worktree nested inside the repo picked up the root's .env and resolved its relative
+    DATA_ROOT inside the worktree, where there is no corpus (#541)."""
+    from dotenv import dotenv_values  # here, not at the top: the jaxfree CI jobs lack it
+    values = {k: v for k, v in dotenv_values(pathlib.Path(root) / ".env").items() if v is not None}
+    for name in LOCATIONS:
+        value = values.get(name)
+        if value and "://" not in value:
+            values[name] = str((pathlib.Path(root) / value).resolve())
+    return values
+
+
+def load_env(root=REPO_ROOT, environ=os.environ):
+    """Load `env_file(root)` into the environment; a value already set there wins."""
+    for name, value in env_file(root).items():
+        environ.setdefault(name, value)
 
 
 # The launching process's Config, read when this module is first imported. Only entry

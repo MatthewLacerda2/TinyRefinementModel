@@ -15,11 +15,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from flax import nnx
-from dotenv import load_dotenv
 
 from trm.config import MAX_STEPS_LIMIT, resolve_root
 from trm.model import build_model
-from trm.settings import DEFAULT_DATA_MIXTURE, location
+from trm.settings import DEFAULT_DATA_MIXTURE, load_env, location
 from trm.runtime.layout import LOG_REAL_STEPS
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, milestone_thresholds,
                                      save_checkpoint, save_milestone, wait_for_pending_saves)
@@ -33,7 +32,7 @@ from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
 from trm.runtime.metrics import MetricsLogger
 from trm.data.loaders import TextDataGenerator, DataMixer
 
-load_dotenv()
+load_env()
 
 PREFETCH_SIZE = 128
 

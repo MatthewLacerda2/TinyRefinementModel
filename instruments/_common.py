@@ -65,16 +65,14 @@ def param_count(model):
 
 
 def load_env():
-    """Load the repo's `.env` into the environment (DATA_ROOT and friends).
+    """Load this checkout's `.env` into the environment (DATA_ROOT and friends, secrets).
 
-    Where it is called decides what `.env` may set. trm.settings reads MODEL_ARCH,
-    TIME_SIGNAL and the rest once, when anything in trm first imports it: called
-    before that, `.env` can set them; called after, only the locations read at run
-    time (DATA_ROOT, CHECKPOINT_ROOT) take effect,
-    which is what a tool that wants config knobs set in the shell does on purpose.
-    Values already in the environment win either way."""
-    from dotenv import load_dotenv
-    load_dotenv()
+    `trm.settings.load_env`, imported inside the call so `--help` stays instant. Importing it reads
+    CONFIG first, so `.env` supplies the locations read at run time and secrets such as
+    HF_TOKEN, never a Config knob: those are set in the shell. Values already in the
+    environment win; the file is never searched for upward (#541)."""
+    from trm.settings import load_env
+    load_env()
 
 
 def module_env(root=REPO_ROOT, **extra):

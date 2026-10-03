@@ -10,8 +10,7 @@ import time
 import threading
 import queue
 from trm.config import TOKENIZER_NAME, resolve_root
-from trm.settings import CONFIG, location
-from dotenv import load_dotenv
+from trm.settings import CONFIG, load_env, location
 
 # Shard order (#364, measured by reading the code below, not assumed): each source is
 # streamed with load_dataset(..., streaming=True) and never shuffled, so the chunk
@@ -19,7 +18,7 @@ from dotenv import load_dotenv
 # sequentially. Consecutive micro-steps from one source are neighbours in that order.
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
-load_dotenv()
+load_env()
 
 # Config
 ENC_NAME = TOKENIZER_NAME

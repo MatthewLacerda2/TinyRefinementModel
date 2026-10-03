@@ -12,12 +12,11 @@ import os
 
 import numpy as np
 import pytest
-from dotenv import load_dotenv
 
 from trm.config import EOT_TOKEN_ID, VOCAB_SIZE, resolve_root
-from trm.settings import CONFIG
+from trm.settings import CONFIG, load_env
 
-load_dotenv()
+load_env()
 
 SAMPLE_TOKENS = 2_000_000  # per file: head slice + random slices
 
