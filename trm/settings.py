@@ -442,9 +442,10 @@ class Config(BaseSettings):
     VRAM_HEADROOM_ALARM_MIB: float = 150.0
 
     # ── Milestone scoring (the supervisor's, #471) ────────────────────────────
-    # CPU LAMBADA scorers the supervisor keeps alive at once; the rest wait for a
-    # later poll. One scorer is ~1.5 GB of RAM and ~40 min of CPU on a 15 GB box
-    # the trainer also needs; nine at once is the OOM that killed a run (#471).
+    # CPU LAMBADA scorers alive at once on a run, a predecessor supervisor's counted
+    # through their claims (#506); the rest wait for a later poll. One scorer is
+    # ~1.5 GB of RAM and ~40 min of CPU on a 15 GB box the trainer also needs; nine
+    # at once is the OOM that killed a run (#471).
     MILESTONE_SCORERS: PositiveInt = 1
 
 

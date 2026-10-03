@@ -38,7 +38,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from trm.runtime.gpu_lock import GpuLock, _pid_alive
+from trm.runtime.gpu_lock import GpuLock
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
@@ -223,8 +223,8 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
 
 
 def card_state() -> Card:
-    holder = GpuLock().holder()
-    if holder and _pid_alive(holder[0]):
+    holder = GpuLock().live_holder()
+    if holder:
         return Card(False, f"GPU lock held by pid {holder[0]} {holder[1]}".strip())
     try:
         out = subprocess.run(

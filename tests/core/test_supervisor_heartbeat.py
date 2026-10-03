@@ -99,6 +99,8 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 
@@ -188,6 +190,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 

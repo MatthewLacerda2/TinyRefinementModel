@@ -38,6 +38,7 @@ import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -46,8 +47,9 @@ import time
 from dataclasses import dataclass, field
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
-from trm.runtime.gpu_lock import GpuLock, Preflight
-from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_JOURNAL  # jax-free
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
+from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
+from trm.runtime.rewind import unresumable  # jax-free
 from trm.settings import CONFIG, Config, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -70,6 +72,10 @@ CHECKPOINTS_PER_WRITE = 3
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
+# The checkpoint a (re)launch would resume is refused (rewind.unresumable, #505).
+# Not DELIBERATE: it waits for a human, so the supervisor exits non-zero, and a
+# `make resume` after it tries again, since the fix (a rewind) may have landed.
+REFUSED_RESUME = "REFUSED_RESUME"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
@@ -116,6 +122,9 @@ class Observation:
     # The f16 margins the last metrics row crosses (#368), as (kind, sentence). An
     # alarm, announced when it appears and when it clears; never a kill.
     margins: tuple = ()
+    # Why the checkpoint a relaunch would resume is refused (rewind.unresumable),
+    # read while the child is dead; None when it is resumable or nothing is.
+    resume_refusal: str | None = None
 
 
 @dataclass
@@ -254,6 +263,10 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
             return Decision(STOP, KILLED_OOM,
                             f"died at step {obs.step} with an out-of-memory failure; "
                             f"relaunching would repeat it exactly")
+        # The same for a checkpoint the trainer refuses to resume: every relaunch
+        # would be refused alike, then read as GAVE_UP (#505).
+        if obs.resume_refusal:
+            return Decision(STOP, REFUSED_RESUME, obs.resume_refusal)
         if state.retries_used >= limits.max_retries:
             return Decision(GIVE_UP, GAVE_UP,
                             f"died before budget and {limits.max_retries} relaunches were used")
@@ -339,7 +352,7 @@ def _without_path_flags(trainer_args):
 
 
 def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout_s=1800.0, poll_s=5.0,
-                  workroot: pathlib.Path = RUNS_DIR) -> FitResult:
+                  workroot: pathlib.Path = RUNS_DIR, on_launch=lambda pid: None) -> FitResult:
     """Run the real trainer until its first metrics row, then throw it away (#168).
 
     Every launch that died on 2026-08-13 died of memory, at an optimizer apply, a
@@ -352,7 +365,8 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
     It runs from its own directory under runs/, whose relative `runs/` holds the
     probe's run dir and checkpoints, so nothing it writes is where a real resume or
     `discover_latest_checkpoint_run` would look; the directory is removed however
-    the gate ends.
+    the gate ends. `on_launch(pid)` is told the probe's pid (main() names it in the
+    GPU lock, #516).
     """
     if command is None and "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("the fit gate would launch the real trainer inside a test "
@@ -379,6 +393,7 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
     try:
         with log_path.open("w") as log:
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
+        on_launch(proc.pid)
         while True:
             text = read_log_since(log_path)
             if oom_in(text):
@@ -550,6 +565,38 @@ def scored_milestones(run_dir: pathlib.Path) -> set[str]:
     return steps
 
 
+def is_scorer(pid: int, run_dir: pathlib.Path, step: str) -> bool:
+    """Whether `pid` is a live yardstick scorer of this run's milestone `step`: alive,
+    and running instruments.base_run with that --run and --step. A pid alone would do
+    while it lives, but after a reboot (#384) the pid in an old claim can belong to
+    anything, and a claim held by a stranger would keep its milestone waiting on
+    someone else's work. A zombie's cmdline is empty, so it reads as done."""
+    try:
+        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return False
+    return (b"instruments.base_run" in argv and b"--run" in argv and b"--step" in argv
+            and argv[argv.index(b"--run") + 1] == str(run_dir).encode()
+            and argv[argv.index(b"--step") + 1] == step.encode())
+
+
+def live_claims(run_dir: pathlib.Path) -> set[str]:
+    """The milestone steps some scorer, this supervisor's or a predecessor's, is
+    working on now (#506). A claim whose scorer is gone is deleted on sight."""
+    live = set()
+    claims = run_dir / YARDSTICK_CLAIMS
+    for claim in (claims.iterdir() if claims.is_dir() else ()):
+        try:
+            pid = int(claim.read_text())
+        except (OSError, ValueError):
+            pid = -1
+        if is_scorer(pid, run_dir, claim.name):
+            live.add(claim.name)
+        else:
+            claim.unlink(missing_ok=True)
+    return live
+
+
 # --- the loop -----------------------------------------------------------------
 
 @dataclass
@@ -597,8 +644,20 @@ class Supervisor:
     # full-state copy when the run ends. None when no COLD_ROOT is set.
     cold: ColdTier | None = None
     _cold_error: str | None = None
+    # The checkpoints a relaunch resumes (resumed_checkpoint_dir); None when the
+    # command resumes nothing.
+    checkpoint_dir: pathlib.Path | None = None
+    # How long stop() waits for the child after SIGTERM, then after SIGKILL.
+    stop_grace_seconds: float = 60.0
+    kill_wait_seconds: float = 30.0
+    # The pid of a child that outlived stop(); main() leaves it the GPU lock (#512).
+    survivor: int | None = field(default=None, init=False)
+    # Told each trainer's pid as it launches; main() names it in the GPU lock, so a
+    # supervisor killed outright leaves a lock its orphaned trainer still holds (#516).
+    on_launch: object = lambda pid: None
+    _child: subprocess.Popen | None = field(default=None, init=False)  # the latest launch(); run() stops it on the way out
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
-    _scorers: list = field(default_factory=list)  # their handles, pruned of finished ones each poll
+    _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -608,37 +667,65 @@ class Supervisor:
         self.log_offset = self.log_path.stat().st_size if self.log_path.exists() else 0
         env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1", **self.env}
         log = self.log_path.open("a")
-        return subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
-                                stdout=log, stderr=subprocess.STDOUT)
+        proc = self._child = subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
+                                              stdout=log, stderr=subprocess.STDOUT)
+        self.on_launch(proc.pid)
+        return proc
 
-    def stop(self, proc: subprocess.Popen, grace: float = 60.0) -> None:
-        """TERM, then KILL. The grace period is for the trainer to finish writing
-        a checkpoint — killing it mid-write is how a run loses its last hour."""
+    def stop(self, proc: subprocess.Popen) -> bool:
+        """TERM, then KILL; whether the child is gone. The grace period is for the
+        trainer to finish writing a checkpoint — killing it mid-write is how a run
+        loses its last hour. A child that outlives even the KILL (stuck in the driver,
+        uninterruptible) is named in `survivor`, and the GPU lock is left to it (#512)."""
         if proc.poll() is not None:
-            return
+            return True
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=grace)
+            proc.wait(timeout=self.stop_grace_seconds)
+            return True
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=30)
+        try:
+            proc.wait(timeout=self.kill_wait_seconds)
+            return True
+        except subprocess.TimeoutExpired:
+            self.survivor = proc.pid
+            self.announce(f"{_stamp()} ⚠ pid {proc.pid} is still alive after SIGKILL; "
+                          f"the GPU lock is left to it, so nothing launches onto its card")
+            return False
 
     def observe(self, proc: subprocess.Popen, started: float) -> Observation:
         step, ce = read_progress(self.metrics_csv)
         text = read_log_since(self.log_path, self.log_offset)
         run_dir = self.metrics_csv.parent
+        alive = proc.poll() is None
         return Observation(
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            alive=proc.poll() is None,
+            alive=alive,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
             margins=margin_alarms(self.config, read_last_row(self.metrics_csv)),
+            resume_refusal=(unresumable(self.checkpoint_dir, self.config.ACCUMULATION_STEPS)
+                            if not alive and self.checkpoint_dir is not None else None),
         )
 
     def run(self) -> str:
         """Supervise to a terminal outcome, relaunching after real crashes only."""
+        try:
+            return self._supervise()
+        except BaseException as exc:
+            # Whatever ends the loop undecided — a bug escaping observe(), a SIGTERM
+            # main() turned into SystemExit, Ctrl-C — the trainer goes first, while
+            # main() still holds the card (#516). One that will not go is `survivor`.
+            if self._child is not None:
+                gone = self.stop(self._child)
+                self.record(f"{_stamp()} ⚠ supervisor exiting on {type(exc).__name__}: pid {self._child.pid} "
+                            + ("stopped first" if gone else "would not stop and keeps the GPU lock"))
+            raise
+
+    def _supervise(self) -> str:
         state = State()
         proc = self.launch()
         started = time.time()
@@ -669,16 +756,20 @@ class Supervisor:
 
             if decision.action == CONTINUE:
                 continue
-            if decision.action in (STOP, KILL):
+            # GIVE_UP stops the child too: it is the wedged one when it is alive,
+            # and the run is over either way (#512).
+            if decision.action in (STOP, KILL, GIVE_UP):
                 self.stop(proc)
-                self.tend_cold_tier(final=True)
-                return decision.outcome
-            if decision.action == GIVE_UP:
-                self.tend_cold_tier(final=True)
+                self.end()
                 return decision.outcome
             if decision.action in (RELAUNCH, RESTART):
-                if decision.action == RESTART:
-                    self.stop(proc)  # wedged, so it is still up and has to go
+                # A wedged child is still up and has to go; one that outlives SIGKILL
+                # still holds the card, and a relaunch beside it would only OOM.
+                if decision.action == RESTART and not self.stop(proc):
+                    self.announce(f"{_stamp()} {GAVE_UP}: pid {proc.pid} could not be stopped, "
+                                  f"so the run cannot be relaunched")
+                    self.end()
+                    return GAVE_UP
                 proc = self.launch()
                 started = time.time()
                 self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
@@ -690,7 +781,7 @@ class Supervisor:
         if self.cold is None:
             return
         try:
-            for line in self.cold.tick(final=final):
+            for line in self.cold.tick(final=final, keep=self.owed_milestones()):
                 self.record(f"{_stamp()} {line}")
         except Exception as exc:  # whatever it is, supervision of the run goes on
             if str(exc) != self._cold_error:
@@ -701,40 +792,100 @@ class Supervisor:
             self.announce(f"{_stamp()} cold tier back: {self.cold.cold_run}")
         self._cold_error = None
 
+    def end(self) -> None:
+        """What every terminal outcome owes before the supervisor returns: the cold
+        tier's last copy, and a word on every milestone still unscored (#506)."""
+        self.tend_cold_tier(final=True)
+        if self.spec is not None:
+            self.announce_unscored_milestones()
+
+    def scorer_argv(self, step: str) -> list[str]:
+        """The command that scores milestone `step` on the CPU, run from REPO_ROOT."""
+        run_dir = self.metrics_csv.parent
+        return [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                "--checkpoint-dir", str(run_dir / "checkpoints" / MILESTONE_SUBDIR), "--step", step,
+                "--limit", str(self.milestone_limit), "--cpu"]
+
+    def unscored_milestones(self) -> tuple[list[str], set[str]]:
+        """(the run's finalized milestones with no score in its journal and no scorer on
+        them, oldest first; the steps scorers are on now). The scorers counted are this
+        supervisor's and any a predecessor left running, seen through their claims (#506).
+        Reaps this supervisor's finished scorers and drops their claims on the way."""
+        run_dir = self.metrics_csv.parent
+        for step, proc in list(self._scorers.items()):
+            if proc.poll() is not None:  # poll() reaps it
+                del self._scorers[step]
+                (run_dir / YARDSTICK_CLAIMS / step).unlink(missing_ok=True)
+        running = set(self._scorers) | live_claims(run_dir)
+        done = scored_milestones(run_dir) | running
+        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
+        unscored = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
+                           if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
+                          key=int)
+        return unscored, running
+
+    def owed_milestones(self) -> frozenset[str]:
+        """The milestones the cold tier must leave on the SSD (#515): with a spec, every
+        one the journal holds no score for, queued, claimed or failed, since its scorer
+        reads the SSD copy. Without a spec nothing is scored, so nothing is owed."""
+        if self.spec is None:
+            return frozenset()
+        unscored, running = self.unscored_milestones()
+        return frozenset(unscored) | running
+
     def score_new_milestones(self) -> None:
         """Every finalized milestone gets one CPU yardstick pass, detached, oldest
-        first, at most MILESTONE_SCORERS of this supervisor's at a time: the card stays the trainer's, and a
+        first, at most MILESTONE_SCORERS at a time: the card stays the trainer's, and a
         scorer that outlives this poll is fine — the journal is append-only.
 
-        What is already scored comes from the run's journal, not from memory, so the
-        fresh supervisor a resume makes does not score every milestone again; and the
-        cap leaves the rest for a later poll. Both at once is how a relaunch spawned
-        nine 1.5 GB scorers in one poll and OOM-killed the run (#471).
+        What is already scored comes from the run's journal, and what is being scored
+        from the claim each scorer leaves in <run-dir>/yardstick_claims, not from
+        memory: so the fresh supervisor a resume or a restart makes neither scores every
+        milestone again (#471) nor starts a duplicate beside a scorer its predecessor
+        left running, and the cap counts those too (#506). Nine 1.5 GB scorers at once
+        is how a relaunch OOM-killed a run (#471).
 
         The scorer is told the milestone's own dir and step (#328). Left to itself it
         scored the newest rolling checkpoint, which is not the milestone, and which
         rolling retention can evict while a slow CPU pass is still restoring it;
         milestones are the one kind nothing evicts."""
         run_dir = self.metrics_csv.parent
-        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
-        if not milestones.is_dir():
+        if not (run_dir / "checkpoints" / MILESTONE_SUBDIR).is_dir():
             return
-        self._scorers = [p for p in self._scorers if p.poll() is None]  # poll() reaps the finished
-        done = self._scored | scored_milestones(run_dir)
-        owed = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
-                       if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
-                      key=int)
-        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(self._scorers))]):
+        unscored, running = self.unscored_milestones()
+        # One this supervisor already tried, whose scorer failed, waits for the next
+        # supervisor rather than being retried every poll.
+        owed = [step for step in unscored if step not in self._scored]
+        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(running))]):
             self._scored.add(step)
             waiting = len(owed) - i - 1
             self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU"
                           + (f" ({waiting} more wait for a free scorer)" if waiting else ""))
-            self._scorers.append(subprocess.Popen(
-                [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
-                 "--checkpoint-dir", str(milestones), "--step", step,
-                 "--limit", str(self.milestone_limit), "--cpu"],
-                cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+            proc = subprocess.Popen(
+                self.scorer_argv(step), cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._scorers[step] = proc
+            try:
+                (run_dir / YARDSTICK_CLAIMS).mkdir(exist_ok=True)
+                (run_dir / YARDSTICK_CLAIMS / step).write_text(str(proc.pid))
+            except OSError as exc:  # a full disk: this supervisor still counts it, and the run goes on
+                self.announce(f"{_stamp()} ⚠ milestone {step}: no claim written ({exc}); "
+                              f"a restarted supervisor may score it twice")
+
+    def announce_unscored_milestones(self) -> None:
+        """At run end, name each milestone that has no score and no scorer, with the
+        command that scores it (#506). Usually the last one: nothing polls after the
+        run ends, so it would otherwise go unscored and unsaid. Scorers still running
+        are left to finish; their lines land in the journal."""
+        unscored, running = self.unscored_milestones()
+        if not unscored:
+            return
+        self.announce(
+            f"{_stamp()} ⚠ the run ended with {len(unscored)} milestone(s) unscored: {', '.join(unscored)}"
+            + (f" (scorers still running on {', '.join(sorted(running, key=int))})" if running else "")
+            + ". Score each with:\n" + "\n".join(
+                f"    cd {shlex.quote(str(REPO_ROOT))} && {shlex.join(self.scorer_argv(step))}"
+                for step in unscored))
 
     def record(self, message: str) -> None:
         """Append one line to the heartbeat file, opened and closed per line so no
@@ -749,6 +900,21 @@ class Supervisor:
         """Record it, and report it to the human-facing destination."""
         self.record(message)
         self.report(message)
+
+
+def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path | None:
+    """The checkpoint dir the trainer these arguments launch resumes: its
+    --checkpoint-path (against the repo root, its cwd), else the run dir's own, where
+    start.py puts them. None under --new-run, which every relaunch replays."""
+    args = list(trainer_args)
+    if "--new-run" in args:
+        return None
+    for i, arg in enumerate(args):
+        if arg == "--checkpoint-path" and i + 1 < len(args):
+            return REPO_ROOT / args[i + 1]
+        if arg.startswith("--checkpoint-path="):
+            return REPO_ROOT / arg.split("=", 1)[1]
+    return run_dir / "checkpoints"
 
 
 def _stamp() -> str:
@@ -851,6 +1017,8 @@ def main(argv=None) -> int:
                         protected=protected_roots())
     print(f"cold tier: {describe_cold(cold)}")
 
+    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
+    lock = GpuLock(label=f"stop_step={args.stop_step}")
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
@@ -862,17 +1030,27 @@ def main(argv=None) -> int:
         spec=args.spec,
         cold=cold,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
+        checkpoint_dir=checkpoint_dir,
+        on_launch=lock.name_child,
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
     )
 
-    lock = GpuLock(label=f"stop_step={args.stop_step}")
+    # Refused before the lock, the fit gate and the first launch: a trainer launched
+    # onto this checkpoint would only be refused the same way (#505).
+    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
+    if why:
+        supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
+        return 1
+
+    previous_sigterm = exit_on_sigterm()
     try:
         if not args.no_gpu_lock:
             lock.acquire()
         if not args.skip_fit_gate:
             print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
-            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP)
+            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP,
+                                on_launch=lock.name_child)
             if not fit.ok:
                 raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
             print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
@@ -880,33 +1058,52 @@ def main(argv=None) -> int:
                   + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
                   flush=True)
         outcome = supervisor.run()
+        print(f"outcome: {outcome}")
+        if args.spec is not None and outcome == BUDGET_COMPLETE:
+            # Inside the try: the final yardstick runs on the card, so the lock is held
+            # through it and released after, never before (#523).
+            return final_yardstick(args, supervisor, outcome)
+        return 0 if outcome in DELIBERATE else 1
     except Preflight as exc:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     finally:
-        lock.release()
+        # run() has stopped its trainer however it ended (#516); one stop() could not
+        # end keeps the card (#512).
+        if supervisor.survivor is not None:
+            lock.leave_to(supervisor.survivor)
+        else:
+            lock.release()
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
 
-    print(f"outcome: {outcome}")
-    if args.spec is not None and outcome == BUDGET_COMPLETE:
-        # The referee and the card live in instruments/, which trm/ never imports
-        # (tests/core/test_package_layout.py); they are run as commands.
-        def instrument(*what):
-            proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
-                                   "--spec", str(args.spec), "--run", str(args.run_dir)],
-                                  cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                                  capture_output=True, text=True)
-            return proc.returncode, (proc.stdout + proc.stderr).strip()
-        print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
-        code, out = instrument("score")
-        if code != 0:
-            print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
-            return 1
-        code, verdict_text = instrument("verdict")
-        supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
-        print(verdict_text)
-        code, card = instrument("card")
-        print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
-    return 0 if outcome in DELIBERATE else 1
+
+def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
+    """Score a completed budget run's final checkpoint on the full LAMBADA set, then
+    judge it and draft its model card. Called while main() still holds the card."""
+    if supervisor.survivor is not None:
+        print(f"yardstick skipped: pid {supervisor.survivor} outlived SIGKILL and still holds the card; "
+              f"score the final checkpoint once it is gone", file=sys.stderr)
+        return 1
+
+    # The referee and the card live in instruments/, which trm/ never imports
+    # (tests/core/test_package_layout.py); they are run as commands.
+    def instrument(*what):
+        proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
+                               "--spec", str(args.spec), "--run", str(args.run_dir)],
+                              cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                              capture_output=True, text=True)
+        return proc.returncode, (proc.stdout + proc.stderr).strip()
+    print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
+    code, out = instrument("score")
+    if code != 0:
+        print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
+        return 1
+    code, verdict_text = instrument("verdict")
+    supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
+    print(verdict_text)
+    code, card = instrument("card")
+    print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
+    return 0
 
 
 if __name__ == "__main__":

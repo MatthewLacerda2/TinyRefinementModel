@@ -18,8 +18,9 @@ is the only function here that removes anything from the live tier. It refuses a
 but a real step dir directly under <run>/checkpoints/milestones/, anything inside a
 protected root (runs/data/, the tokenized corpus) or holding one, and anything without a
 byte-identical copy on the cold tier. Rolling and best checkpoints are never candidates,
-and neither is the newest milestone, the one a CPU yardstick pass is most likely still
-reading (an older one's scorer is not tracked; milestones are 20+ minutes apart).
+and neither is the newest milestone, nor any the caller says to keep: the supervisor
+keeps every milestone still owed a yardstick score, queued or mid-restore, since its
+scorer reads the SSD copy and a pruned one would never be scored or named (#515).
 tests/core/test_cold_tier.py holds each rule, and that nothing else here deletes.
 
 A copy lands whole or not at all: it is written to a dot-named partial dir, checked
@@ -37,7 +38,7 @@ import os
 import pathlib
 import shutil
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from trm.runtime.layout import MILESTONE_SUBDIR
@@ -184,6 +185,7 @@ class ColdTier:
     fullstate_every_hours: float | None  # the stall window; None = only the final copy
     protected: tuple[pathlib.Path, ...] = ()  # roots nothing under may be removed (runs/data/)
     free_gb: Callable[[], float] | None = None  # SSD free space; a test fakes it
+    _held: set = field(default_factory=set, init=False, repr=False)  # kept steps already said
 
     @property
     def cold_run(self) -> pathlib.Path:
@@ -194,10 +196,11 @@ class ColdTier:
             return self.free_gb()
         return shutil.disk_usage(self.run_dir).free / 1e9
 
-    def tick(self, final: bool = False) -> list[str]:
-        """Mirror, snapshot, prune; one line per thing done. Raises OSError, having
-        removed nothing, when the cold root cannot take copies right now: gone (the HDD
-        unmounted) or on the SSD itself. Asked every tick, not once: a mount can go."""
+    def tick(self, final: bool = False, keep: frozenset[str] = frozenset()) -> list[str]:
+        """Mirror, snapshot, prune; one line per thing done. `keep` names the milestone
+        steps pruning must leave on the SSD. Raises OSError, having removed nothing, when
+        the cold root cannot take copies right now: gone (the HDD unmounted) or on the
+        SSD itself. Asked every tick, not once: a mount can go."""
         live = self.run_dir if self.run_dir.exists() else self.run_dir.parent
         problem = cold_root_problem(self.cold_root, live)
         if problem:
@@ -212,7 +215,7 @@ class ColdTier:
         if due is not None and mirror(due, self.cold_run / FULLSTATE_SUBDIR / due.name):
             done.append(f"cold: full-state checkpoint {due.name} copied"
                         + (" (the run's last)" if final else ""))
-        return done + self.prune()
+        return done + self.prune(keep)
 
     def fullstate_due(self, final: bool = False) -> pathlib.Path | None:
         """The rolling checkpoint to copy now, or None: the newest one, once a stall
@@ -234,13 +237,20 @@ class ColdTier:
         last = max(committed_at(c) for c in copies)
         return newest if committed_at(newest) - last >= self.fullstate_every_hours * 3600 else None
 
-    def prune(self) -> list[str]:
-        """While the SSD is under its margin, remove the oldest mirrored milestone."""
+    def prune(self, keep: frozenset[str] = frozenset()) -> list[str]:
+        """While the SSD is under its margin, remove the oldest mirrored milestone
+        that is not in `keep`. Each kept one is said once, when it first holds space."""
         done = []
         for step in finalized_steps(self.run_dir / "checkpoints" / MILESTONE_SUBDIR)[:-1]:
             free = self._ssd_free_gb()
             if free >= self.keep_free_gb:
                 break
+            if step.name in keep:
+                if step.name not in self._held:
+                    self._held.add(step.name)
+                    done.append(f"cold: milestone {step.name} stays on the SSD ({free:.1f}GB free, "
+                                f"keeping {self.keep_free_gb:g}GB): it is not scored yet")
+                continue
             copy = self.cold_run / MILESTONE_SUBDIR / step.name
             if same_bytes(step, copy):
                 self._remove_mirrored_milestone(step)

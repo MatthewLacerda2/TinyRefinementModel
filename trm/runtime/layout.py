@@ -33,3 +33,7 @@ MILESTONE_SUBDIR = "milestones"
 # The run's yardstick journal, one JSON line per scoring pass, appended by
 # instruments.base_run and read by the supervisor to know what is already scored (#471).
 YARDSTICK_JOURNAL = "yardstick.jsonl"
+# One file per milestone a scorer is working on, named by its step and holding the
+# scorer's pid: the claim that lets a restarted supervisor see its predecessor's
+# still-running scorers (#506).
+YARDSTICK_CLAIMS = "yardstick_claims"

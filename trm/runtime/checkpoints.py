@@ -242,6 +242,9 @@ def exit_cleanly_on_sigterm():
         # unrecorded.
         print(f"🛑 received SIGTERM (pid {os.getpid()}) — exiting cleanly, waiting for pending "
               f"checkpoint writes", flush=True)
+        # Once: a second TERM would abort the wait this one started. Both can come at
+        # once — a session-wide TERM reaches the supervisor too, which stops us (#516).
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _raise)
