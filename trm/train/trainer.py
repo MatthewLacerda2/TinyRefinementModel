@@ -191,7 +191,9 @@ def init_model_and_optimizer(config):
             f"{config.MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
             if config.TRM_OPTIMIZER == "muon" else "adamw")
     print(f"🎛️ Optimizer: {muon} | adam b1 {config.ADAM_B1:g} b2 {config.ADAM_B2:g} "
-          f"eps {config.ADAM_EPS:g} | weight decay {config.WEIGHT_DECAY:g} | clip {config.CLIP_NORM:g}")
+          f"eps {config.ADAM_EPS:g} | weight decay {config.WEIGHT_DECAY:g} x LR"
+          + (f", embedding {config.EMBED_WEIGHT_DECAY:g}/step at peak" if config.TRM_OPTIMIZER == "muon" else "")
+          + f" | clip {config.CLIP_NORM:g}")
     optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)
 
     return model, optimizer
