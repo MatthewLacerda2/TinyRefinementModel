@@ -25,6 +25,9 @@ import subprocess
 import sys
 import time
 
+# What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
+REPORTS = {}  # relays GitHub's job conclusions; prints no quantities
+
 RUN_FIELDS = "databaseId,event,headSha,createdAt,status,conclusion,workflowName"
 OK_CONCLUSIONS = {"success", "skipped", "neutral"}
 POLL_S = 5
