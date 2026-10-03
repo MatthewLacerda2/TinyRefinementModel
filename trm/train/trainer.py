@@ -45,6 +45,14 @@ MAX_NONFINITE_STREAK = 50
 # print on every one of them and bury the rest of the log.
 PLATEAU_NOTICE_EVERY = 200
 
+# Host spans of the micro-step, named for a profiler trace (instruments/profile_step.py,
+# #473). A span records only while a trace runs; otherwise it costs ~0.4 µs.
+SPAN_PREFIX = "trm/"
+
+
+def span(name):
+    return jax.profiler.TraceAnnotation(SPAN_PREFIX + name)
+
 DATA_ROOT = location("DATA_ROOT", "")
 if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
@@ -308,7 +316,8 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
 
     try:
         while True:
-            batch, doc_boundary, source, data_state = data_queue.get()
+            with span("data_get"):
+                batch, doc_boundary, source, data_state = data_queue.get()
             if batch is None:
                 break
             monitor.data_state = data_state
@@ -332,18 +341,24 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             # known before this one runs — an outlier cannot widen the gate it is
             # about to be measured against.
             ceiling = grad_guard.threshold
-            loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, jnp.array(step // accumulation_steps), depth, doc_boundary=doc_boundary,
-                loss_scale=jnp.float32(loss_scaler.value),
-                clip_norm=jnp.float32(jnp.inf if ceiling is None else ceiling),
-            )
+            with span("step_scalars"):
+                step_now = jnp.array(step // accumulation_steps)
+                loss_scale = jnp.float32(loss_scaler.value)
+                clip_norm = jnp.float32(jnp.inf if ceiling is None else ceiling)
+            with span("grad_step"):
+                loss, out, grads, grad_norm = compute_grad_step(
+                    model, batch, step_now, depth, doc_boundary=doc_boundary,
+                    loss_scale=loss_scale, clip_norm=clip_norm,
+                )
 
-            current_loss = float(loss)
-            current_grad_norm = float(grad_norm)
-            grad_guard.observe(current_grad_norm)
-            if math.isfinite(current_grad_norm):
-                source_grads.add(source, current_grad_norm,
-                                 clipped=ceiling is not None and current_grad_norm > ceiling)
+            with span("loss_readback"):
+                current_loss = float(loss)
+                current_grad_norm = float(grad_norm)
+            with span("guard"):
+                grad_guard.observe(current_grad_norm)
+                if math.isfinite(current_grad_norm):
+                    source_grads.add(source, current_grad_norm,
+                                     clipped=ceiling is not None and current_grad_norm > ceiling)
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
                 # Divergence must be loud and must not poison the optimizer state
@@ -376,9 +391,10 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 # monitor.samples_seen, so a resume still skips the right amount.
                 continue
             nonfinite_streak = 0
-            if loss_scaler.record_good_step():
-                print(f"🔍 [LossScale] raised to {loss_scaler.value:g} after "
-                      f"{loss_scaler.growth_interval} clean micro-steps (#199)")
+            with span("loss_scale"):
+                if loss_scaler.record_good_step():
+                    print(f"🔍 [LossScale] raised to {loss_scaler.value:g} after "
+                          f"{loss_scaler.growth_interval} clean micro-steps (#199)")
 
             # Underflow instrument (#82), sampled BEFORE the update: apply_grads
             # donates the grad buffers and the accumulator (#128). This logging
@@ -398,11 +414,13 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
-            apply_grads(optimizer, grads, model)
+            with span("apply_grads"):
+                apply_grads(optimizer, grads, model)
 
             t_compute += (time.time() - t_compute_start)
 
-            current_token_loss = float(out.diag.get('token_loss', loss))
+            with span("token_loss_readback"):
+                current_token_loss = float(out.diag.get('token_loss', loss))
 
             window.add(loss=current_loss, token_loss=current_token_loss,
                        grad_norm=current_grad_norm, depth=depth)
