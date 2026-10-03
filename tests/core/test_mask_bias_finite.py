@@ -57,7 +57,7 @@ def test_rotary_attention_additive_mask_stays_finite_in_f16(monkeypatch):
     f16 path on the CPU lane too; batch element 1 masks every key, giving
     genuinely fully-masked rows."""
     monkeypatch.setattr(layers, "COMPUTE_DTYPE", jnp.float16)
-    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0))
+    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0), max_positions=8)
     x = jnp.asarray(np.random.default_rng(2).normal(size=(2, 8, 32)), jnp.float32)
     additive_mask = jnp.zeros((2, 1, 8, 8), jnp.float32).at[1].add(-1e9)
 
@@ -72,7 +72,7 @@ def test_rotary_attention_boolean_mask_stays_finite_in_f16(monkeypatch):
     finite large-negative constant — pinned here so the two branches' contracts
     stay documented together."""
     monkeypatch.setattr(layers, "COMPUTE_DTYPE", jnp.float16)
-    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0))
+    attn = RotaryAttention(4, 32, num_groups=4, rngs=nnx.Rngs(0), max_positions=8)
     x = jnp.asarray(np.random.default_rng(3).normal(size=(2, 8, 32)), jnp.float32)
     bool_mask = jnp.ones((2, 1, 8, 8), bool).at[1].set(False)
 

@@ -13,8 +13,8 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -27,13 +27,13 @@ PROMPT = [1, 2, 3, 4, 5, 6]
 @pytest.fixture(scope="module")
 def toy():
     return PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
 @pytest.fixture(scope="module")
 def tokens():
-    t = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    t = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     return t.at[0, : len(PROMPT)].set(jnp.array(PROMPT, dtype=jnp.int32))
 
 
@@ -74,13 +74,13 @@ def test_training_returns_pre_head_states_and_no_logits(toy, tokens):
     [b, s, vocab] here would reintroduce the f32 logit peak it exists to avoid."""
     out = toy(tokens, depth=1, training=True)
     assert out.logits is None
-    assert out.hidden.shape == (1, MAX_SEQ_LEN, TOY_DIM)
+    assert out.hidden.shape == (1, CONFIG.MAX_SEQ_LEN, TOY_DIM)
 
 
 def test_inference_returns_logits_for_every_position(toy, tokens):
     out = toy(tokens, depth=1, training=False)
     assert out.hidden is None
-    assert out.logits.shape == (1, MAX_SEQ_LEN, TOY_VOCAB)
+    assert out.logits.shape == (1, CONFIG.MAX_SEQ_LEN, TOY_VOCAB)
 
 
 def test_asking_for_one_position_returns_one_position(toy, tokens):
@@ -102,7 +102,7 @@ def test_the_sliced_row_matches_the_full_projection(toy, tokens):
 def test_a_later_token_cannot_change_an_earlier_prediction(toy):
     """The property no amount of architecture simplification is allowed to lose.
     Bit-identical, not close: a causal mask either holds or it does not."""
-    base = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    base = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     base = base.at[0, :8].set(jnp.arange(1, 9, dtype=jnp.int32))
     perturbed = base.at[0, 5].set(TOY_VOCAB - 2)
 
@@ -118,8 +118,8 @@ def test_a_later_token_cannot_change_an_earlier_prediction(toy):
 def test_layer_count_is_the_only_depth_knob(toy, n_params):
     assert len(toy.blocks) == TOY_LAYERS
     deeper = PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        num_layers=TOY_LAYERS + 2, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        num_layers=TOY_LAYERS + 2, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
     assert n_params(deeper) > n_params(toy), "more layers must mean more parameters"
 

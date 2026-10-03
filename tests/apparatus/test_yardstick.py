@@ -12,6 +12,8 @@ import hashlib
 import numpy as np
 import pytest
 
+from trm.settings import CONFIG
+
 from instruments.yardstick.yardstick import (
     encode_example,
     score_examples,
@@ -131,7 +133,7 @@ def test_tiny_refiner_through_the_runner_adapter():
 
     pad = 63
     model = RefinerForTraining(
-        32, nnx.Rngs(0), vocab_size=64, num_heads=2, encoder_layers=1,
+        32, nnx.Rngs(0), CONFIG, vocab_size=64, num_heads=2, encoder_layers=1,
         max_depth=2, max_seq_len=64, pad_token_id=pad,
     )
     rng = np.random.default_rng(3)
@@ -169,25 +171,24 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
 
     from instruments.arch import build
     from instruments.yardstick import eval_yardstick
-    from trm.config import MODEL_ARCH
     from trm.runtime import checkpoints as ck
     from trm.runtime.monitor import LossMonitor
     from trm.runtime.restore import restore_arch
 
-    if not arch_flag and MODEL_ARCH != "plain":
-        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {MODEL_ARCH}")
+    if not arch_flag and CONFIG.MODEL_ARCH != "plain":
+        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {CONFIG.MODEL_ARCH}")
 
     saved = build("plain", **TINY_PLAIN)
     mngr = ocp.CheckpointManager(str(tmp_path / "checkpoints"), item_names=ck.CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(create=True))
     ck.save_checkpoint(mngr, 7, saved, nnx.Optimizer(saved, optax.adam(1e-3), wrt=nnx.Param),
-                       LossMonitor(), "run_tiny")
+                       LossMonitor.of(CONFIG), "run_tiny")
 
     restored = {}
 
-    def tiny_restore(arch, checkpoint_path, step=None):
+    def tiny_restore(config, arch, checkpoint_path, step=None):
         restored["arch"] = arch
-        restored["model"], step = restore_arch(arch, checkpoint_path, step=step, **TINY_PLAIN)
+        restored["model"], step = restore_arch(config, arch, checkpoint_path, step=step, **TINY_PLAIN)
         return restored["model"], step
 
     monkeypatch.setattr(eval_yardstick, "restore_arch", tiny_restore)
@@ -225,7 +226,7 @@ def test_a_fineweb_failure_does_not_cost_the_lambada_reading(tmp_path, monkeypat
         raise ValueError("sha256 mismatch")
 
     monkeypatch.setattr(eval_yardstick.fineweb_val, "fetch_fineweb_val", broken)
-    monkeypatch.setattr(eval_yardstick, "restore_arch", lambda arch, path, step=None: (object(), 3))
+    monkeypatch.setattr(eval_yardstick, "restore_arch", lambda config, arch, path, step=None: (object(), 3))
     monkeypatch.setattr(eval_yardstick, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: FakeEnc()))
     monkeypatch.setattr(eval_yardstick, "make_logits_fn", lambda model, depth: rule_logits_fn)
     data = tmp_path / "lambada.jsonl"
@@ -255,20 +256,20 @@ def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
     older, newer = build("plain", seed=1, **TINY_PLAIN), build("plain", seed=2, **TINY_PLAIN)
     for step, model in ((3, older), (9, newer)):
         ck.save_checkpoint(mngr, step, model, nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param),
-                           LossMonitor(), "run_tiny")
+                           LossMonitor.of(CONFIG), "run_tiny")
 
     def leaves(model):
         return jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
 
-    at_3, step = restore_arch("plain", str(tmp_path), step=3, **TINY_PLAIN)
+    at_3, step = restore_arch(CONFIG, "plain", str(tmp_path), step=3, **TINY_PLAIN)
     assert len(leaves(older)) == len(leaves(at_3))
     assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3)))
     assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3))), \
         "the two saved models must differ, or this test cannot tell the steps apart"
-    _, default_step = restore_arch("plain", str(tmp_path), **TINY_PLAIN)
+    _, default_step = restore_arch(CONFIG, "plain", str(tmp_path), **TINY_PLAIN)
     assert default_step == 9, "with no step named, the newest stays the default"
     with pytest.raises(SystemExit, match="step 5"):
-        restore_arch("plain", str(tmp_path), step=5, **TINY_PLAIN)
+        restore_arch(CONFIG, "plain", str(tmp_path), step=5, **TINY_PLAIN)
 
 
 def test_an_hf_tokenizer_encodes_without_special_tokens():

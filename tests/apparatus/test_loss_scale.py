@@ -15,18 +15,18 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
+from trm.settings import CONFIG
 
 
 def _tiny_model_and_batch():
     from trm.model.refiner_lm import RefinerForTraining
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    model = RefinerForTraining(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
+                               encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
     return model, batch
 
 

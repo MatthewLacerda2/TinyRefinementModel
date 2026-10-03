@@ -4,7 +4,16 @@ Every failure these warn of was visible in real time on the champion and nobody 
 watching: activations at 65,120 of f16's 65,504 (#235), a loss scale pinned at 1
 while the backward overflowed anyway (#199)."""
 
-from trm.runtime.supervisor import margin_alarms, margin_changes
+from trm.runtime.supervisor import margin_alarms as margin_alarms_against, margin_changes
+from trm.settings import Config
+
+DEFAULTS = Config.from_env({})
+
+
+def margin_alarms(row):
+    """The alarms at today's bars."""
+    return margin_alarms_against(DEFAULTS, row)
+
 
 HEALTHY = {"act_max": "45.2", "loss_scale": "131072", "applied_zero_frac_dense_max": "0.000030",
            "arena_peak_mib": "4058", "arena_limit_mib": "4883"}

@@ -118,6 +118,12 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Install pydantic
+        # The audit names the supervisor's run endings by importing them, and the
+        # supervisor reads its alarms from trm.settings.Config (#475). Pins from
+        # requirements.txt, so there is one version to bump.
+        run: pip install "$(grep '^pydantic==' requirements.txt)" "$(grep '^pydantic-settings==' requirements.txt)"
+
       - name: Audit the specs this change can reach
         # No jax: the audit reads TOML, findings and git. Scope is the diff, never a
         # person's choice (#304) — a push's commit range on main, the merge-base

@@ -15,28 +15,29 @@ refiner's, and the reasoner takes neither.
 
 from flax import nnx
 
-from trm.config import LATENT_DIM, MODEL_ARCH
 from trm.model import build_model
+from trm.settings import CONFIG
 
 ARCHES = ("plain", "refiner", "reasoner")
 
 
 def build(arch=None, *, dim=None, seed=0, **overrides):
-    """The model `arch` names, or `MODEL_ARCH` when it names nothing.
+    """The model `arch` names, or `MODEL_ARCH` when it names nothing, shaped by this
+    process's Config.
 
     `overrides` are forwarded only where they apply — passing `num_layers` to the
     refiner is a caller error worth failing on, not something to silently drop.
     """
-    arch = MODEL_ARCH if arch is None else arch
+    arch = CONFIG.MODEL_ARCH if arch is None else arch
     if arch not in ARCHES:
         raise SystemExit(f"unknown --arch {arch!r}; use one of {', '.join(ARCHES)}")
-    return build_model(arch, LATENT_DIM if dim is None else dim, nnx.Rngs(seed), **overrides)
+    return build_model(CONFIG, nnx.Rngs(seed), arch=arch, dim=dim, **overrides)
 
 
 def add_arch_argument(parser):
     """The flag every smoke should take, worded the same way in each."""
     parser.add_argument(
-        "--arch", default=MODEL_ARCH, choices=ARCHES,
+        "--arch", default=CONFIG.MODEL_ARCH, choices=ARCHES,
         help="architecture to exercise; defaults to MODEL_ARCH, i.e. whatever a run "
              "launched right now would actually train")
     return parser

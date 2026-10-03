@@ -105,20 +105,25 @@ def test_the_val_ce_section_drives_the_real_probe(monkeypatch, tmp_path):
     built = {}
 
     class FakeProbe:
-        def __init__(self, data_root):
+        @classmethod
+        def of(cls, config, data_root):
             built["data_root"] = data_root
+            probe = cls()
+            probe.rows, probe.skip = config.EVAL_ROWS, config.VAL_SKIP_SAMPLES
+            return probe
 
         def run(self, model):
             built["model"] = model
             return 3.25
 
     monkeypatch.setenv("DATA_ROOT", str(tmp_path))
-    monkeypatch.setattr(restore, "restore_model", lambda path: (f"model@{path}", 7))
+    monkeypatch.setattr(restore, "restore_model", lambda config, path: (f"model@{path}", 7))
     monkeypatch.setattr(validation, "ValidationProbe", FakeProbe)
     body = section_val_ce("ckpt")
     assert built == {"data_root": str(tmp_path), "model": "model@ckpt"}
     assert body.startswith("validation CE: 3.2500 nats")
-    assert f"fixed depth {validation.VAL_FIXED_DEPTH}, {validation.VAL_ROWS} rows" in body
+    from trm.settings import CONFIG
+    assert f"fixed depth {validation.VAL_FIXED_DEPTH}, {CONFIG.EVAL_ROWS} rows" in body
 
 
 def _dump_transcripts_stdout(capsys, path):

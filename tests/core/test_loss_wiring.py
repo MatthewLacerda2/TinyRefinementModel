@@ -106,8 +106,8 @@ def test_grading_scales_with_the_reported_cost(reasoner_model, token_batch):
 
 
 def test_depth_sampling_is_deterministic_and_covers_range():
-    depths = [sample_reasoning_depth(step) for step in range(2048)]
-    replay = [sample_reasoning_depth(step) for step in range(2048)]
+    depths = [sample_reasoning_depth(step, 42) for step in range(2048)]
+    replay = [sample_reasoning_depth(step, 42) for step in range(2048)]
     assert depths == replay, "depth sampling must replay identically on resume"
     assert min(depths) == 1 and max(depths) == MAX_STEPS_LIMIT
     assert set(depths) == set(range(1, MAX_STEPS_LIMIT + 1)), "all depths must be sampled"

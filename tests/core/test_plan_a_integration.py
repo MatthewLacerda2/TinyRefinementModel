@@ -18,9 +18,9 @@ import pytest
 from flax import nnx
 
 from trm.runtime.checkpoints import restore_tolerating_legacy
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step, apply_grads
 from trm.model.refiner_lm import RefinerForTraining
+from trm.settings import CONFIG
 
 DIM = 64
 VOCAB = 37
@@ -28,14 +28,14 @@ VOCAB = 37
 
 def _tiny_adapter(seed=0):
     return RefinerForTraining(
-        DIM, nnx.Rngs(seed), vocab_size=VOCAB, num_heads=4,
-        encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+        DIM, nnx.Rngs(seed), CONFIG, vocab_size=VOCAB, num_heads=4,
+        encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN,
     )
 
 
 def _fixed_batch(seed=3):
     rng = np.random.default_rng(seed)
-    tokens = rng.integers(1, VOCAB, size=(1, 2 * MAX_SEQ_LEN + 1))
+    tokens = rng.integers(1, VOCAB, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1))
     return jnp.asarray(tokens.astype(np.int32))
 
 
@@ -48,16 +48,16 @@ def test_adapter_speaks_the_neutral_contract():
     into. Both are asserted here because both used to exist purely as costume.
     """
     m = _tiny_adapter()
-    tokens = _fixed_batch()[:, :MAX_SEQ_LEN]
+    tokens = _fixed_batch()[:, :CONFIG.MAX_SEQ_LEN]
     out = m(tokens, depth=4, training=True, new_document=True)
 
     # Training returns pre-head states (logits=None); the loss does the chunked
     # LM-head projection (#19). Inference still returns full logits (checked below).
     assert out.logits is None
-    assert out.hidden.shape == (1, MAX_SEQ_LEN, DIM)
+    assert out.hidden.shape == (1, CONFIG.MAX_SEQ_LEN, DIM)
     assert np.isfinite(np.asarray(out.hidden)).all()
     infer_out = m(tokens, depth=4, training=False, new_document=True)
-    assert infer_out.logits.shape == (1, MAX_SEQ_LEN, VOCAB)
+    assert infer_out.logits.shape == (1, CONFIG.MAX_SEQ_LEN, VOCAB)
     assert np.isfinite(np.asarray(infer_out.logits)).all()
 
     assert out.aux == {}, "the refiner has no auxiliary objectives to grade"
@@ -76,7 +76,7 @@ def test_stateless_forward_ignores_document_boundaries():
     prediction. If this ever fails, the refiner grew cross-window state and the
     trainer's window sequencing has to be revisited."""
     m = _tiny_adapter()
-    tokens = _fixed_batch()[:, :MAX_SEQ_LEN]
+    tokens = _fixed_batch()[:, :CONFIG.MAX_SEQ_LEN]
     fresh = np.asarray(m(tokens, depth=3, training=False, new_document=True).logits)
     continued = np.asarray(m(tokens, depth=3, training=False, new_document=False).logits)
     np.testing.assert_array_equal(fresh, continued)
@@ -111,7 +111,7 @@ def test_checkpoint_roundtrip_preserves_forward(tmp_path):
     forwards must match bit-for-bit. Catches state-tree drift in the new param
     layout before a real run trusts a resume."""
     m = _tiny_adapter(seed=0)
-    tokens = _fixed_batch()[:, :MAX_SEQ_LEN]
+    tokens = _fixed_batch()[:, :CONFIG.MAX_SEQ_LEN]
     reference = np.asarray(m(tokens, depth=2, training=False, new_document=True).logits)
 
     mngr = ocp.CheckpointManager(
@@ -139,7 +139,7 @@ def test_pre_105_checkpoint_still_restores(tmp_path):
     restore matches the legacy shape, discards it, and reproduces the forward.
     """
     m = _tiny_adapter(seed=0)
-    tokens = _fixed_batch()[:, :MAX_SEQ_LEN]
+    tokens = _fixed_batch()[:, :CONFIG.MAX_SEQ_LEN]
     reference = np.asarray(m(tokens, depth=2, training=False).logits)
 
     # A pre-#105 save: the real state plus the buffer the old trainer wrote into.
@@ -195,16 +195,15 @@ def test_adapter_honors_time_signal():
     sinusoidal builds no learned table (different param tree), table does. The
     default comes from config.TIME_SIGNAL, so the base run trains whatever the
     launch environment says."""
-    from trm import config
 
-    sin = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
-                             encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+    sin = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
+                             encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN,
                              time_signal="sinusoidal")
-    tab = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
-                             encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
+    tab = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
+                             encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN,
                              time_signal="table")
-    default = RefinerForTraining(DIM, nnx.Rngs(0), vocab_size=VOCAB, num_heads=4,
-                                 encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    default = RefinerForTraining(DIM, nnx.Rngs(0), CONFIG, vocab_size=VOCAB, num_heads=4,
+                                 encoder_layers=2, max_depth=8, max_seq_len=CONFIG.MAX_SEQ_LEN)
     assert "time_embed" not in nnx.state(sin.refiner, nnx.Param)
     assert "time_embed" in nnx.state(tab.refiner, nnx.Param)
-    assert default.refiner.time_signal == config.TIME_SIGNAL
+    assert default.refiner.time_signal == CONFIG.TIME_SIGNAL

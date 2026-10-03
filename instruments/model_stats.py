@@ -1,9 +1,9 @@
 """What the model weighs — counted, not built.
 
 This module **never imports or constructs a model class**. It is arithmetic over
-the constants in `trm/config.py`, and that is the point: the tool it replaces
-instantiated a whole `UniversalReasoner` on the way to printing a parameter
-count — slow, and a real hazard to run against a busy 6GB card just to answer a
+this process's Config (trm/settings.py) and the constants in `trm/config.py`, and
+that is the point: the tool it replaces instantiated a whole `UniversalReasoner` on
+the way to printing a parameter count — slow, and a real hazard to run against a busy 6GB card just to answer a
 question that is a sum of products.
 
 Purity has an obvious failure mode: a formula transcribed once and then left
@@ -34,22 +34,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from trm.config import (
-    LATENT_DIM,
-    MAX_SEQ_LEN,
-    MAX_STEPS_LIMIT,
-    MODEL_ARCH,
-    NUM_BLOCKS,
-    NUM_HEADS,
-    PLAIN_LAYERS,
-    POST_NORM,
-    REFINER_ENCODER_LAYERS,
-    SHARED_SLOTS,
-    TIME_SIGNAL,
-    VOCAB_SIZE,
-    BATCH_SIZE,
-    INFERENCE_DEPTH,
-)
+from trm.config import MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
+from trm.settings import CONFIG
 
 MIB = 1024 ** 2
 
@@ -144,38 +130,38 @@ def _plain_block(dim, num_heads, post_norm):
 
 def _plain_defaults():
     return {
-        "dim": LATENT_DIM,
+        "dim": CONFIG.LATENT_DIM,
         "vocab_size": VOCAB_SIZE,
-        "num_heads": NUM_HEADS,
-        "num_layers": PLAIN_LAYERS,
-        "max_seq_len": MAX_SEQ_LEN,
-        "post_norm": POST_NORM,
+        "num_heads": CONFIG.NUM_HEADS,
+        "num_layers": CONFIG.PLAIN_LAYERS,
+        "max_seq_len": CONFIG.MAX_SEQ_LEN,
+        "post_norm": CONFIG.POST_NORM,
     }
 
 
 def _refiner_defaults():
     return {
-        "dim": LATENT_DIM,
+        "dim": CONFIG.LATENT_DIM,
         "vocab_size": VOCAB_SIZE,
-        "num_heads": NUM_HEADS,
-        "encoder_layers": REFINER_ENCODER_LAYERS,
+        "num_heads": CONFIG.NUM_HEADS,
+        "encoder_layers": CONFIG.REFINER_ENCODER_LAYERS,
         "max_depth": MAX_STEPS_LIMIT,
-        "max_seq_len": MAX_SEQ_LEN,
-        "time_signal": TIME_SIGNAL,
+        "max_seq_len": CONFIG.MAX_SEQ_LEN,
+        "time_signal": CONFIG.TIME_SIGNAL,
         "use_gate": True,
     }
 
 
 def _reasoner_defaults():
     return {
-        "dim": LATENT_DIM,
+        "dim": CONFIG.LATENT_DIM,
         "vocab_size": VOCAB_SIZE,
-        "num_heads": NUM_HEADS,
-        "num_groups": NUM_HEADS // 4,   # the reasoner's own constant (trm/model/layers.py); pinned by the test
+        "num_heads": CONFIG.NUM_HEADS,
+        "num_groups": CONFIG.NUM_HEADS // 4,   # the reasoner's own constant (trm/model/layers.py); pinned by the test
         "num_blocks": NUM_BLOCKS,
         "shared_slots": SHARED_SLOTS,
         "max_depth": MAX_STEPS_LIMIT,
-        "max_seq_len": MAX_SEQ_LEN,
+        "max_seq_len": CONFIG.MAX_SEQ_LEN,
         "use_forget": True,
     }
 
@@ -200,7 +186,7 @@ def _resolve(arch, overrides):
 
 # ── Parameters ───────────────────────────────────────────────────────────────
 
-def param_breakdown(arch=MODEL_ARCH, **overrides):
+def param_breakdown(arch=CONFIG.MODEL_ARCH, **overrides):
     """Parameter count per group, as a dict in a sensible reading order.
 
     The groups mirror the real param tree (the test asserts exactly that), so
@@ -255,11 +241,11 @@ def param_breakdown(arch=MODEL_ARCH, **overrides):
     }
 
 
-def total_params(arch=MODEL_ARCH, **overrides):
+def total_params(arch=CONFIG.MODEL_ARCH, **overrides):
     return sum(param_breakdown(arch, **overrides).values())
 
 
-def shared_block_group(arch=MODEL_ARCH):
+def shared_block_group(arch=CONFIG.MODEL_ARCH):
     """Which group holds the one physically-stored, repeatedly-applied block, or
     None for the plain stack, which applies each of its blocks once."""
     return {"plain": None, "refiner": "shared refine block"}.get(arch, "shared reasoning block")
@@ -300,7 +286,7 @@ def _remat_boundary_bytes(arch, config, batch, depth):
     return 2 * (stack_boundaries * per_window_state + depth * slot_state)
 
 
-def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrides):
+def vram_estimate(mode, batch=CONFIG.BATCH_SIZE, depth=None, arch=CONFIG.MODEL_ARCH, **overrides):
     """VRAM line items in MiB. `mode` is "train" or "infer".
 
     Every entry is a real, named tensor whose size follows from a count and a
@@ -314,7 +300,7 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
         raise ValueError(f"mode must be 'train' or 'infer', not {mode!r}")
     config = _resolve(arch, overrides)
     if depth is None:
-        depth = config.get("max_depth", MAX_STEPS_LIMIT) if mode == "train" else INFERENCE_DEPTH
+        depth = config.get("max_depth", MAX_STEPS_LIMIT) if mode == "train" else CONFIG.INFERENCE_DEPTH
     params = total_params(arch, **overrides)
 
     lines = {"parameters (f32)": params * F32}
@@ -340,7 +326,7 @@ def vram_estimate(mode, batch=BATCH_SIZE, depth=None, arch=MODEL_ARCH, **overrid
     return megabytes
 
 
-def measured_peak(arch=MODEL_ARCH, batch=BATCH_SIZE, **overrides):
+def measured_peak(arch=CONFIG.MODEL_ARCH, batch=CONFIG.BATCH_SIZE, **overrides):
     """The MeasuredPeak recorded for exactly this config, or None. Quoting a
     measured number against a different config would be the same category error
     this module is trying to stop."""

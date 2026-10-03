@@ -20,8 +20,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from instruments import smoke_refiner_gpu as smoke
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -33,12 +33,12 @@ def _toy(arch, embed_scale=1.0):
     """A three-block model of `arch`: plain's whole stack, or the refiner's encoder."""
     if arch == "plain":
         from trm.model.plain import PlainTransformer
-        model = PlainTransformer(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
-                                 num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        model = PlainTransformer(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
+                                 num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     else:
         from trm.model.refiner_lm import RefinerForTraining
-        model = RefinerForTraining(TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=4,
-                                   encoder_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        model = RefinerForTraining(TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
+                                   encoder_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     embed, _ = smoke.traced_stack(model, arch)
     embed.embedding[...] = embed.embedding[...] * embed_scale
     return model
@@ -56,7 +56,7 @@ def toy(arch):
 
 @pytest.fixture(scope="module")
 def tokens():
-    t = jnp.full((1, MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
+    t = jnp.full((1, CONFIG.MAX_SEQ_LEN), TOY_PAD, dtype=jnp.int32)
     return t.at[0, :8].set(jnp.arange(1, 9, dtype=jnp.int32))
 
 
@@ -125,5 +125,5 @@ def test_random_tokens_are_the_documented_fallback_not_the_default(monkeypatch, 
     monkeypatch.delenv("DATA_ROOT", raising=False)
     batch = smoke.load_batch(np.random.default_rng(0))
 
-    assert batch.shape == (1, 2 * MAX_SEQ_LEN + 1)
+    assert batch.shape == (1, 2 * CONFIG.MAX_SEQ_LEN + 1)
     assert "CANNOT be caught" in capsys.readouterr().out

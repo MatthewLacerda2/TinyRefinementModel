@@ -139,6 +139,18 @@ curriculum_end_mix = "web 0.35 / code 0.40 / math 0.25"
 seeds = "MODEL_SEED=42, DATA_SEED=42"
 milestone_yardstick_limit = 1000
 
+# THE STALL RULE in the notes above, as data `python -m instruments.stall` reads
+# (#468). Transcribed 2026-09-28, after the run, and not amended: the quantity,
+# window, count, bar and decay are the ones registered on 2026-09-20. A next spec
+# picks its own `reads` (web / mixture / every-source) and measures its bars with
+# `--floor`; this web-only bar does not transfer to another quantity.
+[stall]
+reads = "web"
+window_hours = 12
+windows = 2
+min_gain = 0.01
+decay_opt_steps = 1000
+
 [arms.plain]
 role = "treatment"
 flags = []

@@ -16,24 +16,22 @@ arch, left behind when a second arrived.
 import pytest
 
 from trm import infer
-from trm.config import MODEL_ARCH
+from trm.settings import CONFIG, Config
 
 
 def test_serving_follows_the_arch_selector():
     """The selector is the single source of truth for which network exists; a
     serving path that ignores it cannot load what the trainer wrote."""
-    assert type(infer.build_serving_model("plain")).__name__ == "PlainTransformer"
-    assert type(infer.build_serving_model("refiner")).__name__ == "RefinerForTraining"
-    assert type(infer.build_serving_model("reasoner")).__name__ == "UniversalReasoner"
+    assert type(infer.build_serving_model(CONFIG, "plain")).__name__ == "PlainTransformer"
+    assert type(infer.build_serving_model(CONFIG, "refiner")).__name__ == "RefinerForTraining"
+    assert type(infer.build_serving_model(CONFIG, "reasoner")).__name__ == "UniversalReasoner"
 
 
 def test_the_default_is_the_configured_arch():
-    """Called with no argument — the way run_inference() calls it — it must build
-    what MODEL_ARCH says, not a hardcoded choice."""
-    expected = {"plain": "PlainTransformer",
-                "refiner": "RefinerForTraining",
-                "reasoner": "UniversalReasoner"}[MODEL_ARCH]
-    assert type(infer.build_serving_model()).__name__ == expected
+    """Called with no arch — the way run_inference() calls it — it must build what
+    the Config's MODEL_ARCH says, not a hardcoded choice."""
+    refiner = Config.from_env({"MODEL_ARCH": "refiner"})
+    assert type(infer.build_serving_model(refiner)).__name__ == "RefinerForTraining"
 
 
 def test_infer_names_no_model_class():
@@ -75,7 +73,7 @@ def test_every_arch_satisfies_the_contract_the_serving_loop_uses(arch):
     new_document=...) and reads `.logits`. Both arches must honour that, or
     switching MODEL_ARCH would fail at generation time rather than at load."""
     from trm.model.contract import LanguageModel
-    assert isinstance(infer.build_serving_model(arch), LanguageModel)
+    assert isinstance(infer.build_serving_model(CONFIG, arch), LanguageModel)
 
 
 # --- sampling is configurable, and the default is not greedy ------------------
@@ -102,6 +100,5 @@ def test_depth_defaults_to_the_serving_knee_and_is_overridable():
     """Depth is the architecture's whole bet, and the sinusoidal time signal is
     defined at any step — so serving depth should be a dial, not a constant baked
     into the generation loop."""
-    from trm.config import INFERENCE_DEPTH
-    assert infer.build_arg_parser().parse_args([]).depth == INFERENCE_DEPTH
+    assert infer.build_arg_parser().parse_args([]).depth == CONFIG.INFERENCE_DEPTH
     assert infer.build_arg_parser().parse_args(["--depth", "16"]).depth == 16

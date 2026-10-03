@@ -3,11 +3,6 @@ from flax import nnx
 import jax.numpy as jnp
 import optax
 
-from trm.config import (
-    MAX_SEQ_LEN,
-    ACCUMULATION_STEPS,
-    PAD_TOKEN_ID,
-)
 from trm.train.losses import chunked_cross_entropy_rows
 
 def compute_total_loss(ce1, ce2, graded_aux):
@@ -31,8 +26,12 @@ def compute_total_loss(ce1, ce2, graded_aux):
 
 
 @nnx.jit(static_argnames=['depth'])
-def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss_scale=1.0,
+def compute_grad_step(model, batch_tokens, opt_step, depth, doc_boundary=False, loss_scale=1.0,
                       clip_norm=jnp.inf):
+    # `opt_step` is the optimizer step this micro-step belongs to (micro-step //
+    # ACCUMULATION_STEPS): the clock of the auxiliary terms an arch grades, the
+    # reasoner's λ anneals. A row is two windows and the target after them, so the
+    # window length is the batch's own; the pad is the one the model masks (#475).
     # Whether this batch opens a new document is a fact about the data stream;
     # what a model does with it (start fresh, or continue from carried state) is
     # the model's business.
@@ -44,8 +43,9 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
         # #19) — this is what keeps the [b, s, vocab] f32 logit peak off the card.
         embedding = model.embed.embedding[...]
 
-        seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
-        seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
+        window = (batch_tokens.shape[1] - 1) // 2
+        seq1_in, seq1_out = batch_tokens[:, :window], batch_tokens[:, 1:window+1]
+        seq2_in, seq2_out = batch_tokens[:, window:2*window], batch_tokens[:, window+1:2*window+1]
 
         out1 = model(seq1_in, depth=depth, training=True, new_document=new_document)
         out2 = model(seq2_in, depth=depth, training=True, new_document=False)
@@ -59,7 +59,7 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
         hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
         targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
         loss_sums, counts, row_stats = chunked_cross_entropy_rows(
-            hidden, embedding, targets, PAD_TOKEN_ID)
+            hidden, embedding, targets, model.pad_token_id)
         counts = jax.lax.stop_gradient(counts).clip(min=1.0)
         ce1 = loss_sums[:b].sum() / counts[:b].sum()
         ce2 = loss_sums[b:].sum() / counts[b:].sum()
@@ -70,7 +70,6 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
             'max_abs_logit': jnp.max(row_stats['max_abs_logit'][b:]),
         }
 
-        opt_step = step // ACCUMULATION_STEPS
         graded_aux = model.grade_aux([out1.aux, out2.aux], opt_step)
 
         total_loss = compute_total_loss(ce1, ce2, graded_aux)

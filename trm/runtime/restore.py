@@ -9,11 +9,12 @@ import os
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from trm.config import LATENT_DIM, MODEL_ARCH, resolve_root
+from trm.config import resolve_root
 from trm.model import build_model
 from trm.runtime.checkpoints import discover_latest_checkpoint_run, restore_tolerating_legacy
 from trm.runtime.layout import CHECKPOINT_ITEMS
-from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
+from trm.settings import location
+from trm.train.validation import read_heldout_rows
 
 # Eval builds and scores at batch 1, never at the training BATCH_SIZE (#24). The
 # reasoner's hunch_cache is shaped [batch, slots, dim] and its forward asserts on
@@ -52,9 +53,9 @@ def _restore_into(model, checkpoint_path, step=None):
     return model, latest
 
 
-def restore_arch(arch, checkpoint_path=None, *, step=None, dim=None, **overrides):
-    """Model-only restore of `arch` from a checkpoint dir (default: the latest
-    run's), at `step` (default: its newest).
+def restore_arch(config, arch, checkpoint_path=None, *, step=None, dim=None, **overrides):
+    """Model-only restore of `arch`, shaped by `config`, from a checkpoint dir
+    (default: the latest run's), at `step` (default: its newest).
 
     The skeleton comes from `trm.model.build_model`, the factory the trainer uses, so
     a restore builds exactly the param tree a run of that arch wrote. The arch must be
@@ -64,7 +65,7 @@ def restore_arch(arch, checkpoint_path=None, *, step=None, dim=None, **overrides
     if arch == "reasoner":
         overrides = {"batch_size": EVAL_BATCH_SIZE, **overrides}
     try:
-        model = build_model(arch, LATENT_DIM if dim is None else dim, nnx.Rngs(42), **overrides)
+        model = build_model(config, nnx.Rngs(42), arch=arch, dim=dim, **overrides)
     except ValueError as err:
         if "unknown architecture" not in str(err):
             raise  # a constructor's own complaint, not a bad name
@@ -72,15 +73,17 @@ def restore_arch(arch, checkpoint_path=None, *, step=None, dim=None, **overrides
     return _restore_into(model, checkpoint_path, step)
 
 
-def restore_model(checkpoint_path=None):
-    """Restore as MODEL_ARCH, whatever this process was launched with."""
-    return restore_arch(MODEL_ARCH, checkpoint_path)
+def restore_model(config, checkpoint_path=None):
+    """Restore as config.MODEL_ARCH: for this process's CONFIG, whatever it was
+    launched with."""
+    return restore_arch(config, config.MODEL_ARCH, checkpoint_path)
 
 
-def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_SAMPLES):
-    """Held-out rows: skip past the data the training run has consumed.
+def load_eval_batches(config, source="pretrain/fineweb-edu", num_rows=16, skip=None):
+    """Held-out rows: skip past the data the training run has consumed. Rows are
+    `config`'s shape, read the way its trainer reads them.
 
-    The default skip sits far beyond plausible consumption (an 8k-opt-step run
+    The default skip, config.VAL_SKIP_SAMPLES, sits far beyond plausible consumption (an 8k-opt-step run
     reads under 1M fineweb samples of its 4.3M) — the old 200k default was
     inside the range long runs train through, contaminating the eval slice.
 
@@ -88,12 +91,14 @@ def load_eval_batches(source="pretrain/fineweb-edu", num_rows=16, skip=VAL_SKIP_
     (#24): the eval slice must not move when a training throughput knob does, or
     every recorded yardstick number stops being comparable. Batch-1 is also the
     shape every stored checkpoint of both arches was written at."""
-    data_root = os.environ.get("DATA_ROOT", "")
+    data_root = location("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set.")
     source_dir = f"{resolve_root(data_root)}/{source}"
+    skip = config.VAL_SKIP_SAMPLES if skip is None else skip
 
-    batches = read_heldout_rows(source_dir, num_rows, skip)
+    batches = read_heldout_rows(source_dir, num_rows, skip,
+                                max_seq_len=config.MAX_SEQ_LEN, data_seed=config.DATA_SEED)
     if not batches:
         # "No eval data available" alone sends you looking for a missing corpus.
         # The actual cause is almost always that the default skip -- sized for the

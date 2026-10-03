@@ -23,9 +23,10 @@ import jax.numpy as jnp
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN, MAX_STEPS_LIMIT
+from trm.config import MAX_STEPS_LIMIT
 from trm.model.plain import PlainTransformer
 from trm.train.grad_step import compute_grad_step
+from trm.settings import CONFIG
 from trm.train.schedules import sample_reasoning_depth
 
 MICRO_STEPS = 16
@@ -43,14 +44,14 @@ class _CountingPlain(PlainTransformer):
 @pytest.fixture
 def plain():
     TRACES.clear()
-    return _CountingPlain(32, nnx.Rngs(0), vocab_size=37, num_heads=4, num_layers=1,
-                          max_seq_len=MAX_SEQ_LEN, pad_token_id=36)
+    return _CountingPlain(32, nnx.Rngs(0), CONFIG, vocab_size=37, num_heads=4, num_layers=1,
+                          max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=36)
 
 
 def _run(model, depths):
     """The trainer's call, micro-step by micro-step; returns how many grad-step traces
     happened (each trace runs the forward twice, once per window)."""
-    batch = jnp.ones((1, 2 * MAX_SEQ_LEN + 1), dtype=jnp.int32)
+    batch = jnp.ones((1, 2 * CONFIG.MAX_SEQ_LEN + 1), dtype=jnp.int32)
     doc_boundary = jnp.zeros((1,), dtype=bool)
     for step, depth in enumerate(depths):
         compute_grad_step(model, batch, jnp.array(step), depth, doc_boundary=doc_boundary,
@@ -67,7 +68,7 @@ def test_the_plain_grad_step_traces_once_across_micro_steps(plain):
 def test_the_old_loop_compiled_one_plain_program_per_sampled_depth(plain):
     """The defect this removes, reproduced: the loop-sampled depths over the same 16
     micro-steps give one trace per distinct value, for one computation."""
-    sampled = [sample_reasoning_depth(step) for step in range(MICRO_STEPS)]
+    sampled = [sample_reasoning_depth(step, CONFIG.DATA_SEED) for step in range(MICRO_STEPS)]
     assert len(set(sampled)) > 1, "the draw must vary for this to show anything"
     assert _run(plain, sampled) == len(set(sampled))
 
@@ -83,9 +84,12 @@ def test_the_trainer_asks_the_model_for_its_depth():
                                           ("trm.model.reasoner", "UniversalReasoner")])
 def test_looped_arches_keep_the_replayable_draw(module, name):
     """Bit-identical to the old loop: the same depth at every micro-step, so a resumed
-    run replays the depths the original trained at. Unbound: no model is built."""
+    run replays the depths the original trained at. Unbound, on a stand-in carrying
+    only the seed: no model is built."""
     import importlib
+    import types
     cls = getattr(importlib.import_module(module), name)
-    depths = [cls.training_depth(None, step) for step in range(2048)]
-    assert depths == [sample_reasoning_depth(step) for step in range(2048)]
+    model = types.SimpleNamespace(depth_seed=CONFIG.DATA_SEED)
+    depths = [cls.training_depth(model, step) for step in range(2048)]
+    assert depths == [sample_reasoning_depth(step, CONFIG.DATA_SEED) for step in range(2048)]
     assert set(depths) == set(range(1, MAX_STEPS_LIMIT + 1))

@@ -29,6 +29,7 @@ from trm.runtime.supervisor import (
     KILLED_DIVERGENCE,
     KILLED_DISK,
     KILLED_OOM,
+    REFUSED_RESUME,
     RELAUNCH,
     RESTART,
     RUNNING,
@@ -280,6 +281,17 @@ def test_a_crash_without_an_oom_still_relaunches():
     state = State()
     decision = decide(obs(step=400, alive=False, oom_detected=False), LIMITS, state)
     assert (decision.action, decision.outcome) == (RELAUNCH, CRASHED)
+
+
+def test_a_refused_resume_is_a_stop_not_a_crash_to_retry():
+    """#505: a relaunch onto a checkpoint the trainer refuses is refused the same
+    way every time; retrying it only reaches GAVE_UP with the reason buried."""
+    state = State()
+    decision = decide(obs(step=400, alive=False, resume_refusal="❌ sampels_seen: extra"), LIMITS, state)
+    assert (decision.action, decision.outcome) == (STOP, REFUSED_RESUME)
+    assert "sampels_seen" in decision.reason
+    assert state.retries_used == 0
+    assert REFUSED_RESUME not in DELIBERATE, "it waits for a human: the supervisor exits non-zero"
 
 
 def test_an_oom_while_still_alive_is_not_terminal():

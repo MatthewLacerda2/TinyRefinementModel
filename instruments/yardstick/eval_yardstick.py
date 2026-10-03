@@ -35,7 +35,7 @@ from flax import nnx
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
 
-from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID, TOKENIZER_NAME
+from trm.config import TOKENIZER_NAME
 from trm.runtime.restore import EVAL_BATCH_SIZE, restore_arch
 from instruments.arch import add_arch_argument
 from instruments.yardstick.yardstick import (
@@ -48,6 +48,7 @@ from instruments.yardstick.yardstick import (
     summarize,
 )
 from instruments.yardstick import fineweb_val
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -104,9 +105,10 @@ def heldout_perplexity(model):
         print("⚠️ Held-out ppl skipped: DATA_ROOT is not set (try DATA_ROOT=runs/data).")
         return None
     from trm.config import resolve_root
+    from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
 
-    ce = ValidationProbe(resolve_root(data_root)).run(model)
+    ce = ValidationProbe.of(CONFIG, resolve_root(data_root)).run(model)
     if ce is None:
         return None
     return {"val_ce": ce, "ppl": float(np.exp(ce))}
@@ -133,7 +135,7 @@ def main(argv=None):
     ap.add_argument("--fineweb-tokens", type=int, default=FINEWEB_DEFAULT_TOKENS,
                     help=f"tokens of the speedrun's FineWeb val shard to score (0 skips; the full reference "
                          f"set is {fineweb_val.SPEEDRUN_VAL_TOKENS})")
-    ap.add_argument("--fineweb-window", type=int, default=MAX_SEQ_LEN,
+    ap.add_argument("--fineweb-window", type=int, default=CONFIG.MAX_SEQ_LEN,
                     help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
     args = ap.parse_args(argv)
 
@@ -144,7 +146,7 @@ def main(argv=None):
         # keep restoring checkpoints written before batching changed.
         print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
         args.batch = EVAL_BATCH_SIZE
-    model, step = restore_arch(args.arch, args.checkpoint_path, step=args.step)
+    model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
 
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)
@@ -153,7 +155,7 @@ def main(argv=None):
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
     encoded, skipped = [], 0
     for text in texts:
-        pair = encode_example(enc, text, MAX_SEQ_LEN)
+        pair = encode_example(enc, text, CONFIG.MAX_SEQ_LEN)
         if pair is None:
             skipped += 1
         else:
@@ -163,7 +165,7 @@ def main(argv=None):
 
     print(f"📏 LAMBADA: {len(encoded)} examples | arch {args.arch} | depth {args.depth} | batch {args.batch}")
     scores = score_examples(
-        make_logits_fn(model, args.depth), encoded, PAD_TOKEN_ID, batch_size=args.batch,
+        make_logits_fn(model, args.depth), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
         progress=lambda done, total: print(f"  … {done}/{total}", flush=True) if done % 512 < args.batch else None,
     )
     result = summarize(scores)

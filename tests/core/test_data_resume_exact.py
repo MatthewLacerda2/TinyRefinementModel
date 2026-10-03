@@ -11,9 +11,9 @@ import json
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
-STRIDE = 2 * MAX_SEQ_LEN + 1
+STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
 
 def _corpus(root, name, samples_per_file, files, base):
@@ -32,7 +32,7 @@ def _corpus(root, name, samples_per_file, files, base):
 def _mixer(tmp_path):
     from trm.data.loaders import DataMixer, TextDataGenerator
     dirs = [_corpus(tmp_path, "web", 4, 3, 0), _corpus(tmp_path, "code", 3, 2, 20000)]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [0.6, 0.4], rng=np.random.default_rng(11))
 
 

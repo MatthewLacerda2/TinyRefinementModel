@@ -26,15 +26,17 @@ import argparse
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import jax.numpy as jnp
+import numpy as np
 import optax
 from flax import nnx
 import orbax.checkpoint as ocp
 
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, PAD_TOKEN_ID, resolve_root
+from trm.config import resolve_root
 from trm.model.refiner_lm import RefinerForTraining
 from trm.data.loaders import TextDataGenerator
 from trm.runtime.checkpoints import discover_latest_checkpoint_run
 from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.settings import CONFIG
 
 # Curriculum domains, associative -> compositional. Depth should pay off most where
 # the prediction needs multi-step aggregation (math/code), least on web text.
@@ -59,7 +61,7 @@ def restore_refiner(checkpoint_path=None):
         print(f"🔎 Using latest checkpointed run: {run_id}")
     checkpoint_path = os.path.abspath(checkpoint_path)
 
-    model = RefinerForTraining(LATENT_DIM, nnx.Rngs(42))
+    model = RefinerForTraining(CONFIG.LATENT_DIM, nnx.Rngs(42), CONFIG)
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
@@ -85,7 +87,8 @@ def load_domain_batches(source, num_rows, skip):
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         raise SystemExit("DATA_ROOT is not set (try DATA_ROOT=runs/data).")
-    gen = TextDataGenerator(f"{resolve_root(data_root)}/{source}")
+    gen = TextDataGenerator(f"{resolve_root(data_root)}/{source}", max_seq_len=CONFIG.MAX_SEQ_LEN,
+                            rng=np.random.default_rng(CONFIG.DATA_SEED))
     gen.skip_count = skip
     batches = []
     while len(batches) < num_rows:
@@ -100,13 +103,13 @@ def load_domain_batches(source, num_rows, skip):
 def _ce_sums(model, batch, depth):
     """Masked next-token CE sum + token count over both windows at a fixed depth —
     mirrors validation._val_ce_sums, but depth is the swept argument here."""
-    seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
-    seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:2 * MAX_SEQ_LEN + 1]
+    seq1_in, seq1_out = batch[:, :CONFIG.MAX_SEQ_LEN], batch[:, 1:CONFIG.MAX_SEQ_LEN + 1]
+    seq2_in, seq2_out = batch[:, CONFIG.MAX_SEQ_LEN:2 * CONFIG.MAX_SEQ_LEN], batch[:, CONFIG.MAX_SEQ_LEN + 1:2 * CONFIG.MAX_SEQ_LEN + 1]
     out1 = model(seq1_in, depth=depth, training=False)
     out2 = model(seq2_in, depth=depth, training=False)
     total, count = jnp.array(0.0), jnp.array(0)
     for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
-        mask = targets != PAD_TOKEN_ID
+        mask = targets != CONFIG.PAD_TOKEN_ID
         ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
         total += jnp.sum(ce * mask)
         count += jnp.sum(mask)

@@ -35,9 +35,9 @@ import queue
 import jax
 from flax import nnx
 
-from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, MODEL_ARCH
 from trm.runtime.checkpoints import load_or_create_checkpoint
 from trm.runtime.run_tracker import RunTracker
+from trm.settings import CONFIG
 from trm.train import trainer
 
 REPORTS = {
@@ -155,11 +155,11 @@ def format_summary(summary, device_lines, trace_path):
     mean = ms(wall)
     reference = ", ".join(f"{k} {v}" for k, v in REFERENCE_S_PER_OPT_STEP.items())
     lines = [
-        f"profile: {n} micro-steps | arch {MODEL_ARCH} | batch {BATCH_SIZE} x {ACCUMULATION_STEPS} "
+        f"profile: {n} micro-steps | arch {CONFIG.MODEL_ARCH} | batch {CONFIG.BATCH_SIZE} x {CONFIG.ACCUMULATION_STEPS} "
         f"micro-steps per opt step",
         f"trace:   {trace_path}",
         f"wall     {mean:8.1f} ms/micro-step (p50 {summary['p50'] / 1e6:.1f}, max {summary['max'] / 1e6:.1f})"
-        f" -> {mean * ACCUMULATION_STEPS / 1000:.2f} s/opt step (#411, batch 1: {reference})",
+        f" -> {mean * CONFIG.ACCUMULATION_STEPS / 1000:.2f} s/opt step (#411, batch 1: {reference})",
     ]
     if device_lines:
         busy = ms(summary["busy"])
@@ -184,9 +184,9 @@ def format_summary(summary, device_lines, trace_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     # Warmup crosses one opt step, so both apply_grads paths compile before the trace.
-    parser.add_argument("--warmup", type=int, default=ACCUMULATION_STEPS + 2,
+    parser.add_argument("--warmup", type=int, default=CONFIG.ACCUMULATION_STEPS + 2,
                         help="untraced micro-steps, compile included (> ACCUMULATION_STEPS)")
-    parser.add_argument("--micro-steps", type=int, default=ACCUMULATION_STEPS,
+    parser.add_argument("--micro-steps", type=int, default=CONFIG.ACCUMULATION_STEPS,
                         help="micro-steps measured; the default window holds one optimizer update")
     parser.add_argument("--out", default="runs/profile", help="where the profile's run folder goes")
     args = parser.parse_args()
@@ -195,16 +195,16 @@ def main():
     if args.warmup < 2 or args.micro_steps < 1:
         raise SystemExit("need --warmup >= 2 and --micro-steps >= 1")
 
-    run_tracker = RunTracker(runs_root=args.out)
+    run_tracker = RunTracker(CONFIG, runs_root=args.out)
     run_tracker.start_session()
-    model, optimizer = trainer.init_model_and_optimizer()
+    model, optimizer = trainer.init_model_and_optimizer(CONFIG)
     mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
-        model, optimizer, os.path.abspath(os.path.join(run_tracker.run_dir, "checkpoints")), force_new_run=True)
+        CONFIG, model, optimizer, os.path.abspath(os.path.join(run_tracker.run_dir, "checkpoints")), force_new_run=True)
     trace_dir = os.path.join(run_tracker.run_dir, "trace")
     data_queue = TracedQueue(
-        trainer.setup_data_pipeline(start_step), args.warmup, args.micro_steps, trace_dir,
+        trainer.setup_data_pipeline(CONFIG, start_step), args.warmup, args.micro_steps, trace_dir,
         settle=lambda: jax.block_until_ready((nnx.state(model), nnx.state(optimizer))))
-    trainer.train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
+    trainer.train_loop(CONFIG, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
     if data_queue.served <= data_queue.stop_at:
         raise SystemExit("the loop ended before the traced window closed")
 

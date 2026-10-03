@@ -1,6 +1,9 @@
 """The training loop and its data pipeline. The pieces the loop *uses* live in
 their own modules: held-out scoring in validation.py, the optimizer chains in
-optimizers.py, schedules and mixture policies in schedules.py."""
+optimizers.py, schedules and mixture policies in schedules.py.
+
+Every knob the loop reads comes from the Config it is handed (#475):
+trm.train.start builds it, with a resumed run's own budget, and passes it down."""
 
 import os
 import math
@@ -10,57 +13,22 @@ import queue
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 from dotenv import load_dotenv
 
-from trm.config import (
-    BATCH_SIZE,
-    ACCUMULATION_STEPS,
-    LATENT_DIM,
-    MODEL_ARCH,
-    REFINER_ENCODER_LAYERS,
-    MAX_STEPS_LIMIT,
-    DATA_BRANCH,
-    DATA_BRANCH_SEED_STRIDE,
-    DATA_SEED,
-    DEFAULT_DATA_MIXTURE,
-    MODEL_SEED,
-    PLAIN_LAYERS,
-    TOKENS_PER_OPT_STEP,
-    TRAIN_TOKEN_BUDGET,
-    TRM_OPTIMIZER,
-    MUON_LR_MULT,
-    ADAM_B1,
-    ADAM_B2,
-    ADAM_EPS,
-    WEIGHT_DECAY,
-    CLIP_NORM,
-    MUON_BETA,
-    MUON_NS_STEPS,
-    LOSS_SCALE_GROWTH_INTERVAL,
-    resolve_root,
-)
+from trm.config import MAX_STEPS_LIMIT, resolve_root
 from trm.model import build_model
-from trm.runtime.layout import (CHECKPOINT_EVERY_OPT_STEPS, LOG_REAL_STEPS,
-                                VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS)
-from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, save_checkpoint,
-                                     save_milestone, wait_for_pending_saves)
+from trm.settings import DEFAULT_DATA_MIXTURE, location
+from trm.runtime.layout import LOG_REAL_STEPS
+from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, milestone_thresholds,
+                                     save_checkpoint, save_milestone, wait_for_pending_saves)
 from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.optimizers import optimizer_chain
-from trm.train.schedules import (
-    CURRICULUM_END_WEIGHTS,
-    CURRICULUM_START_WEIGHTS,
-    DECAY_STEPS,
-    PRETRAIN_SOURCES,
-    SCHEDULE_HORIZONS,
-    WARMUP_STEPS,
-    get_curriculum_weights,
-    get_average_curriculum_weights,
-    parse_mixture,
-)
+from trm.train.schedules import Schedules, parse_mixture
 from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
 from trm.runtime.metrics import MetricsLogger
 from trm.data.loaders import TextDataGenerator, DataMixer
@@ -85,7 +53,7 @@ SPAN_PREFIX = "trm/"
 def span(name):
     return jax.profiler.TraceAnnotation(SPAN_PREFIX + name)
 
-DATA_ROOT = os.environ.get("DATA_ROOT", "")
+DATA_ROOT = location("DATA_ROOT", "")
 if DATA_ROOT:
     DATA_ROOT = resolve_root(DATA_ROOT)
 
@@ -147,7 +115,7 @@ def split_samples(total_samples, weights):
     return [int(total_samples * w) for w in weights]
 
 
-def samples_from_micro_steps(micro_steps, weights, batch_size=BATCH_SIZE):
+def samples_from_micro_steps(micro_steps, weights, batch_size):
     """split_samples for the case with no recorded sample count — a pre-#24
     checkpoint, or a fresh run. Converts micro-steps at the given batch size."""
     return split_samples(micro_steps * batch_size, weights)
@@ -188,64 +156,73 @@ class LogWindow:
                      for name in self.FIELDS)
 
 
-def init_model_and_optimizer():
-    if MODEL_ARCH == "plain":
-        print(f"🚀 Initializing PlainTransformer (Dim={LATENT_DIM}, layers={PLAIN_LAYERS})...")
-    elif MODEL_ARCH == "refiner":
+def init_model_and_optimizer(config):
+    if config.MODEL_ARCH == "plain":
+        print(f"🚀 Initializing PlainTransformer (Dim={config.LATENT_DIM}, layers={config.PLAIN_LAYERS})...")
+    elif config.MODEL_ARCH == "refiner":
         print(f"🚀 Initializing Plan A CausalRefiner "
-              f"(Dim={LATENT_DIM}, encoder_layers={REFINER_ENCODER_LAYERS}, max_depth={MAX_STEPS_LIMIT})...")
+              f"(Dim={config.LATENT_DIM}, encoder_layers={config.REFINER_ENCODER_LAYERS}, "
+              f"max_depth={MAX_STEPS_LIMIT})...")
     else:
-        print(f"🚀 Initializing UniversalReasoner, the control baseline (Dim={LATENT_DIM})...")
-    model = build_model(MODEL_ARCH, LATENT_DIM, nnx.Rngs(MODEL_SEED))
+        print(f"🚀 Initializing UniversalReasoner, the control baseline (Dim={config.LATENT_DIM})...")
+    model = build_model(config, nnx.Rngs(config.MODEL_SEED))
 
-    print(f"📐 Architecture '{MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
-          f"(MODEL_SEED={MODEL_SEED}, DATA_SEED={DATA_SEED})")
+    print(f"📐 Architecture '{config.MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
+          f"(MODEL_SEED={config.MODEL_SEED}, DATA_SEED={config.DATA_SEED})")
+    schedules = Schedules.of(config)
     # The resolved LR horizon must be visible at launch (#83): an anneal that
     # bottoms out before the budget ends is undertraining masquerading as an
     # architecture problem.
-    budget_note = (f"TRAIN_TOKEN_BUDGET={TRAIN_TOKEN_BUDGET:,}" if TRAIN_TOKEN_BUDGET is not None
+    budget = config.TRAIN_TOKEN_BUDGET
+    budget_note = (f"TRAIN_TOKEN_BUDGET={budget:,}" if budget is not None
                    else "TRAIN_TOKEN_BUDGET unset — historical default")
-    print(f"🗓️ LR horizon: DECAY_STEPS={DECAY_STEPS:,} opt steps "
-          f"(warmup {WARMUP_STEPS:,}) ≈ {DECAY_STEPS * TOKENS_PER_OPT_STEP / 1e9:.2f}B "
+    print(f"🗓️ LR horizon: DECAY_STEPS={schedules.decay_steps:,} opt steps "
+          f"(warmup {config.WARMUP_STEPS:,}) ≈ "
+          f"{schedules.decay_steps * config.TOKENS_PER_OPT_STEP / 1e9:.2f}B "
           f"target tokens ({budget_note})")
     # Every schedule with its horizon and what it scales with (#362).
     print("🗓️ Schedules: " + " | ".join(
-        f"{name} {steps:,} opt steps ({kind})" for name, (kind, steps) in SCHEDULE_HORIZONS.items()))
+        f"{name} {steps:,} opt steps ({kind})" for name, (kind, steps) in schedules.horizons.items()))
     # The mixture at both ends of its ramp, by bucket (#439): what this run reads.
-    print(f"🥣 Mixture: {mixture_label(PRETRAIN_SOURCES, CURRICULUM_START_WEIGHTS)} -> "
-          f"{mixture_label(PRETRAIN_SOURCES, CURRICULUM_END_WEIGHTS)}")
+    print(f"🥣 Mixture: {mixture_label(schedules.sources, schedules.start_weights)} -> "
+          f"{mixture_label(schedules.sources, schedules.end_weights)}")
     # The whole optimizer at launch, every knob named (#358).
-    muon = (f"muon on the matrices (LR x{MUON_LR_MULT:g}, beta {MUON_BETA:g}, "
-            f"{MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
-            if TRM_OPTIMIZER == "muon" else "adamw")
-    print(f"🎛️ Optimizer: {muon} | adam b1 {ADAM_B1:g} b2 {ADAM_B2:g} eps {ADAM_EPS:g} | "
-          f"weight decay {WEIGHT_DECAY:g} | clip {CLIP_NORM:g}")
-    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+    muon = (f"muon on the matrices (LR x{config.MUON_LR_MULT:g}, beta {config.MUON_BETA:g}, "
+            f"{config.MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
+            if config.TRM_OPTIMIZER == "muon" else "adamw")
+    print(f"🎛️ Optimizer: {muon} | adam b1 {config.ADAM_B1:g} b2 {config.ADAM_B2:g} "
+          f"eps {config.ADAM_EPS:g} | weight decay {config.WEIGHT_DECAY:g} | clip {config.CLIP_NORM:g}")
+    optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)
 
     return model, optimizer
 
-def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
+def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
     if not DATA_ROOT:
         print("⚠️ Warning: DATA_ROOT is not set. Data loading will fail unless provided via environment.")
     print("🚀 Initializing Dynamic Data Phases...")
-    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}") for path in PRETRAIN_SOURCES]
-    pretrain_mixer = DataMixer(pretrain_sources, CURRICULUM_START_WEIGHTS, names=PRETRAIN_SOURCES)
+    schedules = Schedules.of(config)
+    # Every reader and the mixer seeded from DATA_SEED, each its own stream.
+    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}", max_seq_len=config.MAX_SEQ_LEN,
+                                          rng=np.random.default_rng(config.DATA_SEED))
+                        for path in schedules.sources]
+    pretrain_mixer = DataMixer(pretrain_sources, schedules.start_weights,
+                               rng=np.random.default_rng(config.DATA_SEED), names=schedules.sources)
 
-    if DATA_BRANCH and start_step == 0:
+    if config.DATA_BRANCH and start_step == 0:
         # A branch that found no checkpoint would train a fresh model on the arm's
         # mixture and report it as the branch.
         raise SystemExit("DATA_BRANCH=1 but no checkpoint was restored: a branch starts from one (#489)")
-    if start_step > 0 and DATA_BRANCH:
+    if start_step > 0 and config.DATA_BRANCH:
         # A branch onto this run's mixture (#489): the weights continue, the stream
         # is rebuilt, and each seed reads its own rows.
         if data_state is None:
             raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
         pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
-                                    skip=DATA_SEED * DATA_BRANCH_SEED_STRIDE)
-        print(f"🌿 Data stream branched onto {', '.join(PRETRAIN_SOURCES)}: "
-              f"seed {DATA_SEED} skips {DATA_SEED * DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
+                                    skip=config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE)
+        print(f"🌿 Data stream branched onto {', '.join(schedules.sources)}: seed {config.DATA_SEED} "
+              f"skips {config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
     elif start_step > 0 and data_state is not None:
         # Exact (#424): the reader and mixer state saved with the last batch the
         # checkpointed run consumed, so the next row is the one it would have read.
@@ -256,14 +233,14 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
         # after it is not the one the run would have read.
         print("⚠️ Data position estimated from the sample count: this checkpoint predates "
               "the saved data state (#424)")
-        start_opt_step = start_step // ACCUMULATION_STEPS
+        start_opt_step = start_step // config.ACCUMULATION_STEPS
         # Prefer the recorded sample count over re-deriving it from micro-steps
         # (#24): only the recorded figure survives a change in BATCH_SIZE between
         # the run that wrote the checkpoint and the one resuming it.
-        avg_weights = get_average_curriculum_weights(start_opt_step)
+        avg_weights = schedules.average_curriculum_weights(start_opt_step)
         skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
                  # Pre-#24 checkpoints come from runs that counted from 1 (#355).
-                 else samples_from_micro_steps(start_step - 1, avg_weights))
+                 else samples_from_micro_steps(start_step - 1, avg_weights, config.BATCH_SIZE))
         for gen, skip in zip(pretrain_sources, skips):
             gen.skip_count = skip
 
@@ -272,9 +249,9 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
     def data_wrapper():
         loader_step = start_step
         while True:
-            loader_opt_step = loader_step // ACCUMULATION_STEPS
-            pretrain_mixer.set_weights(get_curriculum_weights(loader_opt_step))
-            res = pretrain_mixer.get_batch(BATCH_SIZE)
+            loader_opt_step = loader_step // config.ACCUMULATION_STEPS
+            pretrain_mixer.set_weights(schedules.curriculum_weights(loader_opt_step))
+            res = pretrain_mixer.get_batch(config.BATCH_SIZE)
 
             if res[0] is None:
                 data_queue.put((None, None, None, None))
@@ -288,7 +265,7 @@ def setup_data_pipeline(start_step, samples_seen=None, data_state=None):
     threading.Thread(target=data_wrapper, daemon=True).start()
     return data_queue
 
-def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker):
+def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker):
     history_file = os.path.join(run_tracker.run_dir, "metrics.csv")
     # On resume, trim CSV rows the restored checkpoint will replay; a fresh run
     # (start_step == 0) appends to any existing CSV untouched.
@@ -296,17 +273,19 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     # opt step up to (k + 1) // ACCUMULATION_STEPS, and its row was logged before
     # the save, so it stays: trimming from start_step // ACCUMULATION_STEPS dropped
     # that row on every resume (found by tests/apparatus/test_trainer_end_to_end.py).
-    start_opt_step = start_step // ACCUMULATION_STEPS + 1 if start_step > 0 else None
+    accumulation_steps = config.ACCUMULATION_STEPS
+    schedules = Schedules.of(config)
+    start_opt_step = start_step // accumulation_steps + 1 if start_step > 0 else None
     logger = MetricsLogger(history_file, start_opt_step=start_opt_step)
-    val_probe = ValidationProbe(DATA_ROOT)
-    source_probes = [ValidationProbe(DATA_ROOT, skip=None, source=s) for s in VAL_BY_SOURCE]
+    val_probe = ValidationProbe.of(config, DATA_ROOT)
+    source_probes = [ValidationProbe.of(config, DATA_ROOT, source=s) for s in VAL_BY_SOURCE]
     step = start_step
 
     # f16 gradients underflow to exactly zero without this, which is what destroyed
     # the model at opt step 11,140 on 2026-08-18 (#199). Not restored from the
     # checkpoint: S re-finds its ceiling within a few hundred micro-steps, and a
     # stale value would be a worse starting guess than the standard one.
-    loss_scaler = DynamicLossScale(growth_interval=LOSS_SCALE_GROWTH_INTERVAL)
+    loss_scaler = DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL)
     print(f"🔍 [LossScale] dynamic f16 loss scaling active, starting at "
           f"{loss_scaler.value:g} (#199)")
     # The clip in the optimizer chain only ever sees the mean of ACCUMULATION_STEPS
@@ -320,8 +299,10 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
     print(f"🔍 [GradGuard] per-micro-step clipping at {grad_guard.multiplier:g}x the "
           f"running typical norm, after {grad_guard.warmup} warmup micro-steps (#201)")
     window = LogWindow()
-    source_grads = SourceGrads(PRETRAIN_SOURCES)
+    source_grads = SourceGrads(schedules.sources)
     milestone_mngr = make_milestone_manager(mngr.directory)
+    milestones = milestone_thresholds(config.MILESTONE_FIRST_TOKENS, config.MILESTONE_RATIO,
+                                      config.MILESTONE_MAX_COUNT)
     t_compute = 0.0
     nonfinite_streak = 0
     # Latest held-out CE from the validation probe, carried so the (less frequent)
@@ -354,14 +335,14 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             depth = model.training_depth(step)
             # The logging micro-step: its gradient stats are sampled before the
             # update below and logged after it, so both blocks read this one flag.
-            is_log_step = (step + 1) % (ACCUMULATION_STEPS * LOG_REAL_STEPS) == 0
+            is_log_step = (step + 1) % (accumulation_steps * LOG_REAL_STEPS) == 0
 
             # The ceiling is built from the micro-steps already seen, so it is
             # known before this one runs — an outlier cannot widen the gate it is
             # about to be measured against.
             ceiling = grad_guard.threshold
             with span("step_scalars"):
-                step_now = jnp.array(step)
+                step_now = jnp.array(step // accumulation_steps)
                 loss_scale = jnp.float32(loss_scaler.value)
                 clip_norm = jnp.float32(jnp.inf if ceiling is None else ceiling)
             with span("grad_step"):
@@ -428,7 +409,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # and cannot be read against CLIP_NORM; this can: above it, the clip, not
                 # the LR schedule, is setting the step size.
                 applied_grad_norm = float(applied_norm)
-                clip_active = int(applied_grad_norm > CLIP_NORM)
+                clip_active = int(applied_grad_norm > config.CLIP_NORM)
                 clip_logged, clip_bit = clip_logged + 1, clip_bit + clip_active
                 zero_frac_dense = dense_zero_frac_max(zero_fracs)
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
@@ -448,9 +429,9 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
             # boundary (every ACCUMULATION_STEPS micro-steps), independent of the
             # logging block — nesting it inside logging multiplied the effective
             # interval by LOG_REAL_STEPS.
-            if (step + 1) % ACCUMULATION_STEPS == 0:
-                opt_step = (step + 1) // ACCUMULATION_STEPS
-                if opt_step % VAL_EVERY_OPT_STEPS == 0:
+            if (step + 1) % accumulation_steps == 0:
+                opt_step = (step + 1) // accumulation_steps
+                if opt_step % config.VAL_EVERY_OPT_STEPS == 0:
                     val_ce = val_probe.run(model)
                     if val_ce is not None:
                         latest_val_ce, latest_val_step = val_ce, opt_step
@@ -462,7 +443,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                             save_checkpoint(best_mngr, step, model, optimizer, monitor,
                                             run_tracker.run_id, wait=False)
                     # The other corpora (#363), on a rarer cadence of the same steps.
-                    if opt_step % VAL_BY_SOURCE_EVERY_OPT_STEPS == 0:
+                    if opt_step % config.VAL_BY_SOURCE_EVERY_OPT_STEPS == 0:
                         readings = {p.source: p.run(model) for p in source_probes}
                         latest_val_by_source = ";".join(
                             f"{s}={ce:.4f}" for s, ce in readings.items() if ce is not None) or None
@@ -474,7 +455,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # (ROLLING_KEEP by recency, trm/runtime/layout.py). Kept out of the
                 # logging block — the full-state save blocks, so it must stay rare.
                 # The best-CE state is saved on the validation probe, above.
-                if opt_step % CHECKPOINT_EVERY_OPT_STEPS == 0:
+                if opt_step % config.CHECKPOINT_EVERY_OPT_STEPS == 0:
                     save_checkpoint(mngr, step, model, optimizer, monitor,
                                     run_tracker.run_id, wait=False)
 
@@ -482,12 +463,12 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 # doubling token counts and weights-only (#394). Checked every
                 # optimizer step rather than at the rolling boundary, because the
                 # early ones are closer together than that boundary.
-                if milestone_due(opt_step, opt_step - 1, TOKENS_PER_OPT_STEP):
+                if milestone_due(opt_step, opt_step - 1, config.TOKENS_PER_OPT_STEP, milestones):
                     save_milestone(milestone_mngr, step, model, monitor,
                                    run_tracker.run_id, wait=False)
 
             if is_log_step:
-                opt_step = (step + 1) // ACCUMULATION_STEPS
+                opt_step = (step + 1) // accumulation_steps
                 accum_loss, accum_token_loss, accum_grad_norm, accum_depth = window.means()
 
                 # Underflow instrument (#82): zero_fracs / zero_frac_dense were
@@ -511,7 +492,7 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                     applied_zero_frac_dense_max=zero_frac_dense,
                     applied_grad_norm=applied_grad_norm,
                     clip_active=clip_active,
-                    mix=mixture_label(PRETRAIN_SOURCES, get_curriculum_weights(opt_step)),
+                    mix=mixture_label(schedules.sources, schedules.curriculum_weights(opt_step)),
                     grad_by_source=source_grads.label(),
                     loss_scale=f"{loss_scaler.value:g}",
                     skipped_micro_steps=loss_scaler.overflows,
@@ -539,10 +520,10 @@ def train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_ste
                 print(f"📐 [GradBySource] mean/max/guard-clipped/micro-steps: {source_grads.label()}")
 
                 depth_note = "" if accum_depth is None else f" | Avg Sampled Depth: {accum_depth:.2f}"
-                curr_weights = get_curriculum_weights(opt_step)
+                curr_weights = schedules.curriculum_weights(opt_step)
                 print(
                     f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
-                    f"Weights: {mixture_label(PRETRAIN_SOURCES, curr_weights)}"
+                    f"Weights: {mixture_label(schedules.sources, curr_weights)}"
                 )
 
                 # Periodically update session duration to capture active timings

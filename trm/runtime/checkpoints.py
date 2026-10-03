@@ -5,10 +5,10 @@ import signal
 
 from flax import nnx
 import orbax.checkpoint as ocp
-from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_FIRST_TOKENS,
-                                MILESTONE_ITEMS, MILESTONE_MAX_COUNT, MILESTONE_RATIO,
-                                MILESTONE_SUBDIR, ROLLING_KEEP)
+from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_ITEMS, MILESTONE_SUBDIR,
+                                ROLLING_KEEP)
 from trm.runtime.monitor import LossMonitor
+from trm.runtime.resume_state import ResumeState
 from trm.runtime.rewind import refuse_sft_phase_resume
 
 def discover_latest_run(runs_root="runs"):
@@ -50,7 +50,7 @@ def discover_latest_checkpoint_run(runs_root="runs"):
 # deleted by the time a run ends.
 #
 # Two things make a milestone cheap enough to keep forever (#394): they are spaced
-# by doubling (MILESTONE_* in layout.py), and they hold the weights, not the whole
+# by doubling (MILESTONE_* in trm/settings.py), and they hold the weights, not the whole
 # training state. Weights are what the yardstick, the registry and the trajectory
 # figures read; the optimizer state is ~3/4 of a full save and only a resume wants
 # it, which is what the rolling checkpoints are for. So a milestone is not a resume
@@ -66,10 +66,10 @@ def make_milestone_manager(checkpoint_path):
     )
 
 
-def milestone_thresholds(first=MILESTONE_FIRST_TOKENS, ratio=MILESTONE_RATIO,
-                         count=MILESTONE_MAX_COUNT):
+def milestone_thresholds(first, ratio, count):
     """The token counts a milestone is kept at: first, first*ratio, … capped at
-    `count` of them. `first <= 0` turns milestones off."""
+    `count` of them (MILESTONE_FIRST_TOKENS / _RATIO / _MAX_COUNT). `first <= 0`
+    turns milestones off."""
     if first <= 0 or count <= 0:
         return ()
     marks, mark = [], float(first)
@@ -79,7 +79,7 @@ def milestone_thresholds(first=MILESTONE_FIRST_TOKENS, ratio=MILESTONE_RATIO,
     return tuple(marks)
 
 
-def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None):
+def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds):
     """Whether a milestone token count was crossed between two optimizer steps.
 
     Checked every optimizer step, not only where a rolling checkpoint lands: the
@@ -87,32 +87,14 @@ def milestone_due(opt_step, since_opt_step, tokens_per_opt_step, thresholds=None
     than the rolling cadence, and a milestone that waits for the next boundary is
     not the point in training it claims to be.
     """
-    marks = milestone_thresholds() if thresholds is None else thresholds
     now = opt_step * tokens_per_opt_step
     before = max(since_opt_step, 0) * tokens_per_opt_step
-    return any(before < mark <= now for mark in marks)
+    return any(before < mark <= now for mark in thresholds)
 
 
 def _monitor_state(monitor, run_id):
     """The JSON side of a save: everything a resume rebuilds the run from."""
-    return {
-        "ce_history": list(monitor.ce_history),
-        "best_ce": monitor.best_ce,
-        "best_loss": monitor.best_loss,
-        "best_avg_ce": monitor.best_avg_ce,
-        "best_val_ce": monitor.best_val_ce,
-        "last_improvement_step": monitor.last_improvement_step,
-        "run_id": run_id,
-        # Samples actually consumed, counted as they were served rather
-        # than re-derived (#24). Resume rebuilds the data position from
-        # this; computing it as step x BATCH_SIZE would mis-seek exactly
-        # the run that needs it — one resumed at a different batch size
-        # than it was trained at, whose history spans both.
-        "samples_seen": monitor.samples_seen,
-        # Where the data stream is, exactly (#424). A fresh dict per batch
-        # that nothing mutates afterwards, so handing it over is safe.
-        "data_state": monitor.data_state,
-    }
+    return ResumeState.of(monitor, run_id).saved()
 
 
 def save_milestone(mngr, step, model, monitor, run_id, wait=False):
@@ -260,13 +242,16 @@ def exit_cleanly_on_sigterm():
         # unrecorded.
         print(f"🛑 received SIGTERM (pid {os.getpid()}) — exiting cleanly, waiting for pending "
               f"checkpoint writes", flush=True)
+        # Once: a second TERM would abort the wait this one started. Both can come at
+        # once — a session-wide TERM reaches the supervisor too, which stops us (#516).
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, _raise)
 
 
-def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=False):
-    monitor = LossMonitor()
+def load_or_create_checkpoint(config, model, optimizer, checkpoint_path, force_new_run=False):
+    monitor = LossMonitor.of(config)
     mngr = ocp.CheckpointManager(
         checkpoint_path,
         item_names=CHECKPOINT_ITEMS,
@@ -297,20 +282,9 @@ def load_or_create_checkpoint(model, optimizer, checkpoint_path, force_new_run=F
         m_state = restored["monitor_state"]
         # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
         # don't. Absent reads as pretraining, and an SFT-phase one is refused.
-        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path)
-        monitor.ce_history = m_state.get("ce_history", [])
-        monitor.best_ce = m_state.get("best_ce", float("inf"))
-        monitor.best_loss = m_state.get("best_loss", float("inf"))
-        monitor.best_avg_ce = m_state.get("best_avg_ce", monitor.best_ce)
-        # Absent before #222: the first val probe after resume sets a new best.
-        monitor.best_val_ce = m_state.get("best_val_ce", float("inf"))
-        monitor.last_improvement_step = m_state.get("last_improvement_step", 0)
-        # Checkpoints written before #24 have no samples_seen; every one of them
-        # was trained at BATCH_SIZE=1, so one sample per micro-step is the exact
-        # value, not a guess.
-        monitor.samples_seen = m_state.get("samples_seen", restored["step"])
-        # Absent before #424: the resume then estimates the data position.
-        monitor.data_state = m_state.get("data_state")
+        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path, config.ACCUMULATION_STEPS)
+        ResumeState.load(m_state, f"checkpoint step {latest_step} in {checkpoint_path}").restore(
+            monitor, micro_step=restored["step"])
 
         print(f"✅ Resuming from step {start_step} "
               f"({monitor.samples_seen:,} samples consumed)")

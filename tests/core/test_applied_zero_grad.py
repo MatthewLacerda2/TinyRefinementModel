@@ -79,7 +79,7 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
 
     # The logged column is observed in a real run (tests/apparatus/test_trainer_end_to_end.py);
     # the clip it is read against is the optimizer's.
-    assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
+    assert "clip_by_global_norm(config.CLIP_NORM)" in inspect.getsource(optimizers)
 
 
 def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():

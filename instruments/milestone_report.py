@@ -38,7 +38,7 @@ import time
 import traceback
 
 from instruments._common import REPO_ROOT, add_checkpoint_argument, git_head, module_env
-from trm.runtime.layout import CHECKPOINT_ITEMS  # standard library only, so --help stays instant
+from trm.runtime.layout import CHECKPOINT_ITEMS  # jax-free, so --help stays instant
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # assembles other tools' sections; each number is declared by the tool that produced it
@@ -115,18 +115,20 @@ def section_transcripts(fwd_args, quick_args, timeout):
 def section_val_ce(checkpoint_path):
     from trm.config import resolve_root
     from trm.runtime.restore import restore_model
-    from trm.train.validation import VAL_FIXED_DEPTH, VAL_ROWS, VAL_SKIP_SAMPLES, ValidationProbe
+    from trm.settings import CONFIG
+    from trm.train.validation import VAL_FIXED_DEPTH, ValidationProbe
 
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
         return "skipped: DATA_ROOT is not set — no held-out data to score"
-    model, _ = restore_model(checkpoint_path)
-    val_ce = ValidationProbe(resolve_root(data_root)).run(model)
+    model, _ = restore_model(CONFIG, checkpoint_path)
+    probe = ValidationProbe.of(CONFIG, resolve_root(data_root))
+    val_ce = probe.run(model)
     if val_ce is None:
         return f"no held-out validation data under {data_root}"
     return (f"validation CE: {val_ce:.4f} nats "
-            f"(fixed depth {VAL_FIXED_DEPTH}, {VAL_ROWS} rows, "
-            f"skip {VAL_SKIP_SAMPLES:,} — same probe the training loop logs)")
+            f"(fixed depth {VAL_FIXED_DEPTH}, {probe.rows} rows, "
+            f"skip {probe.skip:,} — same probe the training loop logs)")
 
 
 def main(argv=None):
@@ -142,7 +144,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     # Heavy imports after arg parsing so --help stays instant.
-    from trm.config import MODEL_ARCH
+    from trm.settings import CONFIG
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     import orbax.checkpoint as ocp
 
@@ -163,7 +165,7 @@ def main(argv=None):
     step = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS).latest_step()
     if step is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}.")
-    print(f"📋 Milestone report: {source}, step {step}, arch '{MODEL_ARCH}'")
+    print(f"📋 Milestone report: {source}, step {step}, arch '{CONFIG.MODEL_ARCH}'")
 
     # Forward the checkpoint only when the user overrode it; otherwise each tool
     # self-discovers the same latest run (and keeps its own output placement).
@@ -173,7 +175,7 @@ def main(argv=None):
 
     sections = [
         run_section("Depth curve", lambda: section_depth_curve(
-            MODEL_ARCH, fwd_args, batches, args.section_timeout)),
+            CONFIG.MODEL_ARCH, fwd_args, batches, args.section_timeout)),
         run_section("Fixed-prompt transcripts", lambda: section_transcripts(
             fwd_args, transcript_args, args.section_timeout)),
         run_section("Held-out validation CE", lambda: section_val_ce(checkpoint_path)),
@@ -183,7 +185,7 @@ def main(argv=None):
         f"# Milestone report — checkpoint step {step}",
         "",
         f"- generated: {datetime.datetime.now().astimezone().isoformat()}",
-        f"- arch: {MODEL_ARCH}",
+        f"- arch: {CONFIG.MODEL_ARCH}",
         f"- checkpoint: {checkpoint_path}",
         f"- commit: {git_head() or 'unknown'}",
         "",

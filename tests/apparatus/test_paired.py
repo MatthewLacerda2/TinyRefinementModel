@@ -115,7 +115,7 @@ def test_a_plain_model_is_refused_before_anything_loads(monkeypatch):
     """Plain ignores depth, so both arms would score one forward pass and every
     difference would be an exact zero (#317). Refused by name, before a restore."""
     import instruments.paired as paired
-    monkeypatch.setattr("trm.config.MODEL_ARCH", "plain")
+    monkeypatch.setattr(paired, "CONFIG", paired.CONFIG.model_copy(update={"MODEL_ARCH": "plain"}))
     monkeypatch.setattr("trm.runtime.restore.restore_model",
                         lambda *a, **k: pytest.fail("restored a model it should have refused"))
     with pytest.raises(SystemExit, match="MODEL_ARCH='plain'"):

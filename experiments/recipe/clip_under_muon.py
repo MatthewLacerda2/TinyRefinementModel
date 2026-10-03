@@ -116,9 +116,10 @@ def main(argv=None):
     from flax import nnx
 
     from trm.model import build_model
+    from trm.settings import CONFIG
     from trm.train.optimizers import inner_optimizer, muon_partition
 
-    model = build_model("plain", args.dim, nnx.Rngs(args.seed), vocab_size=args.vocab,
+    model = build_model(CONFIG, nnx.Rngs(args.seed), arch="plain", dim=args.dim, vocab_size=args.vocab,
                         num_heads=4, num_layers=args.layers, max_seq_len=args.seq)
     graphdef, params, rest = nnx.split(model, nnx.Param, ...)
     labels = jax.tree_util.tree_leaves(muon_partition(params))
@@ -129,7 +130,7 @@ def main(argv=None):
             logits.astype(jnp.float32), tokens[:, 1:]).mean()
 
     grad_fn = jax.jit(jax.grad(loss_fn))
-    optimizer = inner_optimizer(optax.constant_schedule(args.lr))
+    optimizer = inner_optimizer(CONFIG, optax.constant_schedule(args.lr))
     update = jax.jit(optimizer.update)
     clip = optax.clip_by_global_norm(args.clip)
 

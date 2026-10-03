@@ -71,6 +71,8 @@ def test_a_refused_gate_stops_the_launch_and_releases_the_card(tmp_path, monkeyp
     launched = []
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             pass
 
@@ -82,12 +84,13 @@ def test_a_refused_gate_stops_the_launch_and_releases_the_card(tmp_path, monkeyp
     monkeypatch.setattr(sup_mod, "Supervisor", Stub)
     monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
     monkeypatch.setattr(sup_mod, "preflight_fit",
-                        lambda args: sup_mod.FitResult(False, "out of memory — this config does not fit"))
+                        lambda args, **_: sup_mod.FitResult(False, "out of memory — this config does not fit"))
     code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log")])
     assert code == 1 and launched == []
     assert not lock_path.exists(), "a refused launch must not keep holding the card"
 
-    monkeypatch.setattr(sup_mod, "preflight_fit", lambda args: (_ for _ in ()).throw(AssertionError("gate ran")))
+    monkeypatch.setattr(sup_mod, "preflight_fit",
+                        lambda args, **_: (_ for _ in ()).throw(AssertionError("gate ran")))
     assert sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
                          "--skip-fit-gate"]) == 0
     assert launched == [True]

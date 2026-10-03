@@ -8,19 +8,11 @@ import orbax.checkpoint as ocp
 import time
 from functools import partial
 
-from trm.config import (
-    INFERENCE_DEPTH,
-    LATENT_DIM,
-    MAX_SEQ_LEN,
-    MODEL_ARCH,
-    EOT_TOKEN_ID,
-    PAD_TOKEN_ID,
-    TOKENIZER_NAME,
-    resolve_root,
-)
+from trm.config import EOT_TOKEN_ID, TOKENIZER_NAME, resolve_root
 from trm.model import build_model
 from trm.model.contract import LanguageModel
 from trm.runtime.layout import CHECKPOINT_ITEMS
+from trm.settings import CONFIG, location
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -39,18 +31,18 @@ REASONER_REFRESH_EVERY = 4
 DEFAULT_TEMPERATURE = 0.7
 
 
-def build_serving_model(arch=MODEL_ARCH):
-    """The architecture MODEL_ARCH selects — the same choice, and the same factory,
-    the trainer uses. The seed is irrelevant: the checkpoint overwrites every weight.
-    Serving once hardcoded one architecture (#185); tests/core/test_infer_arch.py
-    guards the choice.
+def build_serving_model(config, arch=None):
+    """The architecture config.MODEL_ARCH selects (or `arch`) — the same choice, and
+    the same factory, the trainer uses. The seed is irrelevant: the checkpoint
+    overwrites every weight. Serving once hardcoded one architecture (#185);
+    tests/core/test_infer_arch.py guards the choice.
     """
-    return build_model(arch, LATENT_DIM, nnx.Rngs(0))
+    return build_model(config, nnx.Rngs(0), arch=arch)
 
 def run_model_inference(
     model: LanguageModel,
     tokens: jnp.ndarray,
-    depth: int = INFERENCE_DEPTH,
+    depth: int,
     new_document: bool = True,
     logits_at=None,
 ) -> jnp.ndarray:
@@ -163,7 +155,9 @@ def get_logits_for_token(model, padded_tks, token_idx, refresh, top_k, top_p, te
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
 def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TEMPERATURE,
-                  top_k=50, top_p=0.9, depth=INFERENCE_DEPTH, seed=None, quiet=False):
+                  top_k=50, top_p=0.9, *, depth, seed=None, quiet=False):
+    # The window is the model's own (its max_seq_len) and so is the pad it masks;
+    # `depth` is the serving depth, INFERENCE_DEPTH at the command line.
     # The interactive CLI wants a fresh roll every time, so the wall clock stays the
     # default. An explicit seed makes the same checkpoint reproduce the same text,
     # which is what the transcript logbook needs to compare two checkpoints at all
@@ -176,11 +170,12 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
     tokens_list = enc.encode(prompt)
     valid_len = len(tokens_list)
 
-    if valid_len >= MAX_SEQ_LEN:
-        tokens_list = tokens_list[:MAX_SEQ_LEN]
-        valid_len = MAX_SEQ_LEN
+    window, pad = model.max_seq_len, model.pad_token_id
+    if valid_len >= window:
+        tokens_list = tokens_list[:window]
+        valid_len = window
 
-    padded_array = tokens_list + [PAD_TOKEN_ID] * (MAX_SEQ_LEN - valid_len)
+    padded_array = tokens_list + [pad] * (window - valid_len)
     # Initialize tensor ONCE
     input_ids = jnp.array([padded_array], dtype=jnp.int32)
 
@@ -188,7 +183,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         print("🤖 Assistant: ", end="", flush=True)
 
     for i in range(max_new_tokens):
-        if valid_len >= MAX_SEQ_LEN:
+        if valid_len >= window:
             break
 
         new_document = (i % REASONER_REFRESH_EVERY == 0)
@@ -214,7 +209,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
 
         # The end of a document (#373): with EOT a real token the model can predict it,
         # and a pad was never a target, so either one ends the generation.
-        if next_token in (EOT_TOKEN_ID, PAD_TOKEN_ID):
+        if next_token in (EOT_TOKEN_ID, pad):
             break
 
         tokens_list.append(next_token)
@@ -240,11 +235,11 @@ def build_arg_parser():
                     help="nucleus cutoff, applied after temperature (default 0.9)")
     ap.add_argument("--max-new-tokens", type=int, default=256,
                     help="generation length cap (default 256)")
-    ap.add_argument("--depth", type=int, default=INFERENCE_DEPTH,
+    ap.add_argument("--depth", type=int, default=CONFIG.INFERENCE_DEPTH,
                     help="refinement loops per forward pass, for the depth-recurrent "
                          "arches (refiner, reasoner); the plain model ignores it. The "
                          f"dense sweep put the refiner's plateau at ~6 (default "
-                         f"{INFERENCE_DEPTH}). The refiner's sinusoidal time signal is "
+                         f"{CONFIG.INFERENCE_DEPTH}). The refiner's sinusoidal time signal is "
                          "defined at any step, so it extrapolates past the trained range; "
                          "the reasoner's learned time table stops at MAX_STEPS_LIMIT")
     return ap
@@ -253,19 +248,20 @@ def build_arg_parser():
 def run_inference(argv=None):
     args = build_arg_parser().parse_args(argv)
 
-    print(f"🔮 Initializing '{MODEL_ARCH}' (Dim={LATENT_DIM}, serving depth {args.depth})...")
+    print(f"🔮 Initializing '{CONFIG.MODEL_ARCH}' (Dim={CONFIG.LATENT_DIM}, serving depth {args.depth})...")
     print(f"   sampling: temperature {args.temperature}, top_k {args.top_k}, "
           f"top_p {args.top_p}, max {args.max_new_tokens} tokens")
 
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
-    model = build_serving_model()
+    model = build_serving_model(CONFIG)
 
     # CHECKPOINT_ROOT names a checkpoint dir; without it, the latest checkpointed run
     # under runs/ is served. There is no third, default path: the old one
     # (`orbax_checkpoints`) pointed at a directory nothing writes.
-    if os.environ.get("CHECKPOINT_ROOT") is not None:
-        active_checkpoint_dir = resolve_root(os.environ["CHECKPOINT_ROOT"])
+    checkpoint_root = location("CHECKPOINT_ROOT")
+    if checkpoint_root is not None:
+        active_checkpoint_dir = resolve_root(checkpoint_root)
     else:
         from trm.runtime.checkpoints import discover_latest_checkpoint_run
         discovered_path, discovered_run_id = discover_latest_checkpoint_run()

@@ -19,13 +19,14 @@ import numpy as np
 import pytest
 
 from trm.runtime import checkpoints
+from trm.runtime.monitor import LossMonitor
+from trm.settings import CONFIG
+from trm.runtime.resume_state import ResumeState
 
-from trm import config
 
 import trm.train.trainer as trainer_mod
 from trm.train import validation
 
-from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, EVAL_ROWS, MAX_SEQ_LEN
 from trm.runtime import restore
 from experiments.depth import eval_refiner_transfer as depth_transfer
 from trm.train.trainer import samples_from_micro_steps, split_samples
@@ -35,10 +36,10 @@ def test_tokens_per_opt_step_is_the_batching_invariant():
     """The product is the contract: BATCH_SIZE x ACCUMULATION_STEPS is what the
     LR horizon and TRAIN_TOKEN_BUDGET are denominated in. Changing one without
     the other silently rescales the whole schedule."""
-    assert config.TOKENS_PER_OPT_STEP == ACCUMULATION_STEPS * BATCH_SIZE * 2 * MAX_SEQ_LEN
+    assert CONFIG.TOKENS_PER_OPT_STEP == CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE * 2 * CONFIG.MAX_SEQ_LEN
     # 131072 is the value every recorded run and every DECAY_STEPS was computed
     # against. If this must change, it is a new run, not a resume.
-    assert config.TOKENS_PER_OPT_STEP == 131072
+    assert CONFIG.TOKENS_PER_OPT_STEP == 131072
 
 
 class _FakeGen:
@@ -79,10 +80,10 @@ def test_eval_probe_collects_exactly_eval_rows():
     BATCH_SIZE."""
     gen = _FakeGen()
     batches = []
-    while len(batches) < EVAL_ROWS:
+    while len(batches) < CONFIG.EVAL_ROWS:
         row, _ = gen.get_batch(1)
         batches.append(row)
-    assert gen.calls == [1] * EVAL_ROWS
+    assert gen.calls == [1] * CONFIG.EVAL_ROWS
     assert all(b.shape[0] == 1 for b in batches)
 
 
@@ -111,10 +112,10 @@ def test_resume_skip_scales_with_batch_size(batch_size):
 def test_resume_skip_without_the_batch_factor_under_skips():
     """The exact defect, stated: counting micro-steps as samples. It re-feeds the
     model 1/BATCH_SIZE of its own history, and nothing crashes."""
-    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS))
+    correct = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=CONFIG.BATCH_SIZE))
     buggy = sum(samples_from_micro_steps(MICRO_STEPS, WEIGHTS, batch_size=1))
-    assert correct == pytest.approx(buggy * BATCH_SIZE, rel=0.01)
-    if BATCH_SIZE > 1:
+    assert correct == pytest.approx(buggy * CONFIG.BATCH_SIZE, rel=0.01)
+    if CONFIG.BATCH_SIZE > 1:
         assert correct > buggy
 
 
@@ -136,11 +137,12 @@ def test_samples_seen_is_counted_not_derived():
     """The consumed-sample counter must accumulate actual batch rows. Deriving it
     at save time as step x BATCH_SIZE is wrong for the one run that needs it: a
     resume whose history spans two different batch sizes."""
-    # _monitor_state builds the JSON side of every save — full state and
-    # weights-only milestones alike (#394).
-    save_src = inspect.getsource(checkpoints._monitor_state)
-    assert '"samples_seen": monitor.samples_seen' in save_src
-    assert "step * BATCH_SIZE" not in save_src
+    # ResumeState.of builds the JSON side of every save — full state and
+    # weights-only milestones alike (#394, #477).
+    save_src = inspect.getsource(ResumeState.of)
+    assert "samples_seen=monitor.samples_seen" in save_src
+    assert "BATCH_SIZE" not in save_src
+    assert "ResumeState.of(monitor, run_id)" in inspect.getsource(checkpoints._monitor_state)
     assert "_monitor_state(monitor, run_id)" in inspect.getsource(checkpoints.save_checkpoint)
     assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
 
@@ -148,5 +150,9 @@ def test_samples_seen_is_counted_not_derived():
 def test_pre_24_checkpoints_resume_exactly():
     """A checkpoint with no samples_seen was written at BATCH_SIZE=1, so one
     sample per micro-step is its exact position — not an approximation."""
-    restore_src = inspect.getsource(checkpoints.load_or_create_checkpoint)
-    assert 'm_state.get("samples_seen", restored["step"])' in restore_src
+    pre_24 = {"run_id": "r", "ce_history": [], "best_ce": 3.0, "best_loss": 3.0,
+              "best_avg_ce": 3.0, "last_improvement_step": 0}
+    monitor = LossMonitor.of(CONFIG)
+    ResumeState.load(pre_24, "a pre-#24 checkpoint").restore(monitor, micro_step=1000)
+    assert monitor.samples_seen == 1000
+    assert "micro_step=restored[\"step\"]" in inspect.getsource(checkpoints.load_or_create_checkpoint)

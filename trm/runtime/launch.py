@@ -47,6 +47,11 @@ a oneshot unit without it tears down its whole cgroup when ExecStart returns, ki
 the supervisor it just started. The unit then reports success while the run stays
 down, which is exactly what the power cut of 2026-09-24 produced.
 
+Both a launch and a resume start the supervisor through `trm.runtime.oom.detach`:
+under `systemd-run --user -p OOMScoreAdjust=100` where a user manager runs, so a run
+started from a Claude shell is not the kernel's first OOM victim (#524), and the
+banner prints the supervisor's `oom_score_adj`.
+
 The data position after a resume is an estimate (fine for a base run, not for a
 matched pair), and what a cut costs is the steps since the last checkpoint,
 CHECKPOINT_EVERY_OPT_STEPS at most.
@@ -65,10 +70,12 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-from trm.runtime.layout import CHECKPOINT_EVERY_OPT_STEPS
+from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.run_budget import BUDGET_ENV
-from trm.runtime.gpu_lock import GpuLock, _pid_alive
-from trm.runtime.supervisor import DELIBERATE, GAVE_UP, RUNS_DIR, read_progress
+from trm.runtime.gpu_lock import GpuLock
+from trm.runtime.oom import banner, detach
+from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
+                                    read_progress)
 
 # The base run a launch started and has not seen end, for --resume after a reboot.
 ACTIVE_RUN = RUNS_DIR / ".active_base_run.json"
@@ -77,8 +84,7 @@ TERMINAL = (*DELIBERATE, GAVE_UP)
 _OUTCOME_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ([A-Z_]+):")
 
 
-def stop_step_for(budget_tokens: int, tokens_per_opt_step: int,
-                  checkpoint_every: int = CHECKPOINT_EVERY_OPT_STEPS) -> int:
+def stop_step_for(budget_tokens: int, tokens_per_opt_step: int, checkpoint_every: int) -> int:
     """The first checkpoint boundary at or past the budget.
 
     The supervisor stops the run once metrics.csv reaches this step, and the
@@ -99,17 +105,22 @@ class Plan:
     stdout_path: pathlib.Path
 
 
-def plan(budget_tokens: int, tokens_per_opt_step: int, *, run_id: str, issue: int | None = None,
-         spec: pathlib.Path | None = None,
+def plan(budget_tokens: int, config, *, run_id: str, issue: int | None = None,
+         spec: pathlib.Path | None = None, cold_root: pathlib.Path | None = None,
          runs_dir: pathlib.Path = RUNS_DIR, python: str = sys.executable) -> Plan:
+    """The supervised launch of a `budget_tokens` run of `config` (its tokens per opt
+    step and checkpoint cadence set where the run stops)."""
     run_dir = runs_dir / run_id
-    stop = stop_step_for(budget_tokens, tokens_per_opt_step)
+    stop = stop_step_for(budget_tokens, config.TOKENS_PER_OPT_STEP, config.CHECKPOINT_EVERY_OPT_STEPS)
     argv = [python, "-m", "trm.runtime.supervisor",
             "--stop-step", str(stop),
             "--run-dir", str(run_dir),
             "--log", str(runs_dir / f"{run_id}.log"),
             *(["--issue", str(issue)] if issue is not None else []),
             *(["--spec", str(spec)] if spec is not None else []),
+            # Named in the argv, not left to the supervisor's environment, so a resume
+            # after a reboot (#384) replays the same cold tier.
+            *(["--cold-root", str(cold_root)] if cold_root is not None else []),
             "--", "--checkpoint-path", str(run_dir / "checkpoints")]
     assert "--new-run" not in argv, "a relaunch would replay it and restart the run from scratch"
     return Plan(run_id, run_dir, stop, argv, {BUDGET_ENV: str(budget_tokens)},
@@ -141,8 +152,8 @@ def refusal(p: Plan) -> str | None:
     """Why this launch must not happen, or None."""
     if p.run_dir.exists():
         return f"{p.run_dir} already exists — a launch never reuses a run directory"
-    holder = GpuLock().holder()
-    if holder and _pid_alive(holder[0]):
+    holder = GpuLock().live_holder()
+    if holder:
         return f"the GPU is held by pid {holder[0]} ({holder[1] or 'unlabelled'})"
     return None
 
@@ -180,9 +191,7 @@ def resume(active: pathlib.Path = ACTIVE_RUN) -> int:
     heartbeat = run_dir.parent / f"{state['run_id']}.supervisor.log"
     text = heartbeat.read_text(errors="replace") if heartbeat.exists() else ""
     step, _ = read_progress(run_dir / "metrics.csv")
-    holder = GpuLock().holder()
-    why, over = resume_refusal(state, last_outcome(text), step,
-                               holder if holder and _pid_alive(holder[0]) else None)
+    why, over = resume_refusal(state, last_outcome(text), step, GpuLock().live_holder())
     if why:
         print(f"resume: not resuming — {why}")
         if over:
@@ -191,10 +200,10 @@ def resume(active: pathlib.Path = ACTIVE_RUN) -> int:
     stamp = datetime.datetime.now().strftime("%F %T")
     with heartbeat.open("a") as fh:
         fh.write(f"{stamp} resumed after a reboot at opt step {step:,} (#384)\n")
-    with pathlib.Path(state["stdout_path"]).open("a") as out:
-        proc = subprocess.Popen(state["argv"], env={**os.environ, **state["env"]}, stdout=out,
-                                stderr=subprocess.STDOUT, cwd=RUNS_DIR.parent, start_new_session=True)
-    print(f"resume: {state['run_id']} from opt step {step:,}, supervisor pid {proc.pid}")
+    pid = detach(state["argv"], {**os.environ, **state["env"]}, RUNS_DIR.parent,
+                 pathlib.Path(state["stdout_path"]), label=state["run_id"])
+    print(f"resume: {state['run_id']} from opt step {step:,}, supervisor pid {pid}")
+    print(banner(pid))
     return 0
 
 
@@ -224,14 +233,24 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"refusing to launch: --budget {int(args.budget):,} disagrees with the spec's "
                          f"budget_tokens {spec_budget:,}; change one, commit, relaunch")
 
-    from trm.config import TOKENS_PER_OPT_STEP
+    cold_root = local_location("COLD_ROOT")
+    if cold_root is not None:
+        why = cold_root_problem(cold_root, RUNS_DIR if RUNS_DIR.exists() else RUNS_DIR.parent)
+        if why:
+            raise SystemExit(f"refusing to launch: COLD_ROOT {why}")
+
+    from trm.settings import CONFIG
     run_id = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    p = plan(int(args.budget), TOKENS_PER_OPT_STEP, run_id=run_id, issue=args.issue, spec=args.spec.resolve())
+    p = plan(int(args.budget), CONFIG, run_id=run_id, issue=args.issue, spec=args.spec.resolve(),
+             cold_root=cold_root)
     print(f"run:        {p.run_dir}")
     print(f"budget:     {int(args.budget):,} tokens -> stop at opt step {p.stop_step:,} "
-          f"({p.stop_step * TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
+          f"({p.stop_step * CONFIG.TOKENS_PER_OPT_STEP:,} tokens, a checkpoint boundary)")
     print(f"command:    {' '.join(f'{k}={v}' for k, v in p.env.items())} {' '.join(p.argv)}")
     print(f"supervisor: stdout -> {p.stdout_path}; heartbeats -> runs/{run_id}.supervisor.log")
+    print("cold tier:  " + describe_cold(cold_root and ColdTier(
+        run_dir=p.run_dir, cold_root=cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
+        fullstate_every_hours=stall_window_hours(args.spec))))
     if args.dry_run:
         return 0
     why = refusal(p)
@@ -239,10 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"refusing to launch: {why}")
 
     p.stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with p.stdout_path.open("a") as out:
-        proc = subprocess.Popen(p.argv, env={**os.environ, **p.env}, stdout=out, stderr=subprocess.STDOUT,
-                                cwd=RUNS_DIR.parent, start_new_session=True)
-    print(f"launched:   supervisor pid {proc.pid}, detached")
+    pid = detach(p.argv, {**os.environ, **p.env}, RUNS_DIR.parent, p.stdout_path, label=p.run_id)
+    print(f"launched:   supervisor pid {pid}, detached")
+    print(banner(pid))
     ACTIVE_RUN.write_text(json.dumps({
         "run_id": p.run_id, "run_dir": str(p.run_dir), "stop_step": p.stop_step,
         "argv": p.argv, "env": p.env, "stdout_path": str(p.stdout_path),

@@ -31,6 +31,7 @@ import json
 from dataclasses import dataclass
 
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
+from trm.runtime.resume_state import ResumeState
 
 SET_ASIDE_PREFIX = "set_aside_"
 
@@ -64,7 +65,7 @@ def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Che
 
 
 def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
-                            accumulation_steps: int | None = None) -> None:
+                            accumulation_steps: int) -> None:
     """Refuse to resume a checkpoint written inside the retired SFT phase (#323).
 
     The in-run SFT flip is gone, so the trainer would resume such a checkpoint as
@@ -75,9 +76,6 @@ def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
     sft_start_step = monitor_state.get("sft_start_step")
     if sft_start_step is None:
         return
-    if accumulation_steps is None:
-        from trm.config import ACCUMULATION_STEPS
-        accumulation_steps = ACCUMULATION_STEPS
     # The flip happened on an opt-step boundary, after that boundary's saves, so
     # every checkpoint at or below this opt step is still pretraining.
     last_clean_opt_step = (sft_start_step + 1) // accumulation_steps
@@ -86,25 +84,31 @@ def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
         f"(opt step {last_clean_opt_step}). The in-run SFT flip was removed (#323), so resuming it "
         f"would silently continue as pretraining on a different mixture and LR. Rewind to the "
         f"last pretraining checkpoint first:\n"
-        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}\n"
-        f"(Under the supervisor this exit reads as a crash: it is relaunched, then reported "
-        f"GAVE_UP. These lines are the reason.)")
+        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}")
 
 
-def refuse_sft_phase_checkpoint_dir(checkpoint_dir, accumulation_steps: int) -> None:
-    """The same refusal, read from disk before a launch touches anything: no run
-    session appended, no model built, no orbax restore. Reads the newest finalized
-    checkpoint's monitor state — the one a resume would load. An unreadable state
-    is left for the restore to report."""
+def unresumable(checkpoint_dir, accumulation_steps: int) -> str | None:
+    """Why the checkpoint a resume of `checkpoint_dir` would load must be refused, or
+    None. Read from disk before a launch touches anything: no run session appended,
+    no model built, no orbax restore, no jax. The checkpoint is the newest finalized
+    one; it is refused when it is from the retired SFT phase (#323) or when its
+    resume state is not a ResumeState (#477). The trainer asks before its session
+    starts, and the supervisor before it launches or relaunches one (#505). An
+    unreadable state is left for the restore to report."""
     found = checkpoints_in(pathlib.Path(checkpoint_dir), accumulation_steps)
     if not found:
-        return
+        return None
     newest = found[-1]
     try:
         state = json.loads((newest.path / "monitor_state" / "metadata").read_text())
     except (OSError, ValueError):
-        return
-    refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
+        return None
+    try:
+        refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
+        ResumeState.load(state, f"checkpoint step {newest.step} in {checkpoint_dir}")
+    except SystemExit as refused:
+        return str(refused)
+    return None
 
 
 def resolve(checkpoints: list[Checkpoint], to_opt_step: int) -> Checkpoint:
@@ -148,8 +152,8 @@ def main(argv: list[str] | None = None) -> int:
                          "Pass the run's own value if it trained under a different one.")
     args = ap.parse_args(argv)
     if args.accumulation_steps is None:
-        from trm.config import ACCUMULATION_STEPS
-        args.accumulation_steps = ACCUMULATION_STEPS
+        from trm.settings import CONFIG
+        args.accumulation_steps = CONFIG.ACCUMULATION_STEPS
 
     if args.to_opt_step is None:
         for directory in (args.checkpoint_dir, args.checkpoint_dir / BEST_SUBDIR,

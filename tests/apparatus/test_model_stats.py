@@ -19,7 +19,8 @@ import pytest
 from flax import nnx
 
 from instruments import model_stats
-from trm.config import LATENT_DIM, MAX_STEPS_LIMIT, TIME_SIGNAL
+from trm.config import MAX_STEPS_LIMIT
+from trm.settings import CONFIG
 
 # The refiner's group names, and the top-level attribute of the real param tree
 # each one owns. `RefinerForTraining` nests everything under `.refiner`; that
@@ -84,7 +85,7 @@ def test_refiner_formula_matches_the_real_model():
     """The shipped refiner, at the exact config the live base run trains."""
     from trm.model.refiner_lm import RefinerForTraining
 
-    model = RefinerForTraining(LATENT_DIM, nnx.Rngs(0))
+    model = RefinerForTraining(CONFIG.LATENT_DIM, nnx.Rngs(0), CONFIG)
     try:
         _assert_matches("refiner", model, REFINER_GROUPS, strip="refiner")
     finally:
@@ -97,7 +98,7 @@ def test_reasoner_formula_matches_the_real_model():
     also keeps the formula honest about GQA's narrow K/V projections."""
     from trm.model.reasoner import UniversalReasoner
 
-    model = UniversalReasoner(LATENT_DIM, nnx.Rngs(0), batch_size=1)
+    model = UniversalReasoner(CONFIG.LATENT_DIM, nnx.Rngs(0), CONFIG, batch_size=1)
     try:
         _assert_matches("reasoner", model, REASONER_GROUPS)
     finally:
@@ -118,7 +119,7 @@ def test_refiner_formula_tracks_the_shape_knobs(dim, num_heads, encoder_layers):
     overrides = dict(dim=dim, vocab_size=97, num_heads=num_heads,
                      encoder_layers=encoder_layers, max_depth=4)
     model = RefinerForTraining(
-        dim, nnx.Rngs(0), vocab_size=97, num_heads=num_heads,
+        dim, nnx.Rngs(0), CONFIG, vocab_size=97, num_heads=num_heads,
         encoder_layers=encoder_layers, max_depth=4,
     )
     _assert_matches("refiner", model, REFINER_GROUPS, strip="refiner", **overrides)
@@ -131,7 +132,7 @@ def test_the_learned_time_table_is_counted_when_it_exists():
     from trm.model.refiner_lm import RefinerForTraining
 
     common = dict(vocab_size=97, num_heads=4, encoder_layers=1, max_depth=4)
-    model = RefinerForTraining(128, nnx.Rngs(0), time_signal="table", **common)
+    model = RefinerForTraining(128, nnx.Rngs(0), CONFIG, time_signal="table", **common)
     _assert_matches("refiner", model, REFINER_GROUPS, strip="refiner",
                     dim=128, time_signal="table", **common)
 
@@ -145,7 +146,7 @@ def test_the_live_run_parameter_count_is_reproduced():
     '138.7M parameters' for the refiner at dim960 / 7 encoder layers / 15 heads.
     Pinned exactly so a config change that moves the model shows up as this
     number moving, and not as a quietly different run."""
-    assert TIME_SIGNAL in ("table", "sinusoidal", "none")
+    assert CONFIG.TIME_SIGNAL in ("table", "sinusoidal", "none")
     assert model_stats.total_params("refiner", time_signal="sinusoidal") == 138_708_224
     # The reasoner control, for the same reason: this is the count the old
     # (model-instantiating) plotter printed, so agreeing with it proves the
@@ -254,7 +255,7 @@ PLAIN_GROUPS = {
 def test_plain_formula_matches_the_real_model():
     from trm.model.plain import PlainTransformer
 
-    model = PlainTransformer(LATENT_DIM, nnx.Rngs(0))
+    model = PlainTransformer(CONFIG.LATENT_DIM, nnx.Rngs(0), CONFIG)
     try:
         _assert_matches("plain", model, PLAIN_GROUPS)
     finally:
@@ -267,7 +268,7 @@ def test_plain_formula_matches_the_real_model():
 def test_plain_formula_tracks_the_shape_knobs(dim, num_heads, num_layers, post_norm):
     from trm.model.plain import PlainTransformer
 
-    model = PlainTransformer(dim, nnx.Rngs(0), vocab_size=97, num_heads=num_heads,
+    model = PlainTransformer(dim, nnx.Rngs(0), CONFIG, vocab_size=97, num_heads=num_heads,
                              num_layers=num_layers, post_norm=post_norm)
     _assert_matches("plain", model, PLAIN_GROUPS, dim=dim, vocab_size=97, num_heads=num_heads,
                     num_layers=num_layers, post_norm=post_norm)
@@ -280,8 +281,7 @@ def test_the_plain_parameter_count_is_reproduced():
     # 8 is the default again since 2026-09-20: batch 2 buys more than the ninth layer
     # (+39% tok/s, #385). The count is the formula's; test_plain_formula_matches_the_real_model
     # ties the formula to the instantiated tree, so this pins the default's size, not a measurement.
-    from trm.config import PLAIN_LAYERS
-    assert PLAIN_LAYERS == 8
+    assert CONFIG.PLAIN_LAYERS == 8
 
 
 REPORT_ARCHES = ("plain", "refiner", "reasoner")

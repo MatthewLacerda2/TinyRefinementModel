@@ -37,4 +37,8 @@ ignore_names = [
     "pytest_*",
     # The module-level mark variable pytest reads by name.
     "pytestmark",
+    # What pydantic reads off a model class by name (trm/settings.py).
+    "model_config", "settings_customise_sources",
 ]
+# Pydantic calls a validator through its decorator; nothing references it by name.
+ignore_decorators = ["@field_validator"]

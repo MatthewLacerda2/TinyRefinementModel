@@ -20,7 +20,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import ACCUMULATION_STEPS, BATCH_SIZE, MAX_SEQ_LEN, MAX_STEPS_LIMIT, MODEL_ARCH, VOCAB_SIZE
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.settings import CONFIG
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import compute_grad_step, apply_grads
 
@@ -50,7 +51,7 @@ def main():
     parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
                         help="refinement/reasoning depth; inert for plain, which has no depth dial")
     parser.add_argument("--modes", type=str, default="loop,kernel")
-    parser.add_argument("--batch", type=int, default=BATCH_SIZE,
+    parser.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE,
                         help="micro-batch rows (default: config BATCH_SIZE). Sweeping this "
                              "measures how throughput scales with the forward's GEMM shape — "
                              "the 1->2 rung is what stacking the two windows would buy without "
@@ -62,7 +63,7 @@ def main():
     print(f"device: {jax.devices()[0]}")
     print(f"allocator: {os.environ.get('XLA_PYTHON_CLIENT_ALLOCATOR', '(default bfc)')} | "
           f"preallocate: {os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '(default true)')}")
-    print(f"arch: {MODEL_ARCH} | depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | "
+    print(f"arch: {CONFIG.MODEL_ARCH} | depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | "
           f"warmup: {args.warmup} | attn_impl: {args.attn_impl or '(default)'}")
 
     if args.attn_impl:
@@ -71,17 +72,17 @@ def main():
         jax.nn.dot_product_attention = functools.partial(_orig, implementation=args.attn_impl)
 
     # The trainer's own constructor, so the bench times the model a launch trains.
-    model, optimizer = init_model_and_optimizer()
+    model, optimizer = init_model_and_optimizer(CONFIG)
 
     rng = np.random.default_rng(0)
     batch = jnp.array(
-        rng.integers(0, VOCAB_SIZE, size=(args.batch, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32
+        rng.integers(0, VOCAB_SIZE, size=(args.batch, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32
     )
     no_boundary = jnp.zeros((args.batch,), dtype=bool)
 
     def micro_step(i, sync):
         loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, jnp.array(i), args.depth, doc_boundary=no_boundary
+            model, batch, jnp.array(i // CONFIG.ACCUMULATION_STEPS), args.depth, doc_boundary=no_boundary
         )
         apply_grads(optimizer, grads, model)
         if sync:
@@ -99,7 +100,7 @@ def main():
     print(f"warmup (incl. compile): {time.time() - t0:.1f}s")
     report_memory("post-warmup")
 
-    tokens_per_step = args.batch * 2 * MAX_SEQ_LEN
+    tokens_per_step = args.batch * 2 * CONFIG.MAX_SEQ_LEN
     for mode in args.modes.split(","):
         t0 = time.time()
         for i in range(args.steps):
@@ -110,7 +111,7 @@ def main():
         print(
             f"mode={mode:6} : {ms:7.1f} ms/micro-step | {args.steps / dt:6.2f} steps/s | "
             f"{tokens_per_step * args.steps / dt / 1e3:6.1f}k tok/s | "
-            f"opt-step (x{ACCUMULATION_STEPS}): {ms * ACCUMULATION_STEPS / 1000:5.2f}s"
+            f"opt-step (x{CONFIG.ACCUMULATION_STEPS}): {ms * CONFIG.ACCUMULATION_STEPS / 1000:5.2f}s"
         )
     report_memory("post-bench")
 

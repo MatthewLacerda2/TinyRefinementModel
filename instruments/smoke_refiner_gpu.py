@@ -39,9 +39,11 @@ from flax import nnx
 
 from instruments._common import F16_MAX, param_count
 from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import LATENT_DIM, MAX_SEQ_LEN, MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
+from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
+from trm.train.schedules import Schedules
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -119,19 +121,20 @@ def load_batch(rng):
     root = os.environ.get("DATA_ROOT", "")
     if root:
         from trm.config import resolve_root
-        from trm.train.validation import VAL_SKIP_SAMPLES, read_heldout_rows
+        from trm.train.validation import read_heldout_rows
         for source in ("codeparrot", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue
-            rows = read_heldout_rows(path, 1, VAL_SKIP_SAMPLES)
+            rows = read_heldout_rows(path, 1, CONFIG.VAL_SKIP_SAMPLES, max_seq_len=CONFIG.MAX_SEQ_LEN,
+                                     data_seed=CONFIG.DATA_SEED)
             if rows:
                 (row,) = rows
                 print(f"📚 real tokens from {source} (the distribution that stresses f16)")
-                return jnp.asarray(row[:, :2 * MAX_SEQ_LEN + 1].astype(np.int32))
+                return jnp.asarray(row[:, :2 * CONFIG.MAX_SEQ_LEN + 1].astype(np.int32))
     print("🎲 random tokens — DATA_ROOT unset, so the corpus-specific overflow "
           "(#235) CANNOT be caught by this run")
-    return jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    return jnp.asarray(rng.integers(1, VOCAB_SIZE, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
 
 def main():
@@ -144,11 +147,11 @@ def main():
     assert jax.default_backend() == "gpu", "smoke must run on GPU (unset JAX_PLATFORMS / FORCE_F32_COMPUTE)"
 
     refuse_untraced(args.arch)  # before building 138M params for nothing
-    model = arch_build(args.arch, dim=LATENT_DIM, seed=42)
+    model = arch_build(args.arch, dim=CONFIG.LATENT_DIM, seed=42)
     print(f"📐 {args.arch}: {param_count(model) / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as
     # in training — the peak that matters is grad step + resident optimizer state.
-    optimizer = nnx.Optimizer(model, optimizer_chain, wrt=nnx.Param)
+    optimizer = nnx.Optimizer(model, optimizer_chain(CONFIG, Schedules.of(CONFIG).learning_rate), wrt=nnx.Param)
 
     # Wake the zero-init residual path before measuring zero-fracs: at init,
     # down_proj == 0 blocks all gradient to gate/up_proj, so nearly half of each
@@ -169,7 +172,7 @@ def main():
     # Headroom BEFORE the grad steps: this is a property of the weights and the
     # tokens, and reading it first means a doomed run is refused before it spends
     # anything. Measured on one window, the shape the stack actually sees.
-    peaks, worst, headroom = block_headroom(model, batch[:, :MAX_SEQ_LEN], args.arch)
+    peaks, worst, headroom = block_headroom(model, batch[:, :CONFIG.MAX_SEQ_LEN], args.arch)
     stack = "block" if args.arch == "plain" else "encoder block"
     print(f"📏 activation peak per {stack}: "
           + "  ".join(f"{v:,.0f}" for v in peaks))
@@ -196,7 +199,8 @@ def main():
 
     print(f"— grad steps at depth {MAX_STEPS_LIMIT} (worst case; inert for plain) with optimizer resident —")
     for s in range(1, 4):
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s), MAX_STEPS_LIMIT)
+        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s // CONFIG.ACCUMULATION_STEPS),
+                                                 MAX_STEPS_LIMIT)
         loss_f, grad_f = float(loss), float(gnorm)
         ok = math.isfinite(loss_f) and math.isfinite(grad_f) and grad_f > 0
         print(f"  step {s}: loss={loss_f:.4f}  grad_norm={grad_f:.4f}  {'OK' if ok else '✗ NON-FINITE/ZERO'}")
@@ -209,7 +213,7 @@ def main():
     if shallow:
         print("— finiteness at shallow depths 1 and 4 —")
     for depth in shallow:
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1), depth)
+        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1 // CONFIG.ACCUMULATION_STEPS), depth)
         ok = math.isfinite(float(loss)) and math.isfinite(float(gnorm))
         print(f"  depth {depth}: loss={float(loss):.4f}  grad_norm={float(gnorm):.4f}  {'OK' if ok else '✗'}")
         assert ok

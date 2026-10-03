@@ -29,6 +29,7 @@ its research line like everything else there (#143).
 | `[verdict]` | `keep_if` / `kill_if` (lists of criterion names), and `recorded` once it has run |
 | `[readouts]` | observations that explicitly carry **no** keep/kill weight |
 | `[execution]` | how to actually run it (optional — see below) |
+| `[stall]` | a base run's early-stop rule: which held-out CE it reads, window, bar, decay (read by `python -m instruments.stall`, #468) |
 | `[results.<point>]` | per-arm numbers, written **after** the run |
 
 Three comparison rules, which is all the recorded experiments have ever needed:

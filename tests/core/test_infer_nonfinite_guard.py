@@ -24,12 +24,14 @@ of nearly every entry after top-k/top-p, so a guard written with `jnp.isfinite`
 would reject every healthy row in the codebase.
 """
 
+import types
+
 import jax.numpy as jnp
 import pytest
 from flax import nnx
 
 from trm import infer
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 TOY_DIM = 32
 TOY_VOCAB = 37
@@ -123,23 +125,19 @@ def test_generation_raises_instead_of_emitting_a_token(monkeypatch):
         lambda *a, **k: jnp.full((TOY_VOCAB,), jnp.nan))
 
     with pytest.raises(infer.NonFiniteLogits):
-        infer.generate_text(object(), _StubEncoder(), "hello",
-                            max_new_tokens=4, quiet=True)
+        stub = types.SimpleNamespace(max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        infer.generate_text(stub, _StubEncoder(), "hello", max_new_tokens=4, depth=1, quiet=True)
 
 
 def test_a_healthy_model_still_generates(monkeypatch):
     """The end-to-end counter-test: a real forward pass, real truncation, real
     sampling, and the guard stays out of the way.
 
-    `generate_text` pads with the *config* PAD_TOKEN_ID (50256), which is outside
-    the toy vocab — and one out-of-range id makes this model return all-NaN
-    logits for the whole window (#233). That is a real defect, but it is not the
-    one under test here, so the pad id is aligned with the toy model instead of
-    letting an unrelated bug decide whether this test passes.
+    `generate_text` pads with the model's own pad (TOY_PAD here, inside the toy
+    vocab): an out-of-range id would make this model return all-NaN logits for the
+    whole window (#233), a real defect but not the one under test.
     """
     from trm.model.refiner_lm import RefinerForTraining
-
-    monkeypatch.setattr(infer, "PAD_TOKEN_ID", TOY_PAD)
 
     calls = []
     real_guard = infer.reject_unsampleable
@@ -148,8 +146,8 @@ def test_a_healthy_model_still_generates(monkeypatch):
                                               real_guard(logits, **kw))[1])
 
     model = RefinerForTraining(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        encoder_layers=1, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD,
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        encoder_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
     infer.generate_text(model, _StubEncoder(), "hello", max_new_tokens=3,
                         top_k=8, depth=TOY_DEPTH, seed=0, quiet=True)

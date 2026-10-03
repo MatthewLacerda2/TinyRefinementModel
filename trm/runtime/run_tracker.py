@@ -5,52 +5,8 @@ import time
 import datetime
 import subprocess
 
-from trm.config import (
-    LATENT_DIM,
-    NUM_BLOCKS,
-    SHARED_SLOTS,
-    MAX_SEQ_LEN,
-    VOCAB_SIZE,
-    MAX_STEPS_LIMIT,
-    BATCH_SIZE,
-    ACCUMULATION_STEPS,
-    PAD_TOKEN_ID,
-    NUM_HEADS,
-    DATA_SEED,
-    MODEL_SEED,
-    TRAIN_TOKEN_BUDGET,
-    MODEL_ARCH,
-    PLAIN_LAYERS,
-    POST_NORM,
-    REFINER_ENCODER_LAYERS,
-    TIME_SIGNAL,
-    TRM_OPTIMIZER,
-    MUON_LR_MULT,
-    ADAM_B1,
-    ADAM_B2,
-    ADAM_EPS,
-    WEIGHT_DECAY,
-    CLIP_NORM,
-    MUON_BETA,
-    MUON_NS_STEPS,
-    MUON_EPS,
-    MUON_NESTEROV,
-    LOSS_SCALE_GROWTH_INTERVAL,
-    DATA_MIXTURE,
-    MIXTURE_RAMP_FRACTION,
-    DATA_BRANCH,
-    DATA_BRANCH_SEED_STRIDE,
-)
-from trm.runtime.layout import VAL_BY_SOURCE_EVERY_OPT_STEPS, VAL_EVERY_OPT_STEPS
-from trm.train.schedules import (
-    CURRICULUM_STEPS,
-    DECAY_STEPS,
-    LR_SCHEDULE,
-    PEAK_LR,
-    WARMUP_STEPS,
-    WSD_DECAY_FRACTION,
-    WSD_DECAY_START,
-)
+from trm.config import MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
+from trm.train.schedules import Schedules
 
 # What each architecture's param tree is built from (#317). A resume that changes one
 # of these cannot load its checkpoint, or loads it into a different network whose tree
@@ -64,7 +20,12 @@ TREE_KEYS = {
 }
 
 class RunTracker:
-    def __init__(self, runs_root="runs"):
+    """A run's folder and its run_metadata.json. `config` is the run's Config, the one
+    the trainer is handed (#475): what the metadata records and what a resume is
+    checked against."""
+
+    def __init__(self, config, runs_root="runs"):
+        self.config = config
         self.runs_root = runs_root
         self.run_id = None
         self.run_dir = None
@@ -99,7 +60,7 @@ class RunTracker:
         return metadata
 
     @staticmethod
-    def capture_environment_snapshot(run_dir):
+    def capture_environment_snapshot(run_dir, model_arch):
         """Freeze everything a revival (instruments.timemachine) needs beyond the commit
         SHA: the dirty working tree, the pinned Python libs, and the host it assumed.
 
@@ -127,7 +88,7 @@ class RunTracker:
         #    surface (driver is a shared passthrough) but invaluable for debugging a
         #    failed revival. MODEL_ARCH also rides in run_metadata.json, machine-readable.
         lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}",
-                 f"MODEL_ARCH {MODEL_ARCH}"]
+                 f"MODEL_ARCH {model_arch}"]
         try:
             smi = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version,name",
@@ -173,67 +134,22 @@ class RunTracker:
             print(f"⚠️ Could not list untracked files ({e}).")
 
     @staticmethod
-    def get_hyperparameters():
+    def get_hyperparameters(config):
+        """What run_metadata.json records as the run's parameters: every knob of its
+        Config, whole (so none can be left out: #358, #475), plus what a reader cannot
+        recover from the knobs alone."""
+        schedules = Schedules.of(config)
         return {
-            # Which arch built the param tree — the two arches are not
-            # checkpoint-compatible, so a faithful revival (instruments.timemachine)
-            # must rebuild the same skeleton. Recorded machine-readably here.
-            "MODEL_ARCH": MODEL_ARCH,
-            "LATENT_DIM": LATENT_DIM,
+            **config.model_dump(),
+            # Constants, not knobs, that shape a retired arch's param tree (TREE_KEYS).
+            "VOCAB_SIZE": VOCAB_SIZE,
             "NUM_BLOCKS": NUM_BLOCKS,
             "SHARED_SLOTS": SHARED_SLOTS,
-            "MAX_SEQ_LEN": MAX_SEQ_LEN,
-            "VOCAB_SIZE": VOCAB_SIZE,
             "MAX_STEPS_LIMIT": MAX_STEPS_LIMIT,
-            "BATCH_SIZE": BATCH_SIZE,
-            "ACCUMULATION_STEPS": ACCUMULATION_STEPS,
-            "PAD_TOKEN_ID": PAD_TOKEN_ID,
-            "NUM_HEADS": NUM_HEADS,
-            "DATA_SEED": DATA_SEED,
-            "MODEL_SEED": MODEL_SEED,
-            # The run's recipe horizon (#83): budget in, resolved anneal out.
-            "TRAIN_TOKEN_BUDGET": TRAIN_TOKEN_BUDGET,
-            "DECAY_STEPS": DECAY_STEPS,
-            # The mixture ramp's resolved horizon, budget-relative since #362, and the
-            # mixture itself (#439): which buckets, at which weights, start to end.
-            "CURRICULUM_STEPS": CURRICULUM_STEPS,
-            "DATA_MIXTURE": DATA_MIXTURE,
-            "MIXTURE_RAMP_FRACTION": MIXTURE_RAMP_FRACTION,
-            # A branch onto another mixture, and how far each seed skips (#489).
-            "DATA_BRANCH": DATA_BRANCH,
-            "DATA_BRANCH_SEED_STRIDE": DATA_BRANCH_SEED_STRIDE,
-            # The LR schedule's shape (#386): cosine, or WSD and where its decay starts.
-            "LR_SCHEDULE": LR_SCHEDULE,
-            "WSD_DECAY_FRACTION": WSD_DECAY_FRACTION,
-            "WSD_DECAY_START": WSD_DECAY_START,
-            # Env knobs a reader cannot recover from anything else (#305). Every
-            # one of these is read from *this process's* environment at import, so
-            # a tool that reads them from its own config describes itself, not the
-            # run: the plotter crashed rebuilding a 512-step arm's LR schedule with
-            # a 1000-step warmup, and labelled a plain run with the refiner's depth.
-            "WARMUP_STEPS": WARMUP_STEPS,
-            "PEAK_LR": PEAK_LR,
-            "VAL_EVERY_OPT_STEPS": VAL_EVERY_OPT_STEPS,
-            "VAL_BY_SOURCE_EVERY_OPT_STEPS": VAL_BY_SOURCE_EVERY_OPT_STEPS,
-            "PLAIN_LAYERS": PLAIN_LAYERS,
-            # Tree-shaping knobs the resume check compares (#317); runs recorded
-            # before them skip the comparison.
-            "POST_NORM": POST_NORM,
-            "REFINER_ENCODER_LAYERS": REFINER_ENCODER_LAYERS,
-            "TIME_SIGNAL": TIME_SIGNAL,
-            "TRM_OPTIMIZER": TRM_OPTIMIZER,
-            "MUON_LR_MULT": MUON_LR_MULT,
-            # The rest of the optimizer, so a model card can rebuild it (#358).
-            "ADAM_B1": ADAM_B1,
-            "ADAM_B2": ADAM_B2,
-            "ADAM_EPS": ADAM_EPS,
-            "WEIGHT_DECAY": WEIGHT_DECAY,
-            "CLIP_NORM": CLIP_NORM,
-            "MUON_BETA": MUON_BETA,
-            "MUON_NS_STEPS": MUON_NS_STEPS,
-            "MUON_EPS": MUON_EPS,
-            "MUON_NESTEROV": MUON_NESTEROV,
-            "LOSS_SCALE_GROWTH_INTERVAL": LOSS_SCALE_GROWTH_INTERVAL,
+            # The horizons resolved from the budget: the LR anneal's (#83) and the
+            # mixture ramp's (#362). A resume checks the first against the run's (#197).
+            "DECAY_STEPS": schedules.decay_steps,
+            "CURRICULUM_STEPS": schedules.curriculum_steps,
         }
 
     def _check_compatibility(self, metadata_path):
@@ -245,7 +161,7 @@ class RunTracker:
                 old_meta = json.load(f)
 
             old_params = old_meta.get("parameters", {})
-            current_params = self.get_hyperparameters()
+            current_params = self.get_hyperparameters(self.config)
 
             # A key the run's metadata predates is skipped, not refused.
             mismatches = [
@@ -284,7 +200,7 @@ class RunTracker:
             "git_commit": git_meta["commit"],
             "git_branch": git_meta["branch"],
             "git_dirty": git_meta["dirty"],
-            "parameters": self.get_hyperparameters(),
+            "parameters": self.get_hyperparameters(self.config),
             "sections": [],
         }
 
@@ -308,7 +224,7 @@ class RunTracker:
             metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = 0
             self.save_metadata(metadata)
-            self.capture_environment_snapshot(self.run_dir)
+            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
             print(f"📁 Created new training run folder: {self.run_dir}")
         else:
             # Resume existing run
@@ -337,7 +253,7 @@ class RunTracker:
             self.save_metadata(metadata)
             # Snapshot on resume too (#173): each session describes its own commit
             # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
-            self.capture_environment_snapshot(self.run_dir)
+            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 
         return self.run_id

@@ -73,8 +73,8 @@ from instruments.invariants import clean_column, suspect_rows
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
-from trm.runtime.layout import ACT_MAX_ALARM
-from trm.train.schedules import PEAK_LR, WARMUP_STEPS, resolve_decay_steps
+from trm.settings import CONFIG
+from trm.train.schedules import DEFAULT_DECAY_STEPS
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -295,15 +295,15 @@ class RunConfig:
     # ── what model this was ──
     @property
     def arch(self):
-        return self.value("MODEL_ARCH", this_process.MODEL_ARCH, str)
+        return self.value("MODEL_ARCH", CONFIG.MODEL_ARCH, str)
 
     @property
     def latent_dim(self):
-        return self.value("LATENT_DIM", this_process.LATENT_DIM, int)
+        return self.value("LATENT_DIM", CONFIG.LATENT_DIM, int)
 
     @property
     def layers(self):
-        return self.value("PLAIN_LAYERS", this_process.PLAIN_LAYERS, int)
+        return self.value("PLAIN_LAYERS", CONFIG.PLAIN_LAYERS, int)
 
     @property
     def max_depth(self):
@@ -315,29 +315,29 @@ class RunConfig:
 
     @property
     def max_seq_len(self):
-        return self.value("MAX_SEQ_LEN", this_process.MAX_SEQ_LEN, int)
+        return self.value("MAX_SEQ_LEN", CONFIG.MAX_SEQ_LEN, int)
 
     # ── how it was trained ──
     @property
     def optimizer(self):
-        return self.value("TRM_OPTIMIZER", this_process.TRM_OPTIMIZER, str)
+        return self.value("TRM_OPTIMIZER", CONFIG.TRM_OPTIMIZER, str)
 
     @property
     def muon_lr_mult(self):
-        return self.value("MUON_LR_MULT", this_process.MUON_LR_MULT, float)
+        return self.value("MUON_LR_MULT", CONFIG.MUON_LR_MULT, float)
 
     @property
     def warmup_steps(self):
-        return self.value("WARMUP_STEPS", WARMUP_STEPS, int)
+        return self.value("WARMUP_STEPS", CONFIG.WARMUP_STEPS, int)
 
     @property
     def peak_lr(self):
-        return self.value("PEAK_LR", PEAK_LR, float)
+        return self.value("PEAK_LR", CONFIG.PEAK_LR, float)
 
     @property
     def budget(self):
         """Planned token budget, or None when the run was launched without one."""
-        return self.value("TRAIN_TOKEN_BUDGET", this_process.TRAIN_TOKEN_BUDGET)
+        return self.value("TRAIN_TOKEN_BUDGET", CONFIG.TRAIN_TOKEN_BUDGET)
 
     @property
     def tokens_per_opt_step(self):
@@ -346,7 +346,7 @@ class RunConfig:
         all three, because a run at a different batch recipe is mis-scaled by
         this process's constant."""
         recorded = recorded_tokens_per_opt_step(self.params)
-        return this_process.TOKENS_PER_OPT_STEP if recorded is None else recorded
+        return CONFIG.TOKENS_PER_OPT_STEP if recorded is None else recorded
 
     @property
     def micro_steps(self):
@@ -360,7 +360,7 @@ class RunConfig:
             return self.value("DECAY_STEPS", None, int)
         if self.budget:
             return max(1, round(self.budget / self.tokens_per_opt_step))
-        return resolve_decay_steps(None)
+        return DEFAULT_DECAY_STEPS
 
 
 def describe(cfg):
@@ -392,7 +392,7 @@ def describe(cfg):
     # The peak the schedule warms up to. Named only when the run recorded it and
     # it is not the historical 1e-4, so every existing label is unchanged and the
     # #287 arms — which differ in nothing else — cannot be confused for each other.
-    if cfg.recorded("PEAK_LR") and cfg.peak_lr != PEAK_LR:
+    if cfg.recorded("PEAK_LR") and cfg.peak_lr != CONFIG.PEAK_LR:
         parts.append(f"peak LR {cfg.peak_lr:g}")
     return " · ".join(parts)
 
@@ -814,8 +814,8 @@ def _panel_act_max(ax, runlog, cfg):
     ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
     ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=BLUE,
             linewidth=1.8, label="max |z|")
-    ax.axhline(ACT_MAX_ALARM, color=ORANGE, linewidth=1.2, linestyle="--",
-               label=f"alarm at {ACT_MAX_ALARM:,.0f}")
+    ax.axhline(CONFIG.ACT_MAX_ALARM, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"alarm at {CONFIG.ACT_MAX_ALARM:,.0f}")
     ax.axhline(F16_MAX, color=AQUA, linewidth=1.2, linestyle="--",
                label=f"f16 ceiling {F16_MAX:,.0f}")
     _log_y(ax)

@@ -36,6 +36,7 @@ import optax
 
 from instruments.results import emit as emit_result
 from trm.model.refiner import Block, CausalRefiner
+from trm.settings import CONFIG
 from trm.train.optimizers import _muon
 
 
@@ -247,7 +248,7 @@ def train_one(task_fn, vocab, depth, *, arch="refiner", dim=96, heads=4, enc=2, 
     n_params = sum(int(x.size) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param)))
     # #26: the same partitioned Muon chain production runs, at the harness's LR
     # (the matrix partition gets it x MUON_LR_MULT, as in production).
-    tx = (_muon(lambda _: lr) if optimizer == "muon"
+    tx = (_muon(CONFIG, lambda _: lr) if optimizer == "muon"
           else optax.adamw(lr, weight_decay=wd))
     opt = nnx.Optimizer(model, tx, wrt=nnx.Param)
 

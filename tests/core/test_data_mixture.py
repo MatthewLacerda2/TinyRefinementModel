@@ -20,10 +20,15 @@ import json
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
+from trm.settings import Config
 from trm.train import schedules
+from trm.train.schedules import Schedules
 
-STRIDE = 2 * MAX_SEQ_LEN + 1
+# An unset environment: the defaults every run so far trained with.
+TODAY = Schedules.of(Config.from_env({}))
+
+STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
 
 # ── today, exactly ───────────────────────────────────────────────────────────
@@ -38,20 +43,19 @@ def _todays_curriculum(step, ramp_steps):
 
 
 def test_the_default_mixture_is_the_one_every_run_trained_with():
-    assert schedules.PRETRAIN_SOURCES == (
+    assert TODAY.sources == (
         "pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
-    assert schedules.CURRICULUM_START_WEIGHTS == [0.85, 0.10, 0.05]
-    assert schedules.CURRICULUM_END_WEIGHTS == [0.35, 0.40, 0.25]
-    from trm.config import MIXTURE_RAMP_FRACTION
-    assert MIXTURE_RAMP_FRACTION == 10000 / 30518
+    assert TODAY.start_weights == [0.85, 0.10, 0.05]
+    assert TODAY.end_weights == [0.35, 0.40, 0.25]
+    assert Config.from_env({}).MIXTURE_RAMP_FRACTION == 10000 / 30518
 
 
 def test_the_default_ramp_reproduces_bit_for_bit():
     """Not approximately: `==` on every weight at every step checked. A float that
     moved in its last bit would change which corpus a multinomial draw picks."""
-    ramp = schedules.CURRICULUM_STEPS
+    ramp = TODAY.curriculum_steps
     for step in [0, 1, 7, ramp // 3, ramp // 2, ramp - 1, ramp, ramp + 1, 10 * ramp]:
-        assert schedules.get_curriculum_weights(step) == _todays_curriculum(step, ramp), step
+        assert TODAY.curriculum_weights(step) == _todays_curriculum(step, ramp), step
 
 
 # ── the knob ─────────────────────────────────────────────────────────────────
@@ -83,28 +87,23 @@ def test_a_mixture_that_does_not_say_what_it_means_is_refused(text, why):
         schedules.parse_mixture(text)
 
 
-def test_two_arms_that_differ_only_in_their_mixture_differ_in_nothing_else(import_config_under):
+def test_two_arms_that_differ_only_in_their_mixture_differ_in_nothing_else():
     """The matched-pair property. Every other schedule the run reads must resolve the
     same, so the mixture is the only variable a mixture pair moves."""
-    other = "pretrain/fineweb-edu=1"
-    names = ["PRETRAIN_SOURCES", "CURRICULUM_START_WEIGHTS", "CURRICULUM_END_WEIGHTS",
-             "CURRICULUM_STEPS", "DECAY_STEPS", "WARMUP_STEPS", "PEAK_LR", "LR_SCHEDULE"]
-    default, prose = import_config_under(
-        [{"DATA_MIXTURE": None}, {"DATA_MIXTURE": other}],
-        [f"trm.train.schedules:{name}" for name in names])
-    assert default["ok"] and prose["ok"]
-    moved = {name for name in names
-             if default["values"][f"trm.train.schedules:{name}"]
-             != prose["values"][f"trm.train.schedules:{name}"]}
-    assert moved == {"PRETRAIN_SOURCES", "CURRICULUM_START_WEIGHTS", "CURRICULUM_END_WEIGHTS"}
+    prose = Schedules.of(Config.from_env({"DATA_MIXTURE": "pretrain/fineweb-edu=1"}))
+    names = ["sources", "start_weights", "end_weights", "curriculum_steps", "decay_steps", "horizons"]
+    moved = {name for name in names if getattr(TODAY, name) != getattr(prose, name)}
+    assert moved == {"sources", "start_weights", "end_weights"}
+    assert [float(TODAY.learning_rate(s)) for s in (0, 500, 1000, 12_000, 15_000)] == \
+        [float(prose.learning_rate(s)) for s in (0, 500, 1000, 12_000, 15_000)], "the same LR"
 
 
 def test_the_run_records_the_mixture_it_read():
-    from trm.config import DATA_MIXTURE, MIXTURE_RAMP_FRACTION
     from trm.runtime.run_tracker import RunTracker
-    recorded = RunTracker.get_hyperparameters()
-    assert recorded["DATA_MIXTURE"] == DATA_MIXTURE
-    assert recorded["MIXTURE_RAMP_FRACTION"] == MIXTURE_RAMP_FRACTION
+    config = Config.from_env({"DATA_MIXTURE": "pretrain/fineweb-edu=1", "MIXTURE_RAMP_FRACTION": "0.5"})
+    recorded = RunTracker.get_hyperparameters(config)
+    assert recorded["DATA_MIXTURE"] == "pretrain/fineweb-edu=1"
+    assert recorded["MIXTURE_RAMP_FRACTION"] == 0.5
 
 
 
@@ -120,7 +119,7 @@ def _corpus(root, name, base):
 def _mixer(tmp_path, names=("web", "code")):
     from trm.data.loaders import DataMixer, TextDataGenerator
     dirs = [_corpus(tmp_path, "web", 0), _corpus(tmp_path, "code", 20000)]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [0.6, 0.4], rng=np.random.default_rng(11), names=names)
 
 
@@ -170,7 +169,7 @@ def _branch_mixer(tmp_path, names):
     from trm.data.loaders import DataMixer, TextDataGenerator
     bases = {"web": 0, "code": 20000, "math": 40000}
     dirs = [_corpus(tmp_path, name, bases[name]) for name in names]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [1.0 / len(names)] * len(names), rng=np.random.default_rng(11), names=list(names))
 
 
@@ -233,8 +232,7 @@ def test_a_state_that_cannot_name_its_readers_is_refused(tmp_path):
 
 
 def test_the_run_records_whether_it_branched():
-    from trm.config import DATA_BRANCH, DATA_BRANCH_SEED_STRIDE
     from trm.runtime.run_tracker import RunTracker
-    recorded = RunTracker.get_hyperparameters()
-    assert recorded["DATA_BRANCH"] == DATA_BRANCH
-    assert recorded["DATA_BRANCH_SEED_STRIDE"] == DATA_BRANCH_SEED_STRIDE
+    recorded = RunTracker.get_hyperparameters(Config.from_env({"DATA_BRANCH": "1"}))
+    assert recorded["DATA_BRANCH"] is True
+    assert recorded["DATA_BRANCH_SEED_STRIDE"] == 80_000
