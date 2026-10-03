@@ -12,10 +12,9 @@ from trm.config import EOT_TOKEN_ID, TOKENIZER_NAME, resolve_root
 from trm.model import build_model
 from trm.model.contract import LanguageModel
 from trm.runtime.layout import CHECKPOINT_ITEMS
-from trm.settings import CONFIG, location
+from trm.settings import CONFIG, load_env, location
 
-from dotenv import load_dotenv
-load_dotenv()
+load_env()
 
 # `new_document` is flipped on every Nth generated token. Only the reasoner reads it
 # (it resets its cross-window hunch cache, proven inert — docs/findings/
