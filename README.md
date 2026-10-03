@@ -40,9 +40,9 @@ safe to run, and its layout comes next.
   holds the narrative and the graveyard of killed ideas. `docs/findings/` holds dated
   results, one conclusion each. `docs/registry/` holds model cards for kept models.
   Working plans stay local and gitignored.
-- **Labels.** A *type* — `architecture` (the repo/environment), `tools` (research-support
-  code), `ideas` (things to try on the model), `optimization` (cheaper code, same model),
-  `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
+- **Labels.** A *type*, in priority order — `tools` (instruments, harness, CI: the
+  infrastructure), `architecture` (how the codebase and the model are defined),
+  `optimization` (cheaper code, same model), `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
   serial queue), `blocked` (unmet dependency). Plus `bug`.
 - **Four trees, one home per file.** `trm/` is the library and its operations, and lives
   forever; `experiments/<line>/` holds one research line and is deleted with it;

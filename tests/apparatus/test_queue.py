@@ -28,14 +28,19 @@ def flagged(q):
 
 
 def test_types_lead_in_claude_md_order():
-    q = build_queue([issue(1, "documentation", "cpu"), issue(2, "ideas", "cpu"),
-                     issue(3, "optimization", "cpu"), issue(4, "tools", "cpu"),
-                     issue(5, "architecture", "cpu")], [], FREE)
-    assert list(ranked(q)) == ["architecture", "optimization", "tools", "ideas", "documentation"]
+    q = build_queue([issue(1, "documentation", "cpu"), issue(3, "optimization", "cpu"),
+                     issue(4, "tools", "cpu"), issue(5, "architecture", "cpu")], [], FREE)
+    assert list(ranked(q)) == ["tools", "architecture", "optimization", "documentation"]
+
+
+def test_ideas_is_no_longer_a_tier():
+    """The label was retired (2026-10-03): an issue carrying only it has no type."""
+    q = build_queue([issue(1, "ideas", "cpu")], [], FREE)
+    assert ranked(q) == {} and 1 in flagged(q)
 
 
 def test_an_issue_with_two_types_sits_in_the_higher_one():
-    assert ranked(build_queue([issue(1, "ideas", "tools", "cpu")], [], FREE)) == {"tools": [1]}
+    assert ranked(build_queue([issue(1, "architecture", "tools", "cpu")], [], FREE)) == {"tools": [1]}
 
 
 def test_claimed_work_is_not_ready_whether_by_assignee_or_by_an_open_pr():
@@ -47,7 +52,7 @@ def test_claimed_work_is_not_ready_whether_by_assignee_or_by_an_open_pr():
 
 
 def test_a_plan_is_not_ready_to_start():
-    assert excluded(build_queue([issue(1, "ideas", "cpu", "plan")], [], FREE)) == {1}
+    assert excluded(build_queue([issue(1, "architecture", "cpu", "plan")], [], FREE)) == {1}
 
 
 def test_an_open_blocker_holds_the_issue_back_and_its_blocker_leads():
@@ -77,8 +82,8 @@ def test_a_block_on_an_open_pr_holds_and_is_not_called_stale():
 
 
 def test_a_block_on_a_condition_holds_but_an_unexplained_one_is_flagged():
-    q = build_queue([issue(1, "ideas", "gpu", "blocked", body="**Blocked by:** a base worth aligning"),
-                     issue(2, "ideas", "gpu", "blocked", body="no reason given")], [], FREE)
+    q = build_queue([issue(1, "architecture", "gpu", "blocked", body="**Blocked by:** a base worth aligning"),
+                     issue(2, "architecture", "gpu", "blocked", body="no reason given")], [], FREE)
     assert 1 in excluded(q) and 1 not in flagged(q)
     assert 2 in flagged(q)
 
@@ -100,9 +105,9 @@ def test_an_untyped_issue_is_surfaced_not_guessed_into_a_tier():
 
 
 def test_next_step_names_an_issue_only_when_the_rules_decide_it():
-    assert build_queue([issue(1, "tools", "cpu"), issue(2, "ideas", "cpu")], [], FREE
+    assert build_queue([issue(1, "tools", "cpu"), issue(2, "architecture", "cpu")], [], FREE
                        ).next_step().startswith("#1")
-    tie = build_queue([issue(1, "ideas", "cpu"), issue(2, "ideas", "cpu")], [], FREE).next_step()
+    tie = build_queue([issue(1, "architecture", "cpu"), issue(2, "architecture", "cpu")], [], FREE).next_step()
     assert "judgment" in tie and "#" not in tie
     assert build_queue([], [], FREE).next_step() == "nothing is ready"
 
@@ -119,7 +124,7 @@ def test_blockers_with_a_note_beside_each_are_all_read():
             "is non-zero), **#302** (the KV cache: rollouts dominate RL compute).\n"
             "## What gets built (once unblocked)\nSee #12 for the history.")
     assert blockers_named(body) == [302, 440, 441]
-    issues = [issue(29, "ideas", "gpu", "blocked", body=body), issue(441, "ideas", "gpu", "blocked")]
+    issues = [issue(29, "architecture", "gpu", "blocked", body=body), issue(441, "architecture", "gpu", "blocked")]
     queue = build_queue(issues, [], FREE)
     assert not any(n == 29 for n, _ in queue.needs_human), "#441 is open: the block is live"
 
@@ -191,7 +196,7 @@ def test_a_cloud_session_gets_neither_the_card_nor_this_machines_files():
     """#492: a cloud session can finish neither a gpu-only item nor one that needs the
     weights, corpus or HDD here; it keeps the cpu half of a partial-cpu issue."""
     issues = [issue(1, "tools", "cpu"), issue(2, "tools", "gpu"), issue(3, "tools", "cpu", "gpu"),
-              issue(4, "tools", "cpu", "local"), issue(5, "ideas", "cpu", "gpu", "local")]
+              issue(4, "tools", "cpu", "local"), issue(5, "architecture", "cpu", "gpu", "local")]
     q = build_queue(issues, [], CLOUD_CARD, cloud=True)
     assert ranked(q) == {"tools": [1, 3]}
     assert excluded(q) == {2, 4, 5}
@@ -220,9 +225,9 @@ def test_an_untouched_issue_is_surfaced_unless_it_is_legitimately_waiting():
               issue(2, "tools", "cpu", updated=fresh),                      # fresh
               issue(3, "tools", "cpu", "blocked", body="Blocked by #2", updated=old),
               issue(4, "tools", "cpu", "gpu", updated=old),                 # parked on the card
-              issue(5, "ideas", "cpu", updated=old),                        # its draft waits on nobody
+              issue(5, "architecture", "cpu", updated=old),                        # its draft waits on nobody
               issue(6, "tools", "cpu", updated=old),                        # its PR moved last week
-              issue(7, "ideas", "cpu", "blocked", body="Blocked by: a condition", updated=old)]
+              issue(7, "architecture", "cpu", "blocked", body="Blocked by: a condition", updated=old)]
     q = build_queue(issues, prs, FREE, now=now)
     stale = {n for n, why in q.needs_human if why.startswith("untouched")}
     assert stale == {1, 5, 7}, "a condition no issue can close is exactly what rots unasked"
