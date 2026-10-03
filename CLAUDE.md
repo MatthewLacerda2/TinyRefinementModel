@@ -290,6 +290,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   the env/config knobs that make them hit the changed code), what counts as pass
   against what baseline, and the pre-named fallback if it fails — finishing must need
   only the card, never this conversation's memory. (Template case: PR #98 / #84.)
+  Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
+  skips drafts and re-runs on undraft, so the checks you see right after are the
+  draft's skipped set — never push an empty commit to "retrigger" (#539).
 - **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
   session without them (a cloud session) cannot finish it. Orthogonal to lane: a
   `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
