@@ -15,6 +15,11 @@ from trm.settings import CONFIG
 # underflow ever becomes a problem, the fix is optax loss scaling, not a
 # dtype change. FORCE_F32_COMPUTE (trm/settings.py) is the test suite's way out.
 COMPUTE_DTYPE = jnp.float32 if CONFIG.FORCE_F32_COMPUTE else jnp.float16
+# What accumulates stays f32 (CLAUDE.md's dtype rule): the residual stream of the plain
+# stack (Config.RESIDUAL_DTYPE, #357; tests/core/test_adopted_recipe.py holds it), the
+# gradient accumulator and Adam's variance. Not f32, and why: Adam's and Muon's first
+# moments are stored bf16 (trm/train/optimizers.py, #37), and the retired refiner's and
+# reasoner's streams stay COMPUTE_DTYPE, kept only to load their checkpoints as trained.
 
 # Persistent compilation cache (#204). Every process used to compile from scratch:
 # each supervisor relaunch, test run, smoke and instrument. It makes nothing

@@ -46,9 +46,10 @@ def test_muon_gets_every_knob_by_name(monkeypatch):
 
 
 def test_the_defaults_are_what_every_run_so_far_trained_with():
-    """Naming the knobs must not move them: the golden run and every recorded
-    recipe pair resolve to exactly these."""
-    assert (CONFIG.ADAM_B1, CONFIG.ADAM_B2, CONFIG.ADAM_EPS) == (0.9, 0.999, 1e-8)
+    """Naming the knobs must not move them: every recorded recipe pair resolves to
+    exactly these, except b2, which #359 moved to 0.95 on purpose (ADAM_B2=0.999
+    reproduces the runs before it; tests/core/test_adopted_recipe.py)."""
+    assert (CONFIG.ADAM_B1, CONFIG.ADAM_B2, CONFIG.ADAM_EPS) == (0.9, 0.95, 1e-8)
     assert (CONFIG.WEIGHT_DECAY, CONFIG.CLIP_NORM) == (1e-2, 1.0)
     assert (CONFIG.MUON_BETA, CONFIG.MUON_NS_STEPS, CONFIG.MUON_EPS, CONFIG.MUON_NESTEROV) == (0.95, 5, 1e-8, True)
 
