@@ -42,6 +42,7 @@ pytest tests/core          # the fast loop while you work
 pytest tests/              # everything; expensive/ self-skips without its env flag
 RUN_GOLDEN=1 pytest tests/expensive # what CI's golden-run job forces on
 RUN_TESTS_ON_GPU=1 pytest tests/    # the real f16 path, GPU must be free
+RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py  # any hot-path change, before merging (#540)
 ```
 
 Tests default to CPU (`FORCE_F32_COMPUTE`) so the suite stays runnable while a
