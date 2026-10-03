@@ -293,6 +293,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
   skips drafts and re-runs on undraft, so the checks you see right after are the
   draft's skipped set — never push an empty commit to "retrigger" (#539).
+  A draft that touches the hot path (`trm/train/grad_step.py`) lists
+  `RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py` in its resume
+  protocol: the CPU ignores buffer donation, so only the card shows that class (#540).
 - **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
   session without them (a cloud session) cannot finish it. Orthogonal to lane: a
   `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
