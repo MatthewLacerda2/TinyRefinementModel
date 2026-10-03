@@ -97,7 +97,8 @@ def main():
     doc_boundary = jnp.zeros((1,), dtype=bool)
     step = jnp.array(0)
 
-    compiled = compute_grad_step.lower(model, batch, step, args.depth, doc_boundary=doc_boundary).compile()
+    compiled = compute_grad_step.lower(model, batch, step, args.depth, doc_boundary=doc_boundary,
+                                       z_loss_weight=CONFIG.Z_LOSS_WEIGHT).compile()
 
     ma = compiled.memory_analysis()
     arg = getattr(ma, "argument_size_in_bytes", 0)
@@ -120,7 +121,8 @@ def main():
     if args.run:
         print("\n=== executing one step (driver stats) ===")
         try:
-            loss, *_ = compute_grad_step(model, batch, step, args.depth, doc_boundary)
+            loss, *_ = compute_grad_step(model, batch, step, args.depth, doc_boundary,
+                                         z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             loss.block_until_ready()
             ms = jax.devices()[0].memory_stats()
             print(f"  peak_bytes_in_use: {_gib(ms.get('peak_bytes_in_use', 0))}")

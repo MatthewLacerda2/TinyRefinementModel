@@ -38,7 +38,8 @@ def _leaves(tree):
 
 def _run(inner, hot, touch_at=()):
     model, opt = _setup(inner)
-    path = HotPath(model, opt) if hot else None
+    # The shipped z-loss (#369), so the identity covers its backward too.
+    path = HotPath(model, opt, z_loss_weight=CONFIG.Z_LOSS_WEIGHT) if hot else None
     seen = []
     for i, batch in enumerate(_batches()):
         step = jnp.array(i // K)
@@ -48,7 +49,8 @@ def _run(inner, hot, touch_at=()):
             loss, _, grads, norm = path.grad_step(batch, step, None)
             path.apply(grads)
         else:
-            loss, _, grads, norm = compute_grad_step(model, batch, step, None)
+            loss, _, grads, norm = compute_grad_step(model, batch, step, None,
+                                                     z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(opt, grads, model)
         seen += [np.asarray(loss), np.asarray(norm)]
     if hot:
@@ -82,7 +84,7 @@ def test_reading_the_modules_mid_run_changes_nothing():
 
 def test_a_change_made_through_the_module_is_seen_by_the_next_step():
     model, opt = _setup(optax.sgd(1e-3))
-    path = HotPath(model, opt)
+    path = HotPath(model, opt, z_loss_weight=0.0)
     batch = _batches()[0]
     before, *_ = path.grad_step(batch, jnp.array(0), None)
     for leaf in nnx.state(path.model, nnx.Param).flat_state():
@@ -93,7 +95,7 @@ def test_a_change_made_through_the_module_is_seen_by_the_next_step():
 
 def test_the_host_counter_follows_the_device_and_a_skipped_micro_step_does_not_move_it():
     model, opt = _setup(optax.sgd(1e-3))
-    path = HotPath(model, opt)
+    path = HotPath(model, opt, z_loss_weight=0.0)
     batches = _batches()
     for i, batch in enumerate(batches[:5]):
         _, _, grads, _ = path.grad_step(batch, jnp.array(i // K), None)
@@ -104,7 +106,7 @@ def test_the_host_counter_follows_the_device_and_a_skipped_micro_step_does_not_m
 
 def test_a_drifted_counter_is_caught():
     model, opt = _setup(optax.sgd(1e-3))
-    path = HotPath(model, opt)
+    path = HotPath(model, opt, z_loss_weight=0.0)
     path._mini += 1
     with pytest.raises(RuntimeError, match="counter drift"):
         path.check_counter()

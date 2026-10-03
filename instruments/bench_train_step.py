@@ -83,7 +83,7 @@ def main():
     )
     no_boundary = jnp.zeros((args.batch,), dtype=bool)
 
-    hot = HotPath(model, optimizer)
+    hot = HotPath(model, optimizer, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
 
     def micro_step(i, sync):
         opt_step = jnp.array(i // CONFIG.ACCUMULATION_STEPS)
@@ -92,7 +92,8 @@ def main():
             hot.apply(grads)
         else:
             loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, opt_step, args.depth, doc_boundary=no_boundary)
+                model, batch, opt_step, args.depth, doc_boundary=no_boundary,
+                z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(optimizer, grads, model)
         if sync:
             # The real train loop pulls these to the host every micro-step.

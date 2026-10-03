@@ -143,6 +143,14 @@ class Config(BaseSettings):
     # batch 1, which is both cheaper in memory than what shipped before and faster.
     PLAIN_LAYERS: int = 8
 
+    # The residual stream's dtype on the plain stack (#357): the value every block adds
+    # into, so an accumulator under the dtype policy (trm/config.py), and f32 as in
+    # standard mixed precision. In f16 a block's O(1) output rounds to nothing once the
+    # stream passes ~4k, and the f16 base run's last block was at ~4,000 by opt step
+    # 19,800 (#357). The matmuls, and the norms' outputs that feed them, stay f16. Never
+    # narrower than the compute dtype. float16 reproduces every run before #357.
+    RESIDUAL_DTYPE: Literal["float16", "float32"] = "float32"
+
     # ── Retired architectures (knobs only the refiner reads; #292) ──────────────
     # Refiner time signal (#86): how each refinement pass is told which step it is.
     #   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
@@ -192,9 +200,12 @@ class Config(BaseSettings):
     # read (#358): an optax upgrade that moved one would have changed the recipe silently.
     # Each is what every run so far trained with, so every existing config resolves the same.
     #   ADAM_B2 is the memory of Adam's variance estimate, 1/(1-b2) opt steps: ~1000 at
-    #   0.999, ~20 at 0.95 (#359 asks which).
+    #   0.999, ~20 at 0.95. 0.95 since #359, the value GPT-3, LLaMA, PaLM and nanoGPT
+    #   train with: a gradient spike then holds down the Adam partition's step (the tied
+    #   embedding, the norms) for ~20 opt steps instead of ~1000. 0.999 reproduces every
+    #   run before #359.
     ADAM_B1: float = 0.9
-    ADAM_B2: float = 0.999
+    ADAM_B2: float = 0.95
     ADAM_EPS: float = 1e-8
     # Weight decay on the >=2-D params, multiplied by the LR (so coupled to it): under muon the
     # matrices only, under adamw every >=2-D param, the embedding included.
@@ -223,6 +234,14 @@ class Config(BaseSettings):
     # overflows discards a micro-step: ~200 of 65,536 in a 512-step pair. PyTorch's default
     # is 2,000; #368 asks whether ours should move. Named here, value unchanged.
     LOSS_SCALE_GROWTH_INTERVAL: int = 256
+
+    # ── Loss ──────────────────────────────────────────────────────────────────
+    # PaLM's z-loss (#369): Z_LOSS_WEIGHT * (log Z)^2 per scored position is added to the
+    # gradient, which pins the log-partition of the tied head near 0 instead of letting
+    # it drift (the 4B champion's went from 11 to 16-17). 1e-4 is PaLM's and OLMo 2's
+    # value. The CE every run reports never includes it, so it stays comparable across
+    # the change. 0 turns it off and reproduces every run before #369.
+    Z_LOSS_WEIGHT: float = 1e-4
 
     # ── Batching ──────────────────────────────────────────────────────────────
     # BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
