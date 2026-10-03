@@ -23,7 +23,7 @@ from trm.settings import DEFAULT_DATA_MIXTURE, location
 from trm.runtime.layout import LOG_REAL_STEPS
 from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, milestone_thresholds,
                                      save_checkpoint, save_milestone, wait_for_pending_saves)
-from trm.train.grad_step import (compute_grad_step, apply_grads, applied_gradient_stats, grad_zero_fractions,
+from trm.train.grad_step import (HotPath, applied_gradient_stats, grad_zero_fractions,
                                  dense_zero_frac_max)
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.loss_scale import DynamicLossScale
@@ -315,6 +315,8 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
     # Opt step of the last plateau notice, so a persistent plateau reports
     # periodically instead of on every step. Negative so the first one always prints.
     last_plateau_notice = -PLATEAU_NOTICE_EVERY
+    # The grad step and the optimizer apply with the NNX graph walked once (#474).
+    hot = HotPath(model, optimizer)
 
     try:
         while True:
@@ -334,7 +336,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
 
             # The architecture's depth for this micro-step, or None for one without a
             # depth dial (#316): one static value, so the grad step compiles once.
-            depth = model.training_depth(step)
+            depth = model.training_depth(step)  # reads no state, so not hot.model (#474)
             # The logging micro-step: its gradient stats are sampled before the
             # update below and logged after it, so both blocks read this one flag.
             is_log_step = (step + 1) % (accumulation_steps * LOG_REAL_STEPS) == 0
@@ -348,8 +350,8 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 loss_scale = jnp.float32(loss_scaler.value)
                 clip_norm = jnp.float32(jnp.inf if ceiling is None else ceiling)
             with span("grad_step"):
-                loss, out, grads, grad_norm = compute_grad_step(
-                    model, batch, step_now, depth, doc_boundary=doc_boundary,
+                loss, out, grads, grad_norm = hot.grad_step(
+                    batch, step_now, depth, doc_boundary=doc_boundary,
                     loss_scale=loss_scale, clip_norm=clip_norm,
                 )
 
@@ -378,7 +380,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                     f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — "
                     f"skipping update, loss scale → {scale_now:g}."
                 )
-                model.reset_state()
+                hot.model.reset_state()
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
                     raise RuntimeError(
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
@@ -405,7 +407,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             # window's mean), and this one micro-step's, which carries per-draw
             # artifacts that never reach the weights.
             if is_log_step:
-                applied_fracs, applied_norm = applied_gradient_stats(optimizer, grads)
+                applied_fracs, applied_norm = applied_gradient_stats(hot.optimizer, grads)
                 zero_fracs = {k: float(v) for k, v in applied_fracs.items()}
                 # The norm the clip actually sees (#180). grad_norm_avg is per-micro-step
                 # and cannot be read against CLIP_NORM; this can: above it, the clip, not
@@ -417,7 +419,9 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 zero_frac_dense_microstep = float(dense_zero_frac_max(grad_zero_fractions(grads)))
 
             with span("apply_grads"):
-                apply_grads(optimizer, grads, model)
+                hot.apply(grads)
+            if is_log_step:
+                hot.check_counter()
 
             t_compute += (time.time() - t_compute_start)
 
@@ -434,7 +438,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             if (step + 1) % accumulation_steps == 0:
                 opt_step = (step + 1) // accumulation_steps
                 if opt_step % config.VAL_EVERY_OPT_STEPS == 0:
-                    val_ce = val_probe.run(model)
+                    val_ce = val_probe.run(hot.model)
                     if val_ce is not None:
                         latest_val_ce, latest_val_step = val_ce, opt_step
                         print(f"🧪 [Validation] Opt Step {opt_step} | held-out CE: {val_ce:.4f}")
@@ -442,11 +446,11 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                         # sibling dir so best-retention and rolling-latest
                         # retention never evict each other.
                         if monitor.push_val(val_ce, opt_step):
-                            save_checkpoint(best_mngr, step, model, optimizer, monitor,
+                            save_checkpoint(best_mngr, step, hot.model, hot.optimizer, monitor,
                                             run_tracker.run_id, wait=False)
                     # The other corpora (#363), on a rarer cadence of the same steps.
                     if opt_step % config.VAL_BY_SOURCE_EVERY_OPT_STEPS == 0:
-                        readings = {p.source: p.run(model) for p in source_probes}
+                        readings = {p.source: p.run(hot.model) for p in source_probes}
                         latest_val_by_source = ";".join(
                             f"{s}={ce:.4f}" for s, ce in readings.items() if ce is not None) or None
                         if latest_val_by_source:
@@ -458,7 +462,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 # logging block — the full-state save blocks, so it must stay rare.
                 # The best-CE state is saved on the validation probe, above.
                 if opt_step % config.CHECKPOINT_EVERY_OPT_STEPS == 0:
-                    save_checkpoint(mngr, step, model, optimizer, monitor,
+                    save_checkpoint(mngr, step, hot.model, hot.optimizer, monitor,
                                     run_tracker.run_id, wait=False)
 
                 # Milestones: never evicted by recency (#187), in their own dir, at
@@ -466,7 +470,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 # optimizer step rather than at the rolling boundary, because the
                 # early ones are closer together than that boundary.
                 if milestone_due(opt_step, opt_step - 1, config.TOKENS_PER_OPT_STEP, milestones):
-                    save_milestone(milestone_mngr, step, model, monitor,
+                    save_milestone(milestone_mngr, step, hot.model, monitor,
                                    run_tracker.run_id, wait=False)
 
             if is_log_step:
@@ -548,6 +552,9 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
 
             step += 1
     finally:
+        # The module objects get the loop's last state, for whoever reads them after
+        # this returns (#474: the live state is the hot path's while the loop runs).
+        hot.model
         # An asynchronous checkpoint write may still be landing (#218) — a crash, a
         # budget stop's TERM, or a divergence kill must not cut the last one short.
         wait_for_pending_saves()

@@ -23,7 +23,7 @@ import numpy as np
 from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
 from trm.settings import CONFIG
 from trm.train.trainer import init_model_and_optimizer
-from trm.train.grad_step import compute_grad_step, apply_grads
+from trm.train.grad_step import HotPath, compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -51,6 +51,9 @@ def main():
     parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
                         help="refinement/reasoning depth; inert for plain, which has no depth dial")
     parser.add_argument("--modes", type=str, default="loop,kernel")
+    parser.add_argument("--path", choices=("hot", "nnx"), default="hot",
+                        help="hot: the trainer's HotPath (graph walked once, #474); "
+                             "nnx: the per-call nnx.jit path it replaced, for an A/B")
     parser.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE,
                         help="micro-batch rows (default: config BATCH_SIZE). Sweeping this "
                              "measures how throughput scales with the forward's GEMM shape — "
@@ -80,11 +83,17 @@ def main():
     )
     no_boundary = jnp.zeros((args.batch,), dtype=bool)
 
+    hot = HotPath(model, optimizer)
+
     def micro_step(i, sync):
-        loss, out, grads, grad_norm = compute_grad_step(
-            model, batch, jnp.array(i // CONFIG.ACCUMULATION_STEPS), args.depth, doc_boundary=no_boundary
-        )
-        apply_grads(optimizer, grads, model)
+        opt_step = jnp.array(i // CONFIG.ACCUMULATION_STEPS)
+        if args.path == "hot":
+            loss, out, grads, grad_norm = hot.grad_step(batch, opt_step, args.depth, doc_boundary=no_boundary)
+            hot.apply(grads)
+        else:
+            loss, out, grads, grad_norm = compute_grad_step(
+                model, batch, opt_step, args.depth, doc_boundary=no_boundary)
+            apply_grads(optimizer, grads, model)
         if sync:
             # The real train loop pulls these to the host every micro-step.
             _ = float(loss)

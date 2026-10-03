@@ -33,7 +33,6 @@ import glob
 import queue
 
 import jax
-from flax import nnx
 
 from trm.runtime.checkpoints import load_or_create_checkpoint
 from trm.runtime.run_tracker import RunTracker
@@ -203,7 +202,7 @@ def main():
     trace_dir = os.path.join(run_tracker.run_dir, "trace")
     data_queue = TracedQueue(
         trainer.setup_data_pipeline(CONFIG, start_step), args.warmup, args.micro_steps, trace_dir,
-        settle=lambda: jax.block_until_ready((nnx.state(model), nnx.state(optimizer))))
+        settle=lambda: jax.block_until_ready(jax.live_arrays()))
     trainer.train_loop(CONFIG, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
     if data_queue.served <= data_queue.stop_at:
         raise SystemExit("the loop ended before the traced window closed")
