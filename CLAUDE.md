@@ -247,39 +247,33 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 **Type labels (what kind of work it is) — in priority order:**
 
-1. **`architecture`** — the *repository's* architecture and environment. Comes before
-   everything: the first job is an environment Claude can trust and operate
-   programmatically, without surprises. In that order: **code that reads clearly and
-   stays lean**, with a structure whose shape is obvious; **automation that keeps it on
-   the rails**, so a regression or a drift fails a test or a gate instead of waiting to
-   be noticed; then **rules that make Claude's work clear and unambiguous**, written down
-   where a fresh session will find them. (Note the name clash: a change to the *model's*
-   architecture — say GQA → multi-head latent attention — is an **`idea`**, not this.
-   This label is about the harness/repo, not the network.)
-2. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
-   what the model is**. Same model, fewer resources. (If it changes the model, it's an
-   `idea`. GQA → MLA is an idea; chunking the cross-entropy to free activation memory is
-   an optimization.) Second only to the repo's architecture: speed and memory make every
-   later run cheaper, and they decide what ideas can be — freed memory decides whether a
-   layer, a batch or a longer window fits, and speed decides how many tokens a base run
-   buys in its days. After architecture, not before it: optimizing code that doesn't
-   read clearly yet is premature.
-3. **`tools`** — actual code that is *not* LLM research per se, built to code, improve
-   the model, research and investigate: the harness, instruments, runners, telemetry, CI.
-   Comes after optimization — tools are what let ideas be tested cheaply. Only after
-   these does the work turn to the model itself.
-4. **`ideas`** — things to try on the LLM itself (architecture/recipe changes,
-   hypotheses). Pick these in **any order, your judgment**. An idea may jump ahead of a
-   tool only when it genuinely makes sense — usually when it's small. The label means
-   *the outcome is uncertain* — "maybe this works, I don't know." A directed fix to
-   the model with a known method (the document separator masked as pad, #373) is a
-   **`bug`**, even though it changes what the model is; nobody is wondering whether to
-   do it, so a smoke check that it breaks nothing gates it, not a pair. Such a bug
-   still carries `ideas` as its *type*, the tier where model and trainer work sits, so
-   the queue can place it; `bug` is what says it is not a question. **Before filing an
-   `ideas` issue, ask whether the literature settled it.** If it did, it is a `bug`
-   from birth: title it "Adopt X", and put the source and expected effect in the body.
-5. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
+1. **`tools`** — the infrastructure: code that is *not* LLM research per se, built to
+   develop, measure and investigate — the harness, instruments, runners, telemetry,
+   CI. Comes first because every later judgment stands on it. Above all, an instrument
+   prints a **plain, reproducible report of how something ran** — what it measured,
+   the result, the speed, and what it cost in CPU, GPU, RAM and VRAM — numbers a
+   person can compare across runs to say whether a change made things faster or
+   better, never prose a model wrote about them.
+2. **`architecture`** — how things are *defined*, for both the codebase and the model.
+   For the repo: **code that reads clearly and stays lean**, with modules whose shape
+   is obvious; **automation that keeps it on the rails**, so a regression or a drift
+   fails a test or a gate; **rules that make Claude's work unambiguous**, written where
+   a fresh session finds them. For the model: what it is and how it trains — its
+   shape (GQA → multi-head latent attention), its recipe (LR, mix, weight decay) and
+   its hypotheses. Within the tier, **any order, your judgment**. A model change whose
+   *outcome is uncertain* — "maybe this works, I don't know" — is judged by a matched
+   pair. A directed fix with a known method (the document separator masked as pad,
+   #373) also carries **`bug`**: nobody is wondering whether to do it, so a smoke
+   check that it breaks nothing gates it, not a pair. **Before filing a model change,
+   ask whether the literature settled it.** If it did, it is a `bug` from birth: title
+   it "Adopt X", and put the source and expected effect in the body.
+3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
+   what the model is**. Same model, fewer resources. (GQA → MLA changes the model, so
+   it is `architecture`; chunking the cross-entropy to free activation memory is an
+   optimization.) Speed and memory make every later run cheaper, and they decide what
+   the model can be — freed memory decides whether a layer, a batch or a longer window
+   fits, and speed decides how many tokens a base run buys in its days.
+4. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
 
@@ -325,9 +319,9 @@ found, because now nobody will look again. Two habits follow:
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
-(a result that reframes the question). Repo-architecture, tools, and tests ripple
-downstream, so they lead; a matched pair or sweep is last because nothing depends on its
-output. A base run is the opposite: ablations cannot be read without it and warm-starts
+(a result that reframes the question). Tools ripple downstream into every measurement,
+so they lead; within `architecture`, the repo's structure and a result that reframes the
+model's question lead a pair or sweep nothing depends on. A base run is the opposite: ablations cannot be read without it and warm-starts
 need it, so the `base-gate` list is a launch checklist to close or waive, not a queue to
 drain.
 

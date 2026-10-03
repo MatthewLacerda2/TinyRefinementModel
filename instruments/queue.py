@@ -4,13 +4,13 @@
 
 CLAUDE.md states the ready-queue as prose precise enough to execute — an issue
 is ready when it is open, not blocked, unclaimed, and its lane is free; types
-lead in the order architecture > optimization > tools > ideas > documentation;
+lead in the order tools > architecture > optimization > documentation;
 anything that affects another item leads. Run in a session's head, that
 algorithm runs differently depending on what the session happened to read, and
 not at all in a fresh one. Here it runs the same every time.
 
 It ranks only what the rules decide, then stops. Within a tier the rules set no
-order (for ideas CLAUDE.md says so outright: "any order, your judgment"), so the
+order (for architecture CLAUDE.md says so outright: "any order, your judgment"), so the
 output says that instead of sorting by something that looks like authority. The
 one mechanical tiebreak is dependency: an issue other open issues are blocked
 by affects another item, so it leads its tier.
@@ -43,8 +43,8 @@ from trm.runtime.gpu_lock import GpuLock
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
 
-TYPE_ORDER = ("architecture", "optimization", "tools", "ideas", "documentation")
-UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
+TYPE_ORDER = ("tools", "architecture", "optimization", "documentation")
+UNORDERED = {"architecture": "any order, your judgment, per CLAUDE.md"}
 
 # "Blocked by" alone marks a block. When the first thing after it is an issue number,
 # every number in the rest of that sentence names a blocker — bodies annotate each
