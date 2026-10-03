@@ -50,7 +50,7 @@ from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
 from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
 from trm.runtime.rewind import unresumable  # jax-free
-from trm.settings import CONFIG, Config, location
+from trm.settings import CONFIG, Config, env_file, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
@@ -284,10 +284,7 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
 def local_location(name: str) -> pathlib.Path | None:
     """A machine-local path (trm.settings.LOCATIONS) from the environment or, failing
     that, the repo's .env, resolved against the repo root; None when unset or remote."""
-    value = location(name)
-    if not value:
-        from dotenv import dotenv_values
-        value = dotenv_values(REPO_ROOT / ".env").get(name)
+    value = location(name) or env_file(REPO_ROOT).get(name)
     if not value or "://" in value:
         return None
     return (REPO_ROOT / value).resolve()

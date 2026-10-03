@@ -405,7 +405,9 @@ one home, and the rule is short enough to hold in your head:
 | is per-issue scratch | `aux*`, `docs/plans/` | until you're done (gitignored) |
 
 Nothing goes in the repo root — there are no `.py` files there, and
-`tests/core/test_package_layout.py` fails the build if one appears. Entry points are run
+`tests/core/test_package_layout.py` fails the build if one appears. Worktrees go beside
+the checkout (`git worktree add ../trm-<name>`), never inside it: a checkout reads only
+its own `.env` (#541), so a sibling gets an absolute `DATA_ROOT` from the shell. Entry points are run
 as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -m trm.infer`.
 The front door is the `Makefile` (`make test`, `make test-affected`, `make gate`,
 `make launch BUDGET=…`, `make report RUN=…`): launch a base run through it, never by

@@ -14,11 +14,11 @@ import os
 
 import numpy as np
 import pytest
-from dotenv import load_dotenv
 
 from trm.config import resolve_root
+from trm.settings import load_env
 
-load_dotenv()
+load_env()
 
 
 def _source_dir():
