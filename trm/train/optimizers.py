@@ -8,6 +8,10 @@ import jax.numpy as jnp
 import optax
 
 from trm.train.accumulate import multi_steps
+from trm.train.polar_express import polar_express_coeffs
+
+# Keller Jordan's 2024 quintic, reused at every Newton-Schulz step.
+KELLER_NS_COEFFS = (3.4445, -4.775, 2.0315)
 
 
 def weight_decay_mask(params):
@@ -62,6 +66,16 @@ def _adamw(config, learning_rate, weight_decay=None):
     )
 
 
+def ns_coefficients(kind, steps):
+    """The ns_coeffs optax takes for MUON_NS_COEFFS=`kind` (#375): one tuple reused at
+    every step, or one tuple per step."""
+    if kind == "keller":
+        return KELLER_NS_COEFFS
+    if kind == "polar_express":
+        return polar_express_coeffs(steps)
+    raise ValueError(f"MUON_NS_COEFFS={kind!r}: expected 'keller' or 'polar_express'")
+
+
 def _muon(config, learning_rate, lr_mult=None):
     """Muon on the matrices at its own LR, AdamW on the rest.
 
@@ -79,9 +93,8 @@ def _muon(config, learning_rate, lr_mult=None):
         {
             "muon": optax.chain(
                 optax.contrib.scale_by_muon(
-                    # The 2024 coefficients, stated rather than defaulted (#375 asks
-                    # whether per-step ones orthogonalize better).
-                    ns_coeffs=(3.4445, -4.775, 2.0315),
+                    # Stated rather than defaulted; which table is #375's knob.
+                    ns_coeffs=ns_coefficients(config.MUON_NS_COEFFS, config.MUON_NS_STEPS),
                     ns_steps=config.MUON_NS_STEPS,
                     beta=config.MUON_BETA,
                     eps=config.MUON_EPS,

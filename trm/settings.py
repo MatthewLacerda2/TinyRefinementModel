@@ -120,6 +120,12 @@ class Config(BaseSettings):
     # and it must earn its place through a matched ablation before a run adopts it.
     POST_NORM: bool = False
 
+    # Zero-init the attention output projection `o` too, not only the MLP's down_proj
+    # (#361): every block then starts as a no-op and the model at init is a tied-
+    # embedding bigram. Default OFF until #361's pair judges it: it changes the model at
+    # init (the param tree is the same, so a checkpoint loads either way).
+    ZERO_INIT_ATTN_OUT: bool = False
+
     # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
     # blocks + one refine pass). It was 9 between 2026-09-13 and 2026-09-20, on the
     # allocator numbers for batch 1 (8 layers left 771 MiB of arena headroom, 9 left
@@ -215,9 +221,13 @@ class Config(BaseSettings):
     # norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
     CLIP_NORM: float = 1.0
     # Muon's own (optax.contrib.scale_by_muon): momentum, Newton-Schulz iterations, the
-    # normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
+    # normalization epsilon, Nesterov.
     MUON_BETA: float = 0.95
     MUON_NS_STEPS: int = 5
+    # Which Newton-Schulz coefficients (#375): "keller", Keller Jordan's 2024 quintic
+    # reused at every step (every run so far), or "polar_express", a minimax-optimal
+    # quintic per step (trm/train/polar_express.py). keller until #375's pair judges it.
+    MUON_NS_COEFFS: Literal["keller", "polar_express"] = "keller"
     MUON_EPS: float = 1e-8
     MUON_NESTEROV: bool = True
     # Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
