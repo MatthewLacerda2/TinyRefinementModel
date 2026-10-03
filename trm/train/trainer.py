@@ -194,6 +194,9 @@ def init_model_and_optimizer(config):
           f"eps {config.ADAM_EPS:g} | weight decay {config.WEIGHT_DECAY:g} x LR"
           + (f", embedding {config.EMBED_WEIGHT_DECAY:g}/step at peak" if config.TRM_OPTIMIZER == "muon" else "")
           + f" | clip {config.CLIP_NORM:g}")
+    # What the loss and the stream are, beside the optimizer (#357, #369).
+    print(f"🧮 Loss: z-loss {config.Z_LOSS_WEIGHT:g} x log^2 Z | residual stream "
+          f"{config.RESIDUAL_DTYPE if config.MODEL_ARCH == 'plain' else 'compute dtype'}")
     optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)
 
     return model, optimizer
@@ -316,7 +319,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
     # periodically instead of on every step. Negative so the first one always prints.
     last_plateau_notice = -PLATEAU_NOTICE_EVERY
     # The grad step and the optimizer apply with the NNX graph walked once (#474).
-    hot = HotPath(model, optimizer)
+    hot = HotPath(model, optimizer, z_loss_weight=config.Z_LOSS_WEIGHT)
 
     try:
         while True:

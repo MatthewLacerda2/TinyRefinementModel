@@ -147,7 +147,7 @@ def main(argv=None):
     with CardSampler() as card:
         for step, depth in enumerate(depth_schedule(model, args.micro_steps, args.depth)):
             loss, _out, grads, _gn = compute_grad_step(model, batch, step // CONFIG.ACCUMULATION_STEPS, depth,
-                                                       doc_boundary)
+                                                       doc_boundary, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(optimizer, grads, model)
         float(loss)
         with model.isolated_state():

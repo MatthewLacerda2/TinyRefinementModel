@@ -27,16 +27,17 @@ def compute_total_loss(ce1, ce2, graded_aux):
     return total
 
 
-@nnx.jit(static_argnames=['depth'])
+@nnx.jit(static_argnames=['depth', 'z_loss_weight'])
 def compute_grad_step(model, batch_tokens, opt_step, depth, doc_boundary=False, loss_scale=1.0,
-                      clip_norm=jnp.inf):
+                      clip_norm=jnp.inf, z_loss_weight=0.0):
     # `opt_step` is the optimizer step this micro-step belongs to (micro-step //
     # ACCUMULATION_STEPS): the clock of the auxiliary terms an arch grades, the
     # reasoner's λ anneals. A row is two windows and the target after them, so the
     # window length is the batch's own; the pad is the one the model masks (#475).
     # Whether this batch opens a new document is a fact about the data stream;
     # what a model does with it (start fresh, or continue from carried state) is
-    # the model's business.
+    # the model's business. `z_loss_weight` is Config.Z_LOSS_WEIGHT (#369), static
+    # (a Python float), 0 off: the trainer hands it down through HotPath.
     new_document = jnp.any(doc_boundary).squeeze()
 
     def loss_fn(model):
@@ -61,7 +62,7 @@ def compute_grad_step(model, batch_tokens, opt_step, depth, doc_boundary=False, 
         hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
         targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
         loss_sums, counts, row_stats = chunked_cross_entropy_rows(
-            hidden, embedding, targets, model.pad_token_id)
+            hidden, embedding, targets, model.pad_token_id, z_weight=z_loss_weight)
         counts = jax.lax.stop_gradient(counts).clip(min=1.0)
         ce1 = loss_sums[:b].sum() / counts[:b].sum()
         ce2 = loss_sums[b:].sum() / counts[b:].sum()
@@ -275,13 +276,13 @@ def apply_grads(opt, grads, model):
 # donated grad step, and on the card the gradient output reused a donated buffer that
 # jit had forwarded unchanged — the accumulator was silently overwritten (#474; the
 # CPU ignores donation, so only the GPU identity check showed it).
-@functools.partial(jax.jit, static_argnames=("graphdef", "depth"))
+@functools.partial(jax.jit, static_argnames=("graphdef", "depth", "z_loss_weight"))
 def _grad_step_pure(graphdef, params, rest, batch_tokens, opt_step, depth, doc_boundary, loss_scale,
-                    clip_norm):
+                    clip_norm, z_loss_weight):
     model = nnx.merge(graphdef, params, rest)
     loss, out, grads, grad_norm = compute_grad_step(
         model, batch_tokens, opt_step, depth, doc_boundary=doc_boundary, loss_scale=loss_scale,
-        clip_norm=clip_norm)
+        clip_norm=clip_norm, z_loss_weight=z_loss_weight)
     return nnx.state(model, nnx.Not(nnx.Param)), loss, out, grads, grad_norm
 
 
@@ -326,8 +327,11 @@ class HotPath:
     (tests/core/test_hot_path.py; the card check is in #474).
     """
 
-    def __init__(self, model, opt):
+    def __init__(self, model, opt, *, z_loss_weight):
+        # The run's Config.Z_LOSS_WEIGHT (#369), no default: what the loop trains with
+        # is the caller's to say, never this class's.
         self._model, self._opt = model, opt
+        self._z_loss_weight = float(z_loss_weight)
         self._graphdef, _, _ = nnx.split(model, nnx.Param, ...)
         self._opt_graphdef = nnx.graphdef(opt)
         self._read_objects()
@@ -371,7 +375,7 @@ class HotPath:
         self._live()
         self._rest, loss, out, grads, grad_norm = _grad_step_pure(
             self._graphdef, self._params, self._rest, batch_tokens, opt_step, depth,
-            doc_boundary, loss_scale, clip_norm)
+            doc_boundary, loss_scale, clip_norm, self._z_loss_weight)
         return loss, out, grads, grad_norm
 
     def apply(self, grads):
