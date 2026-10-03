@@ -61,8 +61,8 @@ def test_the_trainer_logs_both_and_names_them_apart():
     from trm.train import trainer
 
     source = inspect.getsource(trainer.train_loop)
-    assert "applied_gradient_stats(optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
-    assert "applied_gradient(optimizer, grads)" not in source
+    assert "applied_gradient_stats(hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
+    assert "applied_gradient(" not in source.replace("applied_gradient_stats(", "")
     # That both are LOGGED is observed, not read off the source: a real run's row
     # carries them (tests/apparatus/test_trainer_end_to_end.py).
     fields = MetricsLogger("/dev/null").fields
