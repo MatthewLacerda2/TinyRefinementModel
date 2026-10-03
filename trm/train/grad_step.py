@@ -1,3 +1,5 @@
+import functools
+
 import jax
 from flax import nnx
 import jax.numpy as jnp
@@ -236,7 +238,7 @@ def dense_zero_frac_max(zero_fracs):
 # saved). The caller must not touch `grads` after this call — the trainer
 # samples its zero-frac telemetry BEFORE applying, for exactly this reason.
 @nnx.jit(donate_argnums=(0, 1, 2))
-def _apply(opt, grads, model):
+def _apply(opt, model, grads):
     opt.update(model, grads)
 
 
@@ -261,4 +263,117 @@ def apply_grads(opt, grads, model):
     if hasattr(tx, "emits_next") and not tx.emits_next(nnx.pure(opt.opt_state)):
         _accumulate(opt, grads)
     else:
-        _apply(opt, grads, model)
+        _apply(opt, model, grads)
+
+
+@functools.partial(jax.jit, static_argnames=("graphdef", "depth"), donate_argnames=("state",))
+def _grad_step_pure(graphdef, state, batch_tokens, opt_step, depth, doc_boundary, loss_scale, clip_norm):
+    model, opt = nnx.merge(graphdef, state)
+    loss, out, grads, grad_norm = compute_grad_step(
+        model, batch_tokens, opt_step, depth, doc_boundary=doc_boundary, loss_scale=loss_scale,
+        clip_norm=clip_norm)
+    return nnx.state((model, opt)), loss, out, grads, grad_norm
+
+
+@functools.partial(jax.jit, static_argnames=("graphdef",), donate_argnames=("state", "grads"))
+def _apply_pure(graphdef, state, grads):
+    model, opt = nnx.merge(graphdef, state)
+    _apply(opt, model, grads)
+    return nnx.state((model, opt))
+
+
+@functools.partial(jax.jit, static_argnames=("graphdef",), donate_argnames=("state", "grads"))
+def _accumulate_pure(graphdef, state, grads):
+    model, opt = nnx.merge(graphdef, state)
+    _accumulate(opt, grads)
+    return nnx.state((model, opt))
+
+
+class HotPath:
+    """compute_grad_step and apply_grads for the training loop, with the NNX graph
+    walked once instead of on every call (#474).
+
+    `nnx.jit` splits its module arguments into graph + state and merges them back on
+    every call; on this model that host work held most of the device's idle time
+    (#473: 43-58% idle per micro-step). Flax's guidance for a hot loop is to split
+    once and `jax.jit` a pure function over the state, which is what this does: the
+    model and optimizer are split here, each call passes only their arrays to a
+    `jax.jit` that merges, runs the SAME nnx functions as before, and splits back.
+    (`nnx.cached_partial` would be smaller, but cannot cache a module holding raw
+    arrays, and the RoPE tables are raw arrays whose checkpoint paths must not move.)
+
+    The accumulation window's counter is kept on the host too: `apply_grads` reads it
+    from the device (`int(mini_step)`, a sync) after walking the optimizer state, on
+    every micro-step. It is read once here and advanced exactly as LazyMultiSteps
+    advances it; `check_counter` compares it with the device when the caller wants.
+
+    The live state is this object's while the loop runs. `model` / `optimizer` hand
+    back the module objects brought up to date, and anything done through them (a
+    checkpoint, validation, `reset_state`) is picked up by the next call. Same
+    functions, same arguments, same donation: bit-identical to compute_grad_step +
+    apply_grads.
+    """
+
+    def __init__(self, model, opt):
+        self._objects = (model, opt)
+        self._graphdef, self._state = nnx.split(self._objects)
+        self._objects_behind = self._state_behind = False
+        self._tx = opt.tx if hasattr(opt.tx, "emits_next") else None
+        if self._tx is not None:
+            state = nnx.pure(opt.opt_state)
+            self._mini, self._gstep = int(state.mini_step), int(state.gradient_step)
+
+    @property
+    def model(self):
+        return self._sync()[0]
+
+    @property
+    def optimizer(self):
+        return self._sync()[1]
+
+    def _sync(self):
+        """The module objects, up to date; whatever is done through them is read back
+        by the next hot call."""
+        if self._objects_behind:
+            nnx.update(self._objects, self._state)
+            self._objects_behind = False
+        self._state_behind = True
+        return self._objects
+
+    def _live_state(self):
+        if self._state_behind:
+            self._state = nnx.state(self._objects)
+            self._state_behind = False
+        self._objects_behind = True
+        return self._state
+
+    def grad_step(self, batch_tokens, opt_step, depth, doc_boundary=False, loss_scale=1.0,
+                  clip_norm=jnp.inf):
+        """compute_grad_step(model, ...), on the live state."""
+        self._state, loss, out, grads, grad_norm = _grad_step_pure(
+            self._graphdef, self._live_state(), batch_tokens, opt_step, depth,
+            doc_boundary, loss_scale, clip_norm)
+        return loss, out, grads, grad_norm
+
+    def apply(self, grads):
+        """apply_grads(opt, grads, model), without the per-call graph walk or sync."""
+        if self._tx is None:
+            self._state = _apply_pure(self._graphdef, self._live_state(), grads)
+            return
+        k = int(self._tx._every_k_schedule(self._gstep))
+        if self._mini == k - 1:
+            self._state = _apply_pure(self._graphdef, self._live_state(), grads)
+            self._mini, self._gstep = (self._mini + 1) % k, self._gstep + 1
+        else:
+            self._state = _accumulate_pure(self._graphdef, self._live_state(), grads)
+            self._mini = (self._mini + 1) % k
+
+    def check_counter(self):
+        """Fail loudly if the host's window counter ever drifts from the device's."""
+        if self._tx is None:
+            return
+        state = nnx.pure(self.optimizer.opt_state)
+        device = (int(state.mini_step), int(state.gradient_step))
+        if device != (self._mini, self._gstep):
+            raise RuntimeError(f"accumulation counter drift: host {(self._mini, self._gstep)}, "
+                               f"device {device} (#474)")
