@@ -9,10 +9,7 @@ own budget into the environment before anything imported this module (#197).
 
 from dataclasses import dataclass
 
-import numpy as np
 import optax
-
-from trm.config import MAX_STEPS_LIMIT
 
 # The LR anneal's horizon must match the run length (#83): it derives from the
 # planned token budget (TRAIN_TOKEN_BUDGET). With no budget set it stays at the
@@ -217,20 +214,3 @@ class Schedules:
             (start + current) / 2.0
             for start, current in zip(self.start_weights, curr)
         ]
-
-
-# ── Reasoning-depth sampling ─────────────────────────────────────────────────
-# The reasoning-loop depth is drawn uniformly per micro-step instead of following
-# a fixed curriculum. Because the model never knows how many steps it gets, every
-# step's slot state must be a viable answer — which is what makes extra steps
-# improve the prediction rather than collapse into a copy of step 1. At inference
-# the depth is INFERENCE_DEPTH (trm/settings.py), the serving default.
-# Only the looping arches draw it, through their `training_depth` hook; the trainer
-# asks the model, and the plain stack has no depth (#316).
-
-def sample_reasoning_depth(micro_step, data_seed):
-    """Uniform depth in [1, MAX_STEPS_LIMIT], derived deterministically from the
-    micro-step and the run's DATA_SEED so resumed runs replay the exact same depth
-    sequence."""
-    rng = np.random.default_rng(data_seed * 1_000_003 + micro_step)
-    return int(rng.integers(1, MAX_STEPS_LIMIT + 1))

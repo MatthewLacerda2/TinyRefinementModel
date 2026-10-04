@@ -1,9 +1,6 @@
-"""Rotary position embedding (RoPE) — the single copy every architecture shares.
+"""Rotary position embedding (RoPE): the cos/sin tables and the rotation.
 
-The rotation and the cos/sin table construction used to live twice, in
-layers.py (RotaryAttention) and refiner.py, with identical math.
-Deliberately config-free: refiner.py stays fully parametrized so the exact
-same blocks run at toy scale and at real scale.
+Config-free, so the same attention runs at toy scale in tests and at real scale.
 """
 
 import jax
