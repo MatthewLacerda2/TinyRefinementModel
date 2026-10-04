@@ -37,7 +37,8 @@ def test_an_unknown_table_is_refused():
 
 
 def test_the_knob_reaches_optax(monkeypatch):
-    """MUON_NS_COEFFS=polar_express hands scale_by_muon one tuple per step; keller one tuple."""
+    """MUON_NS_COEFFS=polar_express hands scale_by_muon one tuple per step; keller one tuple.
+    Both named explicitly, so the check does not depend on which one is the default."""
     import optax
 
     from trm.settings import Config
@@ -47,7 +48,7 @@ def test_the_knob_reaches_optax(monkeypatch):
     original = optax.contrib.scale_by_muon
     monkeypatch.setattr(optax.contrib, "scale_by_muon", lambda **kw: calls.append(kw) or original(**kw))
     _muon(Config(MUON_NS_COEFFS="polar_express"), lambda step: 1e-4)
-    _muon(Config(), lambda step: 1e-4)
+    _muon(Config(MUON_NS_COEFFS="keller"), lambda step: 1e-4)
     polar, keller = (kw["ns_coeffs"] for kw in calls)
     assert polar == ns_coefficients("polar_express", 5) and len(polar) == 5
     assert keller == KELLER_NS_COEFFS
