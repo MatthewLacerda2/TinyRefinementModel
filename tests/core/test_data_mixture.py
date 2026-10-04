@@ -149,7 +149,7 @@ def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
     """The live base run's checkpoints carry no names. A relaunch after this lands
     must still pick up exactly where it stopped."""
     reference = _mixer(tmp_path)
-    expected = [reference.get_batch(1)[0] for _ in range(6)]
+    expected = [reference.get_batch(1) for _ in range(6)]
 
     first = _mixer(tmp_path)
     for _ in range(3):
@@ -160,7 +160,7 @@ def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
     resumed = _mixer(tmp_path)
     resumed.load_state(legacy)
     for want in expected[3:]:
-        np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)[0]), np.asarray(want))
+        np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)), np.asarray(want))
 
 
 # ── branching onto another mixture (#489) ────────────────────────────────────
@@ -174,7 +174,7 @@ def _branch_mixer(tmp_path, names):
 
 
 def _first_row(source):
-    return np.asarray(source.get_batch(1)[0])[0]
+    return np.asarray(source.get_batch(1))[0]
 
 
 def test_a_branch_continues_each_bucket_it_read_and_starts_a_new_one_fresh(tmp_path):

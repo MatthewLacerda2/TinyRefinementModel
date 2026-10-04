@@ -119,11 +119,6 @@ class TestFrontmatter:
         rendered = render_frontmatter({"step": 1})
         assert rendered.startswith("---\n") and rendered.endswith("\n---")
 
-    def test_a_depthless_arch_records_no_depth(self):
-        """The plain model has no depth dial; a `depth:` key would describe nothing."""
-        rendered = render_frontmatter({"model_arch": "plain", "depth": None, "val_ce_depth": None})
-        assert "depth" not in rendered.replace("model_arch", "")
-
 
 class TestFilename:
     def test_the_device_is_in_the_name(self):
@@ -299,6 +294,6 @@ def test_the_written_line_round_trips_and_ignores_human_output(tmp_path, capsys)
     from instruments.dump_transcripts import announce_written, written_transcript
 
     announce_written(tmp_path / "step_000184_cpu.md")
-    stdout = "▶ 8 prompts x 1 depths\n\n✨ runs/x/transcripts/step_000184_cpu.md\n" + capsys.readouterr().out
+    stdout = "▶ 8 prompts, seed 42, on cpu\n\n✨ runs/x/transcripts/step_000184_cpu.md\n" + capsys.readouterr().out
     assert written_transcript(stdout) == str(tmp_path / "step_000184_cpu.md")
     assert written_transcript("✨ runs/x/transcripts/step_000184_cpu.md\n") is None

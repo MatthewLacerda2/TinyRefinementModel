@@ -1,13 +1,11 @@
-"""Metrics with a fixed expectation, used to condemn rows their accumulator broke.
+"""Metrics with a fixed range, used to condemn rows their accumulator broke.
 
-The motivating case (#194), and why a fixed-expectation metric settles it, is
-`instruments/invariants.py`'s module docstring. These tests pin the two properties that make the check worth having: it fires on
-the real artifact, and it does not fire on a healthy run.
+Why a fixed-range metric is worth checking is `instruments/invariants.py`'s module
+docstring. These tests pin the two properties that make the check worth having: it
+fires on an impossible row, and it does not fire on a healthy run.
 """
 
 import math
-
-import pytest
 
 from instruments import invariants
 from instruments.runlog import RunLog
@@ -17,43 +15,20 @@ def _log(rows):
     return RunLog(run_id="test", metrics=[{"step": s, **r} for s, r in rows], metadata={})
 
 
-def test_the_depth_corridor_is_derived_from_the_config_not_hardcoded():
-    """Change MAX_STEPS_LIMIT or ACCUMULATION_STEPS and the bounds must move with
-    them. A hardcoded tolerance silently becomes wrong instead of loudly wrong."""
-    from trm.config import MAX_STEPS_LIMIT
-    from trm.settings import CONFIG
-
-    mean, sigma = invariants.depth_expectation()
-    assert mean == (MAX_STEPS_LIMIT + 1) / 2
-    assert sigma == pytest.approx(
-        math.sqrt((MAX_STEPS_LIMIT**2 - 1) / 12 / CONFIG.ACCUMULATION_STEPS))
-
-
-def test_it_catches_the_resume_artifact():
-    """The exact row from the #157 run, values unaltered."""
-    log = _log([(5950, {"ce": 3.1450, "depth_avg": 4.4062}),
-                (5955, {"ce": 1.8746, "depth_avg": 2.7641}),
-                (5960, {"ce": 3.1754, "depth_avg": 4.4422})])
-    suspect = invariants.suspect_rows(log)
-    assert set(suspect) == {5955}
-    assert "depth_avg" in suspect[5955][0]
-
-
 def test_a_condemned_row_takes_its_whole_row_with_it():
-    """The accumulator is shared. If depth is impossible, the CE computed from the
-    same partial window is wrong too — and it was: both fell by the same ~0.6x."""
-    log = _log([(10, {"ce": 3.2, "depth_avg": 4.5}),
-                (20, {"ce": 1.87, "depth_avg": 2.76})])
+    """The accumulator is shared. If one value on a row is impossible, the CE computed
+    from the same window is wrong too."""
+    log = _log([(10, {"ce": 3.2, "zero_frac_dense_max": 0.01}),
+                (20, {"ce": 1.87, "zero_frac_dense_max": 1.5})])
     steps, values = invariants.clean_column(log, "ce")
     assert steps == [10] and values == [3.2], "the CE on a condemned row must go too"
 
 
 def test_a_healthy_run_has_no_suspect_rows():
     """A check that fires on a healthy run is worse than no check — it teaches the
-    reader to ignore it. Depth wobbles by ~1 sigma every row and must stay clean."""
-    mean, sigma = invariants.depth_expectation()
-    rows = [(i * 5, {"ce": 3.2, "depth_avg": mean + ((-1) ** i) * 2 * sigma})
-            for i in range(1, 60)]
+    reader to ignore it."""
+    rows = [(i * 5, {"ce": 3.2, "out_entropy": 4.0, "zero_frac_dense_max": 1e-4,
+                     "grad_norm_avg": 0.5, "act_max": 50.0}) for i in range(1, 60)]
     assert invariants.suspect_rows(_log(rows)) == {}
 
 
@@ -63,7 +38,7 @@ def test_cross_entropy_is_not_bounded_above_by_ln_vocab():
     initialised one can be. This project logged 11.08 at step 5, above
     ln(50304) = 10.83. Bounding it there would condemn the opening rows of every
     single from-scratch run."""
-    log = _log([(5, {"ce": 11.0810, "depth_avg": 4.3031})])
+    log = _log([(5, {"ce": 11.0810})])
     assert invariants.suspect_rows(log) == {}
 
 
@@ -83,40 +58,10 @@ def test_non_finite_values_are_condemned():
 
 
 def test_blank_cells_are_not_violations():
-    """An arch-optional column (#105) is absent, not wrong."""
-    assert invariants.suspect_rows(_log([(10, {"ce": 3.2, "temporal_drift": None})])) == {}
+    """A column the run did not log (#105) is absent, not wrong."""
+    assert invariants.suspect_rows(_log([(10, {"ce": 3.2, "out_entropy": None})])) == {}
 
 
 def test_fractions_must_lie_in_zero_to_one():
     assert 10 in invariants.suspect_rows(_log([(10, {"zero_frac_dense_max": 1.5})]))
     assert invariants.suspect_rows(_log([(10, {"zero_frac_dense_max": 0.5}) ])) == {}
-
-
-def _live_run_suspects(run_dir):
-    from instruments.runlog import load
-
-    return invariants.suspect_rows(load(str(run_dir)))
-
-
-def test_the_live_run_flags_rows_only_for_known_reasons(champion_run):
-    """Integration against the recorded champion run (tests/apparatus/fixtures, which
-    keeps every suspect row and its neighbours): every flagged row is flagged for
-    depth_avg, the accumulator check.
-
-    #196 measured 2 suspect rows of 1,567, both resume artifacts. The finished run
-    has 32: 24 with depth_avg 8.44-9.20, above the maximum depth of 8, which a resume
-    artifact cannot produce, and 8 below the corridor. That is #355."""
-    suspect = _live_run_suspects(champion_run)
-    assert len(suspect) == 32, "the recorded excerpt must keep every suspect row"
-    assert all("depth_avg" in reasons[0] for reasons in suspect.values())
-
-
-@pytest.mark.xfail(strict=True, reason="#355: the finished champion run flags 32 rows "
-                                       "(24 with depth_avg above 8), not the <= 5 this bound expects")
-def test_the_live_run_flags_few_rows(champion_run):
-    """The bound #196 set (2 measured, slack to 5), kept as it was and recorded as a
-    known failure rather than hidden. The run is a recording, so fixing #355's cause
-    will not change these rows; this turns XPASS only if the invariants learn to tell
-    #355's rows apart, and then the bound should be revisited."""
-    suspect = _live_run_suspects(champion_run)
-    assert len(suspect) <= 5, f"unexpectedly many suspect rows: {sorted(suspect)}"

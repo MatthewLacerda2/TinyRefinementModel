@@ -51,7 +51,7 @@ def clean():
 def test_an_out_of_range_id_does_not_produce_a_single_nan(toy, clean, bad_id):
     """The defect, stated directly. Before the clamp this was 18,944 of 18,944."""
     poisoned = clean.at[0, 7].set(bad_id)
-    logits = toy(poisoned, depth=1, training=False).logits
+    logits = toy(poisoned, training=False).logits
     assert int(jnp.sum(~jnp.isfinite(logits))) == 0
 
 
@@ -60,8 +60,8 @@ def test_earlier_positions_are_untouched_by_a_later_bad_id(toy, clean):
     spread the NaN backwards through the softmax, so a bad id at position 7 changed
     position 0. Causality must hold even for garbage input."""
     poisoned = clean.at[0, 7].set(50256)
-    a = toy(clean, depth=1, training=False).logits
-    b = toy(poisoned, depth=1, training=False).logits
+    a = toy(clean, training=False).logits
+    b = toy(poisoned, training=False).logits
     assert jnp.array_equal(a[0, :7], b[0, :7])
 
 
@@ -69,17 +69,17 @@ def test_a_negative_id_is_handled_too(toy, clean):
     """`jnp.take` treats negatives as wrap-around indices, so they do not NaN — but
     they silently read the wrong row, and the clamp should make that explicit rather
     than leaving two different out-of-range behaviours."""
-    logits = toy(clean.at[0, 3].set(-5), depth=1, training=False).logits
+    logits = toy(clean.at[0, 3].set(-5), training=False).logits
     assert int(jnp.sum(~jnp.isfinite(logits))) == 0
 
 
 def test_in_range_ids_are_completely_unaffected(toy, clean):
     """The counter-test. A clamp that altered ordinary input would be a silent
     behaviour change on every token the model has ever seen."""
-    before = toy(clean, depth=1, training=False).logits
+    before = toy(clean, training=False).logits
     assert int(jnp.sum(~jnp.isfinite(before))) == 0
     assert jnp.array_equal(
-        before, toy(clean, depth=1, training=False).logits)
+        before, toy(clean, training=False).logits)
 
 
 def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):

@@ -1,9 +1,10 @@
 """The underflow watch reads the gradient that updates the weights (#191).
 
 It read one micro-step's grads. On #157 that column hit exactly 0.500 on 13% of
-steps: a depth-1 draw zeroes half of one norm's gradient, in that micro-step only,
-while the 128-step mean that the optimizer applies had no such zeros. Anyone
-reading the column against #82's 0.05 bar would think underflow was blowing it.
+steps: a per-micro-step artifact zeroed half of one norm's gradient, in that
+micro-step only, while the 128-step mean that the optimizer applies had no such
+zeros. Anyone reading the column against #82's 0.05 bar would think underflow was
+blowing it.
 """
 
 import jax

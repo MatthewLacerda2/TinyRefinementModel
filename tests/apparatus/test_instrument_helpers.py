@@ -33,9 +33,9 @@ def test_gpu_query_is_none_when_nvidia_smi_is_missing(monkeypatch):
 
 def test_module_env_puts_the_target_tree_first_and_keeps_the_rest(monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/somewhere/else")
-    env = _common.module_env("/revived/worktree", MODEL_ARCH="refiner", FORCE_F32_COMPUTE=1)
+    env = _common.module_env("/revived/worktree", TRM_OPTIMIZER="muon", FORCE_F32_COMPUTE=1)
     assert env["PYTHONPATH"].split(os.pathsep) == ["/revived/worktree", "/somewhere/else"]
-    assert env["MODEL_ARCH"] == "refiner" and env["FORCE_F32_COMPUTE"] == "1"
+    assert env["TRM_OPTIMIZER"] == "muon" and env["FORCE_F32_COMPUTE"] == "1"
     monkeypatch.delenv("PYTHONPATH")
     assert _common.module_env("/x")["PYTHONPATH"] == "/x"
 
@@ -57,10 +57,10 @@ def test_metadata_that_is_missing_or_half_written_reads_as_empty(tmp_path):
     """RunTracker rewrites run_metadata.json in place, so a reader beside training can
     catch it torn. That is `{}`, the same as no file, never an exception."""
     assert runlog.read_metadata(tmp_path) == {}
-    (tmp_path / "run_metadata.json").write_text('{"parameters": {"MODEL_A')
+    (tmp_path / "run_metadata.json").write_text('{"parameters": {"TRM_OPT')
     assert runlog.read_metadata(tmp_path) == {}
-    (tmp_path / "run_metadata.json").write_text(json.dumps({"parameters": {"MODEL_ARCH": "plain"}}))
-    assert runlog.recorded_params(runlog.read_metadata(tmp_path)) == {"MODEL_ARCH": "plain"}
+    (tmp_path / "run_metadata.json").write_text(json.dumps({"parameters": {"TRM_OPTIMIZER": "muon"}}))
+    assert runlog.recorded_params(runlog.read_metadata(tmp_path)) == {"TRM_OPTIMIZER": "muon"}
 
 
 def test_tokens_per_opt_step_come_from_the_recipe_or_not_at_all():
@@ -75,21 +75,3 @@ def test_checkpoint_steps_are_the_numeric_dirs_only(tmp_path):
         (tmp_path / name).mkdir()
     assert runlog.checkpoint_steps(tmp_path) == [64, 128]
     assert runlog.checkpoint_steps(tmp_path / "missing") == []
-
-
-def test_an_absent_column_is_blamed_on_the_architecture_only_when_it_is():
-    assert runlog.absence_reason("plain", ["tau"]) == runlog.NOT_MEASURED
-    assert runlog.absence_reason("plain", ["grad_norm_avg"]) == runlog.NOT_LOGGED, \
-        "plain logs a grad norm; a run missing it did not log it, and the arch is not why"
-    assert runlog.absence_reason("reasoner", ["tau"]) == runlog.NOT_LOGGED
-    assert runlog.absence_reason(None, ["grad_norm_avg"]) == runlog.NOT_MEASURED, \
-        "a run that recorded no arch gives nothing to judge by"
-
-
-def test_depth_avg_is_a_measurement_only_for_an_arch_with_a_depth_dial():
-    """From #316 plain leaves depth_avg blank; before it, plain logged a sampled value the
-    model ignored. Either way it is not plain's measurement, and a blank one is not news."""
-    assert not runlog.measured_by("plain", "depth_avg")
-    assert runlog.measured_by("refiner", "depth_avg") and runlog.measured_by("reasoner", "depth_avg")
-    assert runlog.absence_reason("plain", ["depth_avg"]) == runlog.NOT_MEASURED
-    assert runlog.absence_reason("refiner", ["depth_avg"]) == runlog.NOT_LOGGED

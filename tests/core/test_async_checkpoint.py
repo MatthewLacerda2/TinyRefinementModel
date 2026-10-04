@@ -27,9 +27,9 @@ def _leaves(tree):
 
 
 def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_it(tmp_path):
-    from instruments.arch import build
+    from trm.model import build_model
 
-    model = build("plain", dim=60, num_layers=2)
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=2)
     optimizer = nnx.Optimizer(model, optax.adam(1e-2), wrt=nnx.Param)
     monitor = LossMonitor.of(CONFIG)
     monitor.ce_history = [3.0, 2.9]
@@ -43,7 +43,7 @@ def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_i
     monitor.ce_history.append(2.8)
     ck.wait_for_pending_saves()
 
-    fresh = build("plain", dim=60, num_layers=2, seed=5)
+    fresh = build_model(CONFIG, nnx.Rngs(5), dim=60, num_layers=2)
     restored = mngr.restore(10, args=ocp.args.Composite(
         model=ocp.args.StandardRestore(nnx.state(fresh)),
         optimizer=ocp.args.StandardRestore(nnx.state(nnx.Optimizer(fresh, optax.adam(1e-2), wrt=nnx.Param))),

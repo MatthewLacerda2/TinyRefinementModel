@@ -1,32 +1,13 @@
-"""The report's diagnostics section speaks for the run's own architecture (#317).
-
-metrics.csv keeps the reasoner-only columns for every arch, because old runs and
-every reader depend on its schema. So "not measured by this architecture" must not
-list them for a run recorded as plain: that is no news, and it buries the columns
-whose absence is.
-"""
+"""The report's diagnostics section names what a run left blank instead of drawing
+it as zero (#105)."""
 
 from instruments import report
-from instruments.runlog import REASONER_ONLY_COLUMNS, RunLog
+from instruments.runlog import NOT_LOGGED, RunLog
 
 
-def _log(arch):
-    metadata = {"parameters": {"MODEL_ARCH": arch}} if arch else {}
-    return RunLog("run_x", [{"step": 64, "logz_mean": 2.0, "max_abs_logit": 9.0}], metadata)
-
-
-def _absent_line(capsys, arch):
-    report._print_diagnostics(_log(arch))
-    return next(line for line in capsys.readouterr().out.splitlines()
-                if "not measured" in line or "not logged" in line)
-
-
-def test_a_plain_run_does_not_list_the_reasoner_only_columns(capsys):
-    line = _absent_line(capsys, "plain")
-    assert not any(col in line for col in REASONER_ONLY_COLUMNS)
-    assert "out_entropy" in line, "a column plain does report is still named when missing"
-
-
-def test_a_reasoner_run_and_an_unrecorded_one_still_list_them(capsys):
-    for arch in ("reasoner", None):
-        assert "tau" in _absent_line(capsys, arch)
+def test_a_blank_column_is_named_as_not_logged(capsys):
+    log = RunLog("run_x", [{"step": 64, "logz_mean": 2.0, "max_abs_logit": 9.0}], {})
+    report._print_diagnostics(log)
+    line = next(line for line in capsys.readouterr().out.splitlines() if NOT_LOGGED in line)
+    assert "out_entropy" in line
+    assert "logz_mean" not in line, "a column the run did log is not listed as missing"
