@@ -144,7 +144,8 @@ is how the apparatus that produced it gets cleaned up afterwards:
 6. **A tombstone takes its apparatus with it.** The knowledge is what we keep; the
    scaffolding that produced it is not. So the PR that writes a graveyard entry also
    deletes that line's harness and its `tests/apparatus/` guards, in the same diff —
-   grep `tests/apparatus/` before opening it. This is the one rule that stops the
+   grep `tests/apparatus/` before opening it. The line's `specs/` stay: they are the
+   pre-registration its findings cite, and the audit checks that a citation resolves. This is the one rule that stops the
    suite from growing forever: tests aren't retired by judgment calls nobody makes,
    they're retired by the kill they belong to. The finding survives the harness.
 
@@ -415,35 +416,25 @@ assembling supervisor flags by hand.
 
 **The direction is enforced, not just intended:** `trm/` never imports from
 `experiments/` or `instruments/`, and one research line never imports another — so
-tombstoning a line stays a single folder deletion (rule 6). The same test holds that line.
+tombstoning a line stays one folder's code deletion (rule 6). The same test holds that line.
 
-Three architectures coexist, selected at launch by `MODEL_ARCH` (see `trm/settings.py`).
-They have different param trees, so a run of one cannot resume another's checkpoint,
-and resuming a run that is not `plain` requires naming its architecture:
-- **`plain`** — `PlainTransformer` in `trm/model/plain.py`: N distinct causal blocks,
-  no loop, no gate, no time signal, no depth dial. **The default and the live
-  architecture.**
-- **`refiner`** — `CausalRefiner` in `trm/model/refiner.py`: a shared block looped K
-  times under a causal mask (depth recurrence). Not the live bet — why is in the
-  ROADMAP and its findings. Kept selectable because the 4B champion is one, and
-  loading that checkpoint requires `MODEL_ARCH=refiner`.
-- **`reasoner`** — `UniversalReasoner` in `trm/model/reasoner.py`: effectively a
-  vanilla random-depth transformer, kept as a control baseline.
+There is one model: `PlainTransformer` in `trm/model/plain.py`, N distinct causal
+blocks over a tied embedding. What came before it (the depth-recurrent refiner, the
+cross-window reasoner) is in `docs/findings/` and the ROADMAP graveyard, not in the
+code (#292); a checkpoint of either loads from its card's SHA-pinned commit.
 
 | Concern | Files |
 |---|---|
-| **Config (single source of truth)** | `trm/settings.py` — `Config`, every knob a launch can set (the arch selector included), read once from the environment and recorded whole; `trm/config.py` — the dtype policy and the constants that are not knobs. Entry points hand this process's `CONFIG` down; library code takes a `Config` |
-| **Model contract** | `trm/model/contract.py` — what the loop requires of a model (tokens + depth → predictions + auxiliary terms). Every arch implements this; the loop knows nothing else about any of them |
-| **Model — live** | `trm/model/plain.py` (PlainTransformer), sharing `Block` with `refiner.py`, plus `rope.py`; `trm/model/__init__.py` `build_model(config, rngs)` is the one factory every entry point builds through |
-| **Model — retired/control** | `trm/model/refiner.py` + `refiner_lm.py` (CausalRefiner — retired as the bet, kept to load the champion), `trm/model/reasoner.py` + `layers.py` (UniversalReasoner and its block) |
+| **Config (single source of truth)** | `trm/settings.py` — `Config`, every knob a launch can set, read once from the environment and recorded whole; `trm/config.py` — the dtype policy and the constants that are not knobs. Entry points hand this process's `CONFIG` down; library code takes a `Config` |
+| **Model** | `trm/model/plain.py` (`PlainTransformer`, its `Block` and `CausalAttention`, the `LMOutput` it returns), plus `rope.py`; `trm/model/__init__.py` `build_model(config, rngs)` is the one factory every entry point builds through |
 | **Training loop** | `trm/train/` — `trainer.py` (loop + data pipeline), `start.py` (entry); the rest is one concern per file |
 | **Data** | `trm/data/` — `prefill.py` (tokenize corpus → `runs/data/`), `loaders.py` |
 | **Persistence & run state** | `trm/runtime/` — `layout.py` (jax-free: checkpoint names, retention), `supervisor.py` (unattended runs: budget stop, divergence/stall kills, crash relaunch — `python -m trm.runtime.supervisor`), `rewind.py` (resume from an earlier checkpoint — `python -m trm.runtime.rewind`); the rest is one concern per file |
 | **Inference** | `trm/infer.py` |
 | **Verifiable worlds** | `trm/rl/` — `tasks.py` (procedural Python problems with their own tests, split train/held-out by a hash of the instance), `sandbox.py` + `_sandbox_child.py` (run a candidate under kernel limits and say what happened). The world the model is meant to learn in by trying; it trains nothing on its own |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
-| **Research lines** | `experiments/depth/` — `ablation_harness.py` (tiny toy-task depth ablations at the *exact* arch we'd ship), `eval_refiner_transfer.py` (the depth-transfer probe); `experiments/scratchpad/harness.py` |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: GPT-2-small is the gate and the calibration, SmolLM2-135M the neighbour), the smokes (`overfit_smoke`, `smoke_refiner_gpu`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots`, `python_world` (pass@k on `trm/rl`'s tasks, per difficulty level — the "can it do something" readout beside LAMBADA's "can it talk") |
+| **Research lines** | `experiments/recipe/` (`tokens_to_ce.py`, the real trainer for recipe pairs), `experiments/mix/`, `experiments/base/`; a tombstoned line keeps only its `specs/` — `experiments/depth/`, `experiments/scratchpad/` — as the record its findings cite |
+| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: GPT-2-small is the gate and the calibration, SmolLM2-135M the neighbour), the smokes (`smoke_gpu`, `overfit_smoke`, `vram_headroom_smoke`, …), `bench_train_step`, `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots`, `python_world` (pass@k on `trm/rl`'s tasks, per difficulty level — the "can it do something" readout beside LAMBADA's "can it talk") |
 | **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs only) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`. `make lint` runs both; run it before pushing, and delete what it finds. |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
@@ -462,5 +453,5 @@ the single biggest VRAM line.
 - **Per-item state / what's live** → GitHub issues (`gh issue list`). The roadmap points
   at issues; issues never hardcode mutable plans the roadmap should own.
 - **Design docs** → `docs/design/` (the experiment-spec format; `plan-a.md` is the
-  depth-recurrence design, not the live arch).
+  retired depth-recurrence design, kept as history).
 - **Local-only scratch** (gitignored) → `docs/plans/`, `aux*` — working notes, not truth.
