@@ -20,8 +20,8 @@ misled us (#175, #177):
 
    The parameter count is marked [estimated] because this tool derived rather
    than observed it — it is nonetheless exact to the byte, and
-   `tests/apparatus/test_model_stats.py` pins it against the instantiated model
-   for both arches. The VRAM total is marked a FLOOR for the opposite reason:
+   `tests/apparatus/test_model_stats.py` pins it against the instantiated model.
+   The VRAM total is marked a FLOOR for the opposite reason:
    its terms are exact but incomplete, and saying "2.08 GB" against a real
    ~5.0 GB is precisely the mistake being retired here.
 """
@@ -37,10 +37,9 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import argparse
 import math
 
-from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import VOCAB_SIZE
 from trm.settings import CONFIG
 from instruments import model_stats, runlog
-from instruments.arch import add_arch_argument
 from instruments.invariants import clean_column, describe, suspect_rows
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -82,41 +81,27 @@ def _mean(values):
 
 # ── Model ────────────────────────────────────────────────────────────────────
 
-def _arch_line(arch):
-    if arch == "plain":
-        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
-                f"{CONFIG.PLAIN_LAYERS} distinct causal blocks, no loop, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}")
-    if arch == "refiner":
-        return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
-                f"{CONFIG.REFINER_ENCODER_LAYERS} encoder layers + 1 shared refine block looped "
-                f"<= {MAX_STEPS_LIMIT}, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}, "
-                f"time signal '{CONFIG.TIME_SIGNAL}'")
-    return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads, encoder/decoder stacks + 1 shared "
-            f"reasoning block looped <= {MAX_STEPS_LIMIT}, vocab {VOCAB_SIZE:,}, "
-            f"seq {CONFIG.MAX_SEQ_LEN}")
+def _model_line():
+    return (f"dim {CONFIG.LATENT_DIM}, {CONFIG.NUM_HEADS} heads (head_dim {CONFIG.LATENT_DIM // CONFIG.NUM_HEADS}), "
+            f"{CONFIG.PLAIN_LAYERS} causal blocks, vocab {VOCAB_SIZE:,}, seq {CONFIG.MAX_SEQ_LEN}")
 
 
-def print_parameters(arch):
-    breakdown = model_stats.param_breakdown(arch)
+def print_parameters():
+    breakdown = model_stats.param_breakdown()
     total = sum(breakdown.values())
     print("\nPARAMETERS  [estimated — analytic over trm/config.py; pinned to the real")
     print("             model by tests/apparatus/test_model_stats.py]")
-    shared = model_stats.shared_block_group(arch)
     for name, count in breakdown.items():
-        note = f"  (1 physical copy, applied up to {MAX_STEPS_LIMIT}x)" if name == shared else ""
-        print(f"  {name:<26} {count:>13,}   {100 * count / total:5.1f}%{note}")
+        print(f"  {name:<26} {count:>13,}   {100 * count / total:5.1f}%")
     print(f"  {'':<26} {'-' * 13}")
     print(f"  {'total':<26} {total:>13,}   ({total / 1e6:.1f}M)")
     return total
 
 
-def print_vram(arch, batch, train_depth, infer_depth):
+def print_vram(batch):
     print("\nVRAM  [estimated — exact byte terms only; see the floor note]")
-    for mode, depth, header in (
-        ("train", train_depth, f"training  (batch {batch}" + ("" if arch == "plain" else f", depth {train_depth}") + ")"),
-        ("infer", infer_depth, f"inference (batch {batch}" + ("" if arch == "plain" else f", depth {infer_depth}") + ")"),
-    ):
-        lines = model_stats.vram_estimate(mode, batch=batch, depth=depth, arch=arch)
+    for mode, header in (("train", f"training  (batch {batch})"), ("infer", f"inference (batch {batch})")):
+        lines = model_stats.vram_estimate(mode, batch=batch)
         print(f"  {header}")
         for name, mib in lines.items():
             if name == model_stats.TOTAL_KEY:
@@ -125,16 +110,14 @@ def print_vram(arch, batch, train_depth, infer_depth):
                       f"({mib / 1024:.2f} GiB)")
             else:
                 print(f"    {name:<42} {mib:9.1f} MiB")
-    print("\n  The floor is not a peak. Excluded: activation recompute inside every")
-    print("  remat'd region, XLA scratch, the f16 casts of f32 weights, and the")
-    print("  allocator's own overhead across the ~28 compiled programs random-depth")
-    print("  training keeps alive (see the 2026-08-14 BFC fragmentation finding).")
-    peak = model_stats.measured_peak(arch, batch=batch)
+    print("\n  The floor is not a peak. Excluded: the activations inside every block,")
+    print("  XLA scratch, the f16 casts of f32 weights, and the allocator's own overhead")
+    print("  (see the 2026-08-14 BFC fragmentation finding).")
+    peak = model_stats.measured_peak(batch=batch)
     if peak is None:
         print("  No measured training peak on record for this config — the floor is all there is.")
     else:
-        floor_mib = model_stats.vram_estimate(
-            "train", batch=batch, depth=train_depth, arch=arch)[model_stats.TOTAL_KEY]
+        floor_mib = model_stats.vram_estimate("train", batch=batch)[model_stats.TOTAL_KEY]
         floor_gb = floor_mib * model_stats.MIB / 1e9
         print(f"  For this exact config the measured training peak is ~{peak.gb:.1f} GB [measured]")
         print(f"    source: {peak.source}")
@@ -269,13 +252,12 @@ def _print_losses(log, suspect=None):
 
 
 # Columns worth a line when present, with what they actually are. A column that
-# is empty is omitted entirely — it is arch-optional (#105), not zero.
+# is empty is not a zero (#105): it is named as not logged.
 _DIAGNOSTICS = (
     ("applied_grad_norm", "grad norm (applied)", "measured",
      "norm of the window mean the clip sees; above 1.0 the clip, not the LR, sets the step (#180)"),
     ("grad_norm_avg", "  ...per micro-step", "sampled",
      "raw per-micro-step, BEFORE clip_by_global_norm(1.0) — not comparable to the clip"),
-    ("depth_avg", "sampled depth", "sampled", "uniform in [1, MAX_STEPS_LIMIT] per micro-step"),
     ("applied_zero_frac_dense_max", "max dense zero-grad frac", "measured",
      "the gradient the optimizer applies: f16 underflow watch (#82, #191)"),
     ("zero_frac_dense_max", "  ...one micro-step", "sampled",
@@ -283,20 +265,12 @@ _DIAGNOSTICS = (
     ("out_entropy", "output entropy", "sampled", "nats, window 2"),
     ("logz_mean", "mean log Z", "sampled", "logit-scale thermometer (#80)"),
     ("max_abs_logit", "max |logit|", "sampled", ""),
-    ("temporal_drift", "slot temporal drift", "sampled", "reasoner only"),
-    ("avg_forget_cost", "forget cost", "sampled", "reasoner only"),
-    ("diversity_loss", "diversity loss", "sampled", "reasoner only"),
-    ("tau", "tau", "measured", "reasoner only"),
 )
 
 
 def _print_diagnostics(log):
-    # A column the run's own arch cannot fill is not news when absent (#317).
-    arch = log.params.get("MODEL_ARCH")
-    applicable = [row for row in _DIAGNOSTICS if runlog.measured_by(arch, row[0])]
-    present = [(col, label, tag, note) for col, label, tag, note in applicable if log.has(col)]
-    absent = [col for col, *_ in applicable if not log.has(col)]
-    absence = runlog.absence_reason(arch, absent)
+    present = [(col, label, tag, note) for col, label, tag, note in _DIAGNOSTICS if log.has(col)]
+    absent = [col for col, *_ in _DIAGNOSTICS if not log.has(col)]
     if present:
         print("  diagnostics (last value):")
         for col, label, tag, note in present:
@@ -311,7 +285,7 @@ def _print_diagnostics(log):
             suffix = f" — {note}" if note else ""
             print(f"    {label:<26} {values[-1]:>12.5g}   [{tag}]{suffix}")
     if absent:
-        print(f"  {absence}: {', '.join(absent)}")
+        print(f"  {runlog.NOT_LOGGED}: {', '.join(absent)}")
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -320,21 +294,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--log", default=None,
                         help="metrics.csv or a run dir (default: the latest run under runs/)")
-    add_arch_argument(parser)
     parser.add_argument("--batch", type=int, default=CONFIG.BATCH_SIZE, help="batch size for the VRAM lines")
-    parser.add_argument("--train-depth", type=int, default=MAX_STEPS_LIMIT)
-    parser.add_argument("--infer-depth", type=int, default=CONFIG.INFERENCE_DEPTH)
     parser.add_argument("--model-only", action="store_true",
                         help="skip the run summary (no metrics.csv needed)")
     args = parser.parse_args()
 
     print(RULE)
-    print(f"TinyRefinementModel — report   ·   architecture '{args.arch}'")
-    print(f"  {_arch_line(args.arch)}")
+    print("TinyRefinementModel — report")
+    print(f"  {_model_line()}")
     print(RULE)
 
-    print_parameters(args.arch)
-    print_vram(args.arch, args.batch, args.train_depth, args.infer_depth)
+    print_parameters()
+    print_vram(args.batch)
 
     if not args.model_only:
         try:

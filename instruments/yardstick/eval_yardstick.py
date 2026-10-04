@@ -6,8 +6,7 @@ reference, plus held-out perplexity on our own corpus — and a JSON row shaped
 for the model card (docs/registry/MODEL_CARD_TEMPLATE.md).
 
     DATA_ROOT=runs/data PYTHONPATH=. python -m instruments.yardstick.eval_yardstick \
-        [--arch refiner] [--checkpoint-path runs/run_x/checkpoints] \
-        [--depth 4] [--limit 500] [--json-out path.json]
+        [--checkpoint-path runs/run_x/checkpoints] [--limit 500] [--json-out path.json]
 
 Reading the result honestly (the caveat lives in issue #48): our corpus is
 fineweb-edu / code / math, not general web/narrative like WebText — LAMBADA is
@@ -36,8 +35,7 @@ from flax import nnx
 from instruments._common import add_checkpoint_argument, git_head, load_env
 
 from trm.config import TOKENIZER_NAME
-from trm.runtime.restore import EVAL_BATCH_SIZE, restore_arch
-from instruments.arch import add_arch_argument
+from trm.runtime.restore import restore_model
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
@@ -73,26 +71,15 @@ ENV_DIVERGENCES = {"XLA_PYTHON_CLIENT_MEM_FRACTION": "an eval that may share the
 # env knobs are process-level and must be set in the shell, as everywhere else.
 load_env()
 
-# Matches the validation probe's fixed depth (validation.py), so the yardstick
-# and the training-time val curve read the model at the same setting. Sweep
-# --depth explicitly when the question is depth-dependent. Only the retired
-# refiner/reasoner read it: `plain` has no depth dial and ignores the argument.
-DEFAULT_DEPTH = 4
+@nnx.jit
+def _forward_logits(model, tokens):
+    return model(tokens, training=False).logits
 
 
-@nnx.jit(static_argnames=["depth"])
-def _forward_logits(model, tokens, depth):
-    return model(tokens, depth=depth, training=False, new_document=True).logits
-
-
-def make_logits_fn(model, depth):
-    """Adapt a restored model to the yardstick's numpy-causal interface.
-
-    Every batch is scored as a fresh document (new_document=True), so a model
-    that carries cross-window state starts clean and LAMBADA examples stay
-    independent. A stateless model carries nothing to begin with."""
+def make_logits_fn(model):
+    """Adapt a restored model to the yardstick's numpy-causal interface."""
     def logits_fn(tokens):
-        return np.asarray(_forward_logits(model, jnp.asarray(tokens), depth=depth))
+        return np.asarray(_forward_logits(model, jnp.asarray(tokens)))
     return logits_fn
 
 
@@ -120,11 +107,6 @@ def main(argv=None):
     ap.add_argument("--step", type=int, default=None,
                     help="which step of that dir to score (default: its newest). A milestones dir "
                          "holds many, and the one to score is the milestone that was asked for")
-    # The param tree the checkpoint holds. A run records its own in run_metadata.json
-    # and instruments.base_run passes that; MODEL_ARCH is only the fallback.
-    add_arch_argument(ap)
-    ap.add_argument("--depth", type=int, default=DEFAULT_DEPTH,
-                    help=f"refinement/reasoning depth at eval (default {DEFAULT_DEPTH}, as validation.py)")
     ap.add_argument("--batch", type=int, default=4, help="examples per forward")
     ap.add_argument("--limit", type=int, default=None,
                     help="score only the first N examples (smoke); the bar needs the full set")
@@ -139,14 +121,7 @@ def main(argv=None):
                     help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
     args = ap.parse_args(argv)
 
-    if args.arch == "reasoner" and args.batch != EVAL_BATCH_SIZE:
-        # The reasoner's slot/hunch caches are built (and checkpointed) at the
-        # eval batch size; its forward asserts on any other leading dim. This is
-        # EVAL_BATCH_SIZE, not the training BATCH_SIZE (#24) — the yardstick must
-        # keep restoring checkpoints written before batching changed.
-        print(f"⚠️ reasoner arch: clamping --batch {args.batch} -> {EVAL_BATCH_SIZE}.")
-        args.batch = EVAL_BATCH_SIZE
-    model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
+    model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
 
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)
@@ -163,9 +138,9 @@ def main(argv=None):
     if skipped:
         print(f"⚠️ Skipped {skipped} degenerate examples (no context/target after encoding).")
 
-    print(f"📏 LAMBADA: {len(encoded)} examples | arch {args.arch} | depth {args.depth} | batch {args.batch}")
+    print(f"📏 LAMBADA: {len(encoded)} examples | batch {args.batch}")
     scores = score_examples(
-        make_logits_fn(model, args.depth), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
+        make_logits_fn(model), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
         progress=lambda done, total: print(f"  … {done}/{total}", flush=True) if done % 512 < args.batch else None,
     )
     result = summarize(scores)
@@ -177,7 +152,7 @@ def main(argv=None):
         try:
             tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
             print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
-            fineweb = fineweb_val.score(make_logits_fn(model, args.depth), tokens, args.fineweb_window,
+            fineweb = fineweb_val.score(make_logits_fn(model), tokens, args.fineweb_window,
                                         batch=args.batch)
             fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
         except Exception as err:  # recorded in the row; the rest of the eval stands
@@ -204,9 +179,7 @@ def main(argv=None):
 
     row = {
         "commit": git_head(short=False),
-        "arch": args.arch,
         "checkpoint": {"path": args.checkpoint_path or "latest", "step": int(step)},
-        "eval_depth": args.depth,
         "tokenizer": TOKENIZER_NAME,
         "lambada": {**result, "data_sha256": LAMBADA_SHA256, "limit": args.limit},
         "heldout": heldout,

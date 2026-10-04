@@ -1,4 +1,4 @@
-"""Real-config GPU smoke, f16 path, for the architecture a launch would train.
+"""Real-config GPU smoke, f16 path, for the model a launch would train.
 
 What the CPU suite can't cover: CPU XLA cannot lower the f16-with-f32-accumulation
 matmuls (config.py), so the real numerical risk — f16 underflow/overflow — and the
@@ -7,10 +7,8 @@ matmuls (config.py), so the real numerical risk — f16 underflow/overflow — a
 loss + finite, nonzero grads AND f16 activation headroom, then runs a few optimizer
 steps.
 
-`--arch` defaults to MODEL_ARCH. `plain` traces every block of its stack; `refiner`
-traces its encoder (where #235 overflowed) and also sweeps depths 1..MAX_STEPS_LIMIT
-through its unrolled refine loop. The reasoner has no trace here and is refused by
-name. The file keeps its historical name because the doctrine and findings cite it.
+It traces every block of the stack. Older findings cite it by its former name,
+`smoke_refiner_gpu` (#292).
 
 With DATA_ROOT set the smoke reads real tokens and prefers **code**, the distribution
 that stresses activations; random tokens are the no-corpus fallback. Beyond non-finite
@@ -23,7 +21,7 @@ Also reads the underflow instrument (#82) on every grad step: per-group zero-gra
 fractions. Embedding rows for absent tokens are legitimately zero; the dense groups
 should sit at ~0 — elevated means f16 underflow, and loss scaling is the named fix.
 
-    venv/bin/python -m instruments.smoke_refiner_gpu
+    venv/bin/python -m instruments.smoke_gpu
 """
 
 import os
@@ -38,8 +36,8 @@ import jax.numpy as jnp
 from flax import nnx
 
 from instruments._common import F16_MAX, param_count
-from instruments.arch import add_arch_argument, build as arch_build
-from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import VOCAB_SIZE
+from trm.model import build_model
 from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
@@ -47,7 +45,7 @@ from trm.train.schedules import Schedules
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
-    "f16 headroom": ("sampled", "worst |activation| over the probed rows and depths only, against the f16 max"),
+    "f16 headroom": ("sampled", "worst |activation| over the probed rows only, against the f16 max"),
     "loss, grad_norm": ("measured", "per probed step; checks finiteness, not quality"),
 }
 
@@ -59,51 +57,23 @@ REPORTS = {
 MIN_HEADROOM = 0.50
 
 
-TRACED_ARCHES = ("plain", "refiner")
-
-
-def refuse_untraced(arch):
-    """The reasoner is a frozen control with no stack this smoke knows how to trace.
-    Refusing by name beats an AttributeError halfway through a 138M build."""
-    if arch not in TRACED_ARCHES:
-        raise SystemExit(f"smoke_refiner_gpu has no f16 activation trace for arch {arch!r}; "
-                         f"it supports {' and '.join(TRACED_ARCHES)}")
-
-
-def traced_stack(model, arch):
-    """(embedding, the blocks whose activations are traced) for `arch`.
-
-    `plain` is its whole stack. The refiner's is its encoder, the stack #235 found at
-    99.4% of the f16 ceiling; its shared refine block is exercised by the grad steps.
-    """
-    refuse_untraced(arch)
-    if arch == "plain":
-        return model.embed, list(model.blocks)
-    refiner = model.refiner  # ARCH-SPECIFIC: refiner — the encoder lives inside the CausalRefiner
-    return refiner.embed, list(refiner.encoder)
-
-
-def residual_blocks(model, arch):
+def residual_blocks(model):
     """Every block whose zero-initialized down_proj the smoke wakes before reading
-    zero-fractions: the traced stack, plus the refiner's shared refine block."""
-    _, blocks = traced_stack(model, arch)
-    if arch == "refiner":
-        blocks.append(model.refiner.refine_block)  # ARCH-SPECIFIC: refiner — its one shared block
-    return blocks
+    zero-fractions: the whole stack, the same blocks the headroom trace reads."""
+    return list(model.blocks)
 
 
-def block_headroom(model, tokens, arch):
+def block_headroom(model, tokens):
     """Peak |activation| after each traced block, and the f16 headroom it leaves.
 
     Reported per block because #235's growth was not gradual: six blocks behaved
     identically on both corpora and the seventh multiplied by ~794. A single
     end-of-stack number says a run is unsafe; the per-block trace says where.
     """
-    embed, blocks = traced_stack(model, arch)
     pad_bias = (((tokens != model.pad_token_id).astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
-    z = embed(tokens)
+    z = model.embed(tokens)
     peaks = []
-    for blk in blocks:
+    for blk in residual_blocks(model):
         z = blk(z, pad_bias)
         peaks.append(float(jnp.max(jnp.abs(z.astype(jnp.float32)))))
     worst = max(peaks)
@@ -114,7 +84,7 @@ def load_batch(rng):
     """Real tokens when a corpus is reachable, preferring code.
 
     Random ids are drawn uniformly over the vocabulary, which is nothing like text
-    and -- crucially -- nothing like the code that actually drives the encoder to
+    and -- crucially -- nothing like the code that actually drives the stack to
     the f16 ceiling. Falling back to random keeps the no-corpus path (CI, a fresh
     clone) working, but it is the weaker test and says so.
     """
@@ -139,16 +109,13 @@ def load_batch(rng):
 
 def main():
     import argparse
-    ap = argparse.ArgumentParser(description="real-config GPU smoke, f16 path")
-    add_arch_argument(ap)
-    args = ap.parse_args()
+    argparse.ArgumentParser(description="real-config GPU smoke, f16 path").parse_args()
 
     print(f"JAX backend: {jax.default_backend()} | devices: {jax.devices()}")
     assert jax.default_backend() == "gpu", "smoke must run on GPU (unset JAX_PLATFORMS / FORCE_F32_COMPUTE)"
 
-    refuse_untraced(args.arch)  # before building 138M params for nothing
-    model = arch_build(args.arch, dim=CONFIG.LATENT_DIM, seed=42)
-    print(f"📐 {args.arch}: {param_count(model) / 1e6:.2f}M params")
+    model = build_model(CONFIG, nnx.Rngs(42))
+    print(f"📐 {param_count(model) / 1e6:.2f}M params")
     # Optimizer state (Adam m+v, MultiSteps grad accumulator) allocated up front, as
     # in training — the peak that matters is grad step + resident optimizer state.
     optimizer = nnx.Optimizer(model, optimizer_chain(CONFIG, Schedules.of(CONFIG).learning_rate), wrt=nnx.Param)
@@ -161,7 +128,7 @@ def main():
     # does, the regime the underflow reading has to certify. Finiteness and
     # VRAM-fit checks are unaffected.
     key = jax.random.PRNGKey(1)
-    for blk in residual_blocks(model, args.arch):
+    for blk in residual_blocks(model):
         key, sub = jax.random.split(key)
         kernel = blk.down_proj.kernel[...]
         blk.down_proj.kernel[...] = 0.02 * jax.random.normal(sub, kernel.shape, kernel.dtype)
@@ -172,21 +139,18 @@ def main():
     # Headroom BEFORE the grad steps: this is a property of the weights and the
     # tokens, and reading it first means a doomed run is refused before it spends
     # anything. Measured on one window, the shape the stack actually sees.
-    peaks, worst, headroom = block_headroom(model, batch[:, :CONFIG.MAX_SEQ_LEN], args.arch)
-    stack = "block" if args.arch == "plain" else "encoder block"
-    print(f"📏 activation peak per {stack}: "
+    peaks, worst, headroom = block_headroom(model, batch[:, :CONFIG.MAX_SEQ_LEN])
+    print("📏 activation peak per block: "
           + "  ".join(f"{v:,.0f}" for v in peaks))
     print(f"   worst {worst:,.1f} of f16 max {F16_MAX:,.0f} → headroom {headroom:.1%}")
     assert headroom >= MIN_HEADROOM, (
-        f"{args.arch} activations reach {worst:,.0f}, leaving {headroom:.1%} of f16 headroom "
+        f"activations reach {worst:,.0f}, leaving {headroom:.1%} of f16 headroom "
         f"(need {MIN_HEADROOM:.0%}). This is #235: the residual branches are unbounded, "
         f"and #229's whole-window NaN is what running out looks like. POST_NORM=1 bounds "
         f"the branch outputs.")
 
-    # Worst-case VRAM and the deepest f16 unroll first: if depth-8 fits with the
-    # optimizer resident, every shallower depth training samples does too. `plain`
-    # has no depth dial, so for it this is simply the grad step. Loss is expected to
-    # stay flat — optimizer_chain is MultiSteps, so no real update lands in a handful
+    # The grad step with the optimizer resident: the VRAM peak that matters. Loss is
+    # expected to stay flat — optimizer_chain is MultiSteps, so no real update lands in a handful
     # of steps; this checks fit + finiteness, not descent.
     def read_zero_fracs(grads):
         zf = {k: float(v) for k, v in grad_zero_fractions(grads).items()}
@@ -197,27 +161,15 @@ def main():
 
     worst_dense = 0.0
 
-    print(f"— grad steps at depth {MAX_STEPS_LIMIT} (worst case; inert for plain) with optimizer resident —")
+    print("— grad steps with optimizer resident —")
     for s in range(1, 4):
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(s // CONFIG.ACCUMULATION_STEPS),
-                                                 MAX_STEPS_LIMIT)
+        loss, _, grads, gnorm = compute_grad_step(model, batch)
         loss_f, grad_f = float(loss), float(gnorm)
         ok = math.isfinite(loss_f) and math.isfinite(grad_f) and grad_f > 0
         print(f"  step {s}: loss={loss_f:.4f}  grad_norm={grad_f:.4f}  {'OK' if ok else '✗ NON-FINITE/ZERO'}")
-        assert ok, f"depth {MAX_STEPS_LIMIT} step {s} non-finite/zero in f16"
+        assert ok, f"step {s} non-finite/zero in f16"
         worst_dense = max(worst_dense, read_zero_fracs(grads))
         apply_grads(optimizer, grads, model)
-
-    # Shallow depths are a different unroll only for an arch that has one.
-    shallow = () if args.arch == "plain" else (1, 4)
-    if shallow:
-        print("— finiteness at shallow depths 1 and 4 —")
-    for depth in shallow:
-        loss, _, grads, gnorm = compute_grad_step(model, batch, jnp.array(1 // CONFIG.ACCUMULATION_STEPS), depth)
-        ok = math.isfinite(float(loss)) and math.isfinite(float(gnorm))
-        print(f"  depth {depth}: loss={float(loss):.4f}  grad_norm={float(gnorm):.4f}  {'OK' if ok else '✗'}")
-        assert ok
-        worst_dense = max(worst_dense, read_zero_fracs(grads))
 
     print(f"(loss ≈ 2·ln(vocab) = {2 * math.log(VOCAB_SIZE):.2f} at init, both windows summed)")
     # Loud reading, not an assert: the #82 decision rule ("~0 through the smoke
@@ -229,7 +181,7 @@ def main():
               f"underflow; per #82, file the loss-scaling adoption issue.")
     else:
         print(f"🧊 dense-kernel zero-fraction max {worst_dense:.4f} — no underflow signal (#82).")
-    print(f"✅ GPU smoke passed: {args.arch} f16 path numerically healthy AND fits in 6GB with optimizer state.")
+    print("✅ GPU smoke passed: f16 path numerically healthy AND fits in 6GB with optimizer state.")
 
 
 if __name__ == "__main__":

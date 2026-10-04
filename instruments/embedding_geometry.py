@@ -49,7 +49,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
-from instruments.arch import add_arch_argument
 from instruments.plots import AQUA, BLUE, GRID, INK, INK_DIM, ORANGE, STYLE, _note
 from instruments.results import emit
 from instruments.runlog import checkpoint_steps, recorded_tokens_per_opt_step
@@ -306,7 +305,6 @@ def trend_figure(rows, out, run_label, tokens_per_step):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_checkpoint_argument(ap, required=True, aliases=("--ckpt",))
-    add_arch_argument(ap)
     ap.add_argument("--tokens", type=int, default=3000, help="how many of the most frequent ids to draw")
     ap.add_argument("--sources", default="fineweb-edu,codeparrot,finemath")
     ap.add_argument("--count-budget", type=int, default=2_000_000,
@@ -328,7 +326,7 @@ def main(argv=None):
 
     load_env()
     from trm.config import resolve_root
-    from trm.runtime.restore import restore_arch
+    from trm.runtime.restore import restore_model
 
     data_root = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
     ids = frequent_tokens(data_root, args.sources.split(","), args.tokens, args.count_budget)
@@ -341,7 +339,7 @@ def main(argv=None):
         raise SystemExit(f"no checkpoints under {args.checkpoint_path}")
     embeddings = []
     for step in steps:
-        model, _ = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=step)
+        model, _ = restore_model(CONFIG, args.checkpoint_path, step=step)
         # Index first, cast second: the whole table in f64 is 386 MB, and this runs
         # beside a trainer on a box where this session is what the OOM killer picks.
         embeddings.append(np.asarray(model.embed.embedding[...])[ids].astype(np.float64))
