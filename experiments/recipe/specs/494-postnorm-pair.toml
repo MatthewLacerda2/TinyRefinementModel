@@ -76,6 +76,7 @@ points = ["run"]
 require = "all"
 
 [verdict]
+recorded = "INCONCLUSIVE"
 keep_if = ["post_norm_costs_nothing"]
 kill_if = ["post_norm_needs_more_tokens"]
 
@@ -91,3 +92,8 @@ KILL adds a graveyard line: POST_NORM costs tokens on plain.
 Readouts, no weight: act_max / act_rms per block (#392), where the mechanism shows;
 tok/s; final_val_ce at the cap.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+control = [18.8744, 18.8744, 18.8744]
+post_norm = [14.6801, 14.6801, 14.6801]

@@ -82,6 +82,7 @@ points = ["run"]
 require = "all"
 
 [verdict]
+recorded = "KEEP"
 keep_if = ["polar_needs_fewer_tokens"]
 kill_if = ["polar_needs_more_tokens"]
 
@@ -94,3 +95,8 @@ orthogonal, but that is not evidence it trains better here) and record the numbe
 Readouts, no weight: tok/s (same number of matmuls, expected identical); final_val_ce
 at the cap; clip rate.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+control = [18.8744, 18.8744, 18.8744]
+polar = [17.8258, 17.8258, 17.8258]

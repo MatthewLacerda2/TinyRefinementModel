@@ -116,14 +116,15 @@ class Config(BaseSettings):
     # input), and down_proj carries it to 64,896 -- 99.1% of f16's 65,504 ceiling.
     # That is the root cause of #229's whole-window NaN. See #235.
     #
-    # Default OFF: it changes what the model is, so no stored checkpoint survives it
-    # and it must earn its place through a matched ablation before a run adopts it.
+    # OFF: #494's pair ended INCONCLUSIVE because it beat the control (-0.056 val CE at
+    # 512 steps, act_max peak ~37 vs ~86) where it was registered to tie; adopting it is
+    # #494's call (PR #538).
     POST_NORM: bool = False
 
     # Zero-init the attention output projection `o` too, not only the MLP's down_proj
     # (#361): every block then starts as a no-op and the model at init is a tied-
-    # embedding bigram. Default OFF until #361's pair judges it: it changes the model at
-    # init (the param tree is the same, so a checkpoint loads either way).
+    # embedding bigram. OFF: #361's pair met its tokens-to-5.85 bar but ends 0.086 val CE
+    # worse at 512 steps (faster start, crossed at ~270), so it is not adopted (PR #538).
     ZERO_INIT_ATTN_OUT: bool = False
 
     # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
@@ -226,8 +227,9 @@ class Config(BaseSettings):
     MUON_NS_STEPS: int = 5
     # Which Newton-Schulz coefficients (#375): "keller", Keller Jordan's 2024 quintic
     # reused at every step (every run so far), or "polar_express", a minimax-optimal
-    # quintic per step (trm/train/polar_express.py). keller until #375's pair judges it.
-    MUON_NS_COEFFS: Literal["keller", "polar_express"] = "keller"
+    # quintic per step (trm/train/polar_express.py). polar_express since #375's pair
+    # (KEEP: -0.023 val CE at 512 steps, ahead from step 72 on, same tok/s; PR #538).
+    MUON_NS_COEFFS: Literal["keller", "polar_express"] = "polar_express"
     MUON_EPS: float = 1e-8
     MUON_NESTEROV: bool = True
     # Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that

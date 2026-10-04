@@ -17,9 +17,9 @@ def _run(coeffs, x):
     return x
 
 
-def test_the_default_is_the_2024_quintic_so_every_run_on_record_resolves_the_same():
+def test_the_2024_quintic_still_resolves_and_polar_express_is_the_default():
     assert ns_coefficients("keller", 5) == KELLER_NS_COEFFS == (3.4445, -4.775, 2.0315)
-    assert CONFIG.MUON_NS_COEFFS == "keller"
+    assert CONFIG.MUON_NS_COEFFS == "polar_express"
 
 
 def test_polar_express_lands_closer_to_orthogonal_in_the_same_five_steps():
