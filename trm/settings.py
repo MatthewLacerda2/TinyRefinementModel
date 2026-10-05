@@ -457,7 +457,7 @@ class Config(BaseSettings):
     # rule" (2026-09-20). It sits well above the supervisor's mid-run KILLED_DISK
     # floor (the next checkpoint write plus 2GB, ~4.6GB at dim 960), so pruning acts
     # long before that stop would, and equals the launch precheck's min_free_gb.
-    SSD_KEEP_FREE_GB: float = 20.0
+    SSD_KEEP_FREE_GB: float = 12.0
 
     # ── f16 margin alarms (the supervisor's, #368) ────────────────────────────
     # Crossing one is an alarm, announced and recorded, never a kill: a margin is a

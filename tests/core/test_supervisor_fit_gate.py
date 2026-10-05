@@ -85,14 +85,16 @@ def test_a_refused_gate_stops_the_launch_and_releases_the_card(tmp_path, monkeyp
     monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
     monkeypatch.setattr(sup_mod, "preflight_fit",
                         lambda args, **_: sup_mod.FitResult(False, "out of memory — this config does not fit"))
-    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log")])
+    # --min-free-gb 0: the disk preflight also returns 1, so on a full disk this passed without reaching the gate (#549)
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0"])
     assert code == 1 and launched == []
     assert not lock_path.exists(), "a refused launch must not keep holding the card"
 
     monkeypatch.setattr(sup_mod, "preflight_fit",
                         lambda args, **_: (_ for _ in ()).throw(AssertionError("gate ran")))
     assert sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
-                         "--skip-fit-gate"]) == 0
+                         "--skip-fit-gate", "--min-free-gb", "0"]) == 0
     assert launched == [True]
 
 
