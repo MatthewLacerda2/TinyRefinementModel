@@ -83,7 +83,7 @@ class TracedQueue:
         if k == self.stop_at:
             self.settle()
             jax.profiler.stop_trace()
-            return None, None, None, None
+            return None, None, None
         try:
             return self.inner.get(timeout=QUEUE_TIMEOUT_S)
         except queue.Empty:
