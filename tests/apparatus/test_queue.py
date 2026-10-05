@@ -177,6 +177,26 @@ def test_unblockers_still_outrank_the_idle_card_rule():
     assert ranked(build_queue(issues, [], FREE))["tools"][0] == 1
 
 
+# --- the repo before the model: codebase leads its tier ----------------------------
+
+def test_a_codebase_issue_leads_its_tier_after_unblockers_and_the_idle_card():
+    issues = [issue(1, "architecture", "gpu", "cpu"), issue(2, "architecture", "cpu", "codebase"),
+              issue(3, "architecture", "cpu")]
+    busy = build_queue(issues, [], BUSY)
+    assert ranked(busy) == {"architecture": [2, 1, 3]}
+    assert busy.next_step().startswith("#2") and "repo before the model" in busy.next_step()
+    assert ranked(build_queue(issues, [], FREE))["architecture"][0] == 1, "an idle card still leads"
+    blocker = issues + [issue(4, "architecture", "cpu"),
+                        issue(5, "architecture", "cpu", "blocked", body="Blocked by #4")]
+    assert ranked(build_queue(blocker, [], BUSY))["architecture"][0] == 4, "unblockers still lead"
+
+
+def test_two_codebase_issues_are_a_judgment_call_between_them():
+    q = build_queue([issue(1, "architecture", "cpu", "codebase"),
+                     issue(2, "architecture", "cpu", "codebase"), issue(3, "architecture", "cpu")], [], BUSY)
+    assert "codebase" in q.next_step() and "judgment" in q.next_step() and "#" not in q.next_step()
+
+
 def test_a_browsers_gpu_process_does_not_hold_the_card():
     """#389: the board's headless Chromium marked an idle card busy."""
     from instruments.queue import split_compute_processes
