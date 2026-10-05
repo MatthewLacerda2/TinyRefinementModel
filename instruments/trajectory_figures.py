@@ -1,7 +1,7 @@
 """Pictures of the residual stream inside a trained model: where each token's
 state goes, block by block (#391).
 
-    MODEL_ARCH=plain python -m instruments.trajectory_figures \\
+    python -m instruments.trajectory_figures \\
         --checkpoint runs/<run>/checkpoints [--step N] [--rows 4] [--out DIR]
 
 Three images, one chart each (the `instruments/plots.py` convention):
@@ -59,7 +59,7 @@ def collect(model, rows, pad_token_id):
     kept_states, kept_gaps, skipped = [], [], 0
     for row in rows:
         tokens = jnp.asarray(row)
-        traj = capture(model, tokens, depth=None)
+        traj = capture(model, tokens)
         if not traj.ok:
             skipped += 1
             continue
@@ -192,10 +192,10 @@ def _main(argv=None):
     args = ap.parse_args(argv)
     load_env()
 
-    from trm.runtime.restore import load_eval_batches, restore_arch
+    from trm.runtime.restore import load_eval_batches, restore_model
     from trm.settings import CONFIG
 
-    model, _ = restore_arch(CONFIG, CONFIG.MODEL_ARCH, args.checkpoint_path, step=args.step)
+    model, _ = restore_model(CONFIG, args.checkpoint_path, step=args.step)
     rows = [row[:, :CONFIG.MAX_SEQ_LEN] for row in load_eval_batches(CONFIG, args.source, num_rows=args.rows)]
     states, gaps = collect(model, rows, CONFIG.PAD_TOKEN_ID)
 

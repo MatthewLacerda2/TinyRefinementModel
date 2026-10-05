@@ -16,7 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from trm.config import MAX_STEPS_LIMIT, resolve_root
+from trm.config import resolve_root
 from trm.model import build_model
 from trm.settings import DEFAULT_DATA_MIXTURE, load_env, location
 from trm.runtime.layout import LOG_REAL_STEPS
@@ -126,12 +126,12 @@ class LogWindow:
     Dividing by the nominal window (ACCUMULATION_STEPS * LOG_REAL_STEPS) is right
     only for a window that starts on a boundary. A resume does not: its first
     window holds fewer micro-steps, so every metric came out scaled by the fraction
-    held — CE 1.87 beside a real 3.2, depth_avg 2.76 on a uniform 1–8 draw (#194) —
+    held — CE 1.87 beside a real 3.2 (#194) —
     and the bogus CE also entered the plateau detector's running minimum. A fresh
     run's first window is one micro-step short too, since steps count from 1.
     """
 
-    FIELDS = ("loss", "token_loss", "grad_norm", "depth")
+    FIELDS = ("loss", "token_loss", "grad_norm")
 
     def __init__(self):
         self.reset()
@@ -142,31 +142,18 @@ class LogWindow:
 
     def add(self, **values):
         for name in self.FIELDS:
-            # None: a quantity this run does not have — depth, on an arch without a
-            # depth dial (#316). Its mean is None, never a zero that reads as a draw.
-            if values[name] is None or self.sums[name] is None:
-                self.sums[name] = None
-            else:
-                self.sums[name] += values[name]
+            self.sums[name] += values[name]
         self.count += 1
 
     def means(self):
-        return tuple(None if self.sums[name] is None else self.sums[name] / self.count
-                     for name in self.FIELDS)
+        return tuple(self.sums[name] / self.count for name in self.FIELDS)
 
 
 def init_model_and_optimizer(config):
-    if config.MODEL_ARCH == "plain":
-        print(f"🚀 Initializing PlainTransformer (Dim={config.LATENT_DIM}, layers={config.PLAIN_LAYERS})...")
-    elif config.MODEL_ARCH == "refiner":
-        print(f"🚀 Initializing Plan A CausalRefiner "
-              f"(Dim={config.LATENT_DIM}, encoder_layers={config.REFINER_ENCODER_LAYERS}, "
-              f"max_depth={MAX_STEPS_LIMIT})...")
-    else:
-        print(f"🚀 Initializing UniversalReasoner, the control baseline (Dim={config.LATENT_DIM})...")
+    print(f"🚀 Initializing PlainTransformer (Dim={config.LATENT_DIM}, layers={config.PLAIN_LAYERS})...")
     model = build_model(config, nnx.Rngs(config.MODEL_SEED))
 
-    print(f"📐 Architecture '{config.MODEL_ARCH}': {_param_count(model) / 1e6:.1f}M parameters "
+    print(f"📐 {_param_count(model) / 1e6:.1f}M parameters "
           f"(MODEL_SEED={config.MODEL_SEED}, DATA_SEED={config.DATA_SEED})")
     schedules = Schedules.of(config)
     # The resolved LR horizon must be visible at launch (#83): an anneal that
@@ -195,7 +182,7 @@ def init_model_and_optimizer(config):
           + f" | clip {config.CLIP_NORM:g}")
     # What the loss and the stream are, beside the optimizer (#357, #369).
     print(f"🧮 Loss: z-loss {config.Z_LOSS_WEIGHT:g} x log^2 Z | residual stream "
-          f"{config.RESIDUAL_DTYPE if config.MODEL_ARCH == 'plain' else 'compute dtype'}")
+          f"{config.RESIDUAL_DTYPE}")
     optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)
 
     return model, optimizer
@@ -255,15 +242,15 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
         while True:
             loader_opt_step = loader_step // config.ACCUMULATION_STEPS
             pretrain_mixer.set_weights(schedules.curriculum_weights(loader_opt_step))
-            res = pretrain_mixer.get_batch(config.BATCH_SIZE)
+            batch = pretrain_mixer.get_batch(config.BATCH_SIZE)
 
-            if res[0] is None:
-                data_queue.put((None, None, None, None))
+            if batch is None:
+                data_queue.put((None, None, None))
                 break
 
             # The state AFTER this batch travels with it, so the trainer can save
             # the one for the last batch it actually consumed, not the prefetched ones.
-            data_queue.put((*res, pretrain_mixer.last_source, pretrain_mixer.state()))
+            data_queue.put((batch, pretrain_mixer.last_source, pretrain_mixer.state()))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
@@ -323,7 +310,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
     try:
         while True:
             with span("data_get"):
-                batch, doc_boundary, source, data_state = data_queue.get()
+                batch, source, data_state = data_queue.get()
             if batch is None:
                 break
             monitor.data_state = data_state
@@ -336,9 +323,6 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
 
             t_compute_start = time.time()
 
-            # The architecture's depth for this micro-step, or None for one without a
-            # depth dial (#316): one static value, so the grad step compiles once.
-            depth = model.training_depth(step)  # reads no state, so not hot.model (#474)
             # The logging micro-step: its gradient stats are sampled before the
             # update below and logged after it, so both blocks read this one flag.
             is_log_step = (step + 1) % (accumulation_steps * LOG_REAL_STEPS) == 0
@@ -348,14 +332,11 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             # about to be measured against.
             ceiling = grad_guard.threshold
             with span("step_scalars"):
-                step_now = jnp.array(step // accumulation_steps)
                 loss_scale = jnp.float32(loss_scaler.value)
                 clip_norm = jnp.float32(jnp.inf if ceiling is None else ceiling)
             with span("grad_step"):
                 loss, out, grads, grad_norm = hot.grad_step(
-                    batch, step_now, depth, doc_boundary=doc_boundary,
-                    loss_scale=loss_scale, clip_norm=clip_norm,
-                )
+                    batch, loss_scale=loss_scale, clip_norm=clip_norm)
 
             with span("loss_readback"):
                 current_loss = float(loss)
@@ -367,9 +348,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                                      clipped=ceiling is not None and current_grad_norm > ceiling)
 
             if not (math.isfinite(current_loss) and math.isfinite(current_grad_norm)):
-                # Divergence must be loud and must not poison the optimizer state
-                # or any state the model carries (which the grad step already
-                # overwrote).
+                # Divergence must be loud and must not poison the optimizer state.
                 nonfinite_streak += 1
                 # With loss scaling on, the overwhelmingly likely cause is that S
                 # climbed past what the f16 backward can hold (#199), so back it off
@@ -382,7 +361,6 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                     f"(loss={current_loss}, grad_norm={current_grad_norm}, streak={nonfinite_streak}) — "
                     f"skipping update, loss scale → {scale_now:g}."
                 )
-                hot.model.reset_state()
                 if nonfinite_streak >= MAX_NONFINITE_STREAK:
                     raise RuntimeError(
                         f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite micro-steps "
@@ -431,7 +409,7 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 current_token_loss = float(out.diag.get('token_loss', loss))
 
             window.add(loss=current_loss, token_loss=current_token_loss,
-                       grad_norm=current_grad_norm, depth=depth)
+                       grad_norm=current_grad_norm)
 
             # Validation probe fires on its own cadence at the optimizer-step
             # boundary (every ACCUMULATION_STEPS micro-steps), independent of the
@@ -477,13 +455,13 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
 
             if is_log_step:
                 opt_step = (step + 1) // accumulation_steps
-                accum_loss, accum_token_loss, accum_grad_norm, accum_depth = window.means()
+                accum_loss, accum_token_loss, accum_grad_norm = window.means()
 
                 # Underflow instrument (#82): zero_fracs / zero_frac_dense were
                 # sampled just before apply_grads above (donation makes the raw
-                # grads unreadable here). Interpretation caveats (time_embed row
-                # sparsity, structural zeros behind the zero-init down_proj early
-                # in training) live on grad_zero_fractions itself.
+                # grads unreadable here). Interpretation caveats (structural zeros
+                # behind the zero-init down_proj early in training) live on
+                # grad_zero_fractions itself.
                 logger.log(
                     opt_step,
                     float(accum_token_loss),
@@ -492,7 +470,6 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                     t_compute,
                     grad_norm_avg=float(accum_grad_norm),
                     seg1_ce=float(out.diag.get('seg1_ce', 0)),
-                    depth_avg=None if accum_depth is None else float(accum_depth),
                     val_ce=latest_val_ce,
                     val_step=latest_val_step,
                     val_by_source=latest_val_by_source,
@@ -527,10 +504,9 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
                 )
                 print(f"📐 [GradBySource] mean/max/guard-clipped/micro-steps: {source_grads.label()}")
 
-                depth_note = "" if accum_depth is None else f" | Avg Sampled Depth: {accum_depth:.2f}"
                 curr_weights = schedules.curriculum_weights(opt_step)
                 print(
-                    f"📚 [Curriculum] Opt Step: {opt_step}{depth_note} | "
+                    f"📚 [Curriculum] Opt Step: {opt_step} | "
                     f"Weights: {mixture_label(schedules.sources, curr_weights)}"
                 )
 

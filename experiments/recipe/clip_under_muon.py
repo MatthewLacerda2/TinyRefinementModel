@@ -119,7 +119,7 @@ def main(argv=None):
     from trm.settings import CONFIG
     from trm.train.optimizers import inner_optimizer, muon_partition
 
-    model = build_model(CONFIG, nnx.Rngs(args.seed), arch="plain", dim=args.dim, vocab_size=args.vocab,
+    model = build_model(CONFIG, nnx.Rngs(args.seed), dim=args.dim, vocab_size=args.vocab,
                         num_heads=4, num_layers=args.layers, max_seq_len=args.seq)
     graphdef, params, rest = nnx.split(model, nnx.Param, ...)
     labels = jax.tree_util.tree_leaves(muon_partition(params))

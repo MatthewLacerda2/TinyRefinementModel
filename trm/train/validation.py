@@ -16,7 +16,6 @@ from trm.config import EOT_TOKEN_ID
 from trm.data.loaders import TextDataGenerator
 from trm.train.losses import chunked_cross_entropy_rows
 
-VAL_FIXED_DEPTH = 4
 # The fineweb slice starts at VAL_SKIP_SAMPLES, past any plausible training
 # consumption, and reads EVAL_ROWS rows (both trm/settings.py).
 # The other corpora the trainer probes (#363), each read from its own tail: the last
@@ -39,7 +38,7 @@ def heldout_targets(targets, pad_token_id):
 @nnx.jit
 def _val_ce_sums(model, batch):
     """Masked CE sums over both windows, mirroring the training segment structure
-    (window 1 opens the document, window 2 continues it) at a fixed depth.
+    (window 1 opens the document, window 2 continues it).
 
     Scored exactly the way the grad step scores (#208): the model hands back
     pre-head states and the tied LM head is projected chunk by chunk, so the two
@@ -55,8 +54,8 @@ def _val_ce_sums(model, batch):
     window = (batch.shape[1] - 1) // 2
     seq1_in, seq1_out = batch[:, :window], batch[:, 1:window + 1]
     seq2_in, seq2_out = batch[:, window:2 * window], batch[:, window + 1:2 * window + 1]
-    out1 = model(seq1_in, depth=VAL_FIXED_DEPTH, training=True, new_document=True)
-    out2 = model(seq2_in, depth=VAL_FIXED_DEPTH, training=True, new_document=False)
+    out1 = model(seq1_in, training=True)
+    out2 = model(seq2_in, training=True)
     targets = heldout_targets(jnp.concatenate([seq1_out, seq2_out], axis=0), model.pad_token_id)
     loss_sums, counts, _ = chunked_cross_entropy_rows(
         jnp.concatenate([out1.hidden, out2.hidden], axis=0),
@@ -83,7 +82,7 @@ def read_heldout_rows(source_dir, rows, skip, *, max_seq_len, data_seed):
     gen.skip_count = skip
     batches = []
     while len(batches) < rows:
-        row, _ = gen.get_batch(1)
+        row = gen.get_batch(1)
         if row is None:
             break
         batches.append(row)
@@ -100,8 +99,6 @@ def corpus_samples(source_dir, max_seq_len):
 
 class ValidationProbe:
     """Loads `rows` fixed held-out rows once, then scores them on demand.
-    Runs inside the model's `isolated_state`, so whatever the training stream
-    carries is restored afterwards and validating never perturbs training.
 
     `skip=None` reads the corpus's tail (the last VAL_TAIL_ROWS samples) instead of
     a fixed offset: the held-out slice for the probes of #363."""
@@ -137,12 +134,8 @@ class ValidationProbe:
         if not self._batches:
             return None
         total, count = 0.0, 0
-        with model.isolated_state():
-            for batch in self._batches:
-                # Every probe row is scored from a clean slate, so the measurement
-                # is a property of the weights and not of the row order.
-                model.reset_state()
-                ce_sum, ce_count = _val_ce_sums(model, batch)
-                total += float(ce_sum)
-                count += int(ce_count)
+        for batch in self._batches:
+            ce_sum, ce_count = _val_ce_sums(model, batch)
+            total += float(ce_sum)
+            count += int(ce_count)
         return total / max(count, 1)

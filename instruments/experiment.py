@@ -5,7 +5,7 @@ referee. This is the other half — the thing that actually executes the sweep t
 spec describes, so the numbers the referee judges are the numbers the spec asked
 for, and nobody hand-copies a table into a criterion.
 
-    python -m instruments.experiment experiments/depth/specs/077-per-pass-supervision.toml
+    python -m instruments.experiment experiments/recipe/specs/287-peak-lr-pair.toml
 
 What it does, in order:
 
@@ -64,10 +64,10 @@ GATE_COMMAND = (sys.executable, "-m", "pytest", "tests/core", "-q", "-x")
 class Leg:
     """One pass of the sweep: a set of flags, the arms it runs, the seeds it uses.
 
-    Legs exist because real experiments here have more than one. #86 trained at
-    depths 1–8 and then ran a *second* command — depth 8, a longer eval sequence,
-    extra eval depths — to measure extrapolation past the cap. #77 ran three
-    seeds, then pre-registered an extension to six for one arm only. A runner
+    Legs exist because real experiments here have more than one. #86 ran its
+    sweep and then a *second* command, with different flags, to measure
+    extrapolation past the cap it trained at. #77 ran three seeds, then
+    pre-registered an extension to six for one arm only. A runner
     that could express neither would have been a runner for experiments we do not
     do, so the same retrofit that falsified the spec format falsified this too.
 

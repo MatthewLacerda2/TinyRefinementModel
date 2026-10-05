@@ -1,13 +1,4 @@
-"""Whole-model invariants: padding correctness and causality.
-
-Causality history: until 2026-06-11 the decoder read this window's reasoning
-output, whose slots had seen the whole window bidirectionally — a future-token
-leak (the slot-future-leak post-mortem in ROADMAP's Post-mortems section). Fixed by decoding against
-the slots the window started with; the loop's output now only reaches the NEXT
-window through the hunch cache. Both causality tests below guard that fix: the
-fresh-slot path and the carried-hunch path (whose gate once peeked at the
-current window's mean — the second leak).
-"""
+"""Whole-model invariants: padding correctness and causality."""
 
 import jax.numpy as jnp
 import numpy as np
@@ -16,8 +7,8 @@ from trm.config import COMPUTE_DTYPE
 from trm.settings import CONFIG
 
 
-def _logits(model, tokens_np, depth=2):
-    out = model(jnp.asarray(tokens_np), depth=depth, training=False, new_document=True)
+def _logits(model, tokens_np):
+    out = model(jnp.asarray(tokens_np), training=False)
     return np.asarray(out.logits, dtype=np.float32)
 
 
@@ -67,47 +58,3 @@ def test_future_token_cannot_influence_past_predictions(tiny_model, token_batch)
 
     np.testing.assert_allclose(base, after, rtol=1e-3, atol=1e-3)
 
-
-def test_causality_holds_with_carried_hunch(reasoner_model, token_batch):
-    """The riskier path: decode window B against the hunch carried from window A.
-    A future token in B must still not influence B's earlier predictions.
-    (Window A influencing all of B is legitimate — A is entirely in the past.)"""
-    window_a = (token_batch + 17) % 5000 + 1
-
-    def run(tokens_b):
-        reasoner_model(jnp.asarray(window_a), depth=2, training=False, new_document=True)
-        out = reasoner_model(jnp.asarray(tokens_b), depth=2, training=False, new_document=False)
-        return np.asarray(out.logits, dtype=np.float32)[:, :40]
-
-    perturbed = token_batch.copy()
-    perturbed[0, 40] = int(perturbed[0, 40]) + 1
-
-    np.testing.assert_allclose(run(token_batch), run(perturbed), rtol=1e-3, atol=1e-3)
-
-
-def test_zero_init_attention_output_makes_the_init_a_tied_bigram():
-    """With `o` zero-initialised as well as `down_proj` (#361), every block starts as a
-    no-op: the logits at init are exactly out_norm(embed(tokens)) @ E^T. The switch
-    must not move any other weight, so a matched pair differs in `o` alone."""
-    import jax
-    from flax import nnx
-
-    from trm.model.plain import PlainTransformer
-    from trm.settings import Config
-
-    def build(zero):
-        return PlainTransformer(32, nnx.Rngs(0), Config(ZERO_INIT_ATTN_OUT=zero), vocab_size=37,
-                                num_heads=4, num_layers=2, max_seq_len=16)
-
-    model, control = build(True), build(False)
-    tokens = jnp.arange(16, dtype=jnp.int32).reshape(1, 16) % 37
-    E = model.embed.embedding[...]
-    bigram = model.out_norm(model.embed(tokens)).astype(COMPUTE_DTYPE) @ E.astype(COMPUTE_DTYPE).T
-    np.testing.assert_allclose(np.asarray(model(tokens).logits, dtype=np.float32),
-                               np.asarray(bigram, dtype=np.float32), rtol=1e-5, atol=1e-5)
-    assert not np.allclose(np.asarray(control(tokens).logits), np.asarray(bigram), atol=1e-3)
-
-    diffs = jax.tree.map(lambda a, b: bool(jnp.any(a != b)),
-                         nnx.state(model, nnx.Param), nnx.state(control, nnx.Param))
-    moved = [jax.tree_util.keystr(path) for path, diff in jax.tree_util.tree_leaves_with_path(diffs) if diff]
-    assert len(moved) == 2 and all("'o'" in p and "kernel" in p for p in moved), moved

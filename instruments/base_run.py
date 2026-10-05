@@ -54,22 +54,6 @@ def load_base_spec(path) -> referee.Spec:
     return spec
 
 
-def recorded_arch(run_dir) -> str | None:
-    """The MODEL_ARCH the run recorded in run_metadata.json, or None if none is readable.
-
-    A checkpoint has to be restored as the architecture it was trained as, and that is
-    a fact about the run, not about the process scoring it. Only the arch comes from the
-    run: LATENT_DIM, PLAIN_LAYERS, NUM_HEADS and the rest still come from this process's
-    config, and a mismatch there fails loudly at restore.
-
-    RunTracker rewrites the file in place at session start and end, so a milestone
-    scorer can read it half-written. `runlog.read_metadata` reads that as no record
-    (the MODEL_ARCH fallback) rather than raising, which would leave the milestone
-    unscored with no journal line, since the supervisor sends the scorer's output to
-    /dev/null."""
-    return runlog.recorded_params(runlog.read_metadata(run_dir)).get("MODEL_ARCH")
-
-
 def checkpoint_source(checkpoint_dir, run_dir) -> str:
     """What a journal line says it scored: 'rolling' for the run's own checkpoints/
     dir, 'milestone' or 'best' for those subdirs, and the dir's own name for anything
@@ -87,25 +71,19 @@ def newest_step(checkpoint_dir) -> int:
     return steps[-1]
 
 
-def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False, arch=None,
+def score_checkpoint(run_dir, checkpoint_path, *, step, limit=None, on_cpu=False,
                      python=sys.executable) -> dict | None:
     """Run the yardstick on exactly `step` of the manager dir `checkpoint_path`, and
     append one line to the run's journal naming that step and its source.
 
     The step is always passed through: a dir holds several steps, and the yardstick
     restores the newest unless told, which is how every milestone used to be scored
-    as whatever rolling checkpoint was newest when the scorer started (#328).
-
-    `arch` defaults to the run's recorded MODEL_ARCH; with none recorded the yardstick
-    falls back to MODEL_ARCH from config."""
-    arch = arch or recorded_arch(run_dir)
+    as whatever rolling checkpoint was newest when the scorer started (#328)."""
     run_dir = pathlib.Path(run_dir)
     source = checkpoint_source(checkpoint_path, run_dir)
     out = run_dir / f"yardstick_{source}_step{step}{'_limit' + str(limit) if limit else ''}.json"
     argv = [python, "-m", "instruments.yardstick.eval_yardstick", "--checkpoint-path", str(checkpoint_path),
             "--step", str(step), "--json-out", str(out), "--no-heldout"]
-    if arch:
-        argv += ["--arch", arch]
     if limit:
         argv += ["--limit", str(limit)]
     env = module_env(**({"JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1"} if on_cpu else {}))
@@ -180,19 +158,9 @@ def _weights_sha(checkpoints_dir) -> tuple[str, str]:
     return newest.name, h.hexdigest()
 
 
-# The card's config snapshot, by recorded arch: a knob the arch never reads is noise on
-# its card. An arch the run did not record gets every key, since any of them may apply.
-_COMMON_CARD_KEYS = ["LATENT_DIM", "NUM_HEADS", "MAX_SEQ_LEN", "BATCH_SIZE", "ACCUMULATION_STEPS", "DECAY_STEPS"]
-_ARCH_CARD_KEYS = {
-    "plain": ["PLAIN_LAYERS"],
-    "refiner": ["REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL"],
-    "reasoner": ["NUM_BLOCKS", "MAX_STEPS_LIMIT"],
-}
-
-
-def card_config_keys(arch):
-    extra = _ARCH_CARD_KEYS.get(arch) or list(dict.fromkeys(k for keys in _ARCH_CARD_KEYS.values() for k in keys))
-    return _COMMON_CARD_KEYS + extra
+# The card's config snapshot: the knobs that shape the model and its recipe.
+CARD_CONFIG_KEYS = ["LATENT_DIM", "NUM_HEADS", "MAX_SEQ_LEN", "BATCH_SIZE", "ACCUMULATION_STEPS", "DECAY_STEPS",
+                    "PLAIN_LAYERS"]
 
 
 def card_fields(run_dir, spec_path=None) -> dict:
@@ -213,14 +181,11 @@ def card_fields(run_dir, spec_path=None) -> dict:
         ref = spec.meta["results"]["run"]
     yard = completion_entry(run_dir)
     step_name, sha = _weights_sha(run_dir / "checkpoints")
-    arch = params.get("MODEL_ARCH", "?")
-    config_keys = card_config_keys(params.get("MODEL_ARCH"))
     return {
         "run_id": meta.get("run_id", run_dir.name),
         "commit": meta.get("git_commit", "?"), "branch": meta.get("git_branch", "?"),
         "dirty": bool(meta.get("git_dirty", False)),
-        "arch": arch,
-        "config": ", ".join(f"{k}={params[k]}" for k in config_keys if k in params),
+        "config": ", ".join(f"{k}={params[k]}" for k in CARD_CONFIG_KEYS if k in params),
         "tokenizer_vocab": params.get("VOCAB_SIZE", "?"),
         "seeds": f"DATA_SEED={params.get('DATA_SEED', '?')}, MODEL_SEED={params.get('MODEL_SEED', '?')}",
         "budget": params.get("TRAIN_TOKEN_BUDGET"),
@@ -251,7 +216,6 @@ def render_card(f: dict) -> str:
 | Field | Value |
 |---|---|
 | Commit SHA | `{f['commit']}`{' (**git_dirty: true**)' if f['dirty'] else ''} |
-| `MODEL_ARCH` | `{f['arch']}` |
 | Config snapshot | `{f['config']}` |
 | Tokenizer | `r50k_base` (VOCAB_SIZE `{f['tokenizer_vocab']}`) |
 | Seed(s) | `{f['seeds']}` |

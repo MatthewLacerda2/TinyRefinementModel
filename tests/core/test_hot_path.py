@@ -13,7 +13,7 @@ import optax
 import pytest
 from flax import nnx
 
-from instruments.arch import build
+from trm.model import build_model
 from trm.settings import CONFIG
 from trm.train.accumulate import multi_steps
 from trm.train.grad_step import HotPath, apply_grads, compute_grad_step
@@ -28,7 +28,7 @@ def _batches():
 
 
 def _setup(inner):
-    model = build("plain", dim=60, num_layers=1, vocab_size=97, max_seq_len=WINDOW)
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1, vocab_size=97, max_seq_len=WINDOW)
     return model, nnx.Optimizer(model, multi_steps(inner, every_k_schedule=K), wrt=nnx.Param)
 
 
@@ -42,15 +42,13 @@ def _run(inner, hot, touch_at=()):
     path = HotPath(model, opt, z_loss_weight=CONFIG.Z_LOSS_WEIGHT) if hot else None
     seen = []
     for i, batch in enumerate(_batches()):
-        step = jnp.array(i // K)
         if hot:
             if i in touch_at:  # what a checkpoint or the validation probe does mid-run
                 _leaves(nnx.state(path.model, nnx.Param))
-            loss, _, grads, norm = path.grad_step(batch, step, None)
+            loss, _, grads, norm = path.grad_step(batch)
             path.apply(grads)
         else:
-            loss, _, grads, norm = compute_grad_step(model, batch, step, None,
-                                                     z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
+            loss, _, grads, norm = compute_grad_step(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(opt, grads, model)
         seen += [np.asarray(loss), np.asarray(norm)]
     if hot:
@@ -86,10 +84,10 @@ def test_a_change_made_through_the_module_is_seen_by_the_next_step():
     model, opt = _setup(optax.sgd(1e-3))
     path = HotPath(model, opt, z_loss_weight=0.0)
     batch = _batches()[0]
-    before, *_ = path.grad_step(batch, jnp.array(0), None)
+    before, *_ = path.grad_step(batch)
     for leaf in nnx.state(path.model, nnx.Param).flat_state():
-        leaf[1].set_value(leaf[1].get_value() * 0)  # a reset done through the object, as reset_state does
-    after, *_ = path.grad_step(batch, jnp.array(0), None)
+        leaf[1].set_value(leaf[1].get_value() * 0)  # a change made through the module object
+    after, *_ = path.grad_step(batch)
     assert not np.array_equal(np.asarray(before), np.asarray(after))
 
 
@@ -98,7 +96,7 @@ def test_the_host_counter_follows_the_device_and_a_skipped_micro_step_does_not_m
     path = HotPath(model, opt, z_loss_weight=0.0)
     batches = _batches()
     for i, batch in enumerate(batches[:5]):
-        _, _, grads, _ = path.grad_step(batch, jnp.array(i // K), None)
+        _, _, grads, _ = path.grad_step(batch)
         if i != 2:  # the trainer skips the update on a non-finite micro-step
             path.apply(grads)
         path.check_counter()

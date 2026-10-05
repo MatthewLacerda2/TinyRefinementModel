@@ -11,14 +11,14 @@ class _Source:
     def get_batch(self, count):
         import jax.numpy as jnp
 
-        return jnp.full((count, 3), self.value), jnp.ones((count, 3))
+        return jnp.full((count, 3), self.value)
 
 
 def test_the_mixer_names_the_source_of_a_single_source_batch():
     from trm.data.loaders import DataMixer
 
     mixer = DataMixer([_Source(1), _Source(2)], [0.0, 1.0], rng=np.random.default_rng(0))
-    batch, _ = mixer.get_batch(1)
+    batch = mixer.get_batch(1)
     assert int(batch[0, 0]) == 2 and mixer.last_source == 1
 
 
@@ -27,7 +27,7 @@ def test_a_batch_that_mixes_sources_is_filed_as_mixed():
 
     mixer = DataMixer([_Source(1), _Source(2)], [0.5, 0.5], rng=np.random.default_rng(3))
     for _ in range(20):
-        batch, _ = mixer.get_batch(8)
+        batch = mixer.get_batch(8)
         if len(set(np.asarray(batch[:, 0]).tolist())) > 1:
             assert mixer.last_source is None
             return

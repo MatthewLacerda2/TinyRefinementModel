@@ -68,7 +68,7 @@ def test_the_card_reproduces_the_champions_fields_from_its_archived_metadata(tmp
     (run / "run_metadata.json").write_text(FIXTURE.read_text())
     (run / "metrics.csv").write_text("step,ce,val_ce,arena_peak_mib\n30465,2.3555,3.6474,5002\n")
     f = base_run.card_fields(run)
-    assert f["commit"].startswith("5455e4d") and f["arch"] == "refiner" and f["dirty"] is True
+    assert f["commit"].startswith("5455e4d") and f["dirty"] is True
     assert f["budget"] == 4000000000 and f["seeds"] == "DATA_SEED=42, MODEL_SEED=42"
     # The champion's card records 259.4 h running across 11 sections
     # (docs/registry/run_20260813_214725-refiner-base-4B.md). The band brackets it
@@ -160,7 +160,7 @@ def test_a_resumed_supervisor_scores_only_what_the_journal_lacks(tmp_path, monke
     monkeypatch.setattr(base_run.subprocess, "run", fake_yardstick)
     for step in (100, 200, 300, 400):
         base_run.score_checkpoint(run, run / "checkpoints" / MILESTONE_SUBDIR, step=step,
-                                  limit=1000, on_cpu=True, arch="plain")
+                                  limit=1000, on_cpu=True)
     with (run / base_run.JOURNAL).open("a") as fh:
         fh.write('{"step": 500, "source": "milest')
 
@@ -340,27 +340,15 @@ def test_a_milestone_is_scored_as_itself_not_as_the_newest_rolling_checkpoint(tm
     assert (base_run.journal(run)[-1]["step"], base_run.journal(run)[-1]["source"]) == (200, "rolling")
 
 
-def test_scoring_restores_the_arch_the_run_recorded_not_the_shells(tmp_path, monkeypatch):
-    """#313: the yardstick must rebuild the param tree the run trained, and that is in
-    the run's metadata. The champion recorded `refiner`; the default here is `plain`.
-    A run that recorded nothing falls back to the yardstick's own MODEL_ARCH default, and
-    so does one whose metadata is caught mid-rewrite: RunTracker rewrites it in place, and
-    the milestone scorer's output goes to /dev/null, so raising would lose the milestone."""
-    calls = []
+def test_a_failed_score_still_leaves_its_journal_line(tmp_path, monkeypatch):
+    """The milestone scorer's output goes to /dev/null, so a failure that left no journal
+    line would lose the milestone silently."""
     failed = type("Proc", (), {"returncode": 1, "stderr": "stubbed", "stdout": ""})()
-    monkeypatch.setattr(base_run.subprocess, "run", lambda argv, **kw: calls.append(argv) or failed)
-    recorded, bare, torn = tmp_path / "recorded", tmp_path / "bare", tmp_path / "torn"
-    for run in (recorded, bare, torn):
-        (run / "checkpoints" / "40").mkdir(parents=True)
-    (recorded / "run_metadata.json").write_text(FIXTURE.read_text())
-    (torn / "run_metadata.json").write_text(FIXTURE.read_text()[:100])
-
-    for run in (recorded, bare, torn):
-        assert base_run.main(["score", "--run", str(run), "--limit", "2", "--cpu"]) == 1
-        assert base_run.journal(run)[-1]["error"] == "stubbed", "a failed score still leaves its journal line"
-    with_meta, without, half_written = calls
-    assert with_meta[with_meta.index("--arch") + 1] == "refiner"
-    assert "--arch" not in without and "--arch" not in half_written
+    monkeypatch.setattr(base_run.subprocess, "run", lambda argv, **kw: failed)
+    run = tmp_path / "run_f"
+    (run / "checkpoints" / "40").mkdir(parents=True)
+    assert base_run.main(["score", "--run", str(run), "--limit", "2", "--cpu"]) == 1
+    assert base_run.journal(run)[-1]["error"] == "stubbed"
 
 
 def test_only_the_runs_own_checkpoint_dir_is_journaled_as_rolling(tmp_path):
@@ -374,20 +362,11 @@ def test_only_the_runs_own_checkpoint_dir_is_journaled_as_rolling(tmp_path):
     assert base_run.checkpoint_source(checkpoints / "set_aside_2026", run) == "set_aside_2026"
 
 
-def test_the_card_shows_only_the_knobs_its_arch_reads():
-    """#332 review: every card listed REFINER_ENCODER_LAYERS, a knob plain never reads."""
-    plain, refiner = base_run.card_config_keys("plain"), base_run.card_config_keys("refiner")
-    assert "PLAIN_LAYERS" in plain and "REFINER_ENCODER_LAYERS" not in plain and "TIME_SIGNAL" not in plain
-    assert {"REFINER_ENCODER_LAYERS", "TIME_SIGNAL"} <= set(refiner) and "PLAIN_LAYERS" not in refiner
-    assert {"PLAIN_LAYERS", "REFINER_ENCODER_LAYERS"} <= set(base_run.card_config_keys(None)), \
-        "a run that recorded no arch shows every knob that might apply"
-
-
 def test_a_card_without_a_recorded_recipe_does_not_claim_zero_tokens(tmp_path):
     """#343 review: an unrecorded ACCUMULATION/BATCH/SEQ recipe rendered 'Tokens seen 0'."""
     run = tmp_path / "run_norecipe"
     run.mkdir()
-    (run / "run_metadata.json").write_text(json.dumps({"run_id": "run_norecipe", "parameters": {"MODEL_ARCH": "plain"}}))
+    (run / "run_metadata.json").write_text(json.dumps({"run_id": "run_norecipe", "parameters": {"PLAIN_LAYERS": 8}}))
     (run / "metrics.csv").write_text("step,ce\n40,3.1\n")
     fields = base_run.card_fields(run)
     assert fields["tokens_seen"] is None

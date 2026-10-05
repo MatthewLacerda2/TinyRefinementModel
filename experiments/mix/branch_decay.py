@@ -137,7 +137,7 @@ def main(argv=None) -> int:
                 ckpts.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(args.branch_from, copy)
             train(run_dir, resume_env(ckpts, copy, env), final)
-        subprocess.run([sys.executable, "-m", "instruments.yardstick.eval_yardstick", "--arch", "plain",
+        subprocess.run([sys.executable, "-m", "instruments.yardstick.eval_yardstick",
                         "--checkpoint-path", str(ckpts), "--step", final.name,
                         "--fineweb-tokens", str(args.fineweb_tokens), "--json-out", str(scored)],
                        cwd=REPO, env=env, check=True)

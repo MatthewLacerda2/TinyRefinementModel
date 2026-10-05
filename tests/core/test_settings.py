@@ -13,10 +13,9 @@ from trm.settings import CONFIG, DEFAULT_DATA_MIXTURE, Config
 # every run so far, the golden run and every recorded recipe pair trained on these.
 TODAYS_DEFAULTS = {
     "FORCE_F32_COMPUTE": False,
-    "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15, "MODEL_ARCH": "plain",
-    "POST_NORM": False, "ZERO_INIT_ATTN_OUT": False, "PLAIN_LAYERS": 8,
+    "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15,
+    "POST_NORM": False, "PLAIN_LAYERS": 8,
     "RESIDUAL_DTYPE": "float32",  # moved by #357 from the f16 stream every earlier run used
-    "TIME_SIGNAL": "sinusoidal", "REFINER_ENCODER_LAYERS": 7, "INFERENCE_DEPTH": 6,
     "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 16.666667,
     "ADAM_B1": 0.9, "ADAM_B2": 0.95, "ADAM_EPS": 1e-8,  # b2 moved by #359 from 0.999
     "WEIGHT_DECAY": 1e-2, "CLIP_NORM": 1.0,
@@ -70,7 +69,7 @@ def test_flags():
 
 
 @pytest.mark.parametrize("knob, value", [
-    ("MODEL_ARCH", "refnier"), ("TIME_SIGNAL", "sinsuoidal"), ("TRM_OPTIMIZER", "adam"),
+    ("TRM_OPTIMIZER", "adam"), ("RESIDUAL_DTYPE", "bfloat16"),
     ("LR_SCHEDULE", "linear"), ("BATCH_SIZE", "3"), ("BATCH_SIZE", "0"), ("PAD_TOKEN_ID", "0"),
     ("LATENT_DIM", "wide"), ("POST_NORM", "maybe"), ("MILESTONE_SCORERS", "0"),
 ])
@@ -83,8 +82,8 @@ def test_a_bad_knob_refuses_to_start_and_says_which(knob, value):
 
 def test_every_bad_knob_is_named_at_once():
     with pytest.raises(SystemExit) as refused:
-        Config.from_env({"MODEL_ARCH": "x", "BATCH_SIZE": "3"})
-    assert "MODEL_ARCH" in refused.value.code and "BATCH_SIZE" in refused.value.code
+        Config.from_env({"TRM_OPTIMIZER": "x", "BATCH_SIZE": "3"})
+    assert "TRM_OPTIMIZER" in refused.value.code and "BATCH_SIZE" in refused.value.code
 
 
 def test_frozen():

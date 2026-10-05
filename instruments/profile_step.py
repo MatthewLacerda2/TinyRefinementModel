@@ -83,7 +83,7 @@ class TracedQueue:
         if k == self.stop_at:
             self.settle()
             jax.profiler.stop_trace()
-            return None, None, None, None
+            return None, None, None
         try:
             return self.inner.get(timeout=QUEUE_TIMEOUT_S)
         except queue.Empty:
@@ -154,7 +154,7 @@ def format_summary(summary, device_lines, trace_path):
     mean = ms(wall)
     reference = ", ".join(f"{k} {v}" for k, v in REFERENCE_S_PER_OPT_STEP.items())
     lines = [
-        f"profile: {n} micro-steps | arch {CONFIG.MODEL_ARCH} | batch {CONFIG.BATCH_SIZE} x {CONFIG.ACCUMULATION_STEPS} "
+        f"profile: {n} micro-steps | batch {CONFIG.BATCH_SIZE} x {CONFIG.ACCUMULATION_STEPS} "
         f"micro-steps per opt step",
         f"trace:   {trace_path}",
         f"wall     {mean:8.1f} ms/micro-step (p50 {summary['p50'] / 1e6:.1f}, max {summary['max'] / 1e6:.1f})"

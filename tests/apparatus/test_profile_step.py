@@ -21,7 +21,7 @@ SEQ = 16
 # BATCH_SIZE 32 makes ACCUMULATION_STEPS 4, so the default window (4 micro-steps
 # after 6 of warmup) holds an optimizer update, as it does at the shipped size.
 ENV = {"JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1", "LATENT_DIM": "32", "NUM_HEADS": "4",
-       "MAX_SEQ_LEN": str(SEQ), "PLAIN_LAYERS": "2", "MODEL_ARCH": "plain", "BATCH_SIZE": "32",
+       "MAX_SEQ_LEN": str(SEQ), "PLAIN_LAYERS": "2", "BATCH_SIZE": "32",
        "MODEL_SEED": "0", "DATA_SEED": "0"}
 SPANS = {"data_get", "step_scalars", "grad_step", "loss_readback", "guard", "loss_scale",
          "apply_grads", "token_loss_readback"}

@@ -23,12 +23,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHADOWS = {
     "--dim": "LATENT_DIM",
     "--heads": "NUM_HEADS",
-    "--encoder-layers": "REFINER_ENCODER_LAYERS",
     "--layers": "PLAIN_LAYERS",
     "--batch": "BATCH_SIZE",
     "--seq": "MAX_SEQ_LEN",
     "--seq-len": "MAX_SEQ_LEN",
-    "--depth": "MAX_STEPS_LIMIT",
 }
 
 

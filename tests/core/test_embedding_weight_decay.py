@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-from instruments.arch import build
+from trm.model import build_model
 from trm.settings import CONFIG
 from trm.train import optimizers
 
@@ -19,7 +19,7 @@ PEAK = CONFIG.PEAK_LR
 
 
 def _model():
-    return build("plain", dim=60, num_layers=1, seed=0)
+    return build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1)
 
 
 def _params_by_path(model):
