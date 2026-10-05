@@ -261,7 +261,8 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
    fails a test or a gate; **rules that make Claude's work unambiguous**, written where
    a fresh session finds them. For the model: what it is and how it trains — its
    shape (GQA → multi-head latent attention), its recipe (LR, mix, weight decay) and
-   its hypotheses. Within the tier, **any order, your judgment**. A model change whose
+   its hypotheses. Within the tier, **the repo's own issues (`codebase`) lead; the rest
+   in any order, your judgment**. A model change whose
    *outcome is uncertain* — "maybe this works, I don't know" — is judged by a matched
    pair. A directed fix with a known method (the document separator masked as pad,
    #373) also carries **`bug`**: nobody is wondering whether to do it, so a smoke
@@ -294,6 +295,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
   skips drafts and re-runs on undraft, so the checks you see right after are the
   draft's skipped set — never push an empty commit to "retrigger" (#539).
+- **`codebase`** — an `architecture` issue about the repo itself (the shape of the
+  code, the automation that keeps it on the rails, the rules), not the model. It leads
+  its tier: every later change lands in that code.
 - **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
   session without them (a cloud session) cannot finish it. Orthogonal to lane: a
   `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
@@ -324,15 +328,16 @@ found, because now nobody will look again. Two habits follow:
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
 (a result that reframes the question). Tools ripple downstream into every measurement,
-so they lead; within `architecture`, the repo's structure and a result that reframes the
-model's question lead a pair or sweep nothing depends on. A base run is the opposite: ablations cannot be read without it and warm-starts
+so they lead; within `architecture`, the repo's structure (`codebase`) and a result that
+reframes the model's question lead a pair or sweep nothing depends on. The queue computes
+the first; a reframing result is a judgment call nobody can label in advance. A base run is the opposite: ablations cannot be read without it and warm-starts
 need it, so the `base-gate` list is a launch checklist to close or waive, not a queue to
 drain.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
 tier order, then issues other open issues are blocked by, and **when the card is idle,
 `gpu`-lane items first within their tier** (an idle card is the scarce resource going
-to waste; see "measure there" above) — and says so where they stop deciding (within a
+to waste; see "measure there" above), then `codebase` issues — and says so where they stop deciding (within a
 tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed (an open PR named as a blocker counts as
 open), an issue with no type label. And it surfaces every issue untouched for more
