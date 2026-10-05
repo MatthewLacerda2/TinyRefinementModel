@@ -1,0 +1,102 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "494-postnorm-long"
+status = "open"
+title = "POST_NORM vs none over 2,000 opt steps: does #494's 512-step win hold at the architecture tier?"
+hypothesis = """
+The 512-step pair (experiments/recipe/specs/494-postnorm-pair.toml, PR #538) put
+POST_NORM ahead at every probe: -0.056 val CE at the cap (3 seeds, worst arm seed beats
+best control seed), act_max peak ~37 vs ~86, +1.4% wall-clock. Its lead shrank from
+-0.75 at step 72 to -0.09 at 328 and flattened at -0.056 from step 488 on. POST_NORM
+changes what the model is, so the architecture tier (~2,000 opt steps, CLAUDE.md) judges
+whether the lead survives a 4x longer schedule before a base run adopts it.
+
+Prediction registered: POST_NORM still ahead at 2,000 steps, by less than at 512
+(-0.02 to -0.04 val CE at the cap), so it reaches the target ~5-10% sooner: KEEP.
+Last time I predicted a tie and it won; on #361 I predicted parity and it lost. Both
+misses were about the late part of the run, which is what this pair measures.
+"""
+issue = 494
+
+[protocol]
+floor_note = """
+Tokens to a target near the control's endpoint, capped at the run (262.1M): an arm that
+never reaches it reports the cap. The floor is the seeds' own spread; tokens are
+quantized to the probe interval (8 opt steps = 1.05M tokens, #547), so min_delta, not
+sigma, carries the decision when the seeds tie.
+The target, 3.55, is chosen so the CONTROL crosses it at ~80-90% of the run, not in its
+first quarter (#361's target sat at step ~140 of 512 and judged only the start, #547).
+Estimate, from data that is not this pair: base run run_20260920_191351 read 3.587 at
+step 1600 and 3.493 at 1984 with its LR still at peak; the 512-step pairs ended 0.18
+below that run's step-512 reading because their schedule decays in-run. If the control
+does not reach 3.55 at all, the target was mis-set and the verdict is void (both arms
+at the cap read as "within"): rerun the reading at a target the control reached, and
+say so on #494, never adopt from it.
+"""
+cap = 262.144
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 3.55 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only POST_NORM differs; both arms new runs at 2,000 opt steps"
+notes = """
+Recipe: main after PR #538 (Polar Express on by default), plain 8 x 960 at batch 2,
+Muon x16.667 on a 6e-4 schedule completing in-run, warmup 100, val every 8 on 64 rows,
+val_step-aligned. Same command as the 512-step pair but --opt-steps 2000, --target-ce
+3.55 and a new tag, so no 512-step run is read back.
+min_delta = 11M tokens, 5% of the ~220M the control is expected to need: the same 5%
+bar as the 512-step pairs.
+Readouts, no weight: final_val_ce at the cap (registered here as the second reading:
+if it disagrees in sign with the verdict, that goes to the owner, as #361 did);
+act_max per block; tok/s.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "3.55", "--opt-steps", "2000", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--tag", "pn2k"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64" }
+
+[arms.control]
+role = "control"
+flags = []
+
+[arms.post_norm]
+role = "treatment"
+flags = ["--set", "POST_NORM=1"]
+
+# Tokens: LOWER is better, so the treatment winning is the control's number being larger.
+[criteria.post_norm_needs_fewer_tokens]
+rule = "beats"
+treatment = "control"
+control = "post_norm"
+sigmas = 2.0
+min_delta = 11.0
+points = ["run"]
+require = "all"
+
+[criteria.post_norm_needs_more_tokens]
+rule = "loses"
+treatment = "control"
+control = "post_norm"
+sigmas = 2.0
+min_delta = 11.0
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["post_norm_needs_fewer_tokens"]
+kill_if = ["post_norm_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers:
+KEEP -> POST_NORM defaults to on in the recording PR (it changes what the model is; the
+next base run trains with it).
+INCONCLUSIVE -> stays off; the 512-step lead did not survive the longer schedule, and
+the act_max reduction alone is not worth a default while the stream is f32 (#357).
+KILL -> stays off, graveyard line: POST_NORM costs tokens on plain at the architecture
+tier, whatever it does at 512.
+"""
