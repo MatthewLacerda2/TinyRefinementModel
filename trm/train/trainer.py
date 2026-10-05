@@ -187,7 +187,7 @@ def init_model_and_optimizer(config):
           f"{mixture_label(schedules.sources, schedules.end_weights)}")
     # The whole optimizer at launch, every knob named (#358).
     muon = (f"muon on the matrices (LR x{config.MUON_LR_MULT:g}, beta {config.MUON_BETA:g}, "
-            f"{config.MUON_NS_STEPS} Newton-Schulz steps), adamw on the rest"
+            f"{config.MUON_NS_STEPS} Newton-Schulz steps, {config.MUON_NS_COEFFS}), adamw on the rest"
             if config.TRM_OPTIMIZER == "muon" else "adamw")
     print(f"🎛️ Optimizer: {muon} | adam b1 {config.ADAM_B1:g} b2 {config.ADAM_B2:g} "
           f"eps {config.ADAM_EPS:g} | weight decay {config.WEIGHT_DECAY:g} x LR"

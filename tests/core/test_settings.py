@@ -14,14 +14,14 @@ from trm.settings import CONFIG, DEFAULT_DATA_MIXTURE, Config
 TODAYS_DEFAULTS = {
     "FORCE_F32_COMPUTE": False,
     "LATENT_DIM": 960, "MAX_SEQ_LEN": 512, "NUM_HEADS": 15, "MODEL_ARCH": "plain",
-    "POST_NORM": False, "PLAIN_LAYERS": 8,
+    "POST_NORM": False, "ZERO_INIT_ATTN_OUT": False, "PLAIN_LAYERS": 8,
     "RESIDUAL_DTYPE": "float32",  # moved by #357 from the f16 stream every earlier run used
     "TIME_SIGNAL": "sinusoidal", "REFINER_ENCODER_LAYERS": 7, "INFERENCE_DEPTH": 6,
     "TRM_OPTIMIZER": "muon", "MUON_LR_MULT": 16.666667,
     "ADAM_B1": 0.9, "ADAM_B2": 0.95, "ADAM_EPS": 1e-8,  # b2 moved by #359 from 0.999
     "WEIGHT_DECAY": 1e-2, "CLIP_NORM": 1.0,
     "EMBED_WEIGHT_DECAY": 6e-5,  # moved by #360 from 6e-6
-    "MUON_BETA": 0.95, "MUON_NS_STEPS": 5, "MUON_EPS": 1e-8, "MUON_NESTEROV": True,
+    "MUON_BETA": 0.95, "MUON_NS_STEPS": 5, "MUON_NS_COEFFS": "polar_express", "MUON_EPS": 1e-8, "MUON_NESTEROV": True,
     "LOSS_SCALE_GROWTH_INTERVAL": 256,
     "Z_LOSS_WEIGHT": 1e-4,  # moved by #369 from off
     "BATCH_SIZE": 2, "ACCUMULATION_STEPS": 64, "TOKENS_PER_OPT_STEP": 131072,

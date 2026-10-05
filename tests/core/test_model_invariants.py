@@ -83,3 +83,31 @@ def test_causality_holds_with_carried_hunch(reasoner_model, token_batch):
     perturbed[0, 40] = int(perturbed[0, 40]) + 1
 
     np.testing.assert_allclose(run(token_batch), run(perturbed), rtol=1e-3, atol=1e-3)
+
+
+def test_zero_init_attention_output_makes_the_init_a_tied_bigram():
+    """With `o` zero-initialised as well as `down_proj` (#361), every block starts as a
+    no-op: the logits at init are exactly out_norm(embed(tokens)) @ E^T. The switch
+    must not move any other weight, so a matched pair differs in `o` alone."""
+    import jax
+    from flax import nnx
+
+    from trm.model.plain import PlainTransformer
+    from trm.settings import Config
+
+    def build(zero):
+        return PlainTransformer(32, nnx.Rngs(0), Config(ZERO_INIT_ATTN_OUT=zero), vocab_size=37,
+                                num_heads=4, num_layers=2, max_seq_len=16)
+
+    model, control = build(True), build(False)
+    tokens = jnp.arange(16, dtype=jnp.int32).reshape(1, 16) % 37
+    E = model.embed.embedding[...]
+    bigram = model.out_norm(model.embed(tokens)).astype(COMPUTE_DTYPE) @ E.astype(COMPUTE_DTYPE).T
+    np.testing.assert_allclose(np.asarray(model(tokens).logits, dtype=np.float32),
+                               np.asarray(bigram, dtype=np.float32), rtol=1e-5, atol=1e-5)
+    assert not np.allclose(np.asarray(control(tokens).logits), np.asarray(bigram), atol=1e-3)
+
+    diffs = jax.tree.map(lambda a, b: bool(jnp.any(a != b)),
+                         nnx.state(model, nnx.Param), nnx.state(control, nnx.Param))
+    moved = [jax.tree_util.keystr(path) for path, diff in jax.tree_util.tree_leaves_with_path(diffs) if diff]
+    assert len(moved) == 2 and all("'o'" in p and "kernel" in p for p in moved), moved
