@@ -119,6 +119,13 @@ its PR.
   answered, removed 2026-09-16 (#321); `experiments/depth/playground.py`, the
   by-eye depth-sweep generator nothing ran any more, removed 2026-09-16 (#314).
 
+- **Zero-initialising the attention output projection (#361)** — not adopted 2026-10-04
+  by the owner, knob `ZERO_INIT_ATTN_OUT` removed with #292's merge. The 512-step pair
+  (PR #538) leads by 1.5 nats at step 8, crosses at ~270 and ends 0.086 val CE worse
+  (3 seeds); its tokens-to-5.85 bar said KEEP only because 5.85 falls in the first
+  quarter of the run (#547). Full record:
+  `docs/findings/2026-10-04-zero-init-attention-output-starts-fast-and-ends-worse.md`.
+
 - **The refiner and the reasoner as code** — removed 2026-10-04 (#292), once a plain
   base run (`run_20260920_191351`) replaced the 4B refiner champion. Both had stayed
   only as checkpoint loaders. The reasoner's cross-window hunch was inert from the start

@@ -20,7 +20,7 @@ TODAYS_DEFAULTS = {
     "ADAM_B1": 0.9, "ADAM_B2": 0.95, "ADAM_EPS": 1e-8,  # b2 moved by #359 from 0.999
     "WEIGHT_DECAY": 1e-2, "CLIP_NORM": 1.0,
     "EMBED_WEIGHT_DECAY": 6e-5,  # moved by #360 from 6e-6
-    "MUON_BETA": 0.95, "MUON_NS_STEPS": 5, "MUON_EPS": 1e-8, "MUON_NESTEROV": True,
+    "MUON_BETA": 0.95, "MUON_NS_STEPS": 5, "MUON_NS_COEFFS": "polar_express", "MUON_EPS": 1e-8, "MUON_NESTEROV": True,
     "LOSS_SCALE_GROWTH_INTERVAL": 256,
     "Z_LOSS_WEIGHT": 1e-4,  # moved by #369 from off
     "BATCH_SIZE": 2, "ACCUMULATION_STEPS": 64, "TOKENS_PER_OPT_STEP": 131072,

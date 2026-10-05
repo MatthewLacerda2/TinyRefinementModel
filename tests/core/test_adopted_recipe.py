@@ -32,7 +32,9 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pre_adoption_trajectory.
 RTOL = 1.8e-6  # 10x tests/expensive/test_golden_run.py's NOISE_FLOOR
 WINDOW, STEPS = 8, 12
 ADOPTED = {"RESIDUAL_DTYPE": "float32", "ADAM_B2": 0.95, "Z_LOSS_WEIGHT": 1e-4}
-SET_BACK = {"RESIDUAL_DTYPE": "float16", "ADAM_B2": 0.999, "Z_LOSS_WEIGHT": 0.0}
+SET_BACK = {"RESIDUAL_DTYPE": "float16", "ADAM_B2": 0.999, "Z_LOSS_WEIGHT": 0.0,
+            # the fixture predates #375 too, so the Newton-Schulz coefficients go back with them
+            "MUON_NS_COEFFS": "keller"}
 
 
 def _trajectory(config):
