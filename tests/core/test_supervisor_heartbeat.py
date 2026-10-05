@@ -111,7 +111,7 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     sup_mod.Supervisor = Stub
     try:
         sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate", "--min-free-gb", "0",
                       "--heartbeat-hours", "6", "--poll-seconds", "300"])
     finally:
         sup_mod.Supervisor = original
@@ -203,7 +203,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     sup_mod.Supervisor = Stub
     try:
         sup_mod.main(["--stop-step", "10", "--run-dir", str(run_dir),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate"])
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+                      "--min-free-gb", "0"])
     finally:
         sup_mod.Supervisor = original
 
