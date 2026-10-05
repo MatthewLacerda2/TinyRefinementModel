@@ -33,10 +33,18 @@ below that run's step-512 reading because their schedule decays in-run. If the c
 does not reach 3.55 at all, the target was mis-set and the verdict is void (both arms
 at the cap read as "within"): rerun the reading at a target the control reached, and
 say so on #494, never adopt from it.
+
+AMENDMENT 2026-10-05, applying the fallback above, committed before any post_norm arm
+had a result (git records the order): control seed 0 ended at 3.5924, never reaching
+3.55. The target moves to 3.70, read off control seed 0 alone: it crossed 3.7185 at
+step 1720 and 3.6996 at 1760, so 3.70 sits at ~88% of the run, where the original
+target meant to be. min_delta stays 11M tokens (5% of ~230M). Nothing else changes.
+All arms are read at 3.70 from their recorded runs (no retraining); the 3.55 reading the
+sweep prints is void.
 """
 cap = 262.144
 metric_key = "tokens_to_target_M"
-metric = "millions of tokens to the first validation probe at or below held-out CE 3.55 (lower is better)"
+metric = "millions of tokens to the first validation probe at or below held-out CE 3.70 (lower is better)"
 matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only POST_NORM differs; both arms new runs at 2,000 opt steps"
 notes = """
 Recipe: main after PR #538 (Polar Express on by default), plain 8 x 960 at batch 2,
@@ -52,7 +60,7 @@ act_max per block; tok/s.
 
 [execution]
 command = ["python", "-m", "experiments.recipe.tokens_to_ce",
-           "--target-ce", "3.55", "--opt-steps", "2000", "--val-every", "8",
+           "--target-ce", "3.70", "--opt-steps", "2000", "--val-every", "8",
            "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
            "--tag", "pn2k"]
 seeds = [0, 1, 2]
