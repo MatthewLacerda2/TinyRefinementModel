@@ -1,39 +1,11 @@
-"""Inference must serve the architecture the run selected.
+"""Inference builds the model the trainer builds, and its CLI reaches every sampling knob.
 
-`trm/infer.py` constructed `UniversalReasoner` unconditionally, while `MODEL_ARCH`
-defaulted to `refiner` while Plan A was the live bet (until 2026-09-12; the default
-is `plain` now). The two have
-different param trees, so serving a refiner checkpoint died on a structure
-mismatch — inference was simply unavailable for the architecture we actually
-train, and nothing said so until you tried it.
-
-This is the third tool found naming one architecture while the run selects
-another (`instruments/plots.py` in #181, `instruments/mem_profile` earlier). The
-shape of the bug is always the same: a default written when there was only one
-arch, left behind when a second arrived.
+`trm/infer.py` once constructed one model class by name while the trainer built
+another, so serving a checkpoint died on a structure mismatch (#185, #318). Serving
+now builds through `trm.model.build_model`, the factory the trainer uses.
 """
 
-import pytest
-
 from trm import infer
-from trm.config import MODEL_ARCH
-
-
-def test_serving_follows_the_arch_selector():
-    """The selector is the single source of truth for which network exists; a
-    serving path that ignores it cannot load what the trainer wrote."""
-    assert type(infer.build_serving_model("plain")).__name__ == "PlainTransformer"
-    assert type(infer.build_serving_model("refiner")).__name__ == "RefinerForTraining"
-    assert type(infer.build_serving_model("reasoner")).__name__ == "UniversalReasoner"
-
-
-def test_the_default_is_the_configured_arch():
-    """Called with no argument — the way run_inference() calls it — it must build
-    what MODEL_ARCH says, not a hardcoded choice."""
-    expected = {"plain": "PlainTransformer",
-                "refiner": "RefinerForTraining",
-                "reasoner": "UniversalReasoner"}[MODEL_ARCH]
-    assert type(infer.build_serving_model()).__name__ == expected
 
 
 def test_infer_names_no_model_class():
@@ -42,12 +14,12 @@ def test_infer_names_no_model_class():
     old hardcoding survived unnoticed."""
     from pathlib import Path
     source = Path(infer.__file__).read_text()
-    for cls in ("UniversalReasoner", "RefinerForTraining", "PlainTransformer"):
-        assert f"import {cls}" not in source, f"{cls} is the factory's to import, not infer's"
+    assert "import PlainTransformer" not in source, "the model class is the factory's to import, not infer's"
 
 
-def test_the_factory_imports_each_arch_only_in_its_own_branch():
-    """Importing the model package must not drag in every architecture's code."""
+def test_the_factory_imports_the_model_lazily():
+    """Importing the model package must cost nothing: the model's module is imported
+    inside build_model, when it is called."""
     import ast
     from pathlib import Path
     import trm.model
@@ -64,18 +36,9 @@ def test_the_factory_imports_each_arch_only_in_its_own_branch():
             yield from runs_at_import(child)
 
     top_level = [node for node in runs_at_import(tree) if isinstance(node, (ast.Import, ast.ImportFrom))]
-    assert not top_level, "arch modules are imported inside build_model, lazily"
+    assert not top_level, "the model module is imported inside build_model, lazily"
     lazy = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-    assert {node.module for node in lazy} >= {"trm.model.plain", "trm.model.refiner_lm", "trm.model.reasoner"}
-
-
-@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
-def test_every_arch_satisfies_the_contract_the_serving_loop_uses(arch):
-    """run_model_inference calls model(tokens, depth=..., training=False,
-    new_document=...) and reads `.logits`. Both arches must honour that, or
-    switching MODEL_ARCH would fail at generation time rather than at load."""
-    from trm.model.contract import LanguageModel
-    assert isinstance(infer.build_serving_model(arch), LanguageModel)
+    assert {node.module for node in lazy} >= {"trm.model.plain"}
 
 
 # --- sampling is configurable, and the default is not greedy ------------------
@@ -93,15 +56,6 @@ def test_the_default_temperature_is_warm_enough_to_see_the_model():
 def test_every_sampling_knob_is_reachable_from_the_cli():
     args = infer.build_arg_parser().parse_args(
         ["--temperature", "0.9", "--top-k", "0", "--top-p", "1.0",
-         "--max-new-tokens", "32", "--depth", "8"])
+         "--max-new-tokens", "32"])
     assert (args.temperature, args.top_k, args.top_p) == (0.9, 0, 1.0)
-    assert (args.max_new_tokens, args.depth) == (32, 8)
-
-
-def test_depth_defaults_to_the_serving_knee_and_is_overridable():
-    """Depth is the architecture's whole bet, and the sinusoidal time signal is
-    defined at any step — so serving depth should be a dial, not a constant baked
-    into the generation loop."""
-    from trm.config import INFERENCE_DEPTH
-    assert infer.build_arg_parser().parse_args([]).depth == INFERENCE_DEPTH
-    assert infer.build_arg_parser().parse_args(["--depth", "16"]).depth == 16
+    assert args.max_new_tokens == 32

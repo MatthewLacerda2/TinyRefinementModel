@@ -1,10 +1,10 @@
 """Fixed-prompt transcripts per checkpoint — the logbook, not the referee (#203).
 
-Same prompts, same seed, same depth ladder, every time. That makes two checkpoints
+Same prompts, same seed, every time: one completion per prompt. That makes two checkpoints
 of the same run comparable by eye, and eventually two finished models comparable to
 each other. What it is *not* is evidence: generated text cannot clear a noise floor
 and cannot attribute cause, so nothing here decides KEEP/KILL. That stays with
-`instruments/verdict.py`, the yardstick, and `experiments/depth/`. This file exists
+`instruments/verdict.py` and the yardstick. This file exists
 so a future session can *see* what a checkpoint sounded like, with enough recorded
 context to know what it was looking at.
 
@@ -12,8 +12,7 @@ Three defects in the previous version, all of which made old transcripts unusabl
 
 1. **Not reproducible.** `generate_text` seeded its RNG from the wall clock, so the
    same checkpoint on the same prompts gave different text every run. The docstring
-   claimed comparability the tool did not have. Fixed with an explicit seed, held
-   constant across depths so depth is the only variable that moves.
+   claimed comparability the tool did not have. Fixed with an explicit seed.
 
 2. **It would have killed the training run.** The module set
    `XLA_PYTHON_CLIENT_MEM_FRACTION=0.5` at import — ~3GB of a 6GB card, while the
@@ -21,7 +20,7 @@ Three defects in the previous version, all of which made old transcripts unusabl
    path refuses to start next to a busy card.
 
 3. **It recorded almost nothing.** Step, and a timestamp. Not the token count, the
-   CE at the time, the depth, the device, or either of the two commits that matter
+   CE at the time, the device, or either of the two commits that matter
    (the one that trained the weights and the one generating the transcript).
 
 And a fourth, subtler one: it hardcoded `temperature=0.5`, which #192 identified as
@@ -33,7 +32,6 @@ decoder's failure mode, not the weights'. The default now follows
 Usage — safe to run while training, as long as you leave --device alone:
 
     PYTHONPATH=. python -m instruments.dump_transcripts
-    PYTHONPATH=. python -m instruments.dump_transcripts --depths 4,8
     PYTHONPATH=. python -m instruments.dump_transcripts --device gpu   # card must be free
 """
 
@@ -45,6 +43,7 @@ import os
 # Module-level names on purpose: select_device and main look them up here, which is
 # also where a test replaces them.
 from instruments._common import add_checkpoint_argument, git_head, gpu_memory_used_mib
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # writes generated text for reading; no quantities
@@ -53,7 +52,7 @@ REPORTS = {}  # writes generated text for reading; no quantities
 # has been written into the environment. Hoisting them would pin the backend before
 # --device is read, which is the whole hazard this module used to carry.
 
-PROMPT_SET_VERSION = 1
+PROMPT_SET_VERSION = 2  # v2 (2026-09-28): the Roman Empire prompt shortened, Genesis appended
 
 # The one line a caller reads to find the transcript a run wrote (#338). Everything else
 # on stdout is for a human and may change; this line is a contract, parsed by
@@ -65,26 +64,19 @@ WRITTEN_PREFIX = "TRANSCRIPT "
 # Frozen. Changing or removing a prompt bumps PROMPT_SET_VERSION; appending does
 # not, because every file records the prompts that actually ran. Prompts 1-4 probe
 # prose, 5-8 cover the code/math/procedure/narrative ground the first four miss —
-# code and math are ~65% of the current curriculum and would otherwise go unlogged.
+# code and math are ~65% of the current curriculum and would otherwise go unlogged;
+# 9 is memorised scripture, a register the curriculum barely holds.
 PROMPTS = [
     "the capital of france is",                    # factual recall, one right answer
     "the american flag is red, white and",         # loop detector: enumeration invites repetition
     "know the truth and the truth will set you",   # memorised common text
-    "The Roman Empire was one of the largest",     # multi-sentence explanation
+    "the roman empire was",                        # multi-sentence explanation
     "def fibonacci(n):",                           # code
     "2 + 2 = 4. 3 + 5 =",                          # arithmetic
     "To make bread, you first need to",            # ordered procedure
     "Once upon a time, in a small village,",       # long-range coherence, no factual anchor
+    "and God said let there be the light",         # memorised scripture, archaic register
 ]
-
-# Doubling ladder across the trained range: 1 is the degenerate no-refinement
-# baseline, 8 is MAX_STEPS_LIMIT. Deliberately spans rather than picks, because
-# depth is a runtime dial on this architecture — the same weights serve at any of
-# these, and which one is *best* is an open question this logbook is built to watch.
-DEFAULT_DEPTHS = (1, 2, 4, 8)
-# Architectures that ignore depth. Every rung of a ladder would be the same forward
-# pass and, at one seed, the same completion: they run once (#317).
-DEPTHLESS_ARCHES = frozenset({"plain"})
 
 DEFAULT_SEED = 42
 REPETITION_NGRAM = 4
@@ -97,9 +89,8 @@ def repetition_score(token_ids, n=REPETITION_NGRAM):
     """Fraction of n-grams that already appeared earlier in the same completion.
 
     The failure mode this whole logbook watches is looping, and by eye that is a
-    vibe. This turns it into one deterministic float per completion, per depth —
-    which is what makes "depth 8 sometimes overthinks" checkable rather than
-    remembered. Measured on token ids, not words, so it is tokenizer-exact.
+    vibe. This turns it into one deterministic float per completion, checkable
+    rather than remembered. Measured on token ids, not words, so it is tokenizer-exact.
 
     0.0 means nothing repeated; a hard loop approaches 1.0.
     """
@@ -113,30 +104,6 @@ def repetition_score(token_ids, n=REPETITION_NGRAM):
         else:
             seen.add(gram)
     return repeats / len(grams)
-
-
-def depths_for(arch, requested=None):
-    """The ladder to run: `requested`, else DEFAULT_DEPTHS — reduced to its first
-    rung for an arch with no depth dial, where more rungs only repeat one completion."""
-    depths = DEFAULT_DEPTHS if requested is None else tuple(requested)
-    return depths[:1] if arch in DEPTHLESS_ARCHES else depths
-
-
-def parse_depths(text):
-    """'1,2,4,8' -> (1, 2, 4, 8). Ordered, de-duplicated, positive."""
-    depths = []
-    for piece in text.split(","):
-        piece = piece.strip()
-        if not piece:
-            continue
-        depth = int(piece)
-        if depth < 1:
-            raise ValueError(f"depth must be >= 1, got {depth}")
-        if depth not in depths:
-            depths.append(depth)
-    if not depths:
-        raise ValueError("no depths given")
-    return tuple(depths)
 
 
 def opt_step_from_checkpoint(ckpt_step, accumulation_steps):
@@ -237,12 +204,8 @@ def build_arg_parser():
                              "canonical series but needs a free card")
     parser.add_argument("--force", action="store_true",
                         help="run on the GPU even if it looks busy")
-    parser.add_argument("--depths", default=None,
-                        help=f"depth ladder (default {','.join(str(d) for d in DEFAULT_DEPTHS)}); "
-                             "every prompt runs at every depth. An arch without a depth dial "
-                             f"({', '.join(sorted(DEPTHLESS_ARCHES))}) runs only the first")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
-                        help=f"RNG seed, held constant across depths (default {DEFAULT_SEED})")
+                        help=f"RNG seed (default {DEFAULT_SEED})")
     parser.add_argument("--temperature", type=float, default=None,
                         help="default: trm.infer.DEFAULT_TEMPERATURE")
     parser.add_argument("--max-new-tokens", type=int, default=128)
@@ -272,15 +235,10 @@ def written_transcript(stdout):
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    requested = None if args.depths is None else parse_depths(args.depths)
     select_device(args.device, args.force)
 
     import tiktoken
-    from trm.config import ACCUMULATION_STEPS, MODEL_ARCH, TOKENIZER_NAME, TOKENS_PER_OPT_STEP
-    depths = depths_for(MODEL_ARCH, requested)
-    if requested is not None and depths != requested:
-        print(f"ℹ️ MODEL_ARCH={MODEL_ARCH} ignores depth: running depth {depths[0]} only, "
-              f"not {','.join(map(str, requested))}")
+    from trm.config import TOKENIZER_NAME
     from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     from trm.runtime.restore import restore_model
@@ -295,8 +253,8 @@ def main(argv=None):
         if discovered is not None:
             run_dir = os.path.join("runs", run_id)
 
-    model, ckpt_step = restore_model(args.checkpoint_path)
-    opt_step = opt_step_from_checkpoint(ckpt_step, ACCUMULATION_STEPS)
+    model, ckpt_step = restore_model(CONFIG, args.checkpoint_path)
+    opt_step = opt_step_from_checkpoint(ckpt_step, CONFIG.ACCUMULATION_STEPS)
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
 
     train_ce = val_ce = model_commit = model_dirty = None
@@ -322,34 +280,28 @@ def main(argv=None):
     tool_commit = git_head()
 
     results = []
-    print(f"▶ {len(prompts)} prompts x {len(depths)} depths = "
-          f"{len(prompts) * len(depths)} completions, seed {args.seed}, on {args.device}")
-    for depth in depths:
-        for index, prompt in enumerate(prompts):
-            started = datetime.datetime.now()
-            # Same seed at every depth: depth is the only variable that moves, so
-            # a difference between two completions is the depth and not the dice.
-            tokens = generate_text(model, enc, prompt, max_new_tokens=args.max_new_tokens,
-                                   temperature=temperature, depth=depth, seed=args.seed,
-                                   quiet=True)
-            elapsed = (datetime.datetime.now() - started).total_seconds()
-            new_tokens = tokens[len(enc.encode(prompt)):]
-            results.append({
-                "prompt": prompt,
-                "depth": depth,
-                "standard": index < standard,
-                "text": enc.decode(new_tokens).strip(),
-                "repetition": repetition_score(new_tokens),
-                "tokens_per_second": (len(new_tokens) / elapsed) if elapsed > 0 else None,
-                "generated_tokens": len(new_tokens),
-            })
-            print(f"  d{depth} [{index + 1}/{len(prompts)}] "
-                  f"rep {results[-1]['repetition']:.3f}  {prompt[:40]}")
+    print(f"▶ {len(prompts)} prompts, seed {args.seed}, on {args.device}")
+    for index, prompt in enumerate(prompts):
+        started = datetime.datetime.now()
+        tokens = generate_text(model, enc, prompt, max_new_tokens=args.max_new_tokens,
+                               temperature=temperature, seed=args.seed,
+                               quiet=True)
+        elapsed = (datetime.datetime.now() - started).total_seconds()
+        new_tokens = tokens[len(enc.encode(prompt)):]
+        results.append({
+            "prompt": prompt,
+            "standard": index < standard,
+            "text": enc.decode(new_tokens).strip(),
+            "repetition": repetition_score(new_tokens),
+            "tokens_per_second": (len(new_tokens) / elapsed) if elapsed > 0 else None,
+            "generated_tokens": len(new_tokens),
+        })
+        print(f"  [{index + 1}/{len(prompts)}] rep {results[-1]['repetition']:.3f}  {prompt[:40]}")
 
-    # The first completion at each depth pays for a JIT compile of the whole
-    # generation step, which is ~50x the steady-state cost. Averaging it in would
-    # make the throughput field a lie that gets worse the shorter the run.
-    steady = [r for r in results if r["tokens_per_second"] is not None][len(depths):]
+    # The first completion pays for a JIT compile of the whole generation step, which
+    # is ~50x the steady-state cost. Averaging it in would make the throughput field a
+    # lie that gets worse the shorter the run.
+    steady = [r for r in results if r["tokens_per_second"] is not None][1:]
     throughput = round(sum(r["tokens_per_second"] for r in steady) / len(steady), 2) if steady else None
 
     fields = {
@@ -359,16 +311,13 @@ def main(argv=None):
         "standard_prompts": standard,
         "step": opt_step,
         "checkpoint_step": ckpt_step,
-        "tokens": opt_step * TOKENS_PER_OPT_STEP,
+        "tokens": opt_step * CONFIG.TOKENS_PER_OPT_STEP,
         "train_ce": None if train_ce is None else round(train_ce, 4),
         "val_ce": None if val_ce is None else round(val_ce, 4),
-        "val_ce_depth": _val_depth(),
-        "depths": list(depths),
         "device": args.device,
         "seed": args.seed,
         "temperature": temperature,
         "max_new_tokens": args.max_new_tokens,
-        "model_arch": MODEL_ARCH,
         "model_commit": model_commit,
         "model_commit_dirty": model_dirty,
         "tool_commit": tool_commit,
@@ -380,45 +329,26 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, transcript_filename(opt_step, args.device))
     with open(out_path, "w") as handle:
-        handle.write(render_document(fields, results, depths))
+        handle.write(render_document(fields, results))
     print(f"\n✨ {out_path}")
     announce_written(out_path)
 
 
-def _val_depth():
-    """VAL_FIXED_DEPTH, recorded separately because val_ce is measured there while
-    the completions span the whole ladder. One `depth:` key would silently claim
-    the CE and the text describe the same configuration. They do not."""
-    try:
-        from trm.train.validation import VAL_FIXED_DEPTH
-        return VAL_FIXED_DEPTH
-    except ImportError:
-        return None
-
-
-def render_document(fields, results, depths):
+def render_document(fields, results):
     parts = [render_frontmatter(fields), ""]
     parts += [f"# Transcripts — opt step {fields['step']:,} · {fields['tokens'] / 1e9:.3f}B tokens", ""]
 
-    # Mean repetition per depth, up top: if a depth overthinks, it loops, and this
-    # is the one line that shows it without reading eight completions.
-    parts += ["## Repetition by depth", "",
-              "Fraction of 4-grams already seen earlier in the same completion. "
-              "Lower is better; a hard loop approaches 1.0.", "",
-              "| depth | mean repetition |", "|---|---|"]
-    for depth in depths:
-        at_depth = [r["repetition"] for r in results if r["depth"] == depth and r["standard"]]
-        mean = sum(at_depth) / len(at_depth) if at_depth else 0.0
-        parts.append(f"| {depth} | {mean:.3f} |")
-    parts.append("")
+    # Mean repetition up top: looping is the failure this logbook watches, and this is
+    # the one line that shows it without reading eight completions.
+    standard = [r["repetition"] for r in results if r["standard"]]
+    mean = sum(standard) / len(standard) if standard else 0.0
+    parts += [f"**Mean repetition {mean:.3f}** — the fraction of 4-grams already seen "
+              "earlier in the same completion. Lower is better; a hard loop approaches 1.0.", ""]
 
-    for prompt in dict.fromkeys(r["prompt"] for r in results):
-        rows = [r for r in results if r["prompt"] == prompt]
-        tag = "" if rows[0]["standard"] else "  *(non-standard, passed on the command line)*"
-        parts += [f"## `{prompt}`{tag}", ""]
-        for row in sorted(rows, key=lambda r: r["depth"]):
-            parts += [f"**depth {row['depth']}** · repetition {row['repetition']:.3f}", "",
-                      "```", row["text"] or "(empty)", "```", ""]
+    for row in results:
+        tag = "" if row["standard"] else "  *(non-standard, passed on the command line)*"
+        parts += [f"## `{row['prompt']}`{tag}", "", f"repetition {row['repetition']:.3f}", "",
+                  "```", row["text"] or "(empty)", "```", ""]
     return "\n".join(parts) + "\n"
 
 

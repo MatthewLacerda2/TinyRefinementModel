@@ -3,7 +3,7 @@
 Covers the three ways an eval silently lies: wrong example prep (split /
 truncation), wrong metric math (the paper-number comparison inherits any slip),
 and batching artifacts (padding or bucket membership changing a score). Plus the
-real-model path: the tiny refiner through the exact adapter the runner uses.
+real-model path: a tiny model through the exact adapter the runner uses.
 All offline — a fake whitespace tokenizer stands in for tiktoken.
 """
 
@@ -11,6 +11,8 @@ import hashlib
 
 import numpy as np
 import pytest
+
+from trm.settings import CONFIG
 
 from instruments.yardstick.yardstick import (
     encode_example,
@@ -22,6 +24,14 @@ from instruments.yardstick.yardstick import (
 
 VOCAB = 11
 PAD = 0
+
+
+def _write_shard(path, tokens):
+    """A speedrun-format token shard: the 256-int32 header, then uint16 ids."""
+    from instruments.yardstick import fineweb_val
+    header = np.zeros(fineweb_val.HEADER_INT32S, dtype=np.int32)
+    header[:3] = fineweb_val.MAGIC, 1, len(tokens)
+    path.write_bytes(header.tobytes() + np.asarray(tokens, dtype=np.uint16).tobytes())
 
 
 class FakeEnc:
@@ -113,23 +123,21 @@ def test_sha256_gate(tmp_path):
         verify_sha256(str(p), "0" * 64)
 
 
-def test_tiny_refiner_through_the_runner_adapter():
-    """The real path at toy scale: RefinerForTraining -> make_logits_fn ->
-    score_examples. Finite, in-range, and deterministic across calls."""
+def test_tiny_model_through_the_runner_adapter():
+    """The real path at toy scale: the model -> make_logits_fn -> score_examples.
+    Finite, in-range, and deterministic across calls."""
     from flax import nnx
 
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model import build_model
     from instruments.yardstick.eval_yardstick import make_logits_fn
 
     pad = 63
-    model = RefinerForTraining(
-        32, nnx.Rngs(0), vocab_size=64, num_heads=2, encoder_layers=1,
-        max_depth=2, max_seq_len=64, pad_token_id=pad,
-    )
+    model = build_model(CONFIG, nnx.Rngs(0), dim=32, vocab_size=64, num_heads=2, num_layers=1,
+                        max_seq_len=64, pad_token_id=pad)
     rng = np.random.default_rng(3)
     encoded = [(list(rng.integers(1, 62, size=n)), list(rng.integers(1, 62, size=2)))
                for n in (5, 11, 20)]
-    logits_fn = make_logits_fn(model, depth=2)
+    logits_fn = make_logits_fn(model)
     runs = [summarize(score_examples(logits_fn, encoded, pad_token_id=pad,
                                      batch_size=2, buckets=(16, 32)))
             for _ in range(2)]
@@ -142,15 +150,20 @@ def test_tiny_refiner_through_the_runner_adapter():
 TINY_PLAIN = dict(dim=32, num_heads=2, num_layers=1, max_seq_len=64)
 
 
-@pytest.mark.parametrize("arch_flag", [[], ["--arch", "plain"]], ids=["default-arch", "explicit-plain"])
-def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch, arch_flag):
-    """#313: `plain` is the default architecture, and the runner could not restore it —
-    `--arch` offered only reasoner/refiner and the restore map raised KeyError on the
-    default. So the base run's milestone and completion scoring died on the live arch.
+def _tiny(seed=0):
+    from flax import nnx
 
-    Drives main() end to end on a tiny plain checkpoint: the real arch flag, the real
-    restore (only the skeleton's size is shrunk), the real scorer and model-card row.
-    LAMBADA itself is a two-line local file and the tokenizer a fake, so it runs offline."""
+    from trm.model import build_model
+    return build_model(CONFIG, nnx.Rngs(seed), **TINY_PLAIN)
+
+
+def test_the_runner_restores_and_scores_a_checkpoint(tmp_path, monkeypatch):
+    """#313: the runner once could not restore the live model, so the base run's
+    milestone and completion scoring died on it.
+
+    Drives main() end to end on a tiny checkpoint: the real restore (only the
+    skeleton's size is shrunk), the real scorer and model-card row. LAMBADA itself is
+    a two-line local file and the tokenizer a fake, so it runs offline."""
     import json
     import types
 
@@ -159,47 +172,67 @@ def test_the_runner_restores_and_scores_a_plain_checkpoint(tmp_path, monkeypatch
     import orbax.checkpoint as ocp
     from flax import nnx
 
-    from instruments.arch import build
     from instruments.yardstick import eval_yardstick
-    from trm.config import MODEL_ARCH
     from trm.runtime import checkpoints as ck
     from trm.runtime.monitor import LossMonitor
-    from trm.runtime.restore import restore_arch
+    from trm.runtime.restore import restore_model
 
-    if not arch_flag and MODEL_ARCH != "plain":
-        pytest.skip(f"the default-arch case needs MODEL_ARCH=plain, this process has {MODEL_ARCH}")
-
-    saved = build("plain", **TINY_PLAIN)
+    saved = _tiny()
     mngr = ocp.CheckpointManager(str(tmp_path / "checkpoints"), item_names=ck.CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(create=True))
     ck.save_checkpoint(mngr, 7, saved, nnx.Optimizer(saved, optax.adam(1e-3), wrt=nnx.Param),
-                       LossMonitor(), "run_tiny")
+                       LossMonitor.of(CONFIG), "run_tiny")
 
     restored = {}
 
-    def tiny_restore(arch, checkpoint_path, step=None):
-        restored["arch"] = arch
-        restored["model"], step = restore_arch(arch, checkpoint_path, step=step, **TINY_PLAIN)
+    def tiny_restore(config, checkpoint_path, step=None):
+        restored["model"], step = restore_model(config, checkpoint_path, step=step, **TINY_PLAIN)
         return restored["model"], step
 
-    monkeypatch.setattr(eval_yardstick, "restore_arch", tiny_restore)
+    monkeypatch.setattr(eval_yardstick, "restore_model", tiny_restore)
     monkeypatch.setattr(eval_yardstick, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: FakeEnc()))
     data = tmp_path / "lambada.jsonl"
     data.write_text('{"text": "1 2 3 4"}\n{"text": "5 6 7 8 9"}\n')
     out = tmp_path / "row.json"
+    shard = tmp_path / "fineweb_val.bin"
+    _write_shard(shard, np.random.default_rng(0).integers(1, 9, 200))
+    monkeypatch.setattr(eval_yardstick.fineweb_val, "fetch_fineweb_val", lambda: str(shard))
 
     eval_yardstick.main(["--checkpoint-path", str(tmp_path / "checkpoints"), "--data-path", str(data),
-                         "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out), *arch_flag])
+                         "--limit", "2", "--batch", "2", "--no-heldout", "--json-out", str(out),
+                         "--fineweb-tokens", "130", "--fineweb-window", "64"])
 
-    assert restored["arch"] == "plain"
     saved_leaves = jax.tree_util.tree_leaves(nnx.state(saved))
     restored_leaves = jax.tree_util.tree_leaves(nnx.state(restored["model"]))
     assert len(saved_leaves) == len(restored_leaves), "a restore that drops leaves must not pass"
     assert all(np.array_equal(a, b) for a, b in zip(saved_leaves, restored_leaves)), \
         "the checkpoint's weights, not the skeleton's own initialization"
     row = json.loads(out.read_text())
-    assert row["arch"] == "plain" and row["checkpoint"]["step"] == 7
+    assert row["checkpoint"]["step"] == 7
     assert row["lambada"]["num_examples"] == 2 and 0.0 <= row["lambada"]["lambada_acc"] <= 1.0
+    assert row["fineweb_val"]["targets"] > 0 and np.isfinite(row["fineweb_val"]["val_ce"])
+
+
+def test_a_fineweb_failure_does_not_cost_the_lambada_reading(tmp_path, monkeypatch):
+    import json
+    import types
+
+    from instruments.yardstick import eval_yardstick
+
+    def broken():
+        raise ValueError("sha256 mismatch")
+
+    monkeypatch.setattr(eval_yardstick.fineweb_val, "fetch_fineweb_val", broken)
+    monkeypatch.setattr(eval_yardstick, "restore_model", lambda config, path, step=None: (object(), 3))
+    monkeypatch.setattr(eval_yardstick, "tiktoken", types.SimpleNamespace(get_encoding=lambda name: FakeEnc()))
+    monkeypatch.setattr(eval_yardstick, "make_logits_fn", lambda model: rule_logits_fn)
+    data = tmp_path / "lambada.jsonl"
+    data.write_text('{"text": "1 2 3 4"}\n')
+    out = tmp_path / "row.json"
+    eval_yardstick.main(["--checkpoint-path", str(tmp_path), "--data-path", str(data), "--no-heldout",
+                         "--json-out", str(out)])
+    row = json.loads(out.read_text())
+    assert row["lambada"]["num_examples"] == 1 and "sha256 mismatch" in row["fineweb_val"]["error"]
 
 
 def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
@@ -210,30 +243,29 @@ def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
     import orbax.checkpoint as ocp
     from flax import nnx
 
-    from instruments.arch import build
     from trm.runtime import checkpoints as ck
     from trm.runtime.monitor import LossMonitor
-    from trm.runtime.restore import restore_arch
+    from trm.runtime.restore import restore_model
 
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=ck.CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(max_to_keep=None, create=True))
-    older, newer = build("plain", seed=1, **TINY_PLAIN), build("plain", seed=2, **TINY_PLAIN)
+    older, newer = _tiny(seed=1), _tiny(seed=2)
     for step, model in ((3, older), (9, newer)):
         ck.save_checkpoint(mngr, step, model, nnx.Optimizer(model, optax.adam(1e-3), wrt=nnx.Param),
-                           LossMonitor(), "run_tiny")
+                           LossMonitor.of(CONFIG), "run_tiny")
 
     def leaves(model):
         return jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
 
-    at_3, step = restore_arch("plain", str(tmp_path), step=3, **TINY_PLAIN)
+    at_3, step = restore_model(CONFIG, str(tmp_path), step=3, **TINY_PLAIN)
     assert len(leaves(older)) == len(leaves(at_3))
     assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3)))
     assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3))), \
         "the two saved models must differ, or this test cannot tell the steps apart"
-    _, default_step = restore_arch("plain", str(tmp_path), **TINY_PLAIN)
+    _, default_step = restore_model(CONFIG, str(tmp_path), **TINY_PLAIN)
     assert default_step == 9, "with no step named, the newest stays the default"
     with pytest.raises(SystemExit, match="step 5"):
-        restore_arch("plain", str(tmp_path), step=5, **TINY_PLAIN)
+        restore_model(CONFIG, str(tmp_path), step=5, **TINY_PLAIN)
 
 
 def test_an_hf_tokenizer_encodes_without_special_tokens():

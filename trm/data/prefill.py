@@ -9,8 +9,8 @@ import glob
 import time
 import threading
 import queue
-from trm.config import MAX_SEQ_LEN, TOKENIZER_NAME, resolve_root
-from dotenv import load_dotenv
+from trm.config import TOKENIZER_NAME, resolve_root
+from trm.settings import CONFIG, load_env, location
 
 # Shard order (#364, measured by reading the code below, not assumed): each source is
 # streamed with load_dataset(..., streaming=True) and never shuffled, so the chunk
@@ -18,11 +18,11 @@ from dotenv import load_dotenv
 # sequentially. Consecutive micro-steps from one source are neighbours in that order.
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
-load_dotenv()
+load_env()
 
 # Config
 ENC_NAME = TOKENIZER_NAME
-OUTPUT_DIR = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
+OUTPUT_DIR = resolve_root(location("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
@@ -57,6 +57,18 @@ MIXTURE = [
         "target_tokens": 2_500_000_000,
         "folder": "pretrain",
         "alias": "finemath"
+    },
+    {
+        # General web, the slice the first base run lacked (#489). Streamed in the same
+        # order the modded-nanogpt speedrun reads it, so its FIRST 100M tokens ARE the
+        # speedrun FineWeb val shard that instruments/yardstick/fineweb_val scores: after
+        # a prefill, move chunk_0.npy (125M tokens) out of the bucket, or a run trains
+        # on its own yardstick. What the #489 pair read is chunk_1 and chunk_2.
+        "path": "HuggingFaceFW/fineweb",
+        "config": "sample-10BT",
+        "target_tokens": 500_000_000,
+        "folder": "pretrain",
+        "alias": "fineweb"
     },
     {
         "path": "HuggingFaceH4/ultrachat_200k",
@@ -193,11 +205,11 @@ def tokenize_buffer(pool, buffer):
     return np.array([t for sub in token_lists for t in sub], dtype=np.int32)
 
 
-def write_chunk(save_path, file_idx, token_acc):
-    """Saves accumulated tokens as a stride-aligned chunk. Returns the next chunk
-    index and the unaligned remainder (carried into the next chunk)."""
+def write_chunk(save_path, file_idx, token_acc, stride):
+    """Saves accumulated tokens as a chunk aligned to `stride` (a row: two MAX_SEQ_LEN
+    windows and the target after them). Returns the next chunk index and the
+    unaligned remainder (carried into the next chunk)."""
     chunk_data = np.concatenate(token_acc)
-    stride = 2 * MAX_SEQ_LEN + 1
     valid_len = (len(chunk_data) // stride) * stride
     if valid_len == 0:
         return file_idx, token_acc
@@ -210,7 +222,7 @@ def write_chunk(save_path, file_idx, token_acc):
     return file_idx + 1, [remainder] if len(remainder) > 0 else []
 
 
-def process_dataset(pool, ds_cfg):
+def process_dataset(pool, ds_cfg, stride):
     name = ds_cfg.get('alias') or ds_cfg['path'].split('/')[-1]
     target = ds_cfg['target_tokens']
     save_path = os.path.join(OUTPUT_DIR, ds_cfg['folder'], name)
@@ -262,7 +274,7 @@ def process_dataset(pool, ds_cfg):
             sys.stdout.flush()
 
             if sum(len(x) for x in token_acc) >= TOKENS_PER_FILE:
-                file_idx, token_acc = write_chunk(save_path, file_idx, token_acc)
+                file_idx, token_acc = write_chunk(save_path, file_idx, token_acc, stride)
                 save_progress(save_path, file_idx, total_tokens_ds, items_processed)
 
             if total_tokens_ds >= target:
@@ -289,7 +301,7 @@ def process_dataset(pool, ds_cfg):
             total_tokens_ds += len(flat_batch)
             items_processed += len(buffer)
         if token_acc:
-            file_idx, _ = write_chunk(save_path, file_idx, token_acc)
+            file_idx, _ = write_chunk(save_path, file_idx, token_acc, stride)
             save_progress(save_path, file_idx, total_tokens_ds, items_processed)
             print(f"\n🏁 Finished {name}. Total: {total_tokens_ds/1e9:.2f}B tokens")
 
@@ -301,7 +313,7 @@ def run_prefill():
 
     with Pool(num_workers) as pool:
         for ds_cfg in MIXTURE:
-            process_dataset(pool, ds_cfg)
+            process_dataset(pool, ds_cfg, 2 * CONFIG.MAX_SEQ_LEN + 1)
 
 
 if __name__ == "__main__":

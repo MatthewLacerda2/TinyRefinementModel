@@ -5,7 +5,7 @@ referee. This is the other half — the thing that actually executes the sweep t
 spec describes, so the numbers the referee judges are the numbers the spec asked
 for, and nobody hand-copies a table into a criterion.
 
-    python -m instruments.experiment experiments/depth/specs/077-per-pass-supervision.toml
+    python -m instruments.experiment experiments/recipe/specs/287-peak-lr-pair.toml
 
 What it does, in order:
 
@@ -32,11 +32,14 @@ whichever `experiments/` folder gets tombstoned next.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -47,6 +50,8 @@ from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
 )
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
+from trm.runtime.oom import rerun_protected
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -59,10 +64,10 @@ GATE_COMMAND = (sys.executable, "-m", "pytest", "tests/core", "-q", "-x")
 class Leg:
     """One pass of the sweep: a set of flags, the arms it runs, the seeds it uses.
 
-    Legs exist because real experiments here have more than one. #86 trained at
-    depths 1–8 and then ran a *second* command — depth 8, a longer eval sequence,
-    extra eval depths — to measure extrapolation past the cap. #77 ran three
-    seeds, then pre-registered an extension to six for one arm only. A runner
+    Legs exist because real experiments here have more than one. #86 ran its
+    sweep and then a *second* command, with different flags, to measure
+    extrapolation past the cap it trained at. #77 ran three seeds, then
+    pre-registered an extension to six for one arm only. A runner
     that could express neither would have been a runner for experiments we do not
     do, so the same retrofit that falsified the spec format falsified this too.
 
@@ -222,13 +227,42 @@ def run_gate(cwd: pathlib.Path) -> None:
             f"gate failed (exit {proc.returncode}) — fix the tree before spending a sweep on it")
 
 
+# How long an arm gets to exit after SIGTERM, then after SIGKILL, when the runner
+# is going down under it (#519).
+STOP_GRACE_SECONDS = 60.0
+KILL_WAIT_SECONDS = 30.0
+
+
+def stop_arm(proc: subprocess.Popen) -> bool:
+    """TERM, then KILL; whether the arm is gone. The grace is the trainer's, to
+    finish a checkpoint write (`exit_cleanly_on_sigterm`)."""
+    if proc.poll() is not None:
+        return True
+    proc.terminate()
+    try:
+        proc.wait(timeout=STOP_GRACE_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    try:
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
-            cwd: pathlib.Path) -> list[dict]:
+            cwd: pathlib.Path, card: GpuLock | None = None) -> list[dict]:
     """Launch one (leg, arm, seed) and return its measurements as journal rows.
 
     Harness stdout is streamed through to the terminal as well as captured: a
     sweep is long, and a runner that swallows its output leaves you watching a
     blank screen for an hour wondering whether it hung.
+
+    The arm is named in `card`, the lock this runner holds, so a runner killed
+    outright leaves a lock its orphaned arm still holds; and whatever ends the
+    runner under a live arm (SIGTERM, Ctrl-C, a bug) stops the arm first, or
+    leaves it the lock if it will not stop (#519, as the supervisor does since #516).
     """
     argv = execution.argv(leg, arm, seed)
     env = module_env(cwd, **execution.env)
@@ -236,12 +270,22 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
     started = time.time()
     captured: list[str] = []
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in proc.stdout:
-        captured.append(line)
-        sys.stdout.write(line)
-    proc.wait()
+    proc = None
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        if card is not None:
+            card.name_child(proc.pid)
+        for line in proc.stdout:
+            captured.append(line)
+            sys.stdout.write(line)
+        proc.wait()
+    except BaseException:
+        if proc is not None and not stop_arm(proc) and card is not None:
+            print(f"⚠ pid {proc.pid} is still alive after SIGKILL; the GPU lock is left to it",
+                  file=sys.stderr, flush=True)
+            card.leave_to(proc.pid)
+        raise
     elapsed = time.time() - started
 
     if proc.returncode != 0:
@@ -261,7 +305,7 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
 
 def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
-          resume: bool = True) -> list[dict]:
+          resume: bool = True, card: GpuLock | None = None) -> list[dict]:
     """Run everything the spec asks for, skipping what the journal already has."""
     path = journal_path(spec.id)
     done = read_journal(path) if resume else []
@@ -273,7 +317,7 @@ def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
         if key in already:
             print(f"skip: {leg.name or 'run'} {arm} seed {seed} (already in journal)", flush=True)
             continue
-        fresh = run_one(execution, leg, arm, seed, cwd)
+        fresh = run_one(execution, leg, arm, seed, cwd, card)
         append_journal(path, fresh)
         rows.extend(fresh)
     return rows
@@ -548,6 +592,9 @@ def main(argv=None) -> int:
                     help="ignore the journal and re-run every (arm, seed)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite results already recorded in the spec file")
+    ap.add_argument("--no-gpu-lock", action="store_true",
+                    help="run the sweep without taking the card's lock — for a spec whose "
+                         "arms never touch the GPU. Anything that trains must take it")
     ap.add_argument("--new", action="store_true",
                     help="write a pre-registration skeleton at SPEC and stop, with the "
                          "runner's two blocking traps already avoided (command as a "
@@ -567,12 +614,30 @@ def main(argv=None) -> int:
     if args.dry_run:
         for leg, arm, seed in planned:
             print(f"$ {' '.join(execution.argv(leg, arm, seed))}")
+        holder = GpuLock().live_holder()
+        if holder:
+            print(f"\n(the card is currently claimed by pid {holder[0]} "
+                  f"{holder[1] or 'unlabelled'})")
         return 0
 
     if not args.no_gate:
         run_gate(REPO_ROOT)
 
-    rows = sweep(spec, execution, resume=not args.no_resume)
+    # The card is a serial queue and this runner is most of what goes on it, so it
+    # has to queue like everything else (#445). Taken after the gate, not before:
+    # a gate that fails never wanted the card, and holding it through a few minutes
+    # of CPU tests would idle the card for a run that is not going to happen.
+    card = None if args.no_gpu_lock else GpuLock(label=spec.id)
+    previous_sigterm = exit_on_sigterm()  # so a TERM unwinds through run_one and the `with` (#519)
+    try:
+        with card or contextlib.nullcontext():
+            rows = sweep(spec, execution, resume=not args.no_resume, card=card)
+    except Preflight as exc:
+        print(f"❌ {exc}")
+        print("   wait for it, or pass --no-gpu-lock if this spec never touches the card")
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
     results = merge_constants(spec, collect(rows, execution.metric), args.spec)
     record_results(args.spec, results, execution.metric, force=args.force)
 
@@ -590,5 +655,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def cli() -> int:
+    """The command line. Arms started from a Claude shell inherit oom_score_adj 200 and
+    are the kernel's first OOM victim (#524), so a sweep first reruns itself under the
+    user manager at 100. Here and not in main(), which tests call in-process: a rerun
+    there would escape their fixtures onto the real card lock and runs/."""
+    argv = sys.argv[1:]
+    if not {"--dry-run", "--new", "-h", "--help"} & set(argv):
+        rerun = rerun_protected([sys.executable, "-m", "instruments.experiment", *argv],
+                                dict(os.environ), pathlib.Path.cwd(), label="experiment")
+        if rerun is not None:
+            return rerun
+    return main(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

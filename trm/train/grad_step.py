@@ -1,54 +1,30 @@
+import functools
+
 import jax
 from flax import nnx
 import jax.numpy as jnp
 import optax
 
-from trm.config import (
-    MAX_SEQ_LEN,
-    ACCUMULATION_STEPS,
-    PAD_TOKEN_ID,
-)
 from trm.train.losses import chunked_cross_entropy_rows
 
-def compute_total_loss(ce1, ce2, graded_aux):
-    """Assembles the full training loss: CE on both windows, plus whatever
-    auxiliary terms the architecture asked to have graded.
-
-    Standalone (not buried in the jitted grad step) so the loss-wiring test can
-    assert every cost the model reports actually contributes — a forget-cost term
-    was once computed and logged but never added here, and the model spent ~3900
-    opt steps not learning to forget.
-
-    This function knows no architecture's cost names: `graded_aux` arrives
-    already weighted from the model's own `grade_aux` (#105). Terms are added one
-    at a time in iteration order rather than summed as a group, so the arithmetic
-    an architecture's recorded trajectory was produced under is reproducible.
-    """
-    total = ce1 + ce2
-    for term in graded_aux.values():
-        total = total + term
-    return total
-
-
-@nnx.jit(static_argnames=['depth'])
-def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss_scale=1.0,
-                      clip_norm=jnp.inf):
-    # Whether this batch opens a new document is a fact about the data stream;
-    # what a model does with it (start fresh, or continue from carried state) is
-    # the model's business.
-    new_document = jnp.any(doc_boundary).squeeze()
-
+@nnx.jit(static_argnames=['z_loss_weight'])
+def compute_grad_step(model, batch_tokens, loss_scale=1.0, clip_norm=jnp.inf, z_loss_weight=0.0):
+    # A row is two windows and the target after them, so the window length is the
+    # batch's own; the pad is the one the model masks (#475). `z_loss_weight` is
+    # Config.Z_LOSS_WEIGHT (#369), static (a Python float), 0 off: the trainer hands
+    # it down through HotPath.
     def loss_fn(model):
         # Training models return pre-head states (out.hidden), not full logits, so the
         # CE is scored chunk-by-chunk through the tied embedding (chunked_cross_entropy,
         # #19) — this is what keeps the [b, s, vocab] f32 logit peak off the card.
         embedding = model.embed.embedding[...]
 
-        seq1_in, seq1_out = batch_tokens[:, :MAX_SEQ_LEN], batch_tokens[:, 1:MAX_SEQ_LEN+1]
-        seq2_in, seq2_out = batch_tokens[:, MAX_SEQ_LEN:2*MAX_SEQ_LEN], batch_tokens[:, MAX_SEQ_LEN+1:2*MAX_SEQ_LEN+1]
+        window = (batch_tokens.shape[1] - 1) // 2
+        seq1_in, seq1_out = batch_tokens[:, :window], batch_tokens[:, 1:window+1]
+        seq2_in, seq2_out = batch_tokens[:, window:2*window], batch_tokens[:, window+1:2*window+1]
 
-        out1 = model(seq1_in, depth=depth, training=True, new_document=new_document)
-        out2 = model(seq2_in, depth=depth, training=True, new_document=False)
+        out1 = model(seq1_in, training=True)
+        out2 = model(seq2_in, training=True)
 
         # Both windows are scored in ONE chunked-CE scan, stacked on the batch axis:
         # two separate calls duplicated the [vocab, dim] f32 gradient plumbing across
@@ -59,7 +35,7 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
         hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
         targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
         loss_sums, counts, row_stats = chunked_cross_entropy_rows(
-            hidden, embedding, targets, PAD_TOKEN_ID)
+            hidden, embedding, targets, model.pad_token_id, z_weight=z_loss_weight)
         counts = jax.lax.stop_gradient(counts).clip(min=1.0)
         ce1 = loss_sums[:b].sum() / counts[:b].sum()
         ce2 = loss_sums[b:].sum() / counts[b:].sum()
@@ -70,10 +46,7 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
             'max_abs_logit': jnp.max(row_stats['max_abs_logit'][b:]),
         }
 
-        opt_step = step // ACCUMULATION_STEPS
-        graded_aux = model.grade_aux([out1.aux, out2.aux], opt_step)
-
-        total_loss = compute_total_loss(ce1, ce2, graded_aux)
+        total_loss = ce1 + ce2
 
         # No NaN masking here: a non-finite loss must surface in the train loop
         # (which skips the update and aborts on a streak), not be silently zeroed.
@@ -103,10 +76,6 @@ def compute_grad_step(model, batch_tokens, step, depth, doc_boundary=False, loss
     # it went too high.
     loss = loss / loss_scale
     grads = jax.tree_util.tree_map(lambda g: g / loss_scale, grads)
-
-    # Let the model settle whatever it carries into the next step. A stateless
-    # architecture does nothing here.
-    model.end_step(new_document)
 
     sq_norms = jax.tree_util.tree_map(lambda x: jnp.sum(jnp.square(x)), grads)
     grad_norm = jnp.sqrt(sum(jax.tree_util.tree_leaves(sq_norms)))
@@ -147,15 +116,13 @@ def grad_zero_fractions(grads):
     The global grad norm can't show a tail of layers that quietly froze, so the
     no-loss-scaling dtype policy (config.py) gets measured instead of assumed.
 
-    Grouping strips wrapper levels holding a single child (the refiner
-    adapter's params all live under 'refiner'), so both arches report their
-    real top-level groups (embed, encoder, refine_block, ...). Reading the
-    numbers — #82's caveat, amended by what the unit test showed:
-      - time_embed rows for unsampled depths are legitimately zero; the tied
-        token embedding, by contrast, gets gradient on EVERY row through the
-        CE head projection, but rare-token magnitudes are small enough to
-        round to zero benignly in f16 — embedding-style groups stay excluded
-        from the decision scalar (dense_zero_frac_max) either way.
+    Grouping strips wrapper levels holding a single child, so the groups are the
+    model's real top-level ones (embed, blocks, out_norm). Reading the numbers —
+    #82's caveat, amended by what the unit test showed:
+      - the tied token embedding gets gradient on EVERY row through the CE head
+        projection, but rare-token magnitudes are small enough to round to zero
+        benignly in f16 — embedding-style groups stay excluded from the decision
+        scalar (dense_zero_frac_max).
       - zero-init down_proj kernels block all gradient to gate/up_proj, so
         block groups carry a large *structural* zero fraction until the first
         optimizer updates land — attribute early readings to that, not
@@ -187,9 +154,8 @@ def applied_gradient(opt, grads):
     meaningful at an apply boundary — mid-window it is a partial mean.
 
     Why it matters: the underflow instrument read one micro-step's grads, and
-    reported 0.500 on 13% of steps — a per-micro-step artifact (a depth-1 draw
-    zeroes half of one norm's gradient), not underflow in anything that updates
-    the weights, yet indistinguishable from it in the column.
+    reported 0.500 on 13% of steps — a per-micro-step artifact, not underflow in
+    anything that updates the weights, yet indistinguishable from it in the column.
     """
     state = opt.opt_state
     seen = jax.tree_util.tree_leaves(state.mini_step)[0]
@@ -236,17 +202,19 @@ def dense_zero_frac_max(zero_fracs):
 # was the true dim960 OOM. Donating aliases old state to new in place (~2.2GiB
 # saved). The caller must not touch `grads` after this call — the trainer
 # samples its zero-frac telemetry BEFORE applying, for exactly this reason.
-@nnx.jit(donate_argnums=(0, 1, 2))
-def _apply(opt, grads, model):
+def _apply_body(opt, model, grads):
     opt.update(model, grads)
 
 
-@nnx.jit(donate_argnums=(0, 1))
-def _accumulate(opt, grads):
+def _accumulate_body(opt, grads):
     """Fold this micro-step's gradient into the optimizer's running mean, in place."""
     state = nnx.pure(opt.opt_state)
     new_state = opt.tx.accumulate(nnx.pure(nnx.state(grads, opt.wrt)), state)
     nnx.update(opt.opt_state, nnx.state(new_state))
+
+
+_apply = nnx.jit(_apply_body, donate_argnums=(0, 1, 2))
+_accumulate = nnx.jit(_accumulate_body, donate_argnums=(0, 1))
 
 
 def apply_grads(opt, grads, model):
@@ -262,4 +230,133 @@ def apply_grads(opt, grads, model):
     if hasattr(tx, "emits_next") and not tx.emits_next(nnx.pure(opt.opt_state)):
         _accumulate(opt, grads)
     else:
-        _apply(opt, grads, model)
+        _apply(opt, model, grads)
+
+
+# The grad step reads the parameters and returns only what it can change: the model's
+# non-parameter state (the RoPE tables, unchanged). Nothing is donated or handed back unchanged, so nothing is
+# copied. An earlier version passed the whole (model, optimizer) state through a
+# donated grad step, and on the card the gradient output reused a donated buffer that
+# jit had forwarded unchanged — the accumulator was silently overwritten (#474; the
+# CPU ignores donation, so only the GPU identity check showed it).
+@functools.partial(jax.jit, static_argnames=("graphdef", "z_loss_weight"))
+def _grad_step_pure(graphdef, params, rest, batch_tokens, loss_scale, clip_norm, z_loss_weight):
+    model = nnx.merge(graphdef, params, rest)
+    loss, out, grads, grad_norm = compute_grad_step(
+        model, batch_tokens, loss_scale=loss_scale, clip_norm=clip_norm, z_loss_weight=z_loss_weight)
+    return nnx.state(model, nnx.Not(nnx.Param)), loss, out, grads, grad_norm
+
+
+# Accumulation (63 of every 64 micro-steps) runs over the split optimizer state and
+# donates what the nnx.jit version donated (#128). The window's update, once per
+# optimizer step, goes through the module objects and the nnx.jit `_apply`. A jax.jit
+# over the split state must never donate the params together with the optimizer
+# state: on the card, for the full model, that pair gives a different update (an XLA
+# aliasing defect; any other donation set is bit-identical — #533's table).
+@functools.partial(jax.jit, static_argnames=("opt_graphdef",), donate_argnames=("opt_state", "grads"))
+def _accumulate_pure(opt_graphdef, opt_state, grads):
+    opt = nnx.merge(opt_graphdef, opt_state)
+    _accumulate_body(opt, grads)
+    return nnx.state(opt)
+
+
+class HotPath:
+    """compute_grad_step and apply_grads for the training loop, with the NNX graph
+    walked once instead of on every call (#474).
+
+    `nnx.jit` splits its module arguments into graph + state and merges them back on
+    every call; on this model that host work held most of the device's idle time
+    (#473: 43-58% idle per micro-step). Flax's guidance for a hot loop is to split
+    once and `jax.jit` a pure function over the state. That is what the grad step
+    and the accumulation do (127 of 128 calls per optimizer step): the model and the
+    optimizer are split here and each call passes only arrays to a `jax.jit` that
+    merges and runs the same nnx code as before. The window's update, once per
+    optimizer step, goes through the module objects and the old nnx.jit `_apply`
+    (#533 says why). (`nnx.cached_partial` would be smaller, but cannot cache a
+    module holding raw arrays, and the RoPE tables are raw arrays whose checkpoint
+    paths must not move.)
+
+    The accumulation window's counter is kept on the host too: `apply_grads` reads it
+    from the device (`int(mini_step)`, a sync) after walking the optimizer state, on
+    every micro-step. It is read once here and advanced exactly as LazyMultiSteps
+    advances it; `check_counter` compares it with the device when the caller wants.
+
+    The live state is this object's while the loop runs. `model` / `optimizer` hand
+    back the module objects brought up to date, and anything done through them (a
+    checkpoint, validation) is picked up by the next call.
+    Bit-identical to compute_grad_step + apply_grads, on the CPU and on the card
+    (tests/core/test_hot_path.py; on the card, tests/expensive/test_gpu_identity.py, #540).
+    """
+
+    def __init__(self, model, opt, *, z_loss_weight):
+        # The run's Config.Z_LOSS_WEIGHT (#369), no default: what the loop trains with
+        # is the caller's to say, never this class's.
+        self._model, self._opt = model, opt
+        self._z_loss_weight = float(z_loss_weight)
+        self._graphdef, _, _ = nnx.split(model, nnx.Param, ...)
+        self._opt_graphdef = nnx.graphdef(opt)
+        self._read_objects()
+        self._objects_behind = self._state_behind = False
+        self._tx = opt.tx if hasattr(opt.tx, "emits_next") else None
+        if self._tx is not None:
+            state = nnx.pure(opt.opt_state)
+            self._mini, self._gstep = int(state.mini_step), int(state.gradient_step)
+
+    def _read_objects(self):
+        _, self._params, self._rest = nnx.split(self._model, nnx.Param, ...)
+        self._opt_state = nnx.state(self._opt)
+
+    @property
+    def model(self):
+        return self._sync()[0]
+
+    @property
+    def optimizer(self):
+        return self._sync()[1]
+
+    def _sync(self):
+        """The module objects, up to date; whatever is done through them is read back
+        by the next hot call."""
+        if self._objects_behind:
+            nnx.update(self._model, self._params, self._rest)
+            nnx.update(self._opt, self._opt_state)
+            self._objects_behind = False
+        self._state_behind = True
+        return self._model, self._opt
+
+    def _live(self):
+        if self._state_behind:
+            self._read_objects()
+            self._state_behind = False
+        self._objects_behind = True
+
+    def grad_step(self, batch_tokens, loss_scale=1.0, clip_norm=jnp.inf):
+        """compute_grad_step(model, ...), on the live state."""
+        self._live()
+        self._rest, loss, out, grads, grad_norm = _grad_step_pure(
+            self._graphdef, self._params, self._rest, batch_tokens, loss_scale, clip_norm,
+            self._z_loss_weight)
+        return loss, out, grads, grad_norm
+
+    def apply(self, grads):
+        """apply_grads(opt, grads, model), without the per-call graph walk or sync."""
+        self._live()
+        if self._tx is not None:
+            k = int(self._tx._every_k_schedule(self._gstep))
+            if self._mini != k - 1:
+                self._opt_state = _accumulate_pure(self._opt_graphdef, self._opt_state, grads)
+                self._mini = (self._mini + 1) % k
+                return
+            self._mini, self._gstep = (self._mini + 1) % k, self._gstep + 1
+        model, opt = self._sync()
+        _apply(opt, model, grads)
+
+    def check_counter(self):
+        """Fail loudly if the host's window counter ever drifts from the device's."""
+        if self._tx is None:
+            return
+        state = nnx.pure(self.optimizer.opt_state)
+        device = (int(state.mini_step), int(state.gradient_step))
+        if device != (self._mini, self._gstep):
+            raise RuntimeError(f"accumulation counter drift: host {(self._mini, self._gstep)}, "
+                               f"device {device} (#474)")

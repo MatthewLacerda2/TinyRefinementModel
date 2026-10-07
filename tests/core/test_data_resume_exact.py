@@ -11,9 +11,9 @@ import json
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
-STRIDE = 2 * MAX_SEQ_LEN + 1
+STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
 
 def _corpus(root, name, samples_per_file, files, base):
@@ -32,14 +32,14 @@ def _corpus(root, name, samples_per_file, files, base):
 def _mixer(tmp_path):
     from trm.data.loaders import DataMixer, TextDataGenerator
     dirs = [_corpus(tmp_path, "web", 4, 3, 0), _corpus(tmp_path, "code", 3, 2, 20000)]
-    return DataMixer([TextDataGenerator(d, rng=np.random.default_rng(7)) for d in dirs],
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
                      [0.6, 0.4], rng=np.random.default_rng(11))
 
 
 @pytest.mark.parametrize("cut", [1, 5, 9, 13])  # mid-file, at and past file ends
 def test_a_restored_mixer_serves_the_rows_an_uninterrupted_one_would(tmp_path, cut):
     reference = _mixer(tmp_path)
-    expected = [reference.get_batch(1)[0] for _ in range(18)]
+    expected = [reference.get_batch(1) for _ in range(18)]
 
     first = _mixer(tmp_path)
     for _ in range(cut):
@@ -50,7 +50,7 @@ def test_a_restored_mixer_serves_the_rows_an_uninterrupted_one_would(tmp_path, c
     resumed = _mixer(tmp_path)
     resumed.load_state(snapshot)
     for want in expected[cut:]:
-        got = resumed.get_batch(1)[0]
+        got = resumed.get_batch(1)
         if want is None:
             assert got is None
             break
@@ -61,5 +61,5 @@ def test_a_state_from_a_different_source_list_is_refused(tmp_path):
     mixer = _mixer(tmp_path)
     state = mixer.state()
     state["sources"] = state["sources"][:1]
-    with pytest.raises(ValueError, match="PRETRAIN_SOURCES"):
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
         _mixer(tmp_path).load_state(state)

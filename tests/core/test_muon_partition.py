@@ -6,8 +6,6 @@ a linear map — through Newton-Schulz. A wrong partition still trains and the
 loss still falls, so nothing downstream would notice.
 """
 
-import os
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -15,7 +13,8 @@ import optax
 import pytest
 from flax import nnx
 
-from instruments.arch import build
+from trm.model import build_model
+from trm.settings import CONFIG, Config
 from trm.train import optimizers
 
 
@@ -26,21 +25,20 @@ def _labels(model):
             zip(jax.tree_util.tree_flatten_with_path(labels)[0], jax.tree_util.tree_flatten_with_path(params)[0])}
 
 
-@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
-def test_matrices_go_to_muon_and_the_embedding_norms_and_biases_to_adam(arch):
-    labels = _labels(build(arch, dim=60, seed=0, **({"num_layers": 2} if arch == "plain" else {})))
+def test_matrices_go_to_muon_and_the_embedding_norms_and_biases_to_adam():
+    labels = _labels(build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=2))
     embed = [k for k in labels if "embed" in k]
     assert embed and all(labels[k][0] == "adam" for k in embed), "the embedding table is not a linear map"
     kernels = [k for k, (lab, nd) in labels.items() if nd == 2 and "embed" not in k]
     assert kernels and all(labels[k][0] == "muon" for k in kernels)
     assert all(lab == "adam" for k, (lab, nd) in labels.items() if nd != 2)
     n_muon = sum(lab == "muon" for lab, _ in labels.values())
-    assert n_muon >= 4 * (2 if arch == "plain" else 1), "every attention/MLP kernel must be on Muon"
+    assert n_muon >= 4 * 2, "every attention/MLP kernel must be on Muon"
 
 
 def test_the_muon_chain_takes_a_step_and_stores_bf16_momentum_on_both_partitions():
-    model = build("plain", dim=60, num_layers=1)
-    tx = optax.MultiSteps(optax.chain(optax.clip_by_global_norm(1.0), optimizers._muon(lambda s: 1e-3)),
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1)
+    tx = optax.MultiSteps(optax.chain(optax.clip_by_global_norm(1.0), optimizers._muon(CONFIG, lambda s: 1e-3)),
                           every_k_schedule=1, use_grad_mean=True)
     opt = nnx.Optimizer(model, tx, wrt=nnx.Param)
     before = jax.tree_util.tree_map(lambda x: np.asarray(x), nnx.state(model, nnx.Param))
@@ -60,11 +58,11 @@ def test_the_muon_chain_takes_a_step_and_stores_bf16_momentum_on_both_partitions
 def test_the_matrix_partition_runs_at_the_multiplied_lr():
     """Muon's update has RMS ~1 per element, so it wants a far larger LR than Adam's;
     the multiplier is what the #26 sweep turns."""
-    model = build("plain", dim=60, num_layers=1)
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1)
     steps = {}
     for mult in (1.0, 10.0):
-        m = build("plain", dim=60, num_layers=1, seed=0)
-        opt = nnx.Optimizer(m, optimizers._muon(lambda s: 1e-3, lr_mult=mult), wrt=nnx.Param)
+        m = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1)
+        opt = nnx.Optimizer(m, optimizers._muon(CONFIG, lambda s: 1e-3, lr_mult=mult), wrt=nnx.Param)
         def kernel(state):
             return [np.asarray(leaf) for p, leaf in jax.tree_util.tree_flatten_with_path(state)[0]
                     if leaf.ndim == 2 and "embed" not in jax.tree_util.keystr(p)][0]
@@ -76,10 +74,10 @@ def test_the_matrix_partition_runs_at_the_multiplied_lr():
     assert steps[10.0] > 5 * steps[1.0]
 
 
-def test_the_selector_fails_closed_and_the_default_is_muon(import_config_under):
-    # A fresh import of trm.config, in the shared config child (tests/conftest.py).
-    (typo,) = import_config_under([{"TRM_OPTIMIZER": "moun"}])
-    assert not typo["ok"], "a typo'd TRM_OPTIMIZER must refuse to start"
-    assert "moun" in typo["error"] and "adamw" in typo["error"] and "muon" in typo["error"]
-    assert optimizers.TRM_OPTIMIZER == "muon" or os.environ.get("TRM_OPTIMIZER") == "adamw"
-    assert optimizers.inner_optimizer(lambda s: 1e-3, kind="adamw") is not None
+def test_the_selector_fails_closed_and_the_default_is_muon():
+    with pytest.raises(SystemExit) as typo:
+        Config.from_env({"TRM_OPTIMIZER": "moun"})
+    error = str(typo.value.code)
+    assert "moun" in error and "adamw" in error and "muon" in error, "a typo'd TRM_OPTIMIZER must refuse"
+    assert Config.from_env({}).TRM_OPTIMIZER == "muon"
+    assert optimizers.inner_optimizer(Config.from_env({"TRM_OPTIMIZER": "adamw"}), lambda s: 1e-3) is not None

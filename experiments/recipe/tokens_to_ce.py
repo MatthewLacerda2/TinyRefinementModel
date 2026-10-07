@@ -104,15 +104,38 @@ def last_step(metrics_csv: pathlib.Path) -> int:
         return 0
 
 
+def prepare_resume(run_dir: pathlib.Path, accumulation_steps: int) -> str | None:
+    """Make an interrupted arm resumable before relaunching it (#554).
+
+    The trainer resumes from the newest rolling checkpoint, but a stop leaves best-CE
+    checkpoints newer than it, and orbax refuses to save under a newer step — the arm
+    dies at its first new best. So set aside everything newer than the resume point,
+    as `python -m trm.runtime.rewind` would. With no rolling checkpoint the arm starts
+    over, so the whole run folder is set aside. Returns what was done, or None."""
+    from trm.runtime.rewind import SET_ASIDE_PREFIX, checkpoints_in, rewind
+
+    ckpt_dir = run_dir / "checkpoints"
+    if not run_dir.exists():
+        return None
+    rolling = checkpoints_in(ckpt_dir, accumulation_steps)
+    if rolling:
+        chosen, moved = rewind(ckpt_dir, rolling[-1].opt_step, accumulation_steps)
+        return f"resuming at opt step {chosen.opt_step}; set aside {len(moved)} newer checkpoint(s)" if moved else None
+    shelf = run_dir.with_name(f"{run_dir.name}.{SET_ASIDE_PREFIX}{time.strftime('%Y%m%d_%H%M%S')}")
+    run_dir.rename(shelf)
+    return f"no resume point: the interrupted run is set aside as {shelf.name}; starting over"
+
+
 def parse_knobs(pairs):
-    """{KNOB: value} from --set KNOB=VALUE, refusing any name trm/config.py does not
-    define: the env var would be read by nothing, and the arm would run as the control."""
-    import trm.config as config
+    """{KNOB: value} from --set KNOB=VALUE, refusing any name that is not a knob (a
+    field of trm.settings.Config): the env var would be read by nothing, and the arm
+    would run as the control."""
+    from trm.settings import Config
     knobs = {}
     for pair in pairs:
         name, sep, value = pair.partition("=")
-        if not sep or not name.isupper() or not hasattr(config, name):
-            raise SystemExit(f"--set {pair!r}: not KNOB=VALUE with KNOB a trm/config.py constant")
+        if not sep or not name.isupper() or name not in Config.model_fields:
+            raise SystemExit(f"--set {pair!r}: not KNOB=VALUE with KNOB a trm.settings.Config field")
         knobs[name] = value
     return knobs
 
@@ -144,14 +167,14 @@ def main(argv=None) -> int:
                     help="PAD_TOKEN_ID (#373): 50257 makes the document separator a real token. "
                          "Unset leaves the historical 50256.")
     ap.add_argument("--set", action="append", default=[], metavar="KNOB=VALUE",
-                    help="any other trm/config.py knob for this arm, e.g. ADAM_B2=0.95 (#359). "
-                         "Repeatable. A name config.py does not define is refused, so a typo "
+                    help="any other knob (a trm.settings.Config field) for this arm, e.g. ADAM_B2=0.95 "
+                         "(#359). Repeatable. A name that is not a knob is refused, so a typo "
                          "cannot run as a silent control.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
     args = ap.parse_args(argv)
     knobs = parse_knobs(args.set)
 
-    from trm.config import TOKENS_PER_OPT_STEP
+    from trm.settings import CONFIG
     name = (f"run_{args.tag}_{args.optimizer}"
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
@@ -168,11 +191,11 @@ def main(argv=None) -> int:
         "PYTHONPATH": str(REPO),
         "TRM_OPTIMIZER": args.optimizer,
         "MODEL_SEED": str(args.seed), "DATA_SEED": str(args.seed),
-        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * TOKENS_PER_OPT_STEP),
+        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * CONFIG.TOKENS_PER_OPT_STEP),
         "WARMUP_STEPS": str(args.warmup),
         "VAL_EVERY_OPT_STEPS": str(args.val_every),
         "CHECKPOINT_EVERY_OPT_STEPS": "256",
-        "MILESTONE_EVERY_TOKENS": "0",
+        "MILESTONE_FIRST_TOKENS": "0",
     }
     if args.lr_mult is not None:
         env["MUON_LR_MULT"] = str(args.lr_mult)
@@ -189,6 +212,9 @@ def main(argv=None) -> int:
     env.update(knobs)
 
     if last_step(metrics) < args.opt_steps:
+        accumulation = (CONFIG.model_copy(update={"BATCH_SIZE": args.batch}) if args.batch else CONFIG).ACCUMULATION_STEPS
+        if note := prepare_resume(run_dir, accumulation):
+            print(f"{name}: {note}", flush=True)
         run_dir.mkdir(parents=True, exist_ok=True)
         log = (run_dir / "train.log").open("a")
         proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
@@ -213,7 +239,7 @@ def main(argv=None) -> int:
         print(f"{name}: already at the cap, reading the recorded run", flush=True)
 
     tokens_m, final, reached, aligned = tokens_to_target(metrics, args.target_ce, args.opt_steps,
-                                                         TOKENS_PER_OPT_STEP)
+                                                         CONFIG.TOKENS_PER_OPT_STEP)
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
     results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),

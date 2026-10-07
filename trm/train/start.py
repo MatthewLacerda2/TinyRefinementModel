@@ -26,31 +26,18 @@ import os
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
-import sys
-
-# A resumed run's LR horizon has to come from the run, not from whichever shell
-# relaunched it (#197) — and it has to be settled *here*, because trm.config bakes
-# TRAIN_TOKEN_BUDGET into schedules.DECAY_STEPS the moment it is imported below.
-# run_budget is stdlib-only for exactly that reason: nothing it touches can pull
-# config in early. An explicit env var still wins.
-from trm.runtime.run_budget import adopt_recorded_budget, checkpoint_path_from_argv, horizon_mismatch
-
-if adopt_recorded_budget(checkpoint_path_from_argv(sys.argv)):
-    # The number itself lands in the LR horizon banner a few lines into startup;
-    # what this says is where it came from.
-    print("🗓️ Recovered TRAIN_TOKEN_BUDGET from the resumed run's own metadata (#197)")
-
 import argparse
 import multiprocessing as mp
 
-from trm.config import ACCUMULATION_STEPS
-from trm.train.schedules import DECAY_STEPS
+from trm.settings import CONFIG
+from trm.runtime.run_budget import horizon_mismatch, with_recorded_budget
+from trm.train.schedules import Schedules
 from trm.train.trainer import (
     init_model_and_optimizer,
     setup_data_pipeline,
     train_loop,
 )
-from trm.runtime.rewind import refuse_sft_phase_checkpoint_dir
+from trm.runtime.rewind import unresumable
 from trm.runtime.run_tracker import RunTracker
 from trm.runtime.checkpoints import (discover_latest_run, discover_latest_checkpoint_run, exit_cleanly_on_sigterm,
                                      load_or_create_checkpoint)
@@ -61,7 +48,7 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
-    parser = argparse.ArgumentParser(description="Train the model MODEL_ARCH selects (plain by default)")
+    parser = argparse.ArgumentParser(description="Train the model")
     parser.add_argument("--new-run", action="store_true", help="Force starting a brand new training run from scratch (ignores existing checkpoints)")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Custom folder for Orbax checkpoints")
     args = parser.parse_args()
@@ -94,21 +81,35 @@ if __name__ == "__main__":
                 active_checkpoint_path = os.path.join("runs", checkpoint_run_id, "checkpoints")
                 print(f"🔎 Auto-discovered latest run (no checkpoints yet): {checkpoint_run_id}")
 
-    # A checkpoint from the retired SFT phase is refused here, before the session
-    # below appends to run_metadata.json (#323). load_or_create_checkpoint repeats
-    # the check as a backstop.
-    if active_checkpoint_path is not None and not args.new_run:
-        refuse_sft_phase_checkpoint_dir(active_checkpoint_path, ACCUMULATION_STEPS)
+    # 2. The run's Config: this process's knobs, read once (trm.settings), with a
+    # resumed run's own token budget when the launch set none, so the LR horizon
+    # comes from the run and not from whichever shell relaunched it (#197). Everything
+    # below is handed this one object (#475).
+    config = with_recorded_budget(CONFIG, active_checkpoint_path)
+    if config.TRAIN_TOKEN_BUDGET != CONFIG.TRAIN_TOKEN_BUDGET:
+        # The number itself lands in the LR horizon banner a few lines into startup;
+        # what this says is where it came from.
+        print("🗓️ Recovered TRAIN_TOKEN_BUDGET from the resumed run's own metadata (#197)")
+    # Resolved before anything is written: a mixture that does not parse or a budget
+    # inside the warmup refuses here, not after a run folder exists.
+    decay_steps = Schedules.of(config).decay_steps
 
-    # 2. Start/Resume Run Tracker session
-    run_tracker = RunTracker()
+    # A checkpoint that cannot be resumed (the retired SFT phase, #323; a resume
+    # state ResumeState refuses, #477) is refused here, before the session below
+    # appends to run_metadata.json (#505). load_or_create_checkpoint repeats the
+    # checks as a backstop.
+    if active_checkpoint_path is not None and not args.new_run:
+        why = unresumable(active_checkpoint_path, config.ACCUMULATION_STEPS)
+        if why:
+            raise SystemExit(why)
+
+    # 3. Start/Resume Run Tracker session
+    run_tracker = RunTracker(config)
     run_tracker.start_session(run_id=checkpoint_run_id)
 
-    # Adoption above covers every launch that names its checkpoint path — including
-    # the supervisor's unattended crash relaunch. A resume that instead let the run
-    # be auto-discovered had no path to read that early, so the horizon is checked
-    # once here, where the run directory is finally known (#197).
-    complaint = horizon_mismatch(run_tracker.run_dir, DECAY_STEPS)
+    # A budget set explicitly to something other than the run's is not replaced
+    # above; it is refused here, where the run directory is known (#197).
+    complaint = horizon_mismatch(run_tracker.run_dir, decay_steps)
     if complaint is not None:
         raise SystemExit(f"❌ {complaint}")
 
@@ -117,14 +118,14 @@ if __name__ == "__main__":
 
     active_checkpoint_path = os.path.abspath(active_checkpoint_path)
 
-    model, optimizer = init_model_and_optimizer()
+    model, optimizer = init_model_and_optimizer(config)
 
     mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
-        model, optimizer, active_checkpoint_path, force_new_run=args.new_run
+        config, model, optimizer, active_checkpoint_path, force_new_run=args.new_run
     )
 
-    data_queue = setup_data_pipeline(start_step, samples_seen=monitor.samples_seen or None,
+    data_queue = setup_data_pipeline(config, start_step, samples_seen=monitor.samples_seen or None,
                                      data_state=monitor.data_state)
 
     exit_cleanly_on_sigterm()  # so a TERM waits for an in-flight checkpoint write (#218)
-    train_loop(model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
+    train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)

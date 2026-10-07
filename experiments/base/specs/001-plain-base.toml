@@ -12,25 +12,50 @@
 
 [experiment]
 id = "001-plain-base"
-status = "open"
+status = "recorded"
+recorded = "KILL"
 title = "Does the plain recipe, trained to its budget, reach GPT-2-small on LAMBADA?"
 hypothesis = """
-The live recipe — PlainTransformer at dim 960, 9 layers, f16 compute, tied
-embeddings, r50k, the fineweb-edu/code/math curriculum, AdamW with the schedule in
-trm/train/schedules.py — trained to `budget_tokens` reaches GPT-2-small's LAMBADA
-last-word accuracy (0.3256, calibrated in-repo, exact match to lm-eval-harness).
+The live recipe — PlainTransformer at dim 960, 8 layers at batch 2, f16 compute, tied
+embeddings, r50k with EOT a trained token (#373), the fineweb-edu/code/math curriculum
+ramped over the first third of the run (#362), and the optimizer adopted in #388: Muon
+x16.667 on a 6e-4 warmup-stable-decay schedule (#386, adopted 2026-09-20) — trained to
+`budget_tokens` reaches GPT-2-small's LAMBADA last-word accuracy (0.3256, calibrated
+in-repo, exact match to lm-eval-harness).
 
-This is CLAUDE.md's base-model bar: the validity check on the whole pipeline. A
-miss says the bug is in the data / LR / tokenizer / eval, not in any architecture
-idea, and gets fixed before clever work resumes.
+This is CLAUDE.md's base-model bar: the gate, not the neighbour. A miss below it by the
+margin registered here says the bug is in the data / LR / tokenizer / eval, and gets
+fixed before clever work resumes. A run between the gate and SmolLM2-135M (0.4289, ~2T
+tokens) did what its budget allows and becomes the champion.
 
-Prediction registered: MISS, by a wide margin, if launched at the current recipe.
-The 4B refiner champion scored 0.098 (#280 confirmed the eval); its own held-out
-ppl was healthy (38.4). The plain stack is the same block without the loop, and
-nothing in this recipe has changed since except the layer count. The one recipe
-lever with a plausible 3x in it is the peak LR (#287, never swept); the Muon pair
-(#26) is the other. Whichever of those the owner adopts, this spec's recipe fields
-are updated in the same commit — before launch, never after.
+Prediction registered 2026-09-19, for the recipe in the fields below (the one
+registered on 2026-09-15 said MISS by a wide margin at AdamW 1e-4; that recipe is
+gone, so that prediction is withdrawn, not scored): **0.29, in the band between the
+KILL margin (0.2756) and the gate (0.3256), i.e. INCONCLUSIVE.** Reasoning: the 4B
+refiner champion scored 0.098 on the old recipe (#280 confirmed the eval); the recipe
+pairs since then bought ~2.8x fewer tokens to a fixed early CE from the LR (#287) and
+1.32x more from Muon (#382), measured at 512 steps, which flatters; GPT-2-small's
+0.3256 came from ~10B tokens of WebText, and this run sees 4B of a mix that ends at
+65% code and math. If the owner's 10-day rule runs it to ~6B tokens at batch 2, the
+point estimate moves to ~0.31. Prediction record on this line: three recipe
+predictions in a row were too timid (#287 twice, #382), after four depth predictions
+that credited the mechanism too much. This one is a level, not a ratio, and the
+base rate that matters is that adopted-literature recipes have delivered every
+time here and novel mechanisms never have — so the timid error is the one to expect
+again, and 0.29 is written knowing that.
+
+Amended 2026-09-20, before launch, by a second session. What changed since the
+prediction above was registered: the budget is 5B rather than 4B (10 days at the
+measured 6,149 tok/s), the shape is 8 layers at batch 2 rather than 9 at batch 1
+(#385, +39% throughput), the schedule is WSD rather than cosine (#386, adopted
+without its pair), and EOT is a trained token rather than the pad (#373, adopted as
+a bug). The 0.29 above stands as the registered prediction of this line and is what
+gets scored. This session's own estimate, written down so two guesses can both be
+wrong on the record: **0.33**, reaching GPT-2-small's level at roughly 2B tokens
+(honest range 1B-4B), and well short of SmolLM2-135M's 0.4289 at any budget this
+card can afford. The difference between 0.29 and 0.33 is one session reading the
+512-step pairs as flattering and the other reading 25x more tokens than any
+finished run as the dominant term.
 """
 issue = 294
 
@@ -48,18 +73,83 @@ metric_key = "lambada_acc"
 metric = "LAMBADA last-word accuracy on the full 5,153-example set (instruments.yardstick.eval_yardstick), at completion"
 matched = "n/a — a single arm against a published reference; observational, not causal"
 notes = """
-Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens):
+Recipe fields (the launcher refuses a BUDGET that disagrees with budget_tokens).
+
+The budget is a time budget in disguise: 6,149 tok/s measured on the real trainer at
+this shape (#385, 2026-09-20), so 5B tokens is ~9.4 days, inside the owner's 10-day
+ceiling. It is 25x the ~200M tokens every previous base run died at, and half of
+GPT-2-small's ~10B.
+
+How it stops (owner, 2026-09-20): at the budget, or earlier if held-out CE passes
+3.6, or earlier still under the stall rule below. WSD is what makes "earlier" a real
+option — the stable phase holds the peak LR, and a decay branched from any checkpoint
+reads what the model would score if it stopped there. A cosine would have to be told
+the end before step 1.
+
+THE STALL RULE, registered 2026-09-20 before the run's first reading counted, so the
+bar cannot move once numbers exist (rule 3):
+
+  After the mixture ramp ends, read held-out CE every 12 hours. When TWO CONSECUTIVE
+  12-hour windows each gain less than 0.01, start a 1,000-opt-step decay and end the
+  run there.
+
+Where those numbers come from — the 4B champion's own val curve (runs/
+run_20260813_214725/metrics.csv, 467 readings), split into the third where it was
+still learning and the flat third:
+
+  reading-to-reading noise   learning 0.037 | flat 0.006
+  gain over 12h (250M tok)   learning median +0.049, min -0.013
+                             flat     median +0.004, max +0.059
+  gain over 24h (500M tok)   learning median +0.156, min +0.036
+                             flat     median +0.007
+
+0.01 per 12 hours sits in the gap: five times under the learning median, more than
+twice over the flat one. Two windows rather than one because a single 12-hour window
+reads wrong in BOTH directions — a learning window measured -0.013 and a flat window
++0.059. Two consecutive windows decide in the same 24 hours a single long window
+would take, on two pieces of evidence instead of one.
+
+What the rule is worth: the champion's last 30% (~3.2 days) bought 0.009 CE, and it
+could not stop, because a cosine cut short leaves an un-annealed model. The decay
+costs 1,000 opt steps = 131M tokens = 6-8 hours at the measured rate, against the
+scheduled 20% decay's ~1B tokens.
+
+One consequence of #394 to know before using this: a decay must branch from a
+FULL-STATE checkpoint, and milestones hold weights only. The rolling checkpoints are
+the full-state ones, so a decay can start from "now" but not from two weeks ago. The
+stall rule only ever needs "now".
+
+Waived by name for this run, both by the owner on 2026-09-20: #373's matched pair
+(the fix was adopted as a bug, not judged as a hypothesis) and #386's WSD pair (WSD
+matching a cosine at a fixed budget is settled outside this repo).
 """
-budget_tokens = 4000000000
+budget_tokens = 5000000000
 arch = "plain"
-layers = 9
+layers = 8
+batch_size = 2
+accumulation_steps = 64
 optimizer = "muon"
 muon_lr_mult = 16.666667
 peak_lr = 6e-4
+lr_schedule = "wsd"
+wsd_decay_fraction = 0.2
 warmup_steps = 1000
+pad_token_id = 50257
 curriculum_end_mix = "web 0.35 / code 0.40 / math 0.25"
 seeds = "MODEL_SEED=42, DATA_SEED=42"
 milestone_yardstick_limit = 1000
+
+# THE STALL RULE in the notes above, as data `python -m instruments.stall` reads
+# (#468). Transcribed 2026-09-28, after the run, and not amended: the quantity,
+# window, count, bar and decay are the ones registered on 2026-09-20. A next spec
+# picks its own `reads` (web / mixture / every-source) and measures its bars with
+# `--floor`; this web-only bar does not transfer to another quantity.
+[stall]
+reads = "web"
+window_hours = 12
+windows = 2
+min_gain = 0.01
+decay_opt_steps = 1000
 
 [arms.plain]
 role = "treatment"
@@ -72,6 +162,8 @@ constant = true
 # The reference: acc 0.3256 / ppl 40.06. Declared as a summary with sigma 0, n 1.
 [results.run]
 gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }
+# run_20260920_191351 at completion (opt step 38,208, 5.008B tokens), full 5,153 set, 2026-09-28.
+plain = [0.2036]
 
 # KEEP: at or above the reference (a 0-sigma 'beats' is 'delta >= 0').
 [criteria.meets_the_bar]

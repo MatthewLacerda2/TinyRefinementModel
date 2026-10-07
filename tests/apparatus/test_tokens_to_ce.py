@@ -41,7 +41,7 @@ def test_minutes_to_target_times_from_the_first_row(tmp_path):
 
 
 def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
-    """--set reaches the trainer's env only for a name trm/config.py defines (#359):
+    """--set reaches the trainer's env only for a knob, a trm.settings.Config field (#359):
     a typo would otherwise train an arm identical to its control."""
     import pytest
     from experiments.recipe.tokens_to_ce import parse_knobs
@@ -50,3 +50,48 @@ def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
     for bad in (["ADAM_BETA2=0.95"], ["adam_b2=0.95"], ["ADAM_B2"]):
         with pytest.raises(SystemExit):
             parse_knobs(bad)
+
+
+def test_an_arm_can_set_its_mixture():
+    """#439: the mixture is a knob a spec pins per arm. `--set` refuses any name
+    that is not a Config field, so a mixture knob that lived anywhere else could
+    not be put on an arm at all — and the `=` inside the value must survive."""
+    from experiments.recipe.tokens_to_ce import parse_knobs
+
+    knobs = parse_knobs(["DATA_MIXTURE=pretrain/fineweb-edu=0.9:0.6,pretrain/finemath=0.1:0.4",
+                         "MIXTURE_RAMP_FRACTION=0.5"])
+    assert knobs == {"DATA_MIXTURE": "pretrain/fineweb-edu=0.9:0.6,pretrain/finemath=0.1:0.4",
+                     "MIXTURE_RAMP_FRACTION": "0.5"}
+
+
+def _ckpt(directory, step):
+    path = directory / str(step)
+    path.mkdir(parents=True)
+    (path / "_CHECKPOINT_METADATA").write_text("{}")
+
+
+def test_an_interrupted_arm_sets_aside_best_checkpoints_newer_than_its_resume_point(tmp_path):
+    """#554: stopped at opt step 272 with the rolling checkpoint at 256, best_val_ce held
+    264 and 272, and the relaunched trainer died at its first new best."""
+    from experiments.recipe.tokens_to_ce import prepare_resume
+
+    ckpts = tmp_path / "run" / "checkpoints"
+    _ckpt(ckpts, 16383)                        # opt 256 at 64 micro-steps per opt step
+    for step in (16383, 16895, 17407):         # opt 256, 264, 272
+        _ckpt(ckpts / "best_val_ce", step)
+    note = prepare_resume(tmp_path / "run", accumulation_steps=64)
+    assert "opt step 256" in note and "2 newer" in note
+    assert sorted(p.name for p in (ckpts / "best_val_ce").iterdir()) == ["16383"]
+    assert prepare_resume(tmp_path / "run", accumulation_steps=64) is None, "a clean arm is left alone"
+
+
+def test_an_arm_stopped_before_its_first_rolling_checkpoint_starts_over(tmp_path):
+    from experiments.recipe.tokens_to_ce import prepare_resume
+
+    run = tmp_path / "run"
+    _ckpt(run / "checkpoints" / "best_val_ce", 511)
+    (run / "metrics.csv").write_text("step,val_ce\n8,9.0\n")
+    note = prepare_resume(run, accumulation_steps=64)
+    assert "starting over" in note and not run.exists()
+    assert [p.name.startswith("run.set_aside_") for p in tmp_path.iterdir()] == [True]
+    assert prepare_resume(tmp_path / "never_ran", accumulation_steps=64) is None

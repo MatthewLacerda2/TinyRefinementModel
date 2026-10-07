@@ -15,18 +15,18 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_step import compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
+from trm.settings import CONFIG
 
 
 def _tiny_model_and_batch():
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
+                             num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
     return model, batch
 
 
@@ -76,13 +76,12 @@ def test_the_default_scale_is_a_power_of_two():
 # ── the promise ──────────────────────────────────────────────────────────────
 
 def test_scaling_does_not_change_the_gradients():
-    """The whole justification for turning this on mid-run. Same model, same batch,
-    same depth: the gradients the optimizer receives must be identical whether the
+    """The whole justification for turning this on mid-run. Same model, same batch:
+    the gradients the optimizer receives must be identical whether the
     loss was scaled by 32,768 or not at all."""
     model, batch = _tiny_model_and_batch()
-    _, _, plain, plain_norm = compute_grad_step(model, batch, jnp.array(1), 2)
-    _, _, scaled, scaled_norm = compute_grad_step(model, batch, jnp.array(1), 2,
-                                                  loss_scale=jnp.float32(2.0 ** 15))
+    _, _, plain, plain_norm = compute_grad_step(model, batch)
+    _, _, scaled, scaled_norm = compute_grad_step(model, batch, loss_scale=jnp.float32(2.0 ** 15))
 
     flat_plain = jax.tree_util.tree_leaves(plain)
     flat_scaled = jax.tree_util.tree_leaves(scaled)
@@ -97,9 +96,8 @@ def test_the_reported_loss_is_unscaled():
     already recorded — a 32,768x jump in the logged loss would be indistinguishable
     from a divergence to anything reading the file."""
     model, batch = _tiny_model_and_batch()
-    plain, _, _, _ = compute_grad_step(model, batch, jnp.array(1), 2)
-    scaled, _, _, _ = compute_grad_step(model, batch, jnp.array(1), 2,
-                                        loss_scale=jnp.float32(2.0 ** 15))
+    plain, _, _, _ = compute_grad_step(model, batch)
+    scaled, _, _, _ = compute_grad_step(model, batch, loss_scale=jnp.float32(2.0 ** 15))
     assert float(scaled) == pytest.approx(float(plain), rel=1e-6)
 
 

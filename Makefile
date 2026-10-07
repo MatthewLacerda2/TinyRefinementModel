@@ -11,13 +11,15 @@
 #   make gate                    VRAM headroom of the config a launch would train (#161)
 #   make launch SPEC=… BUDGET=…  a supervised base run; refuses without a committed spec or BUDGET
 #   make report RUN=run_...      the terminal report and plots for a run
+#   make ready PR=N              undraft PR N and wait for the CI run the undraft started (#539)
+#   make ci-wait PR=N            wait for CI on PR N's current head; never reads a stale check set
 #
 # `make launch` is gated: the supervisor first runs the real trainer for ~5 minutes and
 # refuses a config that does not survive an apply, a probe and a checkpoint (#168).
 
 PY ?= venv/bin/python
 
-.PHONY: lint test test-affected audit gate launch resume report
+.PHONY: lint test test-affected audit gate launch resume report ready ci-wait
 
 lint:
 	$(PY) -m ruff check .
@@ -53,3 +55,11 @@ report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }
 	$(PY) -m instruments.report --log runs/$(RUN)/metrics.csv
 	$(PY) -m instruments.plots --log runs/$(RUN)/metrics.csv --out runs/$(RUN)
+
+ready:
+	@test -n "$(PR)" || { echo "which PR? make ready PR=123"; exit 2; }
+	$(PY) -m instruments.ci_wait --ready $(PR)
+
+ci-wait:
+	@test -n "$(PR)" || { echo "which PR? make ci-wait PR=123"; exit 2; }
+	$(PY) -m instruments.ci_wait $(PR)

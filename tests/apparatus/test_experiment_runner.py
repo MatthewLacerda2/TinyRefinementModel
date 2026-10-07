@@ -574,3 +574,206 @@ chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
     assert set(reloaded) == {"chance", "control", "treated"}
     assert reloaded["chance"]["mean"] == 0.2106
     assert spec_path.read_text().count("[results.d1]") == 1, "one table per point"
+
+
+# --- the card is a serial queue and this runner is most of what goes on it -----
+
+@pytest.fixture(autouse=True)
+def card_lock(tmp_path, monkeypatch):
+    """The runner's lock, pointed at a throwaway file for every test in this module.
+
+    Autouse and not opt-in: the runner now queues for the real card (#445), so a
+    test that called `main()` without this would pass or fail depending on whether
+    a training run happened to be going. A suite that reads the machine's mood is
+    not a suite.
+    """
+    from trm.runtime.gpu_lock import GpuLock
+
+    path = tmp_path / "gpu.lock"
+    monkeypatch.setattr(experiment, "GpuLock", lambda label="": GpuLock(path, label))
+    return path
+
+
+def _a_dead_pid():
+    """A pid that certainly belonged to something, and certainly does not now."""
+    import subprocess
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait()
+    return done.pid
+
+
+def test_the_runner_refuses_a_card_someone_else_is_using(tmp_path, monkeypatch, card_lock):
+    """The whole point of #445: this runner is most of what the card does, and it
+    used to queue against nothing. A base run launched beside a pair is an OOM on
+    6 GB, and the kernel usually takes the watching session rather than either
+    trainer."""
+    import os
+
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{os.getpid()} someone-elses-pair\n")
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 1
+    assert "results" not in spec_path.read_text(), "it must not have swept"
+    assert lock.read_text().startswith(str(os.getpid())), "it must not have stolen the lock"
+
+
+def test_a_lock_whose_holder_died_is_taken_over(tmp_path, monkeypatch, card_lock):
+    """A lock nobody can clear is worse than no lock: one crash would idle the card
+    until a human noticed."""
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{_a_dead_pid()} a-run-that-did-not-survive-the-reboot\n")
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+    assert not lock.exists(), "and it releases what it took"
+
+
+def test_the_lock_is_released_when_the_sweep_finishes(tmp_path, monkeypatch, card_lock):
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+    assert not lock.exists()
+
+
+def test_a_cpu_only_spec_can_say_so(tmp_path, monkeypatch, card_lock):
+    """The escape hatch, matching the supervisor's. A spec whose arms never touch
+    the card should not have to wait behind one that does."""
+    import os
+
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    lock = card_lock
+    lock.write_text(f"{os.getpid()} a-real-run\n")
+
+    assert experiment.main([str(spec_path), "--no-gate", "--no-gpu-lock"]) == 0
+    assert lock.read_text().startswith(str(os.getpid())), "and it leaves the holder alone"
+
+
+# --- a runner that goes down mid-arm never leaves the arm under a free card (#519) ---
+
+_RUNNER_SCRIPT = """
+import pathlib, sys
+from instruments import experiment
+from trm.runtime.gpu_lock import GpuLock
+experiment.GpuLock = lambda label="": GpuLock(pathlib.Path({lock!r}), label)
+experiment.RUNS_DIR = pathlib.Path({runs!r})
+sys.exit(experiment.main([{spec!r}, "--no-gate"]))
+"""
+
+
+def _gone(pid):
+    import os
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    # A zombie still answers kill(0); it is off the card all the same.
+    try:
+        return pathlib.Path(f"/proc/{pid}/stat").read_text().split(")")[-1].split()[0] == "Z"
+    except FileNotFoundError:
+        return True
+
+
+def _runner_with_an_arm(tmp_path, card_lock):
+    """(a real runner process, the pid of the arm it launched and named in the lock)."""
+    import os
+    import subprocess
+    import time
+
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time; time.sleep(600)\n")
+    spec_path = write_spec(tmp_path, textwrap.dedent(f"""
+        [execution]
+        command = ["{sys.executable}", "{sleeper}"]
+        seeds = [0]
+        seed_flag = "--seed"
+    """))
+    script = tmp_path / "run.py"
+    script.write_text(_RUNNER_SCRIPT.format(lock=str(card_lock), runs=str(tmp_path / "runs"), spec=str(spec_path)))
+    proc = subprocess.Popen([sys.executable, str(script)], cwd=REPO_ROOT,
+                            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        text = card_lock.read_text() if card_lock.exists() else ""
+        if "\nchild " in text:
+            return proc, int(text.split("\nchild ")[1].split()[0])
+        time.sleep(0.1)
+    proc.terminate()  # the runner stops whatever arm it did launch
+    proc.wait(timeout=120)
+    raise AssertionError("the runner never named its arm in the lock")
+
+
+def _clean_up(runner, arm):
+    import os
+    import signal
+    runner.kill()
+    runner.wait()
+    if not _gone(arm):
+        os.kill(arm, signal.SIGKILL)
+
+
+def test_a_runner_killed_outright_leaves_the_card_to_its_arm(tmp_path, card_lock):
+    """SIGKILL runs no handler: the arm keeps training, and the lock names it, so
+    nothing launches beside it while it lives."""
+    from trm.runtime.gpu_lock import GpuLock, Preflight
+
+    runner, arm = _runner_with_an_arm(tmp_path, card_lock)
+    try:
+        runner.kill()
+        runner.wait(timeout=30)
+        assert not _gone(arm), "the orphaned arm is still on the card"
+        with pytest.raises(Preflight, match=rf"held by pid {arm} \(child of dead pid {runner.pid}"):
+            GpuLock(card_lock, label="next").acquire()
+    finally:
+        _clean_up(runner, arm)
+
+
+def test_a_sigterm_to_the_runner_stops_its_arm_and_frees_the_card(tmp_path, card_lock):
+    """Python's default TERM ran no `finally`: the lock stayed naming a dead pid and
+    the next acquire took it over beside an arm still training."""
+    import signal
+
+    runner, arm = _runner_with_an_arm(tmp_path, card_lock)
+    try:
+        runner.send_signal(signal.SIGTERM)
+        assert runner.wait(timeout=60) == 128 + signal.SIGTERM
+        assert _gone(arm), "the arm goes with its runner"
+        assert not card_lock.exists()
+    finally:
+        _clean_up(runner, arm)
+
+
+# --- the OOM rerun (#524) lives at the command line, never in main() ------------
+
+def test_main_never_reruns_itself_under_systemd(tmp_path, monkeypatch):
+    """Tests call main() in-process; a rerun there would escape their fixtures onto the
+    real card lock and runs/ on a box whose shell sits at oom_score_adj 200."""
+    def escape(*a, **k):
+        raise AssertionError("main() must not rerun itself")
+    monkeypatch.setattr(experiment, "rerun_protected", escape)
+    stub = write_stub(tmp_path)
+    spec_path = write_spec(tmp_path, single_leg(stub))
+    monkeypatch.setattr(experiment, "RUNS_DIR", tmp_path / "runs")
+    assert experiment.main([str(spec_path), "--no-gate"]) == 0
+
+
+def test_the_command_line_reruns_protected_and_returns_its_exit(monkeypatch):
+    seen = []
+    monkeypatch.setattr(experiment, "rerun_protected", lambda argv, *a, **k: seen.append(argv) or 7)
+    monkeypatch.setattr(experiment, "main", lambda argv: pytest.fail("the rerun does the sweep"))
+    monkeypatch.setattr(experiment.sys, "argv", ["experiment.py", "spec.toml"])
+    assert experiment.cli() == 7
+    assert seen == [[experiment.sys.executable, "-m", "instruments.experiment", "spec.toml"]]
+    monkeypatch.setattr(experiment, "main", lambda argv: 0)
+    monkeypatch.setattr(experiment.sys, "argv", ["experiment.py", "spec.toml", "--dry-run"])
+    assert experiment.cli() == 0 and len(seen) == 1, "a dry run launches nothing, so it needs no rerun"

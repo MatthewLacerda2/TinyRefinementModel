@@ -2,7 +2,7 @@
 
 Its whole value is that an entry written today can be read against one written
 three weeks and two billion tokens later. That only holds if the things which
-define a comparison — the prompt set, the depth ladder, the seed, the device, the
+define a comparison — the prompt set, the seed, the device, the
 step arithmetic — are pinned rather than drifting quietly.
 
 So these guard the properties that make an old transcript *interpretable*, plus
@@ -17,13 +17,10 @@ class there (`-k "not TestARealRunOfMain"`). CI's pytest job runs all of it.
 import pytest
 
 from instruments.dump_transcripts import (
-    DEFAULT_DEPTHS,
-    depths_for,
     PROMPTS,
     PROMPT_SET_VERSION,
     nearest_metric,
     opt_step_from_checkpoint,
-    parse_depths,
     render_frontmatter,
     repetition_score,
     select_device,
@@ -54,44 +51,13 @@ class TestRepetitionScore:
         assert repetition_score(tokens) == repetition_score(tokens)
 
 
-class TestDepthLadder:
-    def test_the_default_ladder_spans_the_trained_range(self):
-        """1 is the no-refinement baseline, 8 is MAX_STEPS_LIMIT. Both ends matter:
-        without 1 there is no floor to compare against, without 8 the 'does it
-        overthink' question cannot be asked at all."""
-        assert DEFAULT_DEPTHS == (1, 2, 4, 8)
-
-    def test_a_looped_arch_runs_the_whole_ladder(self):
-        assert depths_for("refiner") == DEFAULT_DEPTHS
-        assert depths_for("reasoner", (4, 8)) == (4, 8)
-
-    def test_an_arch_without_a_depth_dial_runs_once(self):
-        """Plain ignores depth: four rungs were four identical completions at 4x the
-        cost, and a repetition table of four identical rows (#317)."""
-        assert depths_for("plain") == (1,)
-        assert depths_for("plain", (4, 8)) == (4,)
-
-    def test_depths_parse_in_order(self):
-        assert parse_depths("1,2,4,8") == (1, 2, 4, 8)
-
-    def test_whitespace_and_duplicates_are_tolerated(self):
-        assert parse_depths(" 4 , 8 , 4 ") == (4, 8)
-
-    @pytest.mark.parametrize("bad", ["0", "-1", "", " , "])
-    def test_a_meaningless_ladder_is_refused(self, bad):
-        """Depth 0 would run the block zero times and silently produce garbage
-        rather than failing, which is the worst of both."""
-        with pytest.raises(ValueError):
-            parse_depths(bad)
-
-
 class TestPromptSet:
-    def test_the_set_is_frozen_at_eight(self):
+    def test_the_set_is_frozen_at_nine(self):
         """Not a style rule. Every stored transcript was generated against this
         list, so an edit that is not accompanied by a version bump silently breaks
         comparability with every entry already on disk."""
-        assert len(PROMPTS) == 8
-        assert PROMPT_SET_VERSION == 1
+        assert len(PROMPTS) == 9
+        assert PROMPT_SET_VERSION == 2
 
     def test_the_loop_detector_is_present(self):
         """Enumeration is what provokes the failure mode the logbook watches; drop
@@ -145,9 +111,6 @@ class TestFrontmatter:
         assert "step: 11392" in rendered
         assert "val_ce" not in rendered
 
-    def test_the_depth_ladder_renders_as_a_list(self):
-        assert "depths: [1, 2, 4, 8]" in render_frontmatter({"depths": [1, 2, 4, 8]})
-
     def test_booleans_are_yaml_not_python(self):
         """`True` would not parse as a boolean in any YAML reader."""
         assert "model_commit_dirty: true" in render_frontmatter({"model_commit_dirty": True})
@@ -155,12 +118,6 @@ class TestFrontmatter:
     def test_it_is_delimited_so_a_parser_can_find_it(self):
         rendered = render_frontmatter({"step": 1})
         assert rendered.startswith("---\n") and rendered.endswith("\n---")
-
-    def test_the_two_depths_are_recorded_separately(self):
-        """val_ce is measured at VAL_FIXED_DEPTH while completions span the ladder.
-        A single `depth:` key would claim they describe the same configuration."""
-        rendered = render_frontmatter({"depths": [1, 2, 4, 8], "val_ce_depth": 4})
-        assert "val_ce_depth: 4" in rendered and "depths: [1, 2, 4, 8]" in rendered
 
 
 class TestFilename:
@@ -245,7 +202,7 @@ class TestARealRunOfMain:
         monkeypatch.setattr(tiktoken, "get_encoding", lambda name: Enc())
         monkeypatch.setattr(trm.infer, "generate_text", generate)
         monkeypatch.setattr(trm.runtime.restore, "restore_model",
-                            lambda path: events.append(("restore", path)) or ("model", 1279))
+                            lambda config, path: events.append(("restore", path)) or ("model", 1279))
         monkeypatch.setattr(tool, "git_head", lambda: events.append(("commit",)) or "abc1234")
         real_load = runlog.load
         monkeypatch.setattr(runlog, "load", lambda path: events.append(("run log", path)) or real_load(path))
@@ -260,7 +217,7 @@ class TestARealRunOfMain:
         monkeypatch.setenv("JAX_PLATFORMS", "cpu")
         monkeypatch.setenv("FORCE_F32_COMPUTE", "1")
         capsys.readouterr()
-        tool.main([*located, "--out", str(tmp_path / "out"), "--depths", "1", *argv])
+        tool.main([*located, "--out", str(tmp_path / "out"), *argv])
         path = tool.written_transcript(capsys.readouterr().out)
         return events, path, open(path).read()
 
@@ -337,6 +294,6 @@ def test_the_written_line_round_trips_and_ignores_human_output(tmp_path, capsys)
     from instruments.dump_transcripts import announce_written, written_transcript
 
     announce_written(tmp_path / "step_000184_cpu.md")
-    stdout = "▶ 8 prompts x 1 depths\n\n✨ runs/x/transcripts/step_000184_cpu.md\n" + capsys.readouterr().out
+    stdout = "▶ 8 prompts, seed 42, on cpu\n\n✨ runs/x/transcripts/step_000184_cpu.md\n" + capsys.readouterr().out
     assert written_transcript(stdout) == str(tmp_path / "step_000184_cpu.md")
     assert written_transcript("✨ runs/x/transcripts/step_000184_cpu.md\n") is None

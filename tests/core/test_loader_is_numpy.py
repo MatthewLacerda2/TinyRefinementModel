@@ -8,18 +8,20 @@ a view of the memory-mapped shard would move its disk reads onto the training th
 
 import numpy as np
 
-from trm.config import MAX_SEQ_LEN
+from trm.settings import CONFIG
 
 
 def test_the_loader_and_the_mixer_return_numpy(tmp_path):
     from trm.data.loaders import DataMixer, TextDataGenerator
 
-    np.save(tmp_path / "chunk_0.npy", np.full(8 * MAX_SEQ_LEN + 8, 5, dtype=np.int32))
+    np.save(tmp_path / "chunk_0.npy", np.full(8 * CONFIG.MAX_SEQ_LEN + 8, 5, dtype=np.int32))
 
-    rows, boundary = TextDataGenerator(str(tmp_path)).get_batch(2)
+    def source():
+        return TextDataGenerator(str(tmp_path), max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(0))
+
+    rows = source().get_batch(2)
     assert type(rows) is np.ndarray and rows.dtype == np.int32
-    assert type(boundary) is np.ndarray
+    assert not isinstance(rows, np.memmap) and rows.base is None, "a copy, not a view of the shard"
 
-    mixer = DataMixer([TextDataGenerator(str(tmp_path))], [1.0])
-    rows, boundary = mixer.get_batch(2)
-    assert type(rows) is np.ndarray and type(boundary) is np.ndarray
+    rows = DataMixer([source()], [1.0], rng=np.random.default_rng(0)).get_batch(2)
+    assert type(rows) is np.ndarray and rows.dtype == np.int32

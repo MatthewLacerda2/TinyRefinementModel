@@ -33,10 +33,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import json
 import math
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -44,17 +46,14 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from trm.runtime.layout import (  # standard library only: the supervisor stays jax-free
-    ACT_MAX_ALARM,
-    LOG_REAL_STEPS,
-    LOSS_SCALE_FLOOR_ALARM,
-    VRAM_HEADROOM_ALARM_MIB,
-    ZERO_GRAD_ALARM,
-)
+from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
+from trm.runtime.layout import LOG_REAL_STEPS, MILESTONE_SUBDIR, YARDSTICK_CLAIMS, YARDSTICK_JOURNAL  # jax-free
+from trm.runtime.rewind import unresumable  # jax-free
+from trm.settings import CONFIG, Config, env_file, location
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RUNS_DIR = REPO_ROOT / "runs"
-GPU_LOCK = RUNS_DIR / ".gpu.lock"
 
 # What the supervisor decided to do about the child.
 CONTINUE, STOP, KILL, RELAUNCH, GIVE_UP = "CONTINUE", "STOP", "KILL", "RELAUNCH", "GIVE_UP"
@@ -73,6 +72,10 @@ CHECKPOINTS_PER_WRITE = 3
 CRASHED = "CRASHED"
 STALLED = "STALLED"
 GAVE_UP = "GAVE_UP"
+# The checkpoint a (re)launch would resume is refused (rewind.unresumable, #505).
+# Not DELIBERATE: it waits for a human, so the supervisor exits non-zero, and a
+# `make resume` after it tries again, since the fix (a rewind) may have landed.
+REFUSED_RESUME = "REFUSED_RESUME"
 
 # A terminal outcome the supervisor chose. Anything else that stops the child is
 # a crash, and a crash is the only thing worth relaunching.
@@ -96,7 +99,7 @@ class Limits:
     stall_polls: int = 12
     max_retries: int = 2
     max_hours: float | None = None
-    min_free_gb: float = 20.0
+    min_free_gb: float = 12.0
     # Room kept free beyond the next checkpoint write, once the run is going (#190).
     disk_margin_gb: float = 2.0
 
@@ -119,6 +122,9 @@ class Observation:
     # The f16 margins the last metrics row crosses (#368), as (kind, sentence). An
     # alarm, announced when it appears and when it clears; never a kill.
     margins: tuple = ()
+    # Why the checkpoint a relaunch would resume is refused (rewind.unresumable),
+    # read while the child is dead; None when it is resumable or nothing is.
+    resume_refusal: str | None = None
 
 
 @dataclass
@@ -257,6 +263,10 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
             return Decision(STOP, KILLED_OOM,
                             f"died at step {obs.step} with an out-of-memory failure; "
                             f"relaunching would repeat it exactly")
+        # The same for a checkpoint the trainer refuses to resume: every relaunch
+        # would be refused alike, then read as GAVE_UP (#505).
+        if obs.resume_refusal:
+            return Decision(STOP, REFUSED_RESUME, obs.resume_refusal)
         if state.retries_used >= limits.max_retries:
             return Decision(GIVE_UP, GAVE_UP,
                             f"died before budget and {limits.max_retries} relaunches were used")
@@ -271,8 +281,13 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
 
 # --- preflight ----------------------------------------------------------------
 
-class Preflight(Exception):
-    """A reason not to start. Raised before anything expensive happens."""
+def local_location(name: str) -> pathlib.Path | None:
+    """A machine-local path (trm.settings.LOCATIONS) from the environment or, failing
+    that, the repo's .env, resolved against the repo root; None when unset or remote."""
+    value = location(name) or env_file(REPO_ROOT).get(name)
+    if not value or "://" in value:
+        return None
+    return (REPO_ROOT / value).resolve()
 
 
 def check_disk_headroom(path: pathlib.Path, min_free_gb: float) -> float:
@@ -333,8 +348,8 @@ def _without_path_flags(trainer_args):
     return out
 
 
-def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0,
-                  tokens_per_opt_step=None, workroot: pathlib.Path = RUNS_DIR) -> FitResult:
+def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout_s=1800.0, poll_s=5.0,
+                  workroot: pathlib.Path = RUNS_DIR, on_launch=lambda pid: None) -> FitResult:
     """Run the real trainer until its first metrics row, then throw it away (#168).
 
     Every launch that died on 2026-08-13 died of memory, at an optimizer apply, a
@@ -347,7 +362,8 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
     It runs from its own directory under runs/, whose relative `runs/` holds the
     probe's run dir and checkpoints, so nothing it writes is where a real resume or
     `discover_latest_checkpoint_run` would look; the directory is removed however
-    the gate ends.
+    the gate ends. `on_launch(pid)` is told the probe's pid (main() names it in the
+    GPU lock, #516).
     """
     if command is None and "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("the fit gate would launch the real trainer inside a test "
@@ -361,15 +377,12 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
     run_dir = work / "runs" / "run_fitgate"
     log_path = work / "fitgate.log"
     run_dir.mkdir(parents=True)
-    data_root = os.environ.get("DATA_ROOT")
-    if not data_root:
-        # The trainer would find it in .env and resolve it against ITS cwd, which is
-        # the probe dir. Read only this one key; nothing else in .env is touched.
-        from dotenv import dotenv_values
-        data_root = dotenv_values(REPO_ROOT / ".env").get("DATA_ROOT")
+    # The trainer would find DATA_ROOT in .env and resolve it against ITS cwd, which is
+    # the probe dir. Read only this one key; nothing else in .env is touched.
+    data_root = local_location("DATA_ROOT")
     env = {**os.environ, **FIT_GATE_ENV, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1"}
-    if data_root and "://" not in data_root:
-        env["DATA_ROOT"] = str((REPO_ROOT / data_root).resolve())  # the probe runs from another cwd
+    if data_root is not None:
+        env["DATA_ROOT"] = str(data_root)  # the probe runs from another cwd
     argv = command or [sys.executable, "-m", "trm.train.start",
                        *_without_path_flags(trainer_args),
                        "--checkpoint-path", str(run_dir / "checkpoints")]
@@ -377,6 +390,7 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
     try:
         with log_path.open("w") as log:
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
+        on_launch(proc.pid)
         while True:
             text = read_log_since(log_path)
             if oom_in(text):
@@ -386,8 +400,6 @@ def preflight_fit(trainer_args=(), *, command=None, timeout_s=1800.0, poll_s=5.0
             if row is not None:
                 peak = row.get("arena_peak_mib") or None
                 compute = _COMPUTE.search(text)
-                if compute and tokens_per_opt_step is None:
-                    from trm.config import TOKENS_PER_OPT_STEP as tokens_per_opt_step
                 rate = (FIT_GATE_LOG_ROWS_OPT_STEPS * tokens_per_opt_step / float(compute.group(1))
                         if compute and float(compute.group(1)) > 0 else None)
                 return FitResult(True, "survived five optimizer applies, validation passes and checkpoint saves",
@@ -419,65 +431,6 @@ def largest_checkpoint_gb(checkpoint_dir: pathlib.Path) -> float | None:
     sizes = [sum(f.stat().st_size for f in marker.parent.rglob("*") if f.is_file())
              for marker in checkpoint_dir.rglob("_CHECKPOINT_METADATA")]
     return max(sizes) / 1e9 if sizes else None
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, ValueError):
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    return True
-
-
-class GpuLock:
-    """The single RTX 2060 is a serial queue; this is the queue.
-
-    A stale lock — the holder died without releasing — is taken over rather than
-    respected. A lock nobody can clear is worse than no lock: it turns one crash
-    into a card that stays idle until a human notices.
-    """
-
-    def __init__(self, path: pathlib.Path = GPU_LOCK, label: str = ""):
-        self.path = path
-        self.label = label
-        self.held = False
-
-    def holder(self) -> tuple[int, str] | None:
-        if not self.path.exists():
-            return None
-        try:
-            pid_text, _, label = self.path.read_text().strip().partition(" ")
-            return int(pid_text), label
-        except ValueError:
-            return None  # unreadable lock is a stale lock
-
-    def acquire(self) -> None:
-        current = self.holder()
-        if current and _pid_alive(current[0]):
-            raise Preflight(
-                f"the GPU is held by pid {current[0]} ({current[1] or 'unlabelled'}) — "
-                f"one run at a time on this card")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{os.getpid()} {self.label}\n")
-        self.held = True
-
-    def release(self) -> None:
-        """Only ever removes our own lock — a supervisor that took over a stale
-        lock must not delete whatever replaced it."""
-        current = self.holder()
-        if self.held and current and current[0] == os.getpid():
-            self.path.unlink(missing_ok=True)
-        self.held = False
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *exc):
-        self.release()
-        return False
 
 
 # --- reading the run ----------------------------------------------------------
@@ -527,8 +480,9 @@ def _number(row: dict, key: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def margin_alarms(row: dict) -> tuple:
-    """The f16 margins this metrics row crosses (#368), as (kind, sentence). Pure.
+def margin_alarms(config: Config, row: dict) -> tuple:
+    """The f16 margins this metrics row crosses (#368), as (kind, sentence), against
+    `config`'s bars (ACT_MAX_ALARM and its siblings, trm/settings.py). Pure.
 
     The failures they warn of were all visible in real time and none was watched:
     the champion trained itself to 65,120 of f16's 65,504 (#235); its loss scaler sat
@@ -537,19 +491,19 @@ def margin_alarms(row: dict) -> tuple:
     """
     alarms = []
     act = _number(row, "act_max")
-    if act is not None and act > ACT_MAX_ALARM:
-        alarms.append(("act_max", f"act_max {act:,.0f} > {ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
+    if act is not None and act > config.ACT_MAX_ALARM:
+        alarms.append(("act_max", f"act_max {act:,.0f} > {config.ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
     scale = _number(row, "loss_scale")
-    if scale is not None and scale <= LOSS_SCALE_FLOOR_ALARM:
-        alarms.append(("loss_scale", f"loss scale {scale:g} <= {LOSS_SCALE_FLOOR_ALARM:g}: the "
+    if scale is not None and scale <= config.LOSS_SCALE_FLOOR_ALARM:
+        alarms.append(("loss_scale", f"loss scale {scale:g} <= {config.LOSS_SCALE_FLOOR_ALARM:g}: the "
                                      f"backward overflows with almost no scaling left"))
     zero = _number(row, "applied_zero_frac_dense_max")
-    if zero is not None and zero >= ZERO_GRAD_ALARM:
-        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {ZERO_GRAD_ALARM:g}: "
+    if zero is not None and zero >= config.ZERO_GRAD_ALARM:
+        alarms.append(("zero_grad", f"zero-gradient fraction {zero:.3f} >= {config.ZERO_GRAD_ALARM:g}: "
                                     f"gradients underflowing"))
     peak, limit = _number(row, "arena_peak_mib"), _number(row, "arena_limit_mib")
-    if peak is not None and limit is not None and limit - peak < VRAM_HEADROOM_ALARM_MIB:
-        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {VRAM_HEADROOM_ALARM_MIB:,.0f}"))
+    if peak is not None and limit is not None and limit - peak < config.VRAM_HEADROOM_ALARM_MIB:
+        alarms.append(("vram", f"arena headroom {limit - peak:,.0f} MiB < {config.VRAM_HEADROOM_ALARM_MIB:,.0f}"))
     return tuple(alarms)
 
 
@@ -588,6 +542,58 @@ def oom_in(text: str) -> bool:
     return any(marker in text for marker in OOM_MARKERS)
 
 
+def scored_milestones(run_dir: pathlib.Path) -> set[str]:
+    """The milestone steps the run's yardstick journal holds a score for (#471).
+
+    Only a line with a score counts. An error line is what a scorer leaves when the
+    kernel OOM-kills its yardstick, and that milestone is still owed a pass; a torn
+    last line, from a scorer killed mid-write, is skipped."""
+    path = run_dir / YARDSTICK_JOURNAL
+    if not path.exists():
+        return set()
+    steps = set()
+    for line in path.read_text().splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("source") == "milestone" and "lambada_acc" in entry:
+            steps.add(str(entry["step"]))
+    return steps
+
+
+def is_scorer(pid: int, run_dir: pathlib.Path, step: str) -> bool:
+    """Whether `pid` is a live yardstick scorer of this run's milestone `step`: alive,
+    and running instruments.base_run with that --run and --step. A pid alone would do
+    while it lives, but after a reboot (#384) the pid in an old claim can belong to
+    anything, and a claim held by a stranger would keep its milestone waiting on
+    someone else's work. A zombie's cmdline is empty, so it reads as done."""
+    try:
+        argv = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except (OSError, ValueError):
+        return False
+    return (b"instruments.base_run" in argv and b"--run" in argv and b"--step" in argv
+            and argv[argv.index(b"--run") + 1] == str(run_dir).encode()
+            and argv[argv.index(b"--step") + 1] == step.encode())
+
+
+def live_claims(run_dir: pathlib.Path) -> set[str]:
+    """The milestone steps some scorer, this supervisor's or a predecessor's, is
+    working on now (#506). A claim whose scorer is gone is deleted on sight."""
+    live = set()
+    claims = run_dir / YARDSTICK_CLAIMS
+    for claim in (claims.iterdir() if claims.is_dir() else ()):
+        try:
+            pid = int(claim.read_text())
+        except (OSError, ValueError):
+            pid = -1
+        if is_scorer(pid, run_dir, claim.name):
+            live.add(claim.name)
+        else:
+            claim.unlink(missing_ok=True)
+    return live
+
+
 # --- the loop -----------------------------------------------------------------
 
 @dataclass
@@ -598,6 +604,9 @@ class Supervisor:
     limits: Limits
     log_path: pathlib.Path
     metrics_csv: pathlib.Path
+    # The supervising process's knobs (the margin alarms' bars, MILESTONE_SCORERS),
+    # handed in by main() (#475).
+    config: Config
     poll_seconds: float = 300.0
     # Byte offset where the current launch's output begins; set by launch(). 0 is
     # correct before the first launch — there is nothing of ours to skip yet.
@@ -628,8 +637,24 @@ class Supervisor:
     # and the journal line lands in <run-dir>/yardstick.jsonl.
     spec: pathlib.Path | None = None
     milestone_limit: int = 1000
-    _scored: set = field(default_factory=set)
-    _scorers: list = field(default_factory=list)
+    # The run's cold tier (#458): mirrors and prunes each poll, and takes a last
+    # full-state copy when the run ends. None when no COLD_ROOT is set.
+    cold: ColdTier | None = None
+    _cold_error: str | None = None
+    # The checkpoints a relaunch resumes (resumed_checkpoint_dir); None when the
+    # command resumes nothing.
+    checkpoint_dir: pathlib.Path | None = None
+    # How long stop() waits for the child after SIGTERM, then after SIGKILL.
+    stop_grace_seconds: float = 60.0
+    kill_wait_seconds: float = 30.0
+    # The pid of a child that outlived stop(); main() leaves it the GPU lock (#512).
+    survivor: int | None = field(default=None, init=False)
+    # Told each trainer's pid as it launches; main() names it in the GPU lock, so a
+    # supervisor killed outright leaves a lock its orphaned trainer still holds (#516).
+    on_launch: object = lambda pid: None
+    _child: subprocess.Popen | None = field(default=None, init=False)  # the latest launch(); run() stops it on the way out
+    _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
+    _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
 
     def launch(self) -> subprocess.Popen:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,37 +664,65 @@ class Supervisor:
         self.log_offset = self.log_path.stat().st_size if self.log_path.exists() else 0
         env = {**os.environ, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1", **self.env}
         log = self.log_path.open("a")
-        return subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
-                                stdout=log, stderr=subprocess.STDOUT)
+        proc = self._child = subprocess.Popen(self.command, cwd=REPO_ROOT, env=env,
+                                              stdout=log, stderr=subprocess.STDOUT)
+        self.on_launch(proc.pid)
+        return proc
 
-    def stop(self, proc: subprocess.Popen, grace: float = 60.0) -> None:
-        """TERM, then KILL. The grace period is for the trainer to finish writing
-        a checkpoint — killing it mid-write is how a run loses its last hour."""
+    def stop(self, proc: subprocess.Popen) -> bool:
+        """TERM, then KILL; whether the child is gone. The grace period is for the
+        trainer to finish writing a checkpoint — killing it mid-write is how a run
+        loses its last hour. A child that outlives even the KILL (stuck in the driver,
+        uninterruptible) is named in `survivor`, and the GPU lock is left to it (#512)."""
         if proc.poll() is not None:
-            return
+            return True
         proc.send_signal(signal.SIGTERM)
         try:
-            proc.wait(timeout=grace)
+            proc.wait(timeout=self.stop_grace_seconds)
+            return True
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait(timeout=30)
+        try:
+            proc.wait(timeout=self.kill_wait_seconds)
+            return True
+        except subprocess.TimeoutExpired:
+            self.survivor = proc.pid
+            self.announce(f"{_stamp()} ⚠ pid {proc.pid} is still alive after SIGKILL; "
+                          f"the GPU lock is left to it, so nothing launches onto its card")
+            return False
 
     def observe(self, proc: subprocess.Popen, started: float) -> Observation:
         step, ce = read_progress(self.metrics_csv)
         text = read_log_since(self.log_path, self.log_offset)
         run_dir = self.metrics_csv.parent
+        alive = proc.poll() is None
         return Observation(
             free_gb=shutil.disk_usage(run_dir if run_dir.exists() else REPO_ROOT).free / 1e9,
             checkpoint_gb=largest_checkpoint_gb(run_dir / "checkpoints"),
             step=step, ce=ce,
-            alive=proc.poll() is None,
+            alive=alive,
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
-            margins=margin_alarms(read_last_row(self.metrics_csv)),
+            margins=margin_alarms(self.config, read_last_row(self.metrics_csv)),
+            resume_refusal=(unresumable(self.checkpoint_dir, self.config.ACCUMULATION_STEPS)
+                            if not alive and self.checkpoint_dir is not None else None),
         )
 
     def run(self) -> str:
         """Supervise to a terminal outcome, relaunching after real crashes only."""
+        try:
+            return self._supervise()
+        except BaseException as exc:
+            # Whatever ends the loop undecided — a bug escaping observe(), a SIGTERM
+            # main() turned into SystemExit, Ctrl-C — the trainer goes first, while
+            # main() still holds the card (#516). One that will not go is `survivor`.
+            if self._child is not None:
+                gone = self.stop(self._child)
+                self.record(f"{_stamp()} ⚠ supervisor exiting on {type(exc).__name__}: pid {self._child.pid} "
+                            + ("stopped first" if gone else "would not stop and keeps the GPU lock"))
+            raise
+
+    def _supervise(self) -> str:
         state = State()
         proc = self.launch()
         started = time.time()
@@ -680,6 +733,8 @@ class Supervisor:
         while True:
             time.sleep(self.poll_seconds)
             polls += 1
+            # Before the observation: room pruning frees must count before the disk guard reads.
+            self.tend_cold_tier()
             obs = self.observe(proc, started)
             decision = decide(obs, self.limits, state)
             for change in margin_changes(raised, obs.margins):
@@ -698,45 +753,136 @@ class Supervisor:
 
             if decision.action == CONTINUE:
                 continue
-            if decision.action in (STOP, KILL):
+            # GIVE_UP stops the child too: it is the wedged one when it is alive,
+            # and the run is over either way (#512).
+            if decision.action in (STOP, KILL, GIVE_UP):
                 self.stop(proc)
-                return decision.outcome
-            if decision.action == GIVE_UP:
+                self.end()
                 return decision.outcome
             if decision.action in (RELAUNCH, RESTART):
-                if decision.action == RESTART:
-                    self.stop(proc)  # wedged, so it is still up and has to go
+                # A wedged child is still up and has to go; one that outlives SIGKILL
+                # still holds the card, and a relaunch beside it would only OOM.
+                if decision.action == RESTART and not self.stop(proc):
+                    self.announce(f"{_stamp()} {GAVE_UP}: pid {proc.pid} could not be stopped, "
+                                  f"so the run cannot be relaunched")
+                    self.end()
+                    return GAVE_UP
                 proc = self.launch()
                 started = time.time()
                 self.announce(f"{_stamp()} relaunched as pid {proc.pid}")
 
+    def tend_cold_tier(self, final: bool = False) -> None:
+        """One cold-tier tick (trm/runtime/cold.py). Never fatal: an unmounted HDD must
+        not stop a training run, so a failure is announced once, and training goes on
+        with nothing pruned until the cold root is back."""
+        if self.cold is None:
+            return
+        try:
+            for line in self.cold.tick(final=final, keep=self.owed_milestones()):
+                self.record(f"{_stamp()} {line}")
+        except Exception as exc:  # whatever it is, supervision of the run goes on
+            if str(exc) != self._cold_error:
+                self.announce(f"{_stamp()} ⚠ cold tier: {exc} — training goes on, nothing is pruned")
+            self._cold_error = str(exc)
+            return
+        if self._cold_error is not None:
+            self.announce(f"{_stamp()} cold tier back: {self.cold.cold_run}")
+        self._cold_error = None
+
+    def end(self) -> None:
+        """What every terminal outcome owes before the supervisor returns: the cold
+        tier's last copy, and a word on every milestone still unscored (#506)."""
+        self.tend_cold_tier(final=True)
+        if self.spec is not None:
+            self.announce_unscored_milestones()
+
+    def scorer_argv(self, step: str) -> list[str]:
+        """The command that scores milestone `step` on the CPU, run from REPO_ROOT."""
+        run_dir = self.metrics_csv.parent
+        return [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
+                "--checkpoint-dir", str(run_dir / "checkpoints" / MILESTONE_SUBDIR), "--step", step,
+                "--limit", str(self.milestone_limit), "--cpu"]
+
+    def unscored_milestones(self) -> tuple[list[str], set[str]]:
+        """(the run's finalized milestones with no score in its journal and no scorer on
+        them, oldest first; the steps scorers are on now). The scorers counted are this
+        supervisor's and any a predecessor left running, seen through their claims (#506).
+        Reaps this supervisor's finished scorers and drops their claims on the way."""
+        run_dir = self.metrics_csv.parent
+        for step, proc in list(self._scorers.items()):
+            if proc.poll() is not None:  # poll() reaps it
+                del self._scorers[step]
+                (run_dir / YARDSTICK_CLAIMS / step).unlink(missing_ok=True)
+        running = set(self._scorers) | live_claims(run_dir)
+        done = scored_milestones(run_dir) | running
+        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
+        unscored = sorted((m.parent.name for m in milestones.glob("*/_CHECKPOINT_METADATA")
+                           if m.parent.name.isdigit() and m.parent.name not in done),  # an orbax tmp dir is not a milestone
+                          key=int)
+        return unscored, running
+
+    def owed_milestones(self) -> frozenset[str]:
+        """The milestones the cold tier must leave on the SSD (#515): with a spec, every
+        one the journal holds no score for, queued, claimed or failed, since its scorer
+        reads the SSD copy. Without a spec nothing is scored, so nothing is owed."""
+        if self.spec is None:
+            return frozenset()
+        unscored, running = self.unscored_milestones()
+        return frozenset(unscored) | running
+
     def score_new_milestones(self) -> None:
-        """Every finalized milestone gets one CPU yardstick pass, detached, never
-        two: the card stays the trainer's, and a scorer that outlives this poll
-        is fine — the journal is append-only.
+        """Every finalized milestone gets one CPU yardstick pass, detached, oldest
+        first, at most MILESTONE_SCORERS at a time: the card stays the trainer's, and a
+        scorer that outlives this poll is fine — the journal is append-only.
+
+        What is already scored comes from the run's journal, and what is being scored
+        from the claim each scorer leaves in <run-dir>/yardstick_claims, not from
+        memory: so the fresh supervisor a resume or a restart makes neither scores every
+        milestone again (#471) nor starts a duplicate beside a scorer its predecessor
+        left running, and the cap counts those too (#506). Nine 1.5 GB scorers at once
+        is how a relaunch OOM-killed a run (#471).
 
         The scorer is told the milestone's own dir and step (#328). Left to itself it
         scored the newest rolling checkpoint, which is not the milestone, and which
         rolling retention can evict while a slow CPU pass is still restoring it;
         milestones are the one kind nothing evicts."""
-        from trm.runtime.layout import MILESTONE_SUBDIR  # standard library only
-
         run_dir = self.metrics_csv.parent
-        milestones = run_dir / "checkpoints" / MILESTONE_SUBDIR
-        if not milestones.is_dir():
+        if not (run_dir / "checkpoints" / MILESTONE_SUBDIR).is_dir():
             return
-        for marker in sorted(milestones.glob("*/_CHECKPOINT_METADATA")):
-            step = marker.parent.name
-            if not step.isdigit() or step in self._scored:  # an orbax tmp dir is not a milestone
-                continue
+        unscored, running = self.unscored_milestones()
+        # One this supervisor already tried, whose scorer failed, waits for the next
+        # supervisor rather than being retried every poll.
+        owed = [step for step in unscored if step not in self._scored]
+        for i, step in enumerate(owed[:max(0, self.config.MILESTONE_SCORERS - len(running))]):
             self._scored.add(step)
-            self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU")
-            self._scorers.append(subprocess.Popen(
-                [sys.executable, "-m", "instruments.base_run", "score", "--run", str(run_dir),
-                 "--checkpoint-dir", str(milestones), "--step", step,
-                 "--limit", str(self.milestone_limit), "--cpu"],
-                cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True))
+            waiting = len(owed) - i - 1
+            self.announce(f"{_stamp()} milestone {step}: scoring LAMBADA subsample on the CPU"
+                          + (f" ({waiting} more wait for a free scorer)" if waiting else ""))
+            proc = subprocess.Popen(
+                self.scorer_argv(step), cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._scorers[step] = proc
+            try:
+                (run_dir / YARDSTICK_CLAIMS).mkdir(exist_ok=True)
+                (run_dir / YARDSTICK_CLAIMS / step).write_text(str(proc.pid))
+            except OSError as exc:  # a full disk: this supervisor still counts it, and the run goes on
+                self.announce(f"{_stamp()} ⚠ milestone {step}: no claim written ({exc}); "
+                              f"a restarted supervisor may score it twice")
+
+    def announce_unscored_milestones(self) -> None:
+        """At run end, name each milestone that has no score and no scorer, with the
+        command that scores it (#506). Usually the last one: nothing polls after the
+        run ends, so it would otherwise go unscored and unsaid. Scorers still running
+        are left to finish; their lines land in the journal."""
+        unscored, running = self.unscored_milestones()
+        if not unscored:
+            return
+        self.announce(
+            f"{_stamp()} ⚠ the run ended with {len(unscored)} milestone(s) unscored: {', '.join(unscored)}"
+            + (f" (scorers still running on {', '.join(sorted(running, key=int))})" if running else "")
+            + ". Score each with:\n" + "\n".join(
+                f"    cd {shlex.quote(str(REPO_ROOT))} && {shlex.join(self.scorer_argv(step))}"
+                for step in unscored))
 
     def record(self, message: str) -> None:
         """Append one line to the heartbeat file, opened and closed per line so no
@@ -753,8 +899,40 @@ class Supervisor:
         self.report(message)
 
 
+def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path | None:
+    """The checkpoint dir the trainer these arguments launch resumes: its
+    --checkpoint-path (against the repo root, its cwd), else the run dir's own, where
+    start.py puts them. None under --new-run, which every relaunch replays."""
+    args = list(trainer_args)
+    if "--new-run" in args:
+        return None
+    for i, arg in enumerate(args):
+        if arg == "--checkpoint-path" and i + 1 < len(args):
+            return REPO_ROOT / args[i + 1]
+        if arg.startswith("--checkpoint-path="):
+            return REPO_ROOT / arg.split("=", 1)[1]
+    return run_dir / "checkpoints"
+
+
 def _stamp() -> str:
     return datetime.datetime.now().strftime("%F %T")
+
+
+def protected_roots() -> tuple[pathlib.Path, ...]:
+    """What cold-tier pruning may never reach into: the tokenized corpus, sacred by
+    CLAUDE.md, both where the repo keeps it and wherever DATA_ROOT points."""
+    data_root = local_location("DATA_ROOT")
+    return (RUNS_DIR / "data", *([data_root] if data_root is not None else []))
+
+
+def describe_cold(cold: ColdTier | None) -> str:
+    """The cold tier in one line, for a launch banner."""
+    if cold is None:
+        return "none (COLD_ROOT unset): nothing leaves the SSD"
+    every = (f"every {cold.fullstate_every_hours:g}h (the spec's stall window) and at the end"
+             if cold.fullstate_every_hours else "at the end only (no [stall] window in the spec)")
+    return (f"{cold.cold_run} — milestones mirrored; full state copied {every}; mirrored "
+            f"milestones pruned to keep {cold.keep_free_gb:g}GB free on the SSD")
 
 
 def github_reporter(issue: int):
@@ -799,6 +977,11 @@ def main(argv=None) -> int:
     ap.add_argument("--spec", type=pathlib.Path, default=None,
                     help="the pre-registered base-run spec (#294): milestones get a CPU yardstick, "
                          "completion gets the full yardstick, the referee's verdict and a model card")
+    ap.add_argument("--cold-root", type=pathlib.Path, default=None,
+                    help="the HDD directory this run mirrors to (#458; `make launch` passes COLD_ROOT, "
+                         "so a resume replays the tier the run launched with; unset, none). Milestones "
+                         "are mirrored, full state copied once per the spec's stall window and at the "
+                         "end, and mirrored milestones pruned to keep SSD_KEEP_FREE_GB free")
     ap.add_argument("--skip-fit-gate", action="store_true",
                     help="launch without first proving the config survives an apply, a probe and a "
                          "checkpoint (#168) — only when you know it fits")
@@ -818,27 +1001,53 @@ def main(argv=None) -> int:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     print(f"preflight: {free:.1f}GB free")
+    cold = None
+    if args.cold_root is not None:
+        # A warning here, not a refusal: `make launch` refuses a bad cold root, and a
+        # resume after a reboot (#384) must not stay down because the HDD mounted late.
+        # Each tick asks again and copies nothing until the problem is gone.
+        problem = cold_root_problem(args.cold_root, RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT)
+        if problem:
+            print(f"preflight: ⚠ cold tier waits — {problem}", file=sys.stderr)
+        cold = ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
+                        fullstate_every_hours=stall_window_hours(args.spec),
+                        protected=protected_roots())
+    print(f"cold tier: {describe_cold(cold)}")
 
+    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
+    lock = GpuLock(label=f"stop_step={args.stop_step}")
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
         log_path=args.log,
         metrics_csv=args.run_dir / "metrics.csv",
+        config=CONFIG,
         poll_seconds=args.poll_seconds,
         report=github_reporter(args.issue) if args.issue else print,
         spec=args.spec,
+        cold=cold,
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
+        checkpoint_dir=checkpoint_dir,
+        on_launch=lock.name_child,
         **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
            if args.heartbeat_hours is not None else {}),
     )
 
-    lock = GpuLock(label=f"stop_step={args.stop_step}")
+    # Refused before the lock, the fit gate and the first launch: a trainer launched
+    # onto this checkpoint would only be refused the same way (#505).
+    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
+    if why:
+        supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
+        return 1
+
+    previous_sigterm = exit_on_sigterm()
     try:
         if not args.no_gpu_lock:
             lock.acquire()
         if not args.skip_fit_gate:
             print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
-            fit = preflight_fit(args.trainer_args)
+            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP,
+                                on_launch=lock.name_child)
             if not fit.ok:
                 raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
             print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
@@ -846,33 +1055,52 @@ def main(argv=None) -> int:
                   + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
                   flush=True)
         outcome = supervisor.run()
+        print(f"outcome: {outcome}")
+        if args.spec is not None and outcome == BUDGET_COMPLETE:
+            # Inside the try: the final yardstick runs on the card, so the lock is held
+            # through it and released after, never before (#523).
+            return final_yardstick(args, supervisor, outcome)
+        return 0 if outcome in DELIBERATE else 1
     except Preflight as exc:
         print(f"preflight: {exc}", file=sys.stderr)
         return 1
     finally:
-        lock.release()
+        # run() has stopped its trainer however it ended (#516); one stop() could not
+        # end keeps the card (#512).
+        if supervisor.survivor is not None:
+            lock.leave_to(supervisor.survivor)
+        else:
+            lock.release()
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
 
-    print(f"outcome: {outcome}")
-    if args.spec is not None and outcome == BUDGET_COMPLETE:
-        # The referee and the card live in instruments/, which trm/ never imports
-        # (tests/core/test_package_layout.py); they are run as commands.
-        def instrument(*what):
-            proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
-                                   "--spec", str(args.spec), "--run", str(args.run_dir)],
-                                  cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                                  capture_output=True, text=True)
-            return proc.returncode, (proc.stdout + proc.stderr).strip()
-        print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
-        code, out = instrument("score")
-        if code != 0:
-            print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
-            return 1
-        code, verdict_text = instrument("verdict")
-        supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
-        print(verdict_text)
-        code, card = instrument("card")
-        print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
-    return 0 if outcome in DELIBERATE else 1
+
+def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
+    """Score a completed budget run's final checkpoint on the full LAMBADA set, then
+    judge it and draft its model card. Called while main() still holds the card."""
+    if supervisor.survivor is not None:
+        print(f"yardstick skipped: pid {supervisor.survivor} outlived SIGKILL and still holds the card; "
+              f"score the final checkpoint once it is gone", file=sys.stderr)
+        return 1
+
+    # The referee and the card live in instruments/, which trm/ never imports
+    # (tests/core/test_package_layout.py); they are run as commands.
+    def instrument(*what):
+        proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
+                               "--spec", str(args.spec), "--run", str(args.run_dir)],
+                              cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+                              capture_output=True, text=True)
+        return proc.returncode, (proc.stdout + proc.stderr).strip()
+    print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
+    code, out = instrument("score")
+    if code != 0:
+        print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
+        return 1
+    code, verdict_text = instrument("verdict")
+    supervisor.announce(f"{_stamp()} {outcome} — {verdict_text.splitlines()[0] if verdict_text else 'no verdict'}")
+    print(verdict_text)
+    code, card = instrument("card")
+    print(f"model card drafted: {card.strip().splitlines()[-1] if card else '(failed)'} (fill in the one-line summary)")
+    return 0
 
 
 if __name__ == "__main__":

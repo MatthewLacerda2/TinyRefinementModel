@@ -36,7 +36,7 @@ import argparse
 import subprocess
 
 from instruments import runlog
-from trm.runtime.layout import LOG_REAL_STEPS  # standard library only
+from trm.runtime.layout import LOG_REAL_STEPS  # jax-free
 from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -63,14 +63,14 @@ def load_meta(run_id):
 
 
 def resolve_arch(run_id, meta):
-    """Which arch built the checkpoint's param tree, or None if unknowable.
+    """The architecture selector (MODEL_ARCH) the run recorded, or None.
 
-    The two arches are not checkpoint-compatible, so guessing wrong rebuilds the
-    WRONG skeleton and the restore corrupts silently. We therefore never default:
-    prefer the machine-readable record (run_metadata parameters, or the
-    system_snapshot line for runs after that capture landed), fall back to the
-    older free-text 'arm=<x>', and otherwise return None so the caller demands an
-    explicit --arch rather than gambling on the project default."""
+    Worlds before #292 built one of three architectures behind MODEL_ARCH, which are
+    not checkpoint-compatible (the 4B champion is a refiner), so a revived old world
+    must be handed its run's own selector: a wrong one rebuilds the WRONG skeleton
+    and the restore corrupts silently. Prefer the machine-readable record
+    (run_metadata parameters, or the system_snapshot line), fall back to the older
+    free-text 'arm=<x>'. A run from #292 on records none: its world has one model."""
     arch = meta.get("parameters", {}).get("MODEL_ARCH")
     if arch:
         return arch
@@ -81,6 +81,16 @@ def resolve_arch(run_id, meta):
             if marker in text:
                 return text.split(marker, 1)[1].split()[0].strip("();,")
     return None
+
+
+def world_selects_arch(wt):
+    """Does the revived world's code read MODEL_ARCH? Only such a world needs a
+    selector handed to it; one from #292 on has a single model."""
+    for rel in ("trm/settings.py", "trm/config.py", "config.py"):
+        path = os.path.join(wt, rel)
+        if os.path.exists(path) and "MODEL_ARCH" in open(path).read():
+            return True
+    return False
 
 
 def has_file(run_id, name):
@@ -172,14 +182,15 @@ def reconstruct(run_id, for_mode="infer", build_venv=True, arch_override=None):
     arch = arch_override or resolve_arch(run_id, meta)
     if commit in (None, "unknown"):
         raise SystemExit(f"{run_id} has no recorded commit — cannot reconstruct.")
-    if arch is None:
-        raise SystemExit(
-            f"{run_id} does not record its MODEL_ARCH (a pre-capture run), and the "
-            f"arches are not checkpoint-compatible. Re-run with --arch "
-            f"plain|refiner|reasoner to say which skeleton to rebuild.")
 
-    print(f"Reconstructing world for {run_id}  (commit {commit[:10]}, arch {arch})")
+    print(f"Reconstructing world for {run_id}  (commit {commit[:10]}"
+          + (f", arch {arch})" if arch else ")"))
     wt = ensure_worktree(run_id, commit)
+    if arch is None and world_selects_arch(wt):
+        raise SystemExit(
+            f"{run_id} does not record its MODEL_ARCH (a pre-capture run), and its "
+            f"world's architectures are not checkpoint-compatible. Re-run with --arch "
+            f"plain|refiner|reasoner to say which skeleton to rebuild.")
     venv = ensure_venv(run_id, build=build_venv)
     ckpt = os.path.join(run_dir(run_id), "checkpoints")
     py = os.path.join(venv, "bin", "python") if venv else sys.executable
@@ -188,9 +199,15 @@ def reconstruct(run_id, for_mode="infer", build_venv=True, arch_override=None):
     print(f"  worktree : {wt}")
     print(f"  venv     : {venv or '(caller venv — libs NOT pinned)'}")
     print(f"  weights  : {ckpt}")
-    print(f"  arch     : {arch}")
+    if arch:
+        print(f"  arch     : {arch}")
     _print_commands(wt, py, ckpt, arch, run_id, for_mode)
     return {"worktree": wt, "python": py, "checkpoints": ckpt, "arch": arch}
+
+
+def _arch_env(arch):
+    """The `MODEL_ARCH=<x> ` prefix an old world's command needs, or nothing."""
+    return f"MODEL_ARCH={arch} " if arch else ""
 
 
 def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
@@ -199,7 +216,7 @@ def _print_commands(wt, py, ckpt, arch, run_id, for_mode):
     print("\nRun inside the reconstructed world:")
     if for_mode == "infer":
         print(f"  cd {wt}")
-        print(f"  PYTHONPATH=. MODEL_ARCH={arch} CHECKPOINT_ROOT={ckpt} \\")
+        print(f"  PYTHONPATH=. {_arch_env(arch)}CHECKPOINT_ROOT={ckpt} \\")
         print(f"    {py} -m trm.infer")
         print("  (a worktree older than the trm/ package has no trm.infer; "
               "run that commit's own infer script instead)")
@@ -328,14 +345,15 @@ def evaluate(run_id, arch_override=None, build_venv=True, limit=None,
     out_json = os.path.join(TM_ROOT, "eval", f"{run_id}.json")
     os.makedirs(os.path.dirname(out_json), exist_ok=True)
 
-    cmd = [py, *yard_args, "--arch", arch,
+    cmd = [py, *yard_args, *(["--arch", arch] if arch else []),
            "--checkpoint-path", ckpt, "--json-out", out_json]
     if limit:
         cmd += ["--limit", str(limit)]
 
     # The revived worktree's code, not this checkout's. CPU XLA can't lower the f16
     # matmuls, hence FORCE_F32_COMPUTE; note the fidelity caveat below.
-    env = module_env(wt, MODEL_ARCH=arch, **({"FORCE_F32_COMPUTE": "1"} if cpu else {}))
+    env = module_env(wt, **({"MODEL_ARCH": arch} if arch else {}),
+                     **({"FORCE_F32_COMPUTE": "1"} if cpu else {}))
 
     print(f"\nClosing the metric loop for {run_id}:")
     print(f"  recorded val CE rows     : {len(val_ces)}"
@@ -405,7 +423,7 @@ def fork(run_id, new_name, build_venv=True, arch_override=None):
 
     print("\nResume the fork inside its reconstructed world:")
     print(f"  cd {world['worktree']}")
-    print(f"  PYTHONPATH=. MODEL_ARCH={world['arch']} DATA_ROOT=$DATA_ROOT \\")
+    print(f"  PYTHONPATH=. {_arch_env(world['arch'])}DATA_ROOT=$DATA_ROOT \\")
     print(f"    {world['python']} -m trm.train.start --checkpoint-path {dst_ckpt}")
     print("  (add the run's GPU memory knobs before launching on the 2060.)")
 
@@ -428,7 +446,7 @@ def list_runs():
         rows.append((
             name,
             (meta.get("git_commit") or "unknown")[:10],
-            resolve_arch(name, meta) or "UNKNOWN",
+            resolve_arch(name, meta) or "-",
             "patch" if has_file(name, "worktree.patch") else "commit-only",
             "freeze" if has_file(name, "env_freeze.txt") else "NO-freeze",
             "ckpt" if os.path.isdir(os.path.join(RUNS_ROOT, name, "checkpoints")) else "NO-ckpt",
@@ -442,11 +460,11 @@ def list_runs():
         print(f"{r[0]:<{w}}  {r[1]:<10}  {r[2]:<8}  {r[3]:<11}  {r[4]:<9}  {r[5]}")
 
 
-def main():
-    # The shared arch list, imported here: it pulls in jax, which the module-level
-    # helpers (and their tests) never need.
-    from instruments.arch import ARCHES
+ARCH_HELP = ("MODEL_ARCH for a pre-#292 world whose run did not record it "
+             "(plain|refiner|reasoner)")
 
+
+def main():
     p = argparse.ArgumentParser(description="revive a stored weight in its training world")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -456,20 +474,17 @@ def main():
     r.add_argument("run_id")
     r.add_argument("--for", dest="for_mode", choices=["infer", "train"], default="infer")
     r.add_argument("--no-venv", action="store_true", help="skip the ~5GB venv build (dry)")
-    r.add_argument("--arch", choices=ARCHES, default=None,
-                   help="override arch for pre-capture runs that don't record it")
+    r.add_argument("--arch", default=None, help=ARCH_HELP)
 
     f = sub.add_parser("fork", help="branch a new training lineage off an old checkpoint")
     f.add_argument("run_id")
     f.add_argument("new_name")
     f.add_argument("--no-venv", action="store_true")
-    f.add_argument("--arch", choices=ARCHES, default=None,
-                   help="override arch for pre-capture runs that don't record it")
+    f.add_argument("--arch", default=None, help=ARCH_HELP)
 
     e = sub.add_parser("eval", help="close the loop: reproduce a run's metric within the noise floor (#44 DoD)")
     e.add_argument("run_id")
-    e.add_argument("--arch", choices=ARCHES, default=None,
-                   help="override arch for pre-capture runs that don't record it")
+    e.add_argument("--arch", default=None, help=ARCH_HELP)
     e.add_argument("--no-venv", action="store_true")
     e.add_argument("--limit", type=int, default=None, help="LAMBADA sample cap (speed)")
     e.add_argument("--tolerance", type=float, default=0.06,

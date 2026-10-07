@@ -4,11 +4,11 @@ Two properties are worth a test here, and they are the two the previous
 plotter got wrong (#177):
 
   * **A panel with no data is omitted.** Both flavours of "no data": a blank
-    column (the arch never measured it, #105) and a column of literal zeros
+    column (the run never measured it, #105) and a column of literal zeros
     (what runs written before the blank convention put there). Either one drawn
     flat reads as a measurement of zero.
   * **The model is never instantiated.** Building a whole network to count its
-    parameters is slow, wrong-architecture-prone, and a hazard while the card
+    parameters is slow, and a hazard while the card
     is training. The subprocess test is the one that can actually prove it —
     it checks that no model module was ever imported.
 
@@ -25,21 +25,17 @@ import sys
 
 import pytest
 
-HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,avg_forget_cost,"
-          "diversity_loss,temporal_drift,forget_density,tau,out_entropy,logz_mean,"
-          "max_abs_logit,depth_avg,val_ce,arena_peak_mib")
+HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,out_entropy,logz_mean,"
+          "max_abs_logit,val_ce,arena_peak_mib")
 
 
 def row(step, **overrides):
-    """One refiner-shaped CSV row: the reasoner-only columns blank, as the live
-    trainer writes them."""
+    """One CSV row, as the trainer writes it."""
     cells = {
         "ce": 11.0 - step / 500, "loss": 22.0, "seg1_ce": 10.8,
         "grad_norm_avg": 12.0 + step / 1000, "zero_frac_dense_max": 0.004,
-        "avg_forget_cost": "", "diversity_loss": "", "temporal_drift": "",
-        "forget_density": "", "tau": "", "out_entropy": 9.0 - step / 800,
-        "logz_mean": 11.3, "max_abs_logit": 4.3 + step / 200,
-        "depth_avg": 4.5, "val_ce": "",
+        "out_entropy": 9.0 - step / 800,
+        "logz_mean": 11.3, "max_abs_logit": 4.3 + step / 200, "val_ce": "",
         # The allocator's high-water mark, as every run has logged it since #168.
         "arena_peak_mib": 4400 + step // 10,
     }
@@ -71,41 +67,30 @@ def panels_of(figures, filename):
 
 # ── the rule: absent data is omitted, and the reason is said out loud ────────
 
-def test_reasoner_only_columns_never_get_a_panel(tmp_path):
-    """The refiner has no forget gate, no slots and no drift (#105). Those
-    columns are blank in every refiner run and must not reach a figure."""
-    figures = build(a_run(tmp_path), tmp_path)
-
-    drawn = [name for figure in figures.values() for name in figure["panels"]]
-    for absent in ("temporal_drift", "avg_forget_cost", "diversity_loss", "forget_density",
-                   "tau", "seg1_ce"):
-        assert absent not in drawn
-
-
 def test_blank_column_omits_its_chart_and_says_why(tmp_path, capsys):
     figures = build(a_run(tmp_path, grad_norm_avg=""), tmp_path)
 
     assert "grad_norm.png" not in figures
-    assert "grad_norm: omitted — not measured by this architecture" in capsys.readouterr().out
+    assert "grad_norm: omitted — not logged by this run" in capsys.readouterr().out
     assert "logits.png" in figures, "the other diagnostics still have data"
 
 
 def test_literal_zero_column_is_omitted_too(tmp_path, capsys):
     """The case `has()` alone cannot catch: a pre-#105 run wrote 0.0000 into the
     columns it did not measure, so the column is present and still not data."""
-    figures = build(a_run(tmp_path, depth_avg="0.0000"), tmp_path)
+    figures = build(a_run(tmp_path, grad_norm_avg="0.0000"), tmp_path)
 
-    assert "depth.png" not in figures
+    assert "grad_norm.png" not in figures
     # Told, not silently dropped: absence and a flat zero must stay tellable apart.
-    assert "depth: omitted — constant 0 throughout" in capsys.readouterr().out
+    assert "grad_norm: omitted — constant 0 throughout" in capsys.readouterr().out
 
 
 def test_a_real_flat_signal_is_still_drawn(tmp_path):
     """Constant-at-zero is the tombstone; constant at some other value is a
-    measurement (a sampler pinned to depth 4, say), and it gets its panel."""
-    figures = build(a_run(tmp_path, depth_avg="4.0000"), tmp_path)
+    measurement, and it gets its panel."""
+    figures = build(a_run(tmp_path, grad_norm_avg="4.0000"), tmp_path)
 
-    assert "depth.png" in figures
+    assert "grad_norm.png" in figures
 
 
 def test_every_chart_is_its_own_image_for_a_full_log(tmp_path):
@@ -113,7 +98,7 @@ def test_every_chart_is_its_own_image_for_a_full_log(tmp_path):
     the charts worth a glance: no VRAM, zero-gradient, LR or progress panels."""
     figures = build(a_run(tmp_path), tmp_path)
 
-    assert sorted(figures) == ["depth.png", "grad_norm.png", "logits.png", "training_curve.png"]
+    assert sorted(figures) == ["grad_norm.png", "logits.png", "training_curve.png"]
     assert all(len(figure["panels"]) <= 2 for figure in figures.values())
 
 
@@ -198,9 +183,8 @@ def test_missing_run_is_an_error_not_an_empty_figure(tmp_path):
 # ── the constraint: no model, ever ───────────────────────────────────────────
 
 def test_the_plotter_never_imports_a_model(tmp_path, repo_root):
-    """The defect this rewrite removes: the old plotter built a whole
-    UniversalReasoner to count parameters — the wrong architecture, and a
-    hazard on a card that is training. Run it for real in a clean interpreter
+    """The defect this rewrite removes: the old plotter built a whole model to
+    count parameters — a hazard on a card that is training. Run it for real in a clean interpreter
     and check no model module was ever imported."""
     csv_path = a_run(tmp_path)
     probe = (
@@ -236,6 +220,35 @@ def test_the_grad_norm_panel_reads_against_the_clip_when_the_run_logged_it(tmp_p
     matplotlib.pyplot.close(fig)
 
 
+def test_the_act_max_panel_states_the_headroom_a_flat_trace_hides(tmp_path):
+    """#235: a healthy run sits decades under the f16 ceiling, so the trace alone
+    says nothing — the peak and its share of the ceiling have to be on the panel."""
+    from instruments import plots, runlog
+    header = HEADER + ",act_max"
+    rows = [row(step) + f",{40.0 + step / 10}" for step in range(5, 401, 5)]
+    run_dir = tmp_path / "run_20990101_000000"
+    run_dir.mkdir()
+    (run_dir / "metrics.csv").write_text("\n".join([header, *rows]) + "\n")
+    import matplotlib
+    matplotlib.use("Agg")
+    fig, ax = matplotlib.pyplot.subplots()
+    log = runlog.load(str(run_dir / "metrics.csv"))
+    plots._panel_act_max(ax, log, plots.RunConfig.of(log))
+    title = ax.get_title(loc="left")
+    assert "80" in title and "0.12%" in title, title
+    # Both lines are drawn, and the axis reaches the ceiling even though the data
+    # is three decades below it — the point of the panel is the gap.
+    assert ax.get_ylim()[1] >= plots.F16_MAX
+    matplotlib.pyplot.close(fig)
+
+
+def test_a_run_without_act_max_omits_the_panel(tmp_path, capsys):
+    """Runs older than the column (the 4B champion among them) must not get a
+    flat-zero panel — rule 1 of the plotter's docstring."""
+    build(a_run(tmp_path), str(tmp_path / "out"))
+    assert "act_max" in capsys.readouterr().out
+
+
 # ── the run's own config decides the figure, not this process's (#305) ───────
 
 def with_metadata(csv_path, **parameters):
@@ -252,7 +265,7 @@ def a_short_arm(tmp_path, name="run_026_muon_m100_s1", **parameters):
     schedule completes inside the run, so its warmup is 100, not the 1000 this
     process defaults to."""
     rows = [row(step, val_ce=(6.0 if step % 80 == 0 else "")) for step in range(5, 513, 5)]
-    recorded = {"MODEL_ARCH": "plain", "LATENT_DIM": 960, "PLAIN_LAYERS": 9,
+    recorded = {"LATENT_DIM": 960, "PLAIN_LAYERS": 9,
                 "MAX_SEQ_LEN": 512, "BATCH_SIZE": 1, "ACCUMULATION_STEPS": 128,
                 "TRAIN_TOKEN_BUDGET": 512 * 131072, "DECAY_STEPS": 512,
                 "WARMUP_STEPS": 100, "VAL_EVERY_OPT_STEPS": 16,
@@ -275,37 +288,14 @@ def test_a_short_run_renders_and_names_its_own_schedule(tmp_path):
     assert plots.schedule_line(cfg) == "LR: 100-step warmup to 0.0006, cosine to 512 optimizer steps."
 
 
-def test_a_plain_run_omits_the_depth_panel_and_says_why(tmp_path, capsys):
-    """PlainTransformer ignores the depth argument, so depth_avg is the sampler's
-    dice roll — logged, and not a measurement of this model."""
-    figures = build(a_short_arm(tmp_path), tmp_path)
-
-    assert "depth.png" not in figures
-    assert "ignores the depth argument" in capsys.readouterr().out
-
-
-def test_a_refiner_run_still_draws_the_depth_panel(tmp_path):
-    """The looping arches do have a depth, and the realised mean of the draw is
-    still worth a check there (the 4B champion is one of these)."""
-    figures = build(a_short_arm(tmp_path, MODEL_ARCH="refiner", MAX_STEPS_LIMIT=8), tmp_path)
-
-    assert "depth.png" in figures
-
-
-def test_the_subtitle_identifies_a_plain_run_by_arch_layers_and_optimizer(tmp_path):
-    """`depth ≤8` said nothing about a plain run. What separates two runs of this
-    stack is the layer count and the optimizer — the #26 pair differs in nothing
-    else."""
+def test_the_subtitle_identifies_a_run_by_width_layers_and_optimizer(tmp_path):
+    """What separates two runs of this stack is the layer count and the optimizer —
+    the #26 pair differs in nothing else."""
     from instruments import plots
     from instruments.runlog import load
 
     described = plots.describe(plots.RunConfig.of(load(str(a_short_arm(tmp_path)))))
-    assert described == "plain · dim 960 · 9 layers · muon (LR ×100 on matrices)"
-    assert "depth" not in described
-
-    refiner = plots.RunConfig({"parameters": {"MODEL_ARCH": "refiner", "LATENT_DIM": 960,
-                                              "MAX_STEPS_LIMIT": 8, "TRM_OPTIMIZER": "adamw"}})
-    assert plots.describe(refiner) == "refiner · dim 960 · depth ≤8 · adamw"
+    assert described == "dim 960 · 9 layers · muon (LR ×100 on matrices)"
 
 
 def test_a_fact_the_run_did_not_record_is_named_as_missing(tmp_path):
@@ -315,8 +305,8 @@ def test_a_fact_the_run_did_not_record_is_named_as_missing(tmp_path):
     it was 8 before 2026-09-13."""
     from instruments import plots
 
-    older = plots.RunConfig({"parameters": {"MODEL_ARCH": "plain", "LATENT_DIM": 960}})
-    assert plots.describe(older) == "plain · dim 960 · layer count not recorded · optimizer not recorded"
+    older = plots.RunConfig({"parameters": {"LATENT_DIM": 960}})
+    assert plots.describe(older) == "dim 960 · layer count not recorded · optimizer not recorded"
 
 
 def test_the_val_cadence_comes_from_the_run(tmp_path):
@@ -346,12 +336,10 @@ def test_a_run_written_before_these_parameters_still_renders(tmp_path):
     and only drops what that fallback cannot honestly reconstruct."""
     rows = [row(step) for step in range(5, 1001, 5)]
     csv_path = with_metadata(write_csv(tmp_path, rows, name="run_20260719_020802"),
-                             MODEL_ARCH="refiner", LATENT_DIM=960, MAX_STEPS_LIMIT=8,
-                             TRAIN_TOKEN_BUDGET=4_000_000_000, DECAY_STEPS=30518)
+                             LATENT_DIM=960, TRAIN_TOKEN_BUDGET=4_000_000_000, DECAY_STEPS=30518)
     figures = build(csv_path, tmp_path)
 
     assert figures["training_curve.png"]["panels"] == ["ce"]
-    assert "depth.png" in figures
 
 
 def test_a_run_with_no_metadata_at_all_still_renders(tmp_path):
@@ -407,16 +395,13 @@ def test_the_arena_limit_is_the_runs_own_when_logged_and_flagged_when_assumed():
     assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], {})) == (plots.ARENA_LIMIT_MIB, False)
 
 
-def test_a_blank_column_the_recorded_arch_does_log_is_not_blamed_on_the_arch(tmp_path):
-    """#332 review: on a plain run, a missing column plain does log was reported as
-    'not measured by this architecture'. The reason comes from runlog, shared with report."""
+def test_the_reason_for_a_blank_column_is_the_one_report_gives():
+    """The reason comes from runlog, shared with report, so the two cannot disagree (#319)."""
     from instruments import plots
-    from instruments.runlog import RunLog
+    from instruments.runlog import NOT_LOGGED, RunLog
 
-    plain = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {"parameters": {"MODEL_ARCH": "plain"}})
-    assert plots.why_omitted(plain, ["grad_norm_avg"]) == "not logged by this run"
-    reasoner_only = plots.why_omitted(plain, ["tau"])
-    assert reasoner_only == "not measured by this architecture"
+    blank = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {})
+    assert plots.why_omitted(blank, ["grad_norm_avg"]) == NOT_LOGGED
 
 
 def test_a_run_with_blocks_csv_gets_the_two_heatmaps(tmp_path):

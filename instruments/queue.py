@@ -4,20 +4,32 @@
 
 CLAUDE.md states the ready-queue as prose precise enough to execute — an issue
 is ready when it is open, not blocked, unclaimed, and its lane is free; types
-lead in the order architecture > tools > optimization > ideas > documentation;
+lead in the order tools > architecture > optimization > documentation;
 anything that affects another item leads. Run in a session's head, that
 algorithm runs differently depending on what the session happened to read, and
 not at all in a fresh one. Here it runs the same every time.
 
-It ranks only what the rules decide, then stops. Within a tier the rules set no
-order (for ideas CLAUDE.md says so outright: "any order, your judgment"), so the
-output says that instead of sorting by something that looks like authority. The
-one mechanical tiebreak is dependency: an issue other open issues are blocked
-by affects another item, so it leads its tier.
+It ranks only what the rules decide, then stops. Within a tier the rules set only
+three orders, applied in this sequence:
+- dependency: an issue that other open issues are blocked by affects another item, so
+  it leads its tier;
+- an idle card: gpu-lane items come next;
+- the repo before the model: a `codebase` issue comes next, because the code every
+  later change lands in leads a pair nothing depends on.
+Past those, the order is judgment ("any order, your judgment"), and the output says
+so instead of sorting by something that only looks like authority.
 
 It also refuses to trust labels it can check. A `blocked` label whose blockers
 are all closed is surfaced as stale, not obeyed; an issue with no type label is
-surfaced, not guessed into a tier.
+surfaced, not guessed into a tier. And it surfaces an issue nobody has touched in
+`STALE_DAYS`, unless it is legitimately waiting: to be kept with a reason, or closed.
+
+`--cloud` asks the same question for a session without this machine: no card, no
+trained weights, no tokenized corpus, no HDD. It drops what needs the card to
+finish (the `gpu` lane without `cpu`) and what needs this machine's files (the
+`local` label), and keeps the CPU half of a partial-cpu issue, which such a
+session builds and parks as a draft. A checkout without `runs/data/` is how a
+cloud session looks from inside, and the queue says so when --cloud is missing.
 """
 
 from __future__ import annotations
@@ -30,20 +42,36 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from trm.runtime.supervisor import GpuLock, _pid_alive
+from trm.runtime.gpu_lock import GpuLock
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
 
-TYPE_ORDER = ("architecture", "tools", "optimization", "ideas", "documentation")
-UNORDERED = {"ideas": "any order, your judgment, per CLAUDE.md"}
+TYPE_ORDER = ("tools", "architecture", "optimization", "documentation")
+UNORDERED = {"architecture": "codebase first, then any order, your judgment, per CLAUDE.md"}
 
-# "Blocked by" alone marks a block; followed by issue numbers, it names the blockers.
+# "Blocked by" alone marks a block. When the first thing after it is an issue number,
+# every number in the rest of that sentence names a blocker — bodies annotate each
+# one, "**Blocked by #440** (the world), **#441** (a base that can pass)", and a
+# pattern that wanted a bare `#a, #b and #c` stopped at the first `**` and read #29
+# as unblocked while #441 still held it. When the first thing is prose, the block is
+# a condition and a number later in the sentence is a reference, not a blocker:
+# "Blocked by: the owner turning it into a question; its tool shipped in #391."
 _BLOCKED = r"blocked by"
 BLOCKED_ON_CONDITION = re.compile(_BLOCKED, re.I)
-BLOCKED_BY = re.compile(_BLOCKED + r"\s+((?:#\d+(?:\s*(?:,|and|&|/)\s*)?)+)", re.I)
+BLOCKED_BY = re.compile(_BLOCKED + r"[\s:*_]*(#\d+[^\n.]*)", re.I)
 CLOSES = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.I)
 TITLE_REF = re.compile(r"\(#(\d+)\)")
+
+# An open issue untouched this long (#482) is either still wanted, and a comment says
+# why (which resets the clock), or dead, and closes with CLAUDE.md's vocabulary. Three
+# weeks, the issue's proposal: longer than any job Claude starts unasked (<48h) or a
+# base run (days), so what the clock measures is an issue nobody is holding.
+STALE_DAYS = 21
+# A parked partial-cpu draft (CLAUDE.md "Lane") waits on the card, not on anybody:
+# its "What waits" section, up to the next heading, names the card or the GPU.
+WHAT_WAITS = re.compile(r"what waits.*?(?=\n#|\Z)", re.I | re.S)
+ON_THE_CARD = re.compile(r"\b(?:card|gpu)\b", re.I)
 
 
 @dataclass
@@ -63,6 +91,7 @@ class Entry:
     def reason(self) -> str:
         lane = self.labels & {"cpu", "gpu"}
         parts = ["bug" if "bug" in self.labels else None,
+                 "codebase" if "codebase" in self.labels else None,
                  "cpu half (partial-cpu)" if lane == {"cpu", "gpu"}
                  else "/".join(sorted(lane)) if lane else "no lane label"]
         if self.unblocks:
@@ -87,6 +116,11 @@ class Queue:
                 return f"#{lead.number} — first ready {tier} issue ({lead.reason()})"
             if self.card.free and "gpu" in lead.labels:
                 return f"#{lead.number} — card idle → gpu items first; first ready {tier} issue ({lead.reason()})"
+            if "codebase" in lead.labels:
+                if "codebase" not in entries[1].labels:
+                    return f"#{lead.number} — the repo before the model; first ready {tier} issue ({lead.reason()})"
+                return (f"a codebase {tier} issue — {sum('codebase' in e.labels for e in entries)} are "
+                        f"ready and the rules do not order them; that pick is a judgment call")
             return (f"a {tier} issue — {len(entries)} are ready and the rules do not "
                     f"order them; that pick is a judgment call")
         return "nothing is ready"
@@ -97,22 +131,48 @@ def blockers_named(body: str) -> list[int]:
                    for n in re.findall(r"#(\d+)", m.group(1))})
 
 
+def issues_claimed(pr: dict) -> set[int]:
+    text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
+    return {int(n) for n in CLOSES.findall(text) + TITLE_REF.findall(pr.get("title", ""))}
+
+
 def claimed_by_pr(prs: list[dict]) -> dict[int, int]:
     """Issue number → the open PR that addresses it. A draft counts: CLAUDE.md
     parks partial-cpu work as a draft precisely to keep it out of the queue."""
     claims = {}
     for pr in prs:
-        text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
-        for n in CLOSES.findall(text) + TITLE_REF.findall(pr.get("title", "")):
-            claims.setdefault(int(n), pr["number"])
+        for n in issues_claimed(pr):
+            claims.setdefault(n, pr["number"])
     return claims
 
 
-def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
+def parked_on_card(pr: dict) -> bool:
+    what_waits = WHAT_WAITS.search(pr.get("body") or "")
+    return bool(pr.get("isDraft") and what_waits and ON_THE_CARD.search(what_waits.group(0)))
+
+
+def days_untouched(issue: dict, claiming: list[dict], now: datetime.datetime) -> int:
+    """Whole days since anyone touched the issue or an open PR that claims it (work on
+    the PR is work on the issue). `updatedAt` moves on a comment, an edit or a label."""
+    stamps = [issue["updatedAt"]] + [pr["updatedAt"] for pr in claiming if pr.get("updatedAt")]
+    last = max(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) for s in stamps)
+    return (now - last).days
+
+
+# A session without this machine (#492): it has no card to wait for, and none of the
+# machine's files, which the `local` label marks.
+CLOUD_CARD = Card(False, "cloud session — no card")
+
+
+def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = False,
+                now: datetime.datetime | None = None) -> Queue:
     """Pure: the open issues, the open PRs, and the card's state in; the queue out.
-    Every issue passed in is taken to be open, so a blocker absent from the list
-    is a closed one."""
+    Every issue and PR passed in is taken to be open, so a blocker absent from both
+    lists is a closed one: GitHub numbers them in one sequence, and a PR named as a
+    blocker holds until it merges (#480). `cloud` also drops what needs this
+    machine's files (`local`); `now` turns on the untouched-issue check (#482)."""
     open_numbers = {i["number"] for i in issues}
+    open_prs = {p["number"] for p in prs}
     claims = claimed_by_pr(prs)
     dependents: dict[int, list[int]] = {}
     for issue in issues:
@@ -126,7 +186,8 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
         n, labels = issue["number"], {lb["name"] for lb in issue.get("labels", [])}
         body = issue.get("body") or ""
         named = blockers_named(body)
-        live_blockers = [b for b in named if b in open_numbers]
+        live_blockers = [b for b in named if b in open_numbers | open_prs]
+        live = ", ".join(f"PR #{b}" if b in open_prs else f"#{b}" for b in live_blockers)
 
         on_condition = not named and BLOCKED_ON_CONDITION.search(body)
         if "blocked" in labels and not named and not on_condition:
@@ -135,12 +196,15 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
             needs_human.append((n, "stale block — every blocker it names is closed ("
                                 + ", ".join(f"#{b}" for b in named) + ")"))
         elif live_blockers and "blocked" not in labels:
-            needs_human.append((n, "says blocked by open "
-                                + ", ".join(f"#{b}" for b in live_blockers)
-                                + " but carries no blocked label"))
+            needs_human.append((n, f"says blocked by open {live} but carries no blocked label"))
         tier = next((t for t in TYPE_ORDER if t in labels), None)
         if tier is None:
             needs_human.append((n, "no type label — cannot be placed in a tier"))
+        claiming = [pr for pr in prs if n in issues_claimed(pr)]
+        if (now is not None and not live_blockers and not any(map(parked_on_card, claiming))
+                and (days := days_untouched(issue, claiming, now)) > STALE_DAYS):
+            needs_human.append((n, f"untouched for {days} days — keep it (comment why) or close "
+                                   "it (wont-fix: <reason> / superseded-by #N)"))
 
         if issue.get("assignees"):
             not_ready.append((n, "claimed by " + ", ".join(a["login"] for a in issue["assignees"])))
@@ -149,11 +213,13 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
         elif "plan" in labels:
             not_ready.append((n, "plan — not ready to start"))
         elif live_blockers:
-            not_ready.append((n, "blocked by open " + ", ".join(f"#{b}" for b in live_blockers)))
+            not_ready.append((n, f"blocked by open {live}"))
         elif on_condition and "blocked" in labels:
             not_ready.append((n, "blocked on a condition, not an issue — the queue cannot check it"))
         elif "blocked" in labels:
             continue  # surfaced above; a label that fails its own check is not obeyed
+        elif cloud and "local" in labels:
+            not_ready.append((n, "local — needs this machine's weights, corpus or HDD"))
         elif "gpu" in labels and "cpu" not in labels and not card.free:
             not_ready.append((n, f"gpu lane, card busy ({card.why})"))
         elif tier is not None:
@@ -162,13 +228,15 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card) -> Queue:
     for entries in tiers.values():
         # Unblockers lead. On an idle card, gpu-lane items lead too (#295): the
         # card is the scarce resource, and an idle one is the waste to end first.
-        entries.sort(key=lambda e: (-len(e.unblocks), not (card.free and "gpu" in e.labels), e.number))
+        # Then the repo before the model (`codebase`, CLAUDE.md "The ready-queue").
+        entries.sort(key=lambda e: (-len(e.unblocks), not (card.free and "gpu" in e.labels),
+                                    "codebase" not in e.labels, e.number))
     return Queue(card, tiers, not_ready, needs_human)
 
 
 def card_state() -> Card:
-    holder = GpuLock().holder()
-    if holder and _pid_alive(holder[0]):
+    holder = GpuLock().live_holder()
+    if holder:
         return Card(False, f"GPU lock held by pid {holder[0]} {holder[1]}".strip())
     try:
         out = subprocess.run(
@@ -264,11 +332,16 @@ def render(q: Queue) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--cloud", action="store_true",
+                    help="the queue for a session without this machine: no card, and no issue "
+                         "labelled `local` (weights, corpus, HDD); the cpu half of a partial-cpu "
+                         "issue stays (#492)")
     ap.add_argument("--strays", action="store_true",
                     help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
                          "exit 1 if any (CI runs this on every push)")
     args = ap.parse_args(argv)
-    prs = gh_json("pr", "list", "--state", "open", "--limit", "200", "--json", "number,title,body,headRefName")
+    prs = gh_json("pr", "list", "--state", "open", "--limit", "200",
+                  "--json", "number,title,body,headRefName,isDraft,updatedAt")
     strays = stray_branches(remote_branches(), {p["headRefName"] for p in prs},
                             datetime.datetime.now(datetime.timezone.utc))
     if args.strays:
@@ -277,8 +350,12 @@ def main(argv: list[str] | None = None) -> int:
                   f"(a draft counts), or delete it; a pushed branch nobody can find is #74 again.")
         return 1 if strays else 0
     issues = gh_json("issue", "list", "--state", "open", "--limit", "500",
-                     "--json", "number,title,labels,assignees,body")
-    q = build_queue(issues, prs, card_state())
+                     "--json", "number,title,labels,assignees,body,updatedAt")
+    q = build_queue(issues, prs, CLOUD_CARD if args.cloud else card_state(), cloud=args.cloud,
+                    now=datetime.datetime.now(datetime.timezone.utc))
+    if not args.cloud and not (pathlib.Path(__file__).resolve().parents[1] / "runs" / "data").is_dir():
+        q.needs_human.append((0, "runs/data/ is missing: this looks like a cloud session — "
+                                 "run `python -m instruments.queue --cloud`"))
     q.needs_human += [(0, f"stray branch {name}: last commit {days} days ago, no open PR") for name, days in strays]
     print(render(q), end="")
     return 0

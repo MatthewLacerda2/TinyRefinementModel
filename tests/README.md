@@ -14,9 +14,10 @@ The tiers answer one question: **what breaks if I delete this?**
 
 ## Why `apparatus/` exists
 
-Tests accumulate here faster than anywhere else, and that is not a defect —
-`test_scratchpad_harness.py` is one of the longest files here because the scratchpad ablations are
-only interpretable if the wiring is provably what the write-up claims. The
+Tests accumulate here faster than anywhere else, and that is not a defect — a
+harness's ablations are only interpretable if its wiring is provably what the
+write-up claims (the scratchpad harness's guards were among the longest files here
+until #292 retired them with their line). The
 problem was never that these get written; it is that nothing said when they
 *stop* being load-bearing. A harness outlives its usefulness the moment its
 research line is killed, and until now that moment had no consequence.
@@ -42,6 +43,7 @@ pytest tests/core          # the fast loop while you work
 pytest tests/              # everything; expensive/ self-skips without its env flag
 RUN_GOLDEN=1 pytest tests/expensive # what CI's golden-run job forces on
 RUN_TESTS_ON_GPU=1 pytest tests/    # the real f16 path, GPU must be free
+RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py  # any hot-path change, before merging (#540)
 ```
 
 Tests default to CPU (`FORCE_F32_COMPUTE`) so the suite stays runnable while a

@@ -15,67 +15,53 @@ def test_trainer_imports():
     from trm.train import validation  # noqa: F401
 
 
-def test_validation_probe_scores_and_preserves_training_state(reasoner_model, monkeypatch):
+def test_validation_probe_scores_held_out_rows(tiny_model):
+    from trm.settings import CONFIG
     from trm.train import trainer
-
     from trm.train import validation
-
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
-    monkeypatch.setattr(validation, "VAL_ROWS", 1)
 
-    probe = validation.ValidationProbe(trainer.DATA_ROOT)
-    sentinel = jnp.ones_like(reasoner_model.hunch_cache[...]) * 0.123
-    reasoner_model.hunch_cache[...] = sentinel
-
-    val_ce = probe.run(reasoner_model)
+    probe = validation.ValidationProbe.of(CONFIG, trainer.DATA_ROOT, rows=1)
+    val_ce = probe.run(tiny_model)
 
     assert val_ce is not None and np.isfinite(val_ce), f"validation CE not finite: {val_ce}"
     assert 0.0 < val_ce < 20.0, f"validation CE out of any plausible range: {val_ce}"
-    np.testing.assert_array_equal(
-        np.asarray(reasoner_model.hunch_cache[...]), np.asarray(sentinel),
-        err_msg="validation perturbed the training stream's carried hunch",
-    )
 
 
 # --- the probe scores without building full logits (#208) ----------------------
 
-@pytest.mark.parametrize("arch", ["plain", "refiner", "reasoner"])
-def test_chunked_probe_matches_full_logit_scoring(arch):
+def test_chunked_probe_matches_full_logit_scoring(make_tiny_model):
     """The probe used to build two [1, 512, 50304] f32 logit tensors inside the
     trainer's allocator every probe. Chunked scoring must measure the same CE: the
     reference below is the old full-logit computation, kept here and nowhere else."""
     import optax
     from flax import nnx
 
-    from instruments.arch import build
-    from trm.config import MAX_SEQ_LEN, PAD_TOKEN_ID
+    from trm.settings import CONFIG
     from trm.train import validation
 
-    model = build(arch, dim=60, seed=3, **({"num_layers": 2} if arch == "plain" else {}))
+    model = make_tiny_model(seed=3)
     rng = np.random.default_rng(0)
-    batch = jnp.asarray(rng.integers(1, 50000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
-    batch = batch.at[0, -40:].set(PAD_TOKEN_ID)  # a padded tail, so the mask is exercised
+    batch = jnp.asarray(rng.integers(1, 50000, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = batch.at[0, -40:].set(CONFIG.PAD_TOKEN_ID)  # a padded tail, so the mask is exercised
 
     @nnx.jit
     def full_logit_sums(model, batch):
-        seq1_in, seq1_out = batch[:, :MAX_SEQ_LEN], batch[:, 1:MAX_SEQ_LEN + 1]
-        seq2_in, seq2_out = batch[:, MAX_SEQ_LEN:2 * MAX_SEQ_LEN], batch[:, MAX_SEQ_LEN + 1:]
-        out1 = model(seq1_in, depth=validation.VAL_FIXED_DEPTH, training=False, new_document=True)
-        out2 = model(seq2_in, depth=validation.VAL_FIXED_DEPTH, training=False, new_document=False)
+        seq1_in, seq1_out = batch[:, :CONFIG.MAX_SEQ_LEN], batch[:, 1:CONFIG.MAX_SEQ_LEN + 1]
+        seq2_in, seq2_out = batch[:, CONFIG.MAX_SEQ_LEN:2 * CONFIG.MAX_SEQ_LEN], batch[:, CONFIG.MAX_SEQ_LEN + 1:]
+        out1 = model(seq1_in, training=False)
+        out2 = model(seq2_in, training=False)
         total, count = 0.0, 0
         for logits, targets in ((out1.logits, seq1_out), (out2.logits, seq2_out)):
-            mask = targets != PAD_TOKEN_ID
+            mask = targets != CONFIG.PAD_TOKEN_ID
             ce = optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets)
             total, count = total + jnp.sum(ce * mask), count + jnp.sum(mask)
         return total, count
 
-    with model.isolated_state():
-        model.reset_state()
-        ref_sum, ref_count = full_logit_sums(model, batch)
-        model.reset_state()
-        got_sum, got_count = validation._val_ce_sums(model, batch)
+    ref_sum, ref_count = full_logit_sums(model, batch)
+    got_sum, got_count = validation._val_ce_sums(model, batch)
 
     assert int(got_count) == int(ref_count)
     np.testing.assert_allclose(float(got_sum) / float(got_count), float(ref_sum) / float(ref_count),
@@ -92,18 +78,19 @@ def test_the_probe_never_asks_for_full_logits():
 def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatch):
     """`skip=None` (#363) reads each corpus from its tail: the rows a run reaches only
     by exhausting that corpus, so they stay held out whatever the mixture does."""
-    from trm.config import MAX_SEQ_LEN
+    from trm.settings import CONFIG
     from trm.train import validation
 
-    stride = 2 * MAX_SEQ_LEN + 1
+    stride = 2 * CONFIG.MAX_SEQ_LEN + 1
     source = tmp_path / "pretrain" / "finemath"
     source.mkdir(parents=True)
     # Two shards of 3 samples each; sample i is filled with the value i.
     np.save(source / "chunk_0.npy", np.repeat(np.arange(3, dtype=np.int32), stride))
     np.save(source / "chunk_1.npy", np.repeat(np.arange(3, 6, dtype=np.int32), stride))
-    assert validation.corpus_samples(str(source)) == 6
+    assert validation.corpus_samples(str(source), CONFIG.MAX_SEQ_LEN) == 6
 
     monkeypatch.setattr(validation, "VAL_TAIL_ROWS", 2)
-    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, source="finemath")
-    rows = probe._load()
+    probe = validation.ValidationProbe(str(tmp_path), rows=2, skip=None, max_seq_len=CONFIG.MAX_SEQ_LEN,
+                                       data_seed=0, source="finemath")
+    rows = probe.load_rows()
     assert [int(r[0, 0]) for r in rows] == [4, 5]

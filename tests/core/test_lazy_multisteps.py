@@ -12,14 +12,15 @@ import numpy as np
 import optax
 from flax import nnx
 
-from instruments.arch import build
+from trm.model import build_model
 from trm.train.accumulate import LazyMultiSteps
+from trm.settings import CONFIG
 from trm.train.optimizers import _adamw, _muon
 
 
 def _run(tx_cls, inner, k, steps, seed=0):
     from trm.train.grad_step import apply_grads
-    model = build("plain", dim=60, num_layers=1, seed=seed)
+    model = build_model(CONFIG, nnx.Rngs(seed), dim=60, num_layers=1)
     opt = nnx.Optimizer(model, tx_cls(inner, every_k_schedule=k, use_grad_mean=True), wrt=nnx.Param)
     key = jax.random.PRNGKey(1)
     for i in range(steps):
@@ -36,14 +37,14 @@ def _identical(a, b):
 
 
 def test_adamw_params_and_state_are_bit_identical_across_two_windows_and_a_partial_third():
-    inner = lambda: optax.chain(optax.clip_by_global_norm(1.0), _adamw(lambda s: 1e-3))  # noqa: E731
+    inner = lambda: optax.chain(optax.clip_by_global_norm(1.0), _adamw(CONFIG, lambda s: 1e-3))  # noqa: E731
     ref_p, ref_s = _run(optax.MultiSteps, inner(), k=4, steps=10)
     got_p, got_s = _run(LazyMultiSteps, inner(), k=4, steps=10)
     assert _identical(ref_p, got_p) and _identical(ref_s, got_s)
 
 
 def test_muon_params_are_bit_identical_too():
-    inner = lambda: optax.chain(optax.clip_by_global_norm(1.0), _muon(lambda s: 1e-3))  # noqa: E731
+    inner = lambda: optax.chain(optax.clip_by_global_norm(1.0), _muon(CONFIG, lambda s: 1e-3))  # noqa: E731
     ref_p, _ = _run(optax.MultiSteps, inner(), k=3, steps=7)
     got_p, _ = _run(LazyMultiSteps, inner(), k=3, steps=7)
     assert _identical(ref_p, got_p)
@@ -56,7 +57,7 @@ def test_the_inner_optimizer_runs_once_per_window_and_never_inside_a_branch():
         calls.append(1)
         return updates, state
     inner = optax.GradientTransformation(lambda p: optax.EmptyState(), counting)
-    model = build("plain", dim=60, num_layers=1)
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1)
     tx = LazyMultiSteps(inner, every_k_schedule=4, use_grad_mean=True)
     state = tx.init(nnx.state(model, nnx.Param))
     grads = jax.tree_util.tree_map(jnp.ones_like, nnx.state(model, nnx.Param))
@@ -73,4 +74,4 @@ def test_the_inner_optimizer_runs_once_per_window_and_never_inside_a_branch():
 
 def test_production_chain_is_the_lazy_one():
     from trm.train.optimizers import optimizer_chain
-    assert isinstance(optimizer_chain, LazyMultiSteps)
+    assert isinstance(optimizer_chain(CONFIG, lambda s: 1e-3), LazyMultiSteps)

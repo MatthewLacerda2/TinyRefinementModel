@@ -5,6 +5,7 @@ test_supervisor.py (#325)."""
 import sys
 import textwrap
 
+from trm.settings import Config
 
 from trm.runtime.supervisor import (
     BUDGET_COMPLETE,
@@ -26,6 +27,7 @@ def _supervisor_over(tmp_path, script: str, limits: Limits, **kw):
         limits=limits,
         log_path=tmp_path / "train.log",
         metrics_csv=tmp_path / "metrics.csv",
+        config=Config.from_env({}),
         poll_seconds=0.2,
         heartbeat_every=1,
         report=reported.append,
@@ -85,7 +87,7 @@ def test_routine_reports_are_daily_not_hourly():
     from trm.runtime.supervisor import Supervisor
     import pathlib
     sup = Supervisor(command=(), limits=Limits(stop_step=1),
-                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"))
+                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"), config=Config.from_env({}))
     assert sup.heartbeat_every * sup.poll_seconds / 3600 == 24.0
 
 
@@ -97,6 +99,8 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 
@@ -107,7 +111,7 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     sup_mod.Supervisor = Stub
     try:
         sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate", "--min-free-gb", "0",
                       "--heartbeat-hours", "6", "--poll-seconds", "300"])
     finally:
         sup_mod.Supervisor = original
@@ -186,6 +190,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 
@@ -197,7 +203,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     sup_mod.Supervisor = Stub
     try:
         sup_mod.main(["--stop-step", "10", "--run-dir", str(run_dir),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate"])
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+                      "--min-free-gb", "0"])
     finally:
         sup_mod.Supervisor = original
 

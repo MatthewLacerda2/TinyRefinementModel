@@ -12,11 +12,11 @@ import os
 
 import numpy as np
 import pytest
-from dotenv import load_dotenv
 
-from trm.config import VOCAB_SIZE, PAD_TOKEN_ID, resolve_root
+from trm.config import EOT_TOKEN_ID, VOCAB_SIZE, resolve_root
+from trm.settings import CONFIG, load_env
 
-load_dotenv()
+load_env()
 
 SAMPLE_TOKENS = 2_000_000  # per file: head slice + random slices
 
@@ -45,7 +45,14 @@ def test_token_streams_are_sane(source_dir):
         assert sample.max() < VOCAB_SIZE, (
             f"{path}: token id {sample.max()} >= vocab size {VOCAB_SIZE}"
         )
-        pad_fraction = float(np.mean(sample == PAD_TOKEN_ID))
+        pad_fraction = float(np.mean(sample == CONFIG.PAD_TOKEN_ID))
         assert pad_fraction < 0.25, (
             f"{path}: {pad_fraction:.0%} of sampled tokens are PAD — stream is mostly padding"
+        )
+        # The separator prefill writes between documents (#373). It is a trained token
+        # now, so a corpus without it would teach the model nothing about ending one,
+        # and a corpus that is mostly separators is a tokenizing bug.
+        eot_fraction = float(np.mean(sample == EOT_TOKEN_ID))
+        assert 0 < eot_fraction < 0.25, (
+            f"{path}: {eot_fraction:.2%} of sampled tokens are the document separator"
         )

@@ -40,9 +40,9 @@ safe to run, and its layout comes next.
   holds the narrative and the graveyard of killed ideas. `docs/findings/` holds dated
   results, one conclusion each. `docs/registry/` holds model cards for kept models.
   Working plans stay local and gitignored.
-- **Labels.** A *type* — `architecture` (the repo/environment), `tools` (research-support
-  code), `ideas` (things to try on the model), `optimization` (cheaper code, same model),
-  `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
+- **Labels.** A *type*, in priority order — `tools` (instruments, harness, CI: the
+  infrastructure), `architecture` (how the codebase and the model are defined),
+  `optimization` (cheaper code, same model), `documentation`. A *lane* — `cpu` (runs alongside a GPU job), `gpu` (the single card, a
   serial queue), `blocked` (unmet dependency). Plus `bug`.
 - **Four trees, one home per file.** `trm/` is the library and its operations, and lives
   forever; `experiments/<line>/` holds one research line and is deleted with it;
@@ -67,19 +67,14 @@ Tokens are embedded and passed through a stack of distinct causal transformer bl
 a tied LM head reads the final state. There is no loop and no depth dial: every token
 gets the same amount of compute.
 
-It replaced depth recurrence, which was the bet until September 2026. That design, the
-**`CausalRefiner`** (`trm/model/refiner.py`), looped one shared block over the token
-representations several times under a causal mask, with a per-step time signal and a
-gate. It works on toy tasks that need sequential composition, but on language the trained
-model learned to switch the loop off
-(`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`). It stays
-selectable with `MODEL_ARCH=refiner`, because the 4B-token champion checkpoint uses it.
+It replaced depth recurrence, which was the bet until September 2026: one shared block
+looped over the token representations several times under a causal mask. It works on toy
+tasks that need sequential composition, but on language the trained model learned to
+switch the loop off (`docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`).
+That code is gone (#292); its findings and the ROADMAP graveyard keep the record.
 
-A third mode, selected with `MODEL_ARCH=reasoner` (`trm/model/reasoner.py`), is a vanilla
-random-depth transformer kept as a control baseline.
-
-At the default shape it has 9 blocks of width 960 with 15 attention heads, a 512-token
-window, and about 148M parameters.
+At the default shape it has 8 blocks of width 960 with 15 attention heads, a 512-token
+window, and about 137M parameters.
 
 Everything runs in float16 on the RTX 2060 (Turing has no bfloat16 tensor cores). The
 tokenizer is `r50k_base`. Exact dimensions and the rest of the constants live in

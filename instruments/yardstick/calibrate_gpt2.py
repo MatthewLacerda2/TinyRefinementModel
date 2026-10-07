@@ -31,6 +31,7 @@ except ImportError:
 import tiktoken
 
 from trm.config import TOKENIZER_NAME
+from instruments.yardstick import fineweb_val
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
     encode_example,
@@ -43,6 +44,7 @@ from instruments.yardstick.yardstick import (
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "LAMBADA acc, ppl (GPT-2)": ("measured", "the full LAMBADA test set; with --limit it is a subsample"),
+    "FineWeb val CE (GPT-2)": ("sampled", "the first --fineweb-tokens of the speedrun's shard, at each window"),
 }
 
 GPT2_CONTEXT = 1024
@@ -65,10 +67,22 @@ def main():
     ap = argparse.ArgumentParser(description="yardstick calibration on HF gpt2 (124M)")
     ap.add_argument("--limit", type=int, default=None, help="first N examples only (smoke)")
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--fineweb-tokens", type=int, default=0,
+                    help="also score GPT-2 on this many tokens of the FineWeb val shard (#462); 0 skips")
+    ap.add_argument("--fineweb-windows", default="512,1024",
+                    help="windows to score it at: ours and the reference's, so the window's share of a gap is measured")
     args = ap.parse_args()
 
     model = GPT2LMHeadModel.from_pretrained("gpt2")
     model.eval()
+
+    if args.fineweb_tokens:
+        tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
+        for window in (int(w) for w in args.fineweb_windows.split(",")):
+            out = fineweb_val.score(make_gpt2_logits_fn(model), tokens, window, batch=args.batch)
+            print(f"FineWeb val CE, GPT-2 124M, window {window}: {out['val_ce']:.4f} "
+                  f"({out['targets']} targets, EOT share {out['eot_share']:.4f}; "
+                  f"recorded {fineweb_val.GPT2_MEASURED.get(window)})", flush=True)
 
     texts = load_examples(fetch_lambada())
     if args.limit:

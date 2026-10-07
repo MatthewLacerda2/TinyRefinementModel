@@ -1,7 +1,7 @@
 """What `instruments.runlog` must never do again: read a blank cell as zero.
 
 Every one of these is a shape of run directory that exists on disk somewhere in
-`runs/` — an arch that doesn't measure half the columns, a resume that replayed
+`runs/` — a column in the header that no row measured, a resume that replayed
 a step range, a CSV whose last row was being written when we read it, a run
 folder with no metadata. The loader's job is to make all of them readable
 without inventing a single number.
@@ -12,12 +12,12 @@ import json
 import pytest
 
 from instruments import runlog
-from trm.config import TOKENS_PER_OPT_STEP
+from trm.settings import CONFIG
 
 HEADER = "step,ce,loss,val_ce,avg_forget_cost,grad_norm_avg"
 
-# A refiner run as actually recorded: the reasoner-only column is blank on every
-# row, and val_ce only appears on the eval cadence.
+# An old run as actually recorded: a retired column is blank on every row, and
+# val_ce only appears on the eval cadence.
 REFINER_ROWS = [
     "5,11.0810,22.1671,,,21.1762",
     "10,10.5584,21.1120,,,20.2026",
@@ -37,8 +37,8 @@ def write_run(tmp_path, name="run_20260101_000000", rows=REFINER_ROWS,
 
 
 def test_a_blank_cell_is_absent_not_zero():
-    """The bug this module was written to end. `avg_forget_cost` is empty for
-    every refiner row; reading it as 0.0 manufactures a measurement, and a
+    """The bug this module was written to end. `avg_forget_cost` is empty on
+    every row; reading it as 0.0 manufactures a measurement, and a
     plotter then draws a flat line through a quantity nobody measured."""
     log = runlog.RunLog("r", [{"step": 5, "avg_forget_cost": None, "ce": 11.081}], {})
     assert log.metrics[0]["avg_forget_cost"] is None
@@ -62,11 +62,11 @@ def test_reads_a_real_shaped_run(tmp_path):
     assert log.has("val_ce")
     assert log.column("val_ce") == ([15], [9.8123])
 
-    # Arch-optional column: present in the header, measured by nobody.
+    # Present in the header, measured by nobody.
     assert not log.has("avg_forget_cost")
 
     assert log.last_step == 15
-    assert log.tokens == 15 * TOKENS_PER_OPT_STEP
+    assert log.tokens == 15 * CONFIG.TOKENS_PER_OPT_STEP
 
 
 def test_a_placeholder_zero_column_is_distinguishable_from_a_measurement(tmp_path):
@@ -217,8 +217,8 @@ def test_auto_discovery_says_so_when_there_is_nothing(tmp_path, monkeypatch):
 def test_a_recorded_run_reads_cleanly(name, recorded_run, monkeypatch):
     """Against real artifacts, found the way a bare `runlog.load()` finds the latest run:
     the 4B champion (August format) and a #287 arm (today's format, with wall_clock, mix
-    and arena_peak_mib). Each must parse to the types runlog promises, and the arch-optional
-    columns must come back absent. Excerpts: tests/apparatus/fixtures/README.md."""
+    and arena_peak_mib). Each must parse to the types runlog promises, and a column
+    neither run measured must come back absent. Excerpts: tests/apparatus/fixtures/README.md."""
     import datetime
 
     run = recorded_run(name)
@@ -228,7 +228,7 @@ def test_a_recorded_run_reads_cleanly(name, recorded_run, monkeypatch):
     assert log.fields, "the run's CSV has no header"
     assert log.metrics, "the recorded excerpt has rows"
     assert log.has("ce") and log.has("val_ce") and log.last_step > 0
-    assert not log.has("avg_forget_cost"), "neither refiner nor plain measures the forget cost"
+    assert not log.has("avg_forget_cost"), "neither run measured the forget cost"
     expected = {"wall_clock": datetime.datetime, "mix": str}  # runlog's _TEXT_COLUMNS
     for row in log.metrics:
         assert isinstance(row["step"], int)

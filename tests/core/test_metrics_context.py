@@ -13,14 +13,18 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 
 from trm.runtime.metrics import MetricsLogger
-from trm.train.trainer import PRETRAIN_SOURCES, mixture_label
+from trm.settings import CONFIG
+from trm.train.schedules import Schedules
+from trm.train.trainer import mixture_label
+
+PRETRAIN_SOURCES = Schedules.of(CONFIG).sources
 
 
 def _log_one(tmp_path, **overrides):
     path = tmp_path / "metrics.csv"
     logger = MetricsLogger(str(path))
     out = SimpleNamespace(diag={k: jnp.array(1.5) for k in logger.diag_keys})
-    kwargs = dict(grad_norm_avg=0.5, seg1_ce=3.0, depth_avg=1.0, val_ce=3.1,
+    kwargs = dict(grad_norm_avg=0.5, seg1_ce=3.0, val_ce=3.1,
                   zero_frac_dense_max=0.0, applied_zero_frac_dense_max=0.0, applied_grad_norm=0.7, clip_active=0, val_step=8, val_by_source="codeparrot=2.5", loss_scale="65536", skipped_micro_steps=3, grad_by_source="fineweb-edu=1.0/2.0/0/5",
                   mix="a=1.000")
     kwargs.update(overrides)
@@ -40,29 +44,18 @@ def test_every_declared_column_is_written_when_its_input_exists(tmp_path, monkey
 
 
 def test_the_console_line_shows_only_the_diagnostics_the_model_reported(tmp_path, capsys):
-    """A plain model has no tau and no slot drift; `Tau: 0.0000 | Drift: 0.000000`
-    printed a measurement nobody took (#317). The CSV schema is unchanged: those
-    columns stay, empty, for every reader of old and new runs alike."""
+    """A diagnostic the model did not report prints nothing, never a 0 that reads as
+    a measurement nobody took (#317)."""
     logger = MetricsLogger(str(tmp_path / "metrics.csv"))
-    plain_diag = ("out_entropy", "logz_mean", "max_abs_logit", "act_max")
-    logger.log(10, 3.2, 3.3, SimpleNamespace(diag={k: jnp.array(2.5) for k in plain_diag}), 0.1,
-               seg1_ce=3.0, depth_avg=1.0)
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag={"out_entropy": jnp.array(2.5)}), 0.1, seg1_ce=3.0)
     line = capsys.readouterr().out
-    assert "Tau" not in line and "Drift" not in line
-    assert "H: 2.500" in line and "logZ: 2.50" in line and "Compute: 0.100s" in line
+    assert "H: 2.500" in line and "Compute: 0.100s" in line
+    assert "logZ" not in line and "max|logit|" not in line
 
-    logger.log(11, 3.2, 3.3, SimpleNamespace(diag={k: jnp.array(0.5) for k in logger.diag_keys}), 0.1,
-               seg1_ce=3.0, depth_avg=1.0)
+    logger.log(11, 3.2, 3.3, SimpleNamespace(diag={k: jnp.array(2.5) for k in logger.diag_keys}), 0.1,
+               seg1_ce=3.0)
     line = capsys.readouterr().out
-    assert "Tau: 0.5000" in line and "Drift: 0.500000" in line
-
-
-def test_an_arch_without_a_depth_dial_writes_a_blank_depth(tmp_path, capsys):
-    """#316: plain logs depth_avg=None — an empty cell, like any arch-optional column,
-    and no `Depth:` on the console."""
-    _, rows = _log_one(tmp_path, depth_avg=None)
-    assert rows[0]["depth_avg"] == ""
-    assert "Depth:" not in capsys.readouterr().out
+    assert "H: 2.500" in line and "logZ: 2.50" in line
 
 
 def test_a_row_says_when_it_was_written(tmp_path):
@@ -81,8 +74,7 @@ def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
 
 
 def test_the_mixture_label_covers_every_source_the_mixer_serves():
-    from trm.train.schedules import CURRICULUM_START_WEIGHTS
-    assert len(PRETRAIN_SOURCES) == len(CURRICULUM_START_WEIGHTS)
+    assert len(PRETRAIN_SOURCES) == len(Schedules.of(CONFIG).start_weights)
 
 
 def test_a_resume_onto_an_older_csv_rewrites_it_to_the_wider_schema(tmp_path):
@@ -137,13 +129,57 @@ def test_a_run_written_before_the_arena_limit_column_resumes_under_the_new_heade
     assert rows[0]["arena_peak_mib"] == "4400" and rows[0]["arena_limit_mib"] == ""
 
 
+def test_an_older_header_is_appended_to_under_its_own_columns(tmp_path):
+    """#292 retired columns (depth_avg, tau, ...). A file that already has a header
+    keeps it: a new row goes under the columns the file has, a column it no longer
+    writes stays an empty cell, and nothing shifts — a reader by name still finds
+    every value where it belongs."""
+    from trm.runtime.metrics import COLUMNS
+
+    current = [c.name for c in COLUMNS]
+    # An older schema: retired columns in the middle and at the end, and one current
+    # column (arena_limit_mib) it predates.
+    old_fields = [*current[:3], "depth_avg", *[n for n in current[3:] if n != "arena_limit_mib"], "tau"]
+    path = tmp_path / "metrics.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=old_fields)
+        writer.writeheader()
+        writer.writerow({"step": 5, "ce": "3.0000", "depth_avg": "1.0000", "tau": "0.5"})
+
+    _log_one(tmp_path)
+
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        assert reader.fieldnames == old_fields, "the file's own header must stay"
+        rows = list(reader)
+    assert len(rows) == 2 and all(None not in r for r in rows), "a row is wider than the header"
+    old, new = rows
+    assert old["depth_avg"] == "1.0000" and old["tau"] == "0.5"
+    assert new["step"] == "10" and new["depth_avg"] == "" and new["tau"] == ""
+    assert float(new["ce"]) == 3.2 and float(new["val_ce"]) == 3.1 and new["mix"] == "a=1.000"
+
+
+def test_a_resume_keeps_retired_columns_and_adds_current_ones(tmp_path):
+    """The resume trim widens an older file rather than replacing its header (#292):
+    a retired column's old values are history, and the current columns it lacks are
+    added at the end, empty on the old rows."""
+    path = tmp_path / "metrics.csv"
+    path.write_text("step,ce,depth_avg\n5,3.0,4.1\n15,2.9,4.2\n")
+    MetricsLogger(str(path), start_opt_step=10)
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert reader.fieldnames[:3] == ["step", "ce", "depth_avg"] and "mix" in reader.fieldnames
+    assert [(r["step"], r["depth_avg"], r["mix"]) for r in rows] == [("5", "4.1", "")]
+
+
 def test_per_block_readings_go_to_blocks_csv_one_row_per_state(tmp_path):
-    """#392: a plain model's per-block readings land beside metrics.csv; an arch that
+    """#392: the model's per-block readings land beside metrics.csv; an output that
     reports none writes no file at all (absent, never zero)."""
     logger = MetricsLogger(str(tmp_path / "metrics.csv"))
     diag = {"act_max_blocks": jnp.array([1.5, 20.0, 45.0]), "act_rms_blocks": jnp.array([0.02, 0.9, 1.4])}
-    logger.log(10, 3.2, 3.3, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
-    logger.log(15, 3.1, 3.2, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0, depth_avg=1.0)
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0)
+    logger.log(15, 3.1, 3.2, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0)
     with open(tmp_path / "blocks.csv", newline="") as f:
         rows = list(csv.DictReader(f))
     assert [(r["step"], r["block"]) for r in rows[:3]] == [("10", "0"), ("10", "1"), ("10", "2")]
@@ -156,5 +192,5 @@ def test_per_block_readings_go_to_blocks_csv_one_row_per_state(tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     MetricsLogger(str(other / "metrics.csv")).log(10, 3.2, 3.3, SimpleNamespace(diag={}), 0.1,
-                                                   seg1_ce=3.0, depth_avg=1.0)
+                                                   seg1_ce=3.0)
     assert not (other / "blocks.csv").exists()

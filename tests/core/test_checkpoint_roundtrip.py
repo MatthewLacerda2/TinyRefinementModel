@@ -13,7 +13,7 @@ from flax import nnx
 
 def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, make_tiny_model, token_batch):
     tokens = jnp.asarray(token_batch)
-    reference = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
+    reference = np.asarray(tiny_model(tokens, training=False).logits)
 
     mngr = ocp.CheckpointManager(
         tmp_path / "checkpoints",
@@ -29,5 +29,5 @@ def test_save_restore_roundtrip_preserves_forward(tmp_path, tiny_model, make_tin
     )
     nnx.update(other, restored["model"])
 
-    roundtripped = np.asarray(other(tokens, depth=2, training=False, new_document=True).logits)
+    roundtripped = np.asarray(other(tokens, training=False).logits)
     np.testing.assert_array_equal(reference, roundtripped)

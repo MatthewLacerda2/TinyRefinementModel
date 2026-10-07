@@ -1,0 +1,123 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "489-general-web"
+status = "recorded"
+title = "General web in the decay mix: does the LAMBADA miss come from the mixture?"
+hypothesis = """
+The first base run (run_20260920_191351, 5B tokens) missed its gate: LAMBADA 0.204 against
+GPT-2-small's 0.3256, verdict KILL. Measured against GPT-2 124M on the same rows, window
+and scoring, it is 0.44 nats BETTER on its own FineWeb-Edu held-out and 0.48 nats WORSE
+on the open web (FineWeb). Its end mix held FineWeb-Edu score >= 4 (a narrow educational
+slice) at 35% and code and math at 65%, with no general web and no narrative. So the
+suspect is the mixture, not a broken pipeline.
+
+The test: branch the run's full-state checkpoint at opt step 30,528 (10 steps into its
+decay) and re-run a 2,048-step WSD decay on each arm's mixture. The annealing phase is
+where data has the most leverage per token (MiniCPM, Llama 3's annealing). The treatment
+moves 25 points of code and math to general web (FineWeb sample-10BT), and should score
+higher on LAMBADA at the endpoint than the same decay on the base run's own end mix.
+
+Prediction registered: KEEP, +0.025 LAMBADA accuracy (control ~0.19 after this shorter
+decay, treatment ~0.215), open-web FineWeb CE 0.10-0.20 nats lower in the treatment,
+and code CE ~0.03-0.06 nats worse. My record on this line cuts both ways: recipe
+predictions were too timid four times (#287 twice, #382, #373), and the base run's
+LAMBADA prediction (0.29) was too optimistic by 0.09. It is a level, and I read the
+gap to GPT-2 as mostly data, so if this is wrong I expect the effect to be smaller.
+"""
+issue = 489
+
+[protocol]
+floor_note = """
+LAMBADA last-word accuracy on the full 5,153 examples. Chance is ~0 (a 50k-way pick), so
+two arms at the floor would be a shared failure, not parity; the base run's own endpoint
+(0.204) is 30 sigma of eval sampling above it (binomial SE at p=0.2, n=5153: 0.0056).
+Seed spread comes from the data alone: every arm starts from the same weights and
+optimizer state, and seed s reads rows s x 80,000 past where the base run stopped in
+every bucket (DATA_BRANCH_SEED_STRIDE, #489), so the seeds read disjoint rows.
+"""
+metric_key = "lambada_acc"
+metric = "LAMBADA last-word accuracy, full set, on the weights at opt step 32,576 (higher is better)"
+matched = "same branch checkpoint (weights, optimizer, step), same seed => same row offsets, same schedule and commit; only DATA_MIXTURE differs"
+notes = """
+Branch: /mnt/d_drive/TRM_cold/run_20260920_191351/predecay_optstep30528 (full state).
+Decay: WSD from 30,528 to 32,576 (2,048 opt steps, 268M tokens per arm-seed, ~10 h;
+six runs ~60 h), LR peak (6e-4) to peak/100, as the base run's own decay but 3.7x
+shorter. Length chosen with the owner (2026-09-28) before any arm ran: 1,024 steps
+(~30 h in all) risked an INCONCLUSIVE that says only "too short".
+Everything else is the base run's recorded recipe (diffed on 2026-09-28: every knob
+matches the defaults at this commit except the budget and the mixture, which are set
+here).
+
+The general-web bucket is FineWeb sample-10BT tokenized in stream order. Its first
+125M-token chunk is EXCLUDED from training (kept in runs/data/excluded/): the speedrun
+FineWeb val shard that fineweb_ce reads is byte-for-byte the first 100M tokens of that
+same stream (verified 2026-09-28). Training on it would hand the treatment the answer
+to its own readout. What remains is 254M tokens (~247k rows), which is why the seeds
+are 0, 1 and 2: seed 2 reads rows 160k to ~226k of the bucket, and a seed 3 would run
+it dry.
+
+min_delta 0.02 accuracy: about 100 of the 5,153 examples, a sixth of the gap to the gate.
+A smaller gain is not worth the code and math it costs.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.mix.branch_decay"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = {}
+
+[arms.control]
+role = "control"
+flags = ["--arm", "control",
+         "--mixture", "pretrain/fineweb-edu=0.35,pretrain/codeparrot=0.40,pretrain/finemath=0.25"]
+
+[arms.general_web]
+role = "treatment"
+flags = ["--arm", "general_web",
+         "--mixture", "pretrain/fineweb-edu=0.35,pretrain/fineweb=0.25,pretrain/codeparrot=0.25,pretrain/finemath=0.15"]
+
+[criteria.general_web_lifts_lambada]
+rule = "beats"
+treatment = "general_web"
+control = "control"
+sigmas = 2.0
+min_delta = 0.02
+points = ["run"]
+require = "all"
+
+[criteria.general_web_lowers_lambada]
+rule = "loses"
+treatment = "general_web"
+control = "control"
+sigmas = 2.0
+min_delta = 0.02
+points = ["run"]
+require = "all"
+
+[verdict]
+recorded = "KEEP"
+keep_if = ["general_web_lifts_lambada"]
+kill_if = ["general_web_lowers_lambada"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers:
+- KEEP: the mixture explains at least part of the LAMBADA miss. The next base run's end mix
+  takes general web, and code and math pay for it. The size of the cut is decided with
+  fineweb_ce and code_ce beside the gain, not by LAMBADA alone.
+- INCONCLUSIVE: a 2,048-step decay cannot move LAMBADA by 0.02 on this mix change. That
+  does NOT clear the mixture (the base run's decay was 3.7x longer); the next step is a
+  longer branch or a from-scratch recipe pair, not a pipeline hunt.
+- KILL: general web makes LAMBADA worse. The mixture is not the suspect, and the KILL
+  branch of the base spec (a data/LR/tokenizer/eval bug) is the next step.
+Readouts, no weight: fineweb_ce (open web, predicted the clearest mover), heldout_ce
+(FineWeb-Edu, the base run's own track), code_ce (contaminated probe, #485: read it as a
+trend, not a level) and math_ce, lambada_ppl. The control arm's endpoint against the base
+run's 0.204 says what a 3.7x shorter decay costs, which the INCONCLUSIVE reading needs.
+"""
+
+# --- Results (per seed, written by instruments/experiment.py; metric = lambada_acc) ---
+[results.run]
+control = [0.2043, 0.2020, 0.2001]
+general_web = [0.2451, 0.2381, 0.2305]

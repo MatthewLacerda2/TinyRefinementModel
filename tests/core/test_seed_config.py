@@ -1,21 +1,18 @@
 """Per-run seed configurability (#17 prep): the noise-floor protocol needs
 same-config runs that differ ONLY in seed, so both seeds must be overridable
-from the environment and recorded in run metadata. config reads the env at import
-time, so the cases are fresh imports, both in one child interpreter
-(`import_config_under` in tests/conftest.py, #325)."""
+from the environment and recorded in run metadata. A Config is a pure function of
+the environment it is handed (#475), so both cases are built here."""
+
+from trm.settings import Config
 
 
-def test_seeds_default_and_override(import_config_under):
-    default, override = import_config_under(
-        [{}, {"MODEL_SEED": "7", "DATA_SEED": "1234"}], attrs=("MODEL_SEED", "DATA_SEED"))
-    assert default["ok"], f"the default config refused to import: {default.get('error')}"
-    assert override["ok"], f"the seed-override config refused to import: {override.get('error')}"
-    assert default["values"] == {"MODEL_SEED": 42, "DATA_SEED": 42}
-    assert override["values"] == {"MODEL_SEED": 7, "DATA_SEED": 1234}
+def test_seeds_default_and_override():
+    default, override = Config.from_env({}), Config.from_env({"MODEL_SEED": "7", "DATA_SEED": "1234"})
+    assert (default.MODEL_SEED, default.DATA_SEED) == (42, 42)
+    assert (override.MODEL_SEED, override.DATA_SEED) == (7, 1234)
 
 
 def test_seeds_recorded_in_run_metadata():
     from trm.runtime.run_tracker import RunTracker
-    params = RunTracker().get_hyperparameters()
-    assert params["MODEL_SEED"] == 42
-    assert params["DATA_SEED"] == 42
+    params = RunTracker.get_hyperparameters(Config.from_env({"MODEL_SEED": "7", "DATA_SEED": "1234"}))
+    assert (params["MODEL_SEED"], params["DATA_SEED"]) == (7, 1234)

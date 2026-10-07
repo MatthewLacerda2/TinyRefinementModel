@@ -16,9 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from trm.config import MAX_SEQ_LEN
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.grad_step import compute_grad_step
+from trm.settings import CONFIG
 
 
 def _settled(norm=10.0, warmup=8, **kwargs):
@@ -122,18 +122,17 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
     """grad_norm is the run's oldest continuous telemetry and its docstring promises
     it is pre-clip. Rewriting that meaning would silently break every historical
     comparison in metrics.csv, so the clip must show in the gradients only."""
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
     from flax import nnx
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
+                             num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
-    _, _, loose, raw_norm = compute_grad_step(model, batch, jnp.array(1), 2)
+    _, _, loose, raw_norm = compute_grad_step(model, batch)
     ceiling = float(raw_norm) / 10.0
-    _, _, tight, clipped_report = compute_grad_step(model, batch, jnp.array(1), 2,
-                                                    clip_norm=jnp.float32(ceiling))
+    _, _, tight, clipped_report = compute_grad_step(model, batch, clip_norm=jnp.float32(ceiling))
 
     assert float(clipped_report) == pytest.approx(float(raw_norm), rel=1e-6), \
         "the reported norm must stay pre-clip"
@@ -149,16 +148,15 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
 
 def test_an_infinite_ceiling_is_exactly_todays_behaviour():
     """The default, and what every caller that has not opted in still gets."""
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
     from flax import nnx
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
+                             num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
-    _, _, default, _ = compute_grad_step(model, batch, jnp.array(1), 2)
-    _, _, explicit, _ = compute_grad_step(model, batch, jnp.array(1), 2,
-                                          clip_norm=jnp.float32(jnp.inf))
+    _, _, default, _ = compute_grad_step(model, batch)
+    _, _, explicit, _ = compute_grad_step(model, batch, clip_norm=jnp.float32(jnp.inf))
     for a, b in zip(jax.tree_util.tree_leaves(default), jax.tree_util.tree_leaves(explicit)):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))

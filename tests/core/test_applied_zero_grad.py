@@ -1,9 +1,10 @@
 """The underflow watch reads the gradient that updates the weights (#191).
 
 It read one micro-step's grads. On #157 that column hit exactly 0.500 on 13% of
-steps: a depth-1 draw zeroes half of one norm's gradient, in that micro-step only,
-while the 128-step mean that the optimizer applies had no such zeros. Anyone
-reading the column against #82's 0.05 bar would think underflow was blowing it.
+steps: a per-micro-step artifact zeroed half of one norm's gradient, in that
+micro-step only, while the 128-step mean that the optimizer applies had no such
+zeros. Anyone reading the column against #82's 0.05 bar would think underflow was
+blowing it.
 """
 
 import jax
@@ -61,8 +62,8 @@ def test_the_trainer_logs_both_and_names_them_apart():
     from trm.train import trainer
 
     source = inspect.getsource(trainer.train_loop)
-    assert "applied_gradient_stats(optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
-    assert "applied_gradient(optimizer, grads)" not in source
+    assert "applied_gradient_stats(hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
+    assert "applied_gradient(" not in source.replace("applied_gradient_stats(", "")
     # That both are LOGGED is observed, not read off the source: a real run's row
     # carries them (tests/apparatus/test_trainer_end_to_end.py).
     fields = MetricsLogger("/dev/null").fields
@@ -79,7 +80,7 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
 
     # The logged column is observed in a real run (tests/apparatus/test_trainer_end_to_end.py);
     # the clip it is read against is the optimizer's.
-    assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
+    assert "clip_by_global_norm(config.CLIP_NORM)" in inspect.getsource(optimizers)
 
 
 def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():

@@ -3,11 +3,11 @@
 f16 underflow rounds gradients to exact zeros silently — no NaN, no abort, just
 a plateau — so the instrument counts exact zeros per top-level param group.
 Hand-built grad trees pin the arithmetic (known zero counts per group) and the
-grouping rules; one real grad step through the production adapter pins the
-group naming for the arch we'd actually ship, and demonstrates the
-pre-registered caveat: embedding-style groups are legitimately mostly zero
-(rows for absent tokens/depths), while dense groups sit at ~0 on the f32 CPU
-lane where underflow cannot occur.
+grouping rules; one real grad step through the production model pins the
+group naming, and demonstrates the pre-registered caveats: embedding-style groups
+are excluded from the decision scalar, and the zero-init down_proj makes the block
+group structurally zero at init, while dense groups sit at ~0 on the f32 CPU lane
+where underflow cannot occur once an update lands.
 """
 
 import jax.numpy as jnp
@@ -16,6 +16,7 @@ import pytest
 from flax import nnx
 
 from trm.train.grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
+from trm.settings import CONFIG
 
 
 def _fracs(tree):
@@ -37,8 +38,8 @@ def test_known_zero_counts_per_group():
 
 
 def test_single_child_wrappers_are_stripped():
-    """The refiner adapter holds all params under one 'refiner' attribute; the
-    groups must be its children, not one useless mega-group."""
+    """A wrapper holding every param under one attribute must not read as one
+    useless mega-group: the groups are its children."""
     inner = {
         "embed": jnp.zeros(4),
         "mlp": jnp.ones(4),
@@ -58,76 +59,41 @@ def test_list_entries_aggregate_into_one_group():
 
 
 def test_dense_max_excludes_embedding_style_groups():
-    fracs = {"embed": 0.95, "time_embed": 0.7, "attn": 0.12, "norm": 0.0}
+    fracs = {"embed": 0.95, "pos_embed": 0.7, "attn": 0.12, "norm": 0.0}
     assert dense_zero_frac_max(fracs) == pytest.approx(0.12)
 
 
-def test_real_adapter_groups_and_interpretation_caveats():
-    """One production grad step on a tiny refiner pins the group naming and the
+def test_real_model_groups_and_interpretation_caveats():
+    """One production grad step on a tiny plain model pins the group naming and the
     interpretation caveats the per-group split exists for:
       - the tied token embedding reads 0.0 — EVERY vocab row gets gradient
-        through the CE head projection, so #82's 'absent rows' caveat applies
-        only to the untied time_embed, whose unsampled-depth rows are zero;
+        through the CE head projection;
       - at init the zero-init down_proj blocks all gradient to gate/up_proj, so
-        the block groups carry a large *structural* zero fraction that must
+        the block group carries a large *structural* zero fraction that must
         vanish once an optimizer update lands — zeros the reading has to
         attribute to structure, not underflow.
     f32 CPU lane throughout: underflow itself cannot occur here."""
     import optax
-    from trm.config import MAX_SEQ_LEN
     from trm.train.grad_step import apply_grads
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
 
     vocab = 5000  # far more tokens than the ~60 the batch uses
-    # time_signal pinned to "table": the time_embed caveat this test documents
-    # (unsampled-depth rows read as structural zeros) only exists in table mode.
-    # The base-run default (sinusoidal, #86) is pinned by the companion test below.
-    m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=vocab, num_heads=4,
-                           encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
-                           time_signal="table")
+    m = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=vocab, num_heads=4,
+                         num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
 
-    _, _, grads, _ = compute_grad_step(m, batch, jnp.array(1), 2)
+    _, _, grads, _ = compute_grad_step(m, batch)
     fracs = _fracs(grads)
 
-    assert set(fracs) == {
-        "embed", "time_embed", "encoder", "refine_block",
-        "time_norm", "time_signal_norm", "out_norm", "gate",
-    }
+    assert set(fracs) == {"embed", "blocks", "out_norm"}
     assert fracs["embed"] == 0.0                              # tied head: all rows graded
-    assert fracs["time_embed"] == pytest.approx(7 / 9, rel=1e-4)  # depth 2 of max_depth+1 rows
-    # Exact match on the f32 CPU lane; the GPU f16 lane legitimately underflows
-    # a handful of tiny entries (~4e-5 of the group), so allow that much slack —
-    # the structural claim (both groups ≈0.462 behind zero-init down_proj) survives.
-    assert fracs["encoder"] == pytest.approx(fracs["refine_block"], abs=1e-3)
-    assert fracs["encoder"] > 0.4, "gate/up_proj should sit structurally zero behind down_proj == 0"
-    for group in ("time_norm", "time_signal_norm", "out_norm", "gate"):
-        assert fracs[group] == 0.0
+    assert fracs["blocks"] > 0.4, "gate/up_proj should sit structurally zero behind down_proj == 0"
+    assert fracs["out_norm"] == 0.0
 
     # One real update moves down_proj off zero; the structural zeros must clear.
     opt = nnx.Optimizer(m, optax.adamw(1e-2), wrt=nnx.Param)
     apply_grads(opt, grads, m)
-    _, _, grads, _ = compute_grad_step(m, batch, jnp.array(2), 2)
+    _, _, grads, _ = compute_grad_step(m, batch)
     fracs = _fracs(grads)
     assert dense_zero_frac_max(fracs) < 0.05, "structural zeros must vanish after an update"
-
-
-def test_sinusoidal_adapter_groups_have_no_time_embed():
-    """#86: under the base-run default (sinusoidal time signal) the instrument's
-    group list loses time_embed — the signal is a formula, not parameters. Pin
-    the group set the ACTUAL base run will report so a monitoring script
-    written against it can't be surprised."""
-    from trm.config import MAX_SEQ_LEN
-    from trm.model.refiner_lm import RefinerForTraining
-
-    m = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                           encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN,
-                           time_signal="sinusoidal")
-    rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
-    _, _, grads, _ = compute_grad_step(m, batch, jnp.array(1), 2)
-    assert set(_fracs(grads)) == {
-        "embed", "encoder", "refine_block",
-        "time_norm", "time_signal_norm", "out_norm", "gate",
-    }

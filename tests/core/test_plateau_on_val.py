@@ -24,15 +24,16 @@ def test_train_ce_no_longer_drives_the_plateau():
     assert m.best_ce == 3.2
 
 
-def test_a_bare_monitor_uses_the_configured_plateau_bar():
-    """#318: the defaults were literals and drifted from config (0.005 vs 0.01)."""
-    from trm.config import PLATEAU_MIN_DELTA, PLATEAU_PATIENCE
-    m = LossMonitor()
-    assert (m.min_delta, m.patience) == (PLATEAU_MIN_DELTA, PLATEAU_PATIENCE)
+def test_a_run_s_monitor_uses_its_configured_plateau_bar():
+    """#318: the defaults were literals and drifted from config (0.005 vs 0.01), so
+    the monitor has none: a run's comes from its Config."""
+    from trm.settings import Config
+    m = LossMonitor.of(Config.from_env({"PLATEAU_PATIENCE": "123", "PLATEAU_MIN_DELTA": "0.02"}))
+    assert (m.min_delta, m.patience) == (0.02, 123)
 
 
 def test_push_val_without_a_step_only_tracks_the_best():
-    m = LossMonitor()
+    m = LossMonitor(patience=400, min_delta=0.01)
     assert m.push_val(3.0) and not m.push_val(3.1)
     assert m.ce_history == [] and not m.plateaued
 
@@ -67,6 +68,6 @@ def test_the_plateau_notice_is_rate_limited():
 
 def test_probe_slices_are_disjoint_and_start_at_the_trainers_own():
     from instruments.probe_sigma import slice_offsets
-    from trm.train.validation import VAL_SKIP_SAMPLES
-    offs = slice_offsets(64, 3)
-    assert offs[0] == VAL_SKIP_SAMPLES and offs[1] - offs[0] == 64 and offs[2] - offs[1] == 64
+    from trm.settings import CONFIG
+    offs = slice_offsets(64, 3, CONFIG.VAL_SKIP_SAMPLES)
+    assert offs[0] == CONFIG.VAL_SKIP_SAMPLES and offs[1] - offs[0] == 64 and offs[2] - offs[1] == 64
