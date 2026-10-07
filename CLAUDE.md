@@ -295,6 +295,9 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
   skips drafts and re-runs on undraft, so the checks you see right after are the
   draft's skipped set — never push an empty commit to "retrigger" (#539).
+  A draft that touches the hot path (`trm/train/grad_step.py`) lists
+  `RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py` in its resume
+  protocol: the CPU ignores buffer donation, so only the card shows that class (#540).
 - **`codebase`** — an `architecture` issue about the repo itself (the shape of the
   code, the automation that keeps it on the rails, the rules), not the model. It leads
   its tier: every later change lands in that code.
