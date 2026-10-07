@@ -12,7 +12,6 @@ import threading
 import queue
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
@@ -331,16 +330,17 @@ def train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, s
             # known before this one runs — an outlier cannot widen the gate it is
             # about to be measured against.
             ceiling = grad_guard.threshold
+            # numpy scalars (#411): they ride in the jitted call's own transfer instead
+            # of each dispatching a device array first.
             with span("step_scalars"):
-                loss_scale = jnp.float32(loss_scaler.value)
-                clip_norm = jnp.float32(jnp.inf if ceiling is None else ceiling)
+                loss_scale = np.float32(loss_scaler.value)
+                clip_norm = np.float32(np.inf if ceiling is None else ceiling)
             with span("grad_step"):
                 loss, out, grads, grad_norm = hot.grad_step(
                     batch, loss_scale=loss_scale, clip_norm=clip_norm)
 
-            with span("loss_readback"):
-                current_loss = float(loss)
-                current_grad_norm = float(grad_norm)
+            with span("loss_readback"):  # one blocking read for both scalars, not two (#411)
+                current_loss, current_grad_norm = map(float, jax.device_get((loss, grad_norm)))
             with span("guard"):
                 grad_guard.observe(current_grad_norm)
                 if math.isfinite(current_grad_norm):

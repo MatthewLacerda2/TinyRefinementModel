@@ -1,5 +1,4 @@
 import numpy as np
-import jax.numpy as jnp
 import fsspec
 from trm.config import VOCAB_SIZE
 
@@ -127,7 +126,11 @@ class TextDataGenerator:
                     f"than crash (#233), so this is the only place it can be caught: "
                     f"the shard is corrupt, or it was written by a different tokenizer.")
 
-        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32)
+        # numpy, not jnp (#411): this runs on the prefetch thread, and a JAX op there
+        # (dispatch, a host-to-device copy) competes with the training thread for the
+        # GIL every micro-step. np.array, not astype: it copies out of the memmap here,
+        # so the shard's page faults are paid on this thread, not the training one.
+        return np.array(batch.reshape(batch_size, stride), dtype=np.int32)
 
 class DataMixer:
     """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the
@@ -248,5 +251,5 @@ class DataMixer:
 
             if batch_list:
                 self.last_source = drawn_from[0] if len(drawn_from) == 1 else None
-                return jnp.concatenate(batch_list, axis=0)
+                return np.concatenate(batch_list, axis=0)
         return None
