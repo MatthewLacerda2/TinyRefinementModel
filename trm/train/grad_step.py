@@ -249,10 +249,10 @@ def _grad_step_pure(graphdef, params, rest, batch_tokens, loss_scale, clip_norm,
 
 # Accumulation (63 of every 64 micro-steps) runs over the split optimizer state and
 # donates what the nnx.jit version donated (#128). The window's update, once per
-# optimizer step, goes through the module objects and the nnx.jit `_apply`: an
-# equivalent jax.jit over the split state gave a different update on the card for the
-# full model (not on the CPU, not on a small model) and the cause was not found —
-# #533. Once per 64 micro-steps the graph walk costs nothing worth that risk.
+# optimizer step, goes through the module objects and the nnx.jit `_apply`. A jax.jit
+# over the split state must never donate the params together with the optimizer
+# state: on the card, for the full model, that pair gives a different update (an XLA
+# aliasing defect; any other donation set is bit-identical — #533's table).
 @functools.partial(jax.jit, static_argnames=("opt_graphdef",), donate_argnames=("opt_state", "grads"))
 def _accumulate_pure(opt_graphdef, opt_state, grads):
     opt = nnx.merge(opt_graphdef, opt_state)
