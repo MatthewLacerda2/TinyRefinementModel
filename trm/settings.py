@@ -93,9 +93,10 @@ class Config(BaseSettings):
     # input), and down_proj carries it to 64,896 -- 99.1% of f16's 65,504 ceiling.
     # That is the root cause of #229's whole-window NaN. See #235.
     #
-    # OFF: #494's pair ended INCONCLUSIVE because it beat the control (-0.056 val CE at
-    # 512 steps, act_max peak ~37 vs ~86) where it was registered to tie; adopting it is
-    # #494's call (PR #538).
+    # OFF: the 2,000-step pair (PR #551) ended INCONCLUSIVE: -0.015 val CE at the cap,
+    # 2% fewer tokens to 3.70 (bar 5%), +1.6% wall-clock; the 512-step lead (-0.056, PR
+    # #538) mostly came from the start. It holds act_max near 75 where the control's
+    # grows past 600. Adopting it for that is #494's call.
     POST_NORM: bool = False
 
     # PlainTransformer depth. It was 9 between 2026-09-13 and 2026-09-20, on the
