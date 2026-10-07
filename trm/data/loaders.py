@@ -23,7 +23,6 @@ class TextDataGenerator:
         self.pointer = 0
         self.exhausted = False
         self.skip_count = 0
-        self.is_new_file = False
 
     def _load_next_file(self):
         while True:
@@ -62,22 +61,20 @@ class TextDataGenerator:
                     self.pointer = random_offset
 
             self.current_file_idx += 1
-            self.is_new_file = True
             return True
 
     def state(self):
         """Where this reader is, exactly (#424): enough for `load_state` to continue
         with the very next row an uninterrupted reader would serve. JSON-safe."""
         return {"file_idx": int(self.current_file_idx), "pointer": int(self.pointer),
-                "open": self.data is not None, "is_new_file": self.is_new_file,
-                "exhausted": self.exhausted, "rng": self.rng.bit_generator.state}
+                "open": self.data is not None, "exhausted": self.exhausted, "rng": self.rng.bit_generator.state}
 
     def load_state(self, state):
         """Continue from a `state()` snapshot. The open file is mapped again; the
         rng resumes mid-stream, so every later file draws the offset it would have."""
         self.rng.bit_generator.state = state["rng"]
         self.current_file_idx, self.pointer = state["file_idx"], state["pointer"]
-        self.is_new_file, self.exhausted = state["is_new_file"], state["exhausted"]
+        self.exhausted = state["exhausted"]
         self.skip_count = 0
         self.data = None
         if state["open"]:
@@ -101,14 +98,14 @@ class TextDataGenerator:
 
     def get_batch(self, batch_size):
         if self.exhausted:
-            return None, None
+            return None
 
         stride = 2 * self.max_seq_len + 1
         total_tokens = batch_size * stride
 
         if self.data is None or self.pointer + total_tokens > len(self.data):
             if not self._load_next_file():
-                return None, None
+                return None
             if self.exhausted or self.pointer + total_tokens > len(self.data):
                 return self.get_batch(batch_size)
 
@@ -130,14 +127,7 @@ class TextDataGenerator:
                     f"than crash (#233), so this is the only place it can be caught: "
                     f"the shard is corrupt, or it was written by a different tokenizer.")
 
-        # doc_boundary: marks batches that start a new file, i.e. the previous
-        # document's carried state is no longer relevant downstream.
-        doc_boundary = np.zeros((batch_size,), dtype=bool)
-        if self.is_new_file:
-            doc_boundary[:] = True
-            self.is_new_file = False
-
-        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32), jnp.array(doc_boundary)
+        return jnp.array(batch.reshape(batch_size, stride), dtype=jnp.int32)
 
 class DataMixer:
     """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the
@@ -235,7 +225,7 @@ class DataMixer:
             for i, (source, count) in enumerate(zip(self.sources, counts)):
                 if count > 0:
                     res = source.get_batch(count)
-                    if res[0] is None or getattr(source, "exhausted", False):
+                    if res is None or getattr(source, "exhausted", False):
                         exhausted_indices.append(i)
                     else:
                         batch_list.append(res)
@@ -251,13 +241,12 @@ class DataMixer:
                 self.sources = new_sources
                 self._alive = new_alive
                 if not self.sources:
-                    return None, None
+                    return None
                 total_w = sum(new_weights)
                 self.weights = [w / total_w for w in new_weights]
                 continue
 
             if batch_list:
                 self.last_source = drawn_from[0] if len(drawn_from) == 1 else None
-                batches, masks = zip(*batch_list)
-                return jnp.concatenate(batches, axis=0), jnp.concatenate(masks, axis=0)
-        return None, None
+                return jnp.concatenate(batch_list, axis=0)
+        return None

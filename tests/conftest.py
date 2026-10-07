@@ -72,47 +72,30 @@ def token_batch():
 
 # Small enough that building one costs seconds on CPU, big enough for every
 # property the consumers check (padding, causality, init loss, checkpoint schema).
-# Before #322 this was the full 138M-param reasoner — the control arch — so eight
-# core tests asserted general properties through an architecture nothing ships.
 TINY_DIM = 60
-TINY_OVERRIDES = {"plain": {"num_layers": 2}}
+TINY_LAYERS = 2
 
 
 @pytest.fixture(scope="session")
 def make_tiny_model():
-    """Build a small model of the architecture a run would train (MODEL_ARCH), at
-    `seed`. For tests that need a second instance of the same shape, e.g. to
-    restore a checkpoint into a differently-initialized model."""
-    from instruments.arch import build
+    """Build a small PlainTransformer at `seed`, through the factory the trainer uses.
+    For tests that need a second instance of the same shape, e.g. to restore a
+    checkpoint into a differently-initialized model."""
+    from flax import nnx
+
+    from trm.model import build_model
     from trm.settings import CONFIG
 
     def make(seed=0, **extra):
-        return build(CONFIG.MODEL_ARCH, dim=TINY_DIM, seed=seed, **TINY_OVERRIDES.get(CONFIG.MODEL_ARCH, {}), **extra)
+        return build_model(CONFIG, nnx.Rngs(seed), dim=TINY_DIM,
+                           **{"num_layers": TINY_LAYERS, **extra})
     return make
 
 
 @pytest.fixture(scope="session")
 def tiny_model(make_tiny_model):
-    """A small MODEL_ARCH model (plain by default), shared across the session."""
+    """A small PlainTransformer, shared across the session."""
     return make_tiny_model(seed=0)
-
-
-@pytest.fixture(scope="session")
-def make_reasoner_model():
-    """Build a small UniversalReasoner at `seed`, for the tests that read state only
-    the reasoner has: the carried hunch and the aux regularizers. Goes with #292."""
-    from instruments.arch import build
-
-    # batch_size=1 explicitly: the reasoner sizes its hunch cache from the shipped
-    # BATCH_SIZE, which is 2 since #385, and every test on this fixture feeds one row.
-    return lambda seed=0, batch_size=1: build("reasoner", dim=TINY_DIM, seed=seed,
-                                              batch_size=batch_size)
-
-
-@pytest.fixture(scope="session")
-def reasoner_model(make_reasoner_model):
-    """A small UniversalReasoner, shared across the session."""
-    return make_reasoner_model(seed=0)
 
 
 # --- helpers several test files used to copy byte for byte (#325) -------------------

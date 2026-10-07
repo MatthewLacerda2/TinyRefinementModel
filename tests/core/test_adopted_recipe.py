@@ -32,7 +32,9 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "pre_adoption_trajectory.
 RTOL = 1.8e-6  # 10x tests/expensive/test_golden_run.py's NOISE_FLOOR
 WINDOW, STEPS = 8, 12
 ADOPTED = {"RESIDUAL_DTYPE": "float32", "ADAM_B2": 0.95, "Z_LOSS_WEIGHT": 1e-4}
-SET_BACK = {"RESIDUAL_DTYPE": "float16", "ADAM_B2": 0.999, "Z_LOSS_WEIGHT": 0.0}
+SET_BACK = {"RESIDUAL_DTYPE": "float16", "ADAM_B2": 0.999, "Z_LOSS_WEIGHT": 0.0,
+            # the fixture predates #375 too, so the Newton-Schulz coefficients go back with them
+            "MUON_NS_COEFFS": "keller"}
 
 
 def _trajectory(config):
@@ -43,10 +45,9 @@ def _trajectory(config):
     opt = nnx.Optimizer(model, optimizer_chain(config, lambda step: 1e-3), wrt=nnx.Param)
     rng = np.random.default_rng(5)
     losses, norms = [], []
-    for i in range(STEPS):
+    for _ in range(STEPS):
         batch = jnp.array(rng.integers(1, 97, size=(2, 2 * WINDOW + 1)), dtype=jnp.int32)
-        loss, _, grads, norm = compute_grad_step(model, batch, jnp.array(i // config.ACCUMULATION_STEPS), None,
-                                                 z_loss_weight=config.Z_LOSS_WEIGHT)
+        loss, _, grads, norm = compute_grad_step(model, batch, z_loss_weight=config.Z_LOSS_WEIGHT)
         apply_grads(opt, grads, model)
         losses.append(float(loss))
         norms.append(float(norm))

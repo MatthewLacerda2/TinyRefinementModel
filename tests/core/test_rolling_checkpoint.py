@@ -130,8 +130,8 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
     assert ResumeState.of(resumed, "run_x") == ResumeState.of(monitor, "run_x")
 
     tokens = jnp.asarray(np.full((1, 16), 5, dtype=np.int32))
-    ref = np.asarray(tiny_model(tokens, depth=2, training=False, new_document=True).logits)
-    got = np.asarray(fresh(tokens, depth=2, training=False, new_document=True).logits)
+    ref = np.asarray(tiny_model(tokens, training=False).logits)
+    got = np.asarray(fresh(tokens, training=False).logits)
     np.testing.assert_array_equal(ref, got)
 
 

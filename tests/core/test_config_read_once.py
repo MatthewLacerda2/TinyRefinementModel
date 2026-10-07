@@ -112,7 +112,7 @@ ENTRY_POINTS = {
     "trm/runtime/supervisor.py": "main(): the margin alarms' bars, the fit gate, the scorer cap",
     "trm/runtime/launch.py": "main(): the run's stop step and cold-tier margin",
     "trm/runtime/rewind.py": "main(): the accumulation a checkpoint's opt step is counted in",
-    "trm/infer.py": "the serving CLI: the model it builds and its default depth",
+    "trm/infer.py": "the serving CLI: the model it builds",
     "trm/data/prefill.py": "the tokenizer run: the row stride its chunks align to",
     "trm/config.py": "the compute dtype is process-wide (FORCE_F32_COMPUTE)",
 }

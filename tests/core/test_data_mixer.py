@@ -23,9 +23,9 @@ class FakeSource:
     def get_batch(self, n):
         if self.rows_left < n:
             self.exhausted = True
-            return None, None
+            return None
         self.rows_left -= n
-        return jnp.full((n, 4), self.tag, dtype=jnp.int32), jnp.zeros((n,), dtype=bool)
+        return jnp.full((n, 4), self.tag, dtype=jnp.int32)
 
 
 def make_mixer(rows=(10_000, 3, 10_000), weights=(0.3, 0.4, 0.3)):
@@ -38,7 +38,7 @@ def test_full_batches_and_redistribution_after_exhaustion():
     seen_after_exhaustion = set()
     for _ in range(300):
         mixer.set_weights([0.2, 0.5, 0.3])  # full-length list every call, like the trainer
-        batch, mask = mixer.get_batch(2)
+        batch = mixer.get_batch(2)
         assert batch is not None, "mixer returned no batch while sources remain"
         assert batch.shape[0] == 2, f"undersized batch: {batch.shape}"
         if sources[1].exhausted:
@@ -51,7 +51,7 @@ def test_full_batches_and_redistribution_after_exhaustion():
 def test_returns_none_when_all_sources_exhausted():
     sources, mixer = make_mixer(rows=(4, 4, 4))
     for _ in range(50):
-        batch, mask = mixer.get_batch(2)
+        batch = mixer.get_batch(2)
         if batch is None:
             break
     else:

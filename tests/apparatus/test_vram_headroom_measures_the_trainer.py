@@ -11,7 +11,6 @@ import ast
 import pathlib
 
 from instruments import vram_headroom_smoke as smoke
-from trm.config import MAX_STEPS_LIMIT
 
 SOURCE = pathlib.Path(smoke.__file__).read_text()
 TREE = ast.parse(SOURCE)
@@ -27,27 +26,6 @@ def test_the_default_run_crosses_an_optimizer_apply():
                        and call.args and getattr(call.args[0], "value", None) == "--micro-steps"
                        for kw in call.keywords if kw.arg == "default"}
     assert parser_defaults == {"CONFIG.ACCUMULATION_STEPS + 1"}, "default must be ACCUMULATION_STEPS + 1"
-
-
-class _Arch:
-    """Just the contract hook the schedule reads, answered as the arch would."""
-
-    def __init__(self, depth_dial):
-        self.depth_dial = depth_dial
-
-    def training_depth(self, micro_step):
-        return (micro_step % MAX_STEPS_LIMIT) + 1 if self.depth_dial else None
-
-
-def test_every_sampled_depth_is_compiled_for_a_looped_arch():
-    """Each depth is its own program, and each compiled graph costs driver memory."""
-    assert set(smoke.depth_schedule(_Arch(True), 2 * MAX_STEPS_LIMIT)) == set(range(1, MAX_STEPS_LIMIT + 1))
-
-
-def test_an_arch_without_a_depth_dial_compiles_one_program_as_the_trainer_does():
-    """The trainer passes plain its training_depth, None, every step (#316)."""
-    assert set(smoke.depth_schedule(_Arch(False), 20)) == {None}
-    assert "depth_schedule(model, args.micro_steps" in SOURCE, "the schedule asks the model it sizes"
 
 
 def test_the_validation_probe_is_inside_the_measurement():

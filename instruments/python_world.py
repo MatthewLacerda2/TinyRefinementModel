@@ -33,7 +33,6 @@ import time
 import tiktoken
 
 from instruments._common import add_checkpoint_argument
-from instruments.arch import add_arch_argument
 from instruments.results import emit
 from trm.config import TOKENIZER_NAME
 from trm.rl import sandbox, tasks
@@ -84,7 +83,7 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 
 
 def attempts_for(model, enc, task, samples: int, *, seed: int, temperature: float,
-                 max_new_tokens: int, depth, limits: dict) -> list:
+                 max_new_tokens: int, limits: dict) -> list:
     """Generate `samples` completions for one task and verify each one.
 
     The seed is derived from the task and the attempt number, so the same checkpoint
@@ -101,7 +100,7 @@ def attempts_for(model, enc, task, samples: int, *, seed: int, temperature: floa
         digest = hashlib.sha256(f"{task.key}:{attempt}:{seed}".encode()).digest()
         rolled = int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
         tokens = generate_text(model, enc, task.prompt, max_new_tokens=max_new_tokens,
-                               temperature=temperature, depth=depth, seed=rolled,
+                               temperature=temperature, seed=rolled,
                                quiet=True)
         body = trim(enc.decode(tokens[prompt_length:]))
         outcomes.append(sandbox.verify_task(task.prompt + body, task, **limits))
@@ -134,7 +133,6 @@ def score_level(level: int, attempts, k: int) -> dict:
 def main(argv=None):
     ap = argparse.ArgumentParser(description="pass@k on generated Python tasks, per difficulty level")
     add_checkpoint_argument(ap)
-    add_arch_argument(ap)
     ap.add_argument("--step", type=int, default=None,
                     help="which step of that dir to score (default: its newest)")
     ap.add_argument("--reference", action="store_true",
@@ -151,8 +149,6 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0, help="which tasks, and which rolls")
     ap.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     ap.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS)
-    ap.add_argument("--depth", type=int, default=None,
-                    help="refinement/reasoning depth at eval (default: trm.infer's)")
     ap.add_argument("--timeout", type=float, default=sandbox.DEFAULT_TIMEOUT_S,
                     help="seconds one attempt may run before it counts as a timeout")
     ap.add_argument("--json-out", default=None, help="write the per-level rows here too")
@@ -163,13 +159,12 @@ def main(argv=None):
     levels = [int(x) for x in args.levels.split(",") if x.strip()]
     limits = {"timeout_s": args.timeout}
 
-    model = enc = depth = None
+    model = enc = None
     if not args.reference:
-        from trm.runtime.restore import restore_arch
-        model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
+        from trm.runtime.restore import restore_model
+        model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
         enc = tiktoken.get_encoding(TOKENIZER_NAME)
-        depth = CONFIG.INFERENCE_DEPTH if args.depth is None else args.depth
-        print(f"📐 {args.arch} at step {step}, depth {depth}, temperature {args.temperature}")
+        print(f"📐 step {step}, temperature {args.temperature}")
     else:
         print("📐 reference solutions — the generator checking itself")
 
@@ -183,8 +178,7 @@ def main(argv=None):
         else:
             attempts = [attempts_for(model, enc, task, args.samples, seed=args.seed,
                                      temperature=args.temperature,
-                                     max_new_tokens=args.max_new_tokens, depth=depth,
-                                     limits=limits)
+                                     max_new_tokens=args.max_new_tokens, limits=limits)
                         for task in drawn]
             k = args.k
         row = score_level(level, attempts, k)

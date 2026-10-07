@@ -40,7 +40,6 @@ import pathlib
 import numpy as np
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
-from instruments.arch import add_arch_argument
 from instruments.results import emit
 
 TAILS = (0.10, 0.01)
@@ -106,37 +105,35 @@ def token_bytes(vocab_size):
 
 
 def score_rows(model, rows):
-    """Per-target arrays over held-out rows. Each row is two windows, window 1 opening
-    a document and window 2 continuing it, the way `trm.train.validation` scores them;
-    a target's context length is its position in its window plus one."""
+    """Per-target arrays over held-out rows. Each row is two windows, scored the way
+    `trm.train.validation` scores them; a target's context length is its position in
+    its window plus one."""
     import jax
     import jax.numpy as jnp
     from flax import nnx
 
     from trm.settings import CONFIG
-    from trm.train.validation import VAL_FIXED_DEPTH, heldout_targets
+    from trm.train.validation import heldout_targets
 
-    @nnx.jit(static_argnames=["new_document"])
-    def window(model, tokens, targets, new_document):
-        logits = model(tokens, depth=VAL_FIXED_DEPTH, training=False, new_document=new_document).logits
+    @nnx.jit
+    def window(model, tokens, targets):
+        logits = model(tokens, training=False).logits
         logp = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
         nll = -jnp.take_along_axis(logp, targets[..., None], axis=-1)[..., 0]
         return nll, jnp.exp(logp.max(-1)), logp.argmax(-1) == targets
 
     parts = {k: [] for k in ("nll", "top_prob", "correct", "context_len", "target")}
-    with model.isolated_state():
-        for row in rows:
-            model.reset_state()
-            row = jnp.asarray(row)
-            for w, new_document in ((0, True), (1, False)):
-                tokens = row[:, w * CONFIG.MAX_SEQ_LEN:(w + 1) * CONFIG.MAX_SEQ_LEN]
-                targets = heldout_targets(row[:, w * CONFIG.MAX_SEQ_LEN + 1:(w + 1) * CONFIG.MAX_SEQ_LEN + 1], CONFIG.PAD_TOKEN_ID)
-                nll, top_prob, correct = window(model, tokens, targets, new_document)
-                keep = np.asarray(targets != CONFIG.PAD_TOKEN_ID)
-                for key, value in (("nll", nll), ("top_prob", top_prob), ("correct", correct),
-                                   ("context_len", np.broadcast_to(np.arange(1, tokens.shape[1] + 1), keep.shape)),
-                                   ("target", targets)):
-                    parts[key].append(np.asarray(value)[keep])
+    for row in rows:
+        row = jnp.asarray(row)
+        for w in (0, 1):
+            tokens = row[:, w * CONFIG.MAX_SEQ_LEN:(w + 1) * CONFIG.MAX_SEQ_LEN]
+            targets = heldout_targets(row[:, w * CONFIG.MAX_SEQ_LEN + 1:(w + 1) * CONFIG.MAX_SEQ_LEN + 1], CONFIG.PAD_TOKEN_ID)
+            nll, top_prob, correct = window(model, tokens, targets)
+            keep = np.asarray(targets != CONFIG.PAD_TOKEN_ID)
+            for key, value in (("nll", nll), ("top_prob", top_prob), ("correct", correct),
+                               ("context_len", np.broadcast_to(np.arange(1, tokens.shape[1] + 1), keep.shape)),
+                               ("target", targets)):
+                parts[key].append(np.asarray(value)[keep])
     return {k: np.concatenate(v) for k, v in parts.items()}
 
 
@@ -163,7 +160,6 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_checkpoint_argument(ap, required=True, aliases=("--ckpt",))
     ap.add_argument("--step", type=int, default=None, help="step to score (default: the dir's newest)")
-    add_arch_argument(ap)
     ap.add_argument("--rows", type=int, default=None, help="held-out rows per source (default: the trainer's)")
     ap.add_argument("--sources", default="fineweb-edu,codeparrot,finemath",
                     help="fineweb-edu reads the trainer's fixed skip; the others their tails (#363)")
@@ -177,14 +173,14 @@ def main(argv=None):
 
     load_env()
     from trm.config import VOCAB_SIZE, resolve_root
-    from trm.runtime.restore import restore_arch
+    from trm.runtime.restore import restore_model
     from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
 
-    model, step = restore_arch(CONFIG, args.arch, args.checkpoint_path, step=args.step)
+    model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
     nbytes = token_bytes(VOCAB_SIZE)
     data_root = resolve_root(os.environ.get("DATA_ROOT", "runs/data"))
-    row = {"step": int(step), "arch": args.arch, "checkpoint": str(args.checkpoint_path),
+    row = {"step": int(step), "checkpoint": str(args.checkpoint_path),
            "commit": git_head(short=False), "when": datetime.datetime.now(datetime.timezone.utc).isoformat(),
            "sources": {}}
     for source in args.sources.split(","):

@@ -41,6 +41,10 @@ things, it doesn't go in this folder.
 - `2026-09-18-muon-holds-1-32x-over-adamw-at-its-best-lr.md` — #382: Muon (x16.667 on a 6e-4 schedule) reaches CE 5.85 in 1.32x fewer tokens than AdamW at its best peak 6e-4; its lead went 2.1x → 1.42x → 1.32x as the baseline was tuned, at +4.8% per step and 380 MiB less arena (KEEP)
 - `2026-09-21-a-warmup-clip-enlarges-adams-steps-for-thousands-of-steps-after-it-stops.md` — #447: clip_by_global_norm(1.0) in front of Muon+AdamW turns Muon's matrix update while it binds (cosine 0.87–0.90 in steps 0–100) and leaves AdamW's steps 1.6x larger at steps 1000–1300, after it has stopped binding, through v's memory — decaying to 1.1x by step 4,000 (KEEP)
 - `2026-09-28-the-first-finished-base-model-misses-lambada-by-its-mix.md` — base run 001: the first model trained to its budget (5B tokens) beats GPT-2 124M on its own FineWeb-Edu held-out by 0.44 nats and misses the LAMBADA gate, 0.204 vs 0.3256 (KILL); 0.48 nats behind on the open web — read as a data-mix gap, tested by #489
+- `2026-10-04-zero-init-attention-output-starts-fast-and-ends-worse.md` — #361: zeroing the attention output projection leads by 1.5 nats at step 8 and trails by 0.086 at 512 (3 seeds); its tokens-to-5.85 bar said KEEP because 5.85 falls in the first quarter; not adopted
+- `2026-10-04-polar-express-coefficients-hold-on-the-2060-recipe.md` — #375: Polar Express's per-step Newton-Schulz coefficients beat the 2024 quintic by 0.023 val CE at 512 steps (3 seeds), same speed; not novel (Amsel et al. 2025), recorded as the Muon pairs were; adopted
+- `2026-10-04-post-norm-beats-the-plain-recipe-where-it-was-registered-to-tie.md` — #494: POST_NORM on the plain recipe, −0.056 val CE at 512 steps (3 seeds) and act_max peak ~37 vs ~86, at +1.4% wall-clock; INCONCLUSIVE only because a win was not a registered branch; adoption open on #494
+- `2026-10-07-post-norms-lead-is-mostly-the-start-and-its-act-max-cap-grows-in-value.md` — #494 at 2,000 steps: the 512-step lead shrinks to −0.015 val CE (13σ, 2% fewer tokens to 3.70, bar 5%): INCONCLUSIVE; the control's act_max grows past 600 where POST_NORM's stays ~70
 
 ## Entry template
 

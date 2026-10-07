@@ -40,7 +40,7 @@ def test_act_max_is_reported_on_both_paths(toy, tokens, training):
     """Training is the path that matters — a run must be able to see this while it
     happens — but inference reporting it too means an instrument gets the same
     number without a second code path to drift."""
-    diag = toy(tokens, depth=1, training=training).diag
+    diag = toy(tokens, training=training).diag
     assert "act_max" in diag
     assert float(diag["act_max"]) > 0.0
 
@@ -53,15 +53,15 @@ def test_it_is_the_peak_not_the_average(toy, tokens):
                               num_layers=3, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
     scaled.embed.embedding.value = scaled.embed.embedding.value * 100.0
 
-    calm = float(toy(tokens, depth=1, training=True).diag["act_max"])
-    hot = float(scaled(tokens, depth=1, training=True).diag["act_max"])
+    calm = float(toy(tokens, training=True).diag["act_max"])
+    hot = float(scaled(tokens, training=True).diag["act_max"])
     assert hot > calm * 10, "act_max must track the peak it is supposed to report"
 
 
 def test_the_metrics_logger_knows_the_key():
     """A model reporting a diagnostic nothing writes down is a diagnostic that does
-    not exist. This is the seam #105 made arch-optional, and the seam where a new
-    metric silently goes nowhere."""
+    not exist. This is the seam where a new metric
+    silently goes nowhere."""
     from trm.runtime.metrics import MetricsLogger
 
     logger = MetricsLogger.__new__(MetricsLogger)

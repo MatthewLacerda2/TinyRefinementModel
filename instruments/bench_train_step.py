@@ -1,7 +1,7 @@
 """Micro-step training benchmark: measure a step before optimizing it.
 
 Measures steps/sec and peak VRAM for the real compute_grad_step + apply_grads
-path on synthetic data, for the model the trainer builds (MODEL_ARCH). Two modes:
+path on synthetic data, for the model the trainer builds. Two modes:
   - loop:   mimics the real train loop, pulling loss/grad-norm/token-loss floats
             to the host every micro-step (the trainer's per-step sync)
   - kernel: dispatches all steps and syncs once at the end — the upper bound a
@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from trm.config import MAX_STEPS_LIMIT, VOCAB_SIZE
+from trm.config import VOCAB_SIZE
 from trm.settings import CONFIG
 from trm.train.trainer import init_model_and_optimizer
 from trm.train.grad_step import HotPath, compute_grad_step, apply_grads
@@ -48,8 +48,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=60, help="timed micro-steps per mode")
     parser.add_argument("--warmup", type=int, default=10, help="untimed steps (includes compile)")
-    parser.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
-                        help="refinement/reasoning depth; inert for plain, which has no depth dial")
     parser.add_argument("--modes", type=str, default="loop,kernel")
     parser.add_argument("--path", choices=("hot", "nnx"), default="hot",
                         help="hot: the trainer's HotPath (graph walked once, #474); "
@@ -66,7 +64,7 @@ def main():
     print(f"device: {jax.devices()[0]}")
     print(f"allocator: {os.environ.get('XLA_PYTHON_CLIENT_ALLOCATOR', '(default bfc)')} | "
           f"preallocate: {os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', '(default true)')}")
-    print(f"arch: {CONFIG.MODEL_ARCH} | depth: {args.depth} | batch: {args.batch} | steps: {args.steps} | "
+    print(f"batch: {args.batch} | steps: {args.steps} | "
           f"warmup: {args.warmup} | attn_impl: {args.attn_impl or '(default)'}")
 
     if args.attn_impl:
@@ -81,19 +79,15 @@ def main():
     batch = jnp.array(
         rng.integers(0, VOCAB_SIZE, size=(args.batch, 2 * CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32
     )
-    no_boundary = jnp.zeros((args.batch,), dtype=bool)
 
     hot = HotPath(model, optimizer, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
 
-    def micro_step(i, sync):
-        opt_step = jnp.array(i // CONFIG.ACCUMULATION_STEPS)
+    def micro_step(sync):
         if args.path == "hot":
-            loss, out, grads, grad_norm = hot.grad_step(batch, opt_step, args.depth, doc_boundary=no_boundary)
+            loss, out, grads, grad_norm = hot.grad_step(batch)
             hot.apply(grads)
         else:
-            loss, out, grads, grad_norm = compute_grad_step(
-                model, batch, opt_step, args.depth, doc_boundary=no_boundary,
-                z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
+            loss, out, grads, grad_norm = compute_grad_step(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(optimizer, grads, model)
         if sync:
             # The real train loop pulls these to the host every micro-step.
@@ -104,8 +98,8 @@ def main():
 
     t0 = time.time()
     last = None
-    for i in range(args.warmup):
-        last = micro_step(i, sync=True)
+    for _ in range(args.warmup):
+        last = micro_step(sync=True)
     jax.block_until_ready(last)
     print(f"warmup (incl. compile): {time.time() - t0:.1f}s")
     report_memory("post-warmup")
@@ -113,8 +107,8 @@ def main():
     tokens_per_step = args.batch * 2 * CONFIG.MAX_SEQ_LEN
     for mode in args.modes.split(","):
         t0 = time.time()
-        for i in range(args.steps):
-            last = micro_step(args.warmup + i, sync=(mode == "loop"))
+        for _ in range(args.steps):
+            last = micro_step(sync=(mode == "loop"))
         jax.block_until_ready(last)
         dt = time.time() - t0
         ms = dt / args.steps * 1000

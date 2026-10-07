@@ -81,33 +81,9 @@ class Config(BaseSettings):
     MAX_SEQ_LEN: int = 512
     # 15 heads → head_dim = 960/15 = 64, the tensor-core-clean size on Turing f16.
     # (16 heads would give head_dim 60, not a multiple of 8 → XLA pads to 64: you pay
-    # near-1024 attention cost for 960 of width. Avoid.) Verified end-to-end: refiner
-    # asserts pass (dim%heads==0, head_dim even for RoPE).
+    # near-1024 attention cost for 960 of width. Avoid.) The attention asserts
+    # dim%heads==0 and head_dim even for RoPE.
     NUM_HEADS: int = 15
-
-    # Architecture selector, chosen at launch rather than by a code edit:
-    #   "refiner"  — Plan A CausalRefiner: causal within-window depth recurrence.
-    #                RETIRED as the default on 2026-09-12. The mechanism works on
-    #                sequential composition (findings 2026-06-13 / 06-16 / 06-18,
-    #                unretracted) and is actively SUPPRESSED on language: the trained
-    #                gate routes to 6 of 960 channels on prose, the second refine pass
-    #                costs 5.7 nats at 0.66B and nothing at 3.99B, and bounding the
-    #                activation scale does not recover it. See
-    #                docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md.
-    #                Kept selectable: it is the architecture of the 4B champion, and
-    #                MODEL_ARCH=refiner is required to load or resume it.
-    #   "reasoner" — UniversalReasoner, the cross-window-hunch baseline. The hunch
-    #                is proven inert (finding 2026-06-13), so this is effectively a
-    #                vanilla random-depth transformer, kept as the control —
-    #                select it explicitly (MODEL_ARCH=reasoner) for control runs.
-    #   "plain"    — PlainTransformer: N distinct causal blocks, no loop, no gate, no
-    #                time signal, no depth dial. The default since depth recurrence
-    #                was retired.
-    # The arches have different param trees, so a checkpoint from one cannot be resumed
-    # by another — resuming the 4B champion now requires MODEL_ARCH=refiner. A value
-    # outside the three refuses to start (#104): the selector would otherwise fall
-    # through to a default, the one failure a launch banner does not reliably catch.
-    MODEL_ARCH: Literal["plain", "refiner", "reasoner"] = "plain"
 
     # Normalize each residual BRANCH's output before it is added back ("sandwich" /
     # post-norm, as in Gemma 2). The pre-norms bound what goes INTO attention and the
@@ -117,12 +93,13 @@ class Config(BaseSettings):
     # input), and down_proj carries it to 64,896 -- 99.1% of f16's 65,504 ceiling.
     # That is the root cause of #229's whole-window NaN. See #235.
     #
-    # Default OFF: it changes what the model is, so no stored checkpoint survives it
-    # and it must earn its place through a matched ablation before a run adopts it.
+    # OFF: the 2,000-step pair (PR #551) ended INCONCLUSIVE: -0.015 val CE at the cap,
+    # 2% fewer tokens to 3.70 (bar 5%), +1.6% wall-clock; the 512-step lead (-0.056, PR
+    # #538) mostly came from the start. It holds act_max near 75 where the control's
+    # grows past 600. Adopting it for that is #494's call.
     POST_NORM: bool = False
 
-    # PlainTransformer depth. 8 matched what the refiner ran at depth 1 (7 encoder
-    # blocks + one refine pass). It was 9 between 2026-09-13 and 2026-09-20, on the
+    # PlainTransformer depth. It was 9 between 2026-09-13 and 2026-09-20, on the
     # allocator numbers for batch 1 (8 layers left 771 MiB of arena headroom, 9 left
     # 446, 10 left 121).
     #
@@ -146,35 +123,8 @@ class Config(BaseSettings):
     # narrower than the compute dtype. float16 reproduces every run before #357.
     RESIDUAL_DTYPE: Literal["float16", "float32"] = "float32"
 
-    # ── Retired architectures (knobs only the refiner reads; #292) ──────────────
-    # Refiner time signal (#86): how each refinement pass is told which step it is.
-    #   "sinusoidal" — continuous diffusion-style step encoding, defined at ANY step,
-    #                  so inference depth is an open dial (finding
-    #                  2026-07-18-sinusoidal-time-signal-depth-extrapolates.md:
-    #                  parity with the table at trained depths, +0.11 from
-    #                  extrapolated loops under length shift). The default — what
-    #                  the base run trains.
-    #   "table"      — the learned per-step embedding; rows end at MAX_STEPS_LIMIT
-    #                  and the signal clamps past them (chance + NaN, same finding).
-    #                  Required to RESUME refiner checkpoints from before this flip:
-    #                  the two modes have different param trees.
-    # Same fail-closed contract as MODEL_ARCH (#104).
-    TIME_SIGNAL: Literal["table", "sinusoidal"] = "sinusoidal"
-    # Plan A: number of causal encoder layers beneath the single shared refine block
-    # (which is looped up to MAX_STEPS_LIMIT times). Tuned to land the param count
-    # near the reasoner baseline; init prints the actual count for both arches.
-    REFINER_ENCODER_LAYERS: int = 7
-    # Refiner serving depth. The dense 1→8 sweep
-    # (docs/findings/2026-06-19-plan-a-depth-dense-sweep.md) put the accuracy
-    # plateau at ~d6 (peak d7; d6–d8 inside seed noise), and pretraining shifts the
-    # curve LEFT — the same ceiling in fewer loops. Loops past the knee buy nothing
-    # measurable and cost a full pass of the shared block each, so inference/eval
-    # tooling defaults here. Training is a separate decision and still samples up to
-    # MAX_STEPS_LIMIT (pre-registered with the sweep: "MAX_STEPS_LIMIT=8 stays").
-    INFERENCE_DEPTH: int = 6
-
     # ── Optimizer ─────────────────────────────────────────────────────────────
-    # Optimizer selector (#26), with MODEL_ARCH's fail-closed contract:
+    # Optimizer selector (#26), failing closed on an unknown name (#104):
     #   muon  — THE DEFAULT since 2026-09-19 (#388): orthogonalized momentum for the 2-D
     #           weight matrices, AdamW for the token embedding, norms and biases. It
     #           reaches a fixed held-out CE in 1.32x fewer tokens than AdamW at AdamW's
@@ -210,15 +160,20 @@ class Config(BaseSettings):
     # change does not move it. 6e-5 is nanoGPT/GPT-3's 0.1 x their 6e-4 peak; WEIGHT_DECAY x LR
     # gave the table 6e-6, ten times less. 6e-6 restores the recipe before #360 at a 6e-4 peak.
     # It is Adam's partition that takes it: the >=2-D leaves Muon leaves to Adam, which are the
-    # lookup tables (and the retired reasoner's shared_token); norms and biases stay undecayed.
+    # lookup tables; norms and biases stay undecayed.
     EMBED_WEIGHT_DECAY: float = 6e-5
     # The global-norm clip on the accumulation window's MEAN gradient. The trainer logs that
     # norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
     CLIP_NORM: float = 1.0
     # Muon's own (optax.contrib.scale_by_muon): momentum, Newton-Schulz iterations, the
-    # normalization epsilon, Nesterov. The Newton-Schulz coefficients are #375's subject.
+    # normalization epsilon, Nesterov.
     MUON_BETA: float = 0.95
     MUON_NS_STEPS: int = 5
+    # Which Newton-Schulz coefficients (#375): "keller", Keller Jordan's 2024 quintic
+    # reused at every step (every run so far), or "polar_express", a minimax-optimal
+    # quintic per step (trm/train/polar_express.py). polar_express since #375's pair
+    # (KEEP: -0.023 val CE at 512 steps, ahead from step 72 on, same tok/s; PR #538).
+    MUON_NS_COEFFS: Literal["keller", "polar_express"] = "polar_express"
     MUON_EPS: float = 1e-8
     MUON_NESTEROV: bool = True
     # Clean micro-steps before the f16 loss scaler tries a larger S (#199). Each probe that
@@ -293,7 +248,7 @@ class Config(BaseSettings):
     # (the champion's 4.7092, the #17 noise floor of sigma~0.03, the time machine's
     # +/-0.06 reproduction check). Eval is a handful of rows, so there is nothing to
     # gain by batching it — and batch-1 scoring is also the shape every stored
-    # checkpoint of both arches was written at.
+    # checkpoint was written at.
     #
     # CHANGEOVER 2026-09-15 (#184): 4 -> 64 rows. Four rows gave val CE a per-probe
     # noise of ~0.011 nats per interval, more than twice the plateau detector's
@@ -372,7 +327,7 @@ class Config(BaseSettings):
     # Seeds (#17: the seed-variance noise floor needs same-config runs differing ONLY
     # in seed). Both are recorded in run_metadata.json so every run stays reproducible.
     #   DATA_SEED  — data-pipeline randomness: the start offset into each source
-    #                (under 1,025 tokens), the mixture draws, per-step depth sampling.
+    #                (under 1,025 tokens), the mixture draws.
     #                NOT the document order. Every source is read front to back, so two
     #                seeds see nearly the same documents in the same order, and a pair's
     #                seed spread is init variance, not data variance (#378).
@@ -445,7 +400,7 @@ class Config(BaseSettings):
     # rule" (2026-09-20). It sits well above the supervisor's mid-run KILLED_DISK
     # floor (the next checkpoint write plus 2GB, ~4.6GB at dim 960), so pruning acts
     # long before that stop would, and equals the launch precheck's min_free_gb.
-    SSD_KEEP_FREE_GB: float = 20.0
+    SSD_KEEP_FREE_GB: float = 12.0
 
     # ── f16 margin alarms (the supervisor's, #368) ────────────────────────────
     # Crossing one is an alarm, announced and recorded, never a kill: a margin is a

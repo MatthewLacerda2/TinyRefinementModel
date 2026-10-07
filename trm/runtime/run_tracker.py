@@ -5,19 +5,13 @@ import time
 import datetime
 import subprocess
 
-from trm.config import MAX_STEPS_LIMIT, NUM_BLOCKS, SHARED_SLOTS, VOCAB_SIZE
+from trm.config import VOCAB_SIZE
 from trm.train.schedules import Schedules
 
-# What each architecture's param tree is built from (#317). A resume that changes one
-# of these cannot load its checkpoint, or loads it into a different network whose tree
-# happens to match. Keyed per arch: a knob only another arch reads must not refuse the
-# resume — and PLAIN_LAYERS used to pass unchecked while retired-arch knobs were checked.
-_SHARED_TREE_KEYS = ("MODEL_ARCH", "LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN")
-TREE_KEYS = {
-    "plain": (*_SHARED_TREE_KEYS, "PLAIN_LAYERS", "POST_NORM"),
-    "refiner": (*_SHARED_TREE_KEYS, "REFINER_ENCODER_LAYERS", "MAX_STEPS_LIMIT", "TIME_SIGNAL", "POST_NORM"),
-    "reasoner": (*_SHARED_TREE_KEYS, "NUM_BLOCKS", "SHARED_SLOTS", "MAX_STEPS_LIMIT"),
-}
+# What the model's param tree is built from (#317). A resume that changes one of these
+# cannot load its checkpoint, or loads it into a different network whose tree happens
+# to match.
+TREE_KEYS = ("LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN", "PLAIN_LAYERS", "POST_NORM")
 
 class RunTracker:
     """A run's folder and its run_metadata.json. `config` is the run's Config, the one
@@ -60,7 +54,7 @@ class RunTracker:
         return metadata
 
     @staticmethod
-    def capture_environment_snapshot(run_dir, model_arch):
+    def capture_environment_snapshot(run_dir):
         """Freeze everything a revival (instruments.timemachine) needs beyond the commit
         SHA: the dirty working tree, the pinned Python libs, and the host it assumed.
 
@@ -86,9 +80,8 @@ class RunTracker:
 
         # 2. The host the venv assumed — driver/GPU/python. Not part of the compat
         #    surface (driver is a shared passthrough) but invaluable for debugging a
-        #    failed revival. MODEL_ARCH also rides in run_metadata.json, machine-readable.
-        lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}",
-                 f"MODEL_ARCH {model_arch}"]
+        #    failed revival.
+        lines = [f"python {sys.version.split()[0]}", f"platform {sys.platform}"]
         try:
             smi = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=driver_version,name",
@@ -141,11 +134,8 @@ class RunTracker:
         schedules = Schedules.of(config)
         return {
             **config.model_dump(),
-            # Constants, not knobs, that shape a retired arch's param tree (TREE_KEYS).
+            # A constant, not a knob, that shapes the param tree (TREE_KEYS).
             "VOCAB_SIZE": VOCAB_SIZE,
-            "NUM_BLOCKS": NUM_BLOCKS,
-            "SHARED_SLOTS": SHARED_SLOTS,
-            "MAX_STEPS_LIMIT": MAX_STEPS_LIMIT,
             # The horizons resolved from the budget: the LR anneal's (#83) and the
             # mixture ramp's (#362). A resume checks the first against the run's (#197).
             "DECAY_STEPS": schedules.decay_steps,
@@ -166,7 +156,7 @@ class RunTracker:
             # A key the run's metadata predates is skipped, not refused.
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                for k in TREE_KEYS[current_params["MODEL_ARCH"]]
+                for k in TREE_KEYS
                 if k in old_params and old_params[k] != current_params[k]
             ]
 
@@ -224,7 +214,7 @@ class RunTracker:
             metadata["sections"].append(self._new_section(start_timestamp))
             self.session_index = 0
             self.save_metadata(metadata)
-            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
+            self.capture_environment_snapshot(self.run_dir)
             print(f"📁 Created new training run folder: {self.run_dir}")
         else:
             # Resume existing run
@@ -253,7 +243,7 @@ class RunTracker:
             self.save_metadata(metadata)
             # Snapshot on resume too (#173): each session describes its own commit
             # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
-            self.capture_environment_snapshot(self.run_dir, self.config.MODEL_ARCH)
+            self.capture_environment_snapshot(self.run_dir)
             print(f"🔄 Resumed training run folder: {self.run_dir}")
 
         return self.run_id

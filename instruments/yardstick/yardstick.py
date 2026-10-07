@@ -46,7 +46,7 @@ LAMBADA_CACHE = "runs/data/eval/lambada_test.jsonl"
 # (instruments.yardstick.calibrate_gpt2, full 5153-example set, 2026-07-04,
 # commit fec1567): acc 0.3256 / ppl 40.06 — matching lm-eval-harness's gpt2
 # lambada_openai reading to every published digit (delta 0.0000 / -0.00).
-# Sanity floor: a random-init refiner reads acc 0.0000 / ppl ~4.1e5 through
+# Sanity floor: a random-init model (the refiner of the day) reads acc 0.0000 / ppl ~4.1e5 through
 # the same pipeline. Full calibration report lives in the PR that landed it.
 GPT2_SMALL_REFERENCE = {
     "lambada_acc": 0.3256,

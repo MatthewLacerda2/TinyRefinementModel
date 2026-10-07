@@ -19,9 +19,8 @@ from instruments.latents import Trajectory
 from instruments.results import parse
 
 
-def _traj(states, gates=None):
-    states = np.asarray(states, dtype=np.float32)
-    return Trajectory(states=states, gates=gates, depth=states.shape[0] - 1)
+def _traj(states):
+    return Trajectory(states=np.asarray(states, dtype=np.float32))
 
 
 def _line(points):
@@ -31,36 +30,35 @@ def _line(points):
 
 # --- step size ---------------------------------------------------------------
 
-def test_step_size_measures_the_distance_each_pass_moved():
+def test_step_size_measures_the_distance_each_block_moved():
     traj = _traj([[[[0.0, 0.0]]], [[[3.0, 4.0]]], [[[3.0, 4.0]]]])
-    assert np.allclose(traj.step_sizes(), [5.0, 0.0]), "3-4-5, then a pass that did nothing"
+    assert np.allclose(traj.step_sizes(), [5.0, 0.0]), "3-4-5, then a block that did nothing"
 
 
-def test_step_size_has_one_entry_per_pass_not_per_state():
-    traj = _line(5)                      # 5 states = 1 origin + 4 passes
+def test_step_size_has_one_entry_per_block_not_per_state():
+    traj = _line(5)                      # 5 states = 1 origin + 4 blocks
     assert traj.step_sizes().shape == (4,)
 
 
 # --- turning angle -----------------------------------------------------------
 
 def test_walking_a_straight_line_turns_by_nothing():
-    """+1 means the passes are one long stride chopped up — the reading that
-    would suggest the same displacement is reachable in fewer passes."""
+    """+1 means the blocks are one long stride chopped up."""
     assert np.allclose(_line(4).turning_angles(), [1.0, 1.0])
 
 
-def test_a_pass_that_undoes_the_last_one_reads_as_a_reversal():
+def test_a_block_that_undoes_the_last_one_reads_as_a_reversal():
     traj = _traj([[[[0.0, 0.0]]], [[[1.0, 0.0]]], [[[0.0, 0.0]]]])
     assert np.allclose(traj.turning_angles(), [-1.0])
 
 
-def test_unrelated_passes_read_as_a_right_angle():
+def test_unrelated_blocks_read_as_a_right_angle():
     traj = _traj([[[[0.0, 0.0]]], [[[1.0, 0.0]]], [[[1.0, 1.0]]]])
     assert np.allclose(traj.turning_angles(), [0.0], atol=1e-6)
 
 
 def test_a_zero_length_step_does_not_divide_by_zero():
-    """A converged loop stops moving; the readout must survive its own success."""
+    """A block that leaves the stream where it was must not break the readout."""
     traj = _traj([[[[0.0, 0.0]]], [[[1.0, 0.0]]], [[[1.0, 0.0]]]])
     assert np.isfinite(traj.turning_angles()).all()
 
@@ -70,7 +68,7 @@ def test_a_zero_length_step_does_not_divide_by_zero():
 def test_distance_to_final_is_zero_at_the_end_and_counts_down():
     d = _line(4).distance_to_final()
     assert d[-1] == 0.0
-    assert np.all(np.diff(d) < 0), "each pass should end nearer the destination"
+    assert np.all(np.diff(d) < 0), "each block should end nearer the destination"
 
 
 # --- non-finite refusal ------------------------------------------------------
@@ -78,7 +76,7 @@ def test_distance_to_final_is_zero_at_the_end_and_counts_down():
 @pytest.mark.parametrize("readout", ["step_sizes", "turning_angles", "distance_to_final"])
 def test_every_readout_refuses_a_trajectory_that_blew_up(readout):
     traj = Trajectory(states=np.array([[[[0.0, np.nan]]], [[[1.0, 2.0]]]], dtype=np.float32),
-                      gates=None, depth=1, nonfinite=1)
+                      nonfinite=1)
     assert not traj.ok
     with pytest.raises(ValueError, match="non-finite"):
         getattr(traj, readout)()
@@ -94,41 +92,12 @@ def test_a_healthy_trajectory_is_not_refused():
 
 # --- the machine-readable protocol -------------------------------------------
 
-def test_results_are_emitted_one_line_per_pass(capsys):
+def test_results_are_emitted_one_line_per_block(capsys):
     """`instruments/results.py` is how a spec drives this and the referee reads
     it — the whole reason these numbers can be judged rather than eyeballed."""
-    traj = _traj([[[[0.0, 0.0]]], [[[1.0, 0.0]]], [[[2.0, 0.0]]], [[[3.0, 0.0]]]],
-                 gates=np.array([0.1, 0.2, 0.3], dtype=np.float32))
-    traj.emit_results()
+    _traj([[[[0.0, 0.0]]], [[[1.0, 0.0]]], [[[2.0, 0.0]]], [[[3.0, 0.0]]]]).emit_results()
 
     rows = parse(capsys.readouterr().out)
-    assert [r["point"] for r in rows] == ["d1", "d2", "d3"]
-    assert all("step_size" in r and "gate_openness" in r for r in rows)
-    assert "turning_angle" not in rows[0], "the first pass has no previous step to turn from"
-    assert np.isclose(rows[2]["gate_openness"], 0.3)
-
-
-def test_an_arch_without_a_trajectory_is_refused_before_anything_loads(monkeypatch):
-    import instruments.latents as latents
-    monkeypatch.setattr(latents, "CONFIG", latents.CONFIG.model_copy(update={"MODEL_ARCH": "reasoner"}))
-    monkeypatch.setattr("trm.runtime.restore.restore_arch",
-                        lambda *a, **k: pytest.fail("restored a model it should have refused"))
-    with pytest.raises(SystemExit, match="MODEL_ARCH='reasoner'"):
-        latents._main(["--checkpoint", "nowhere"])
-
-
-@pytest.mark.parametrize("arch", ["plain", "refiner"])
-def test_the_arches_with_a_trajectory_get_past_the_guard(monkeypatch, arch):
-    """The plain model walks its blocks (#391), the refiner its passes (#225)."""
-    import instruments.latents as latents
-
-    class Restored(Exception):
-        pass
-
-    def restore(*args, **kwargs):
-        raise Restored
-
-    monkeypatch.setattr(latents, "CONFIG", latents.CONFIG.model_copy(update={"MODEL_ARCH": arch}))
-    monkeypatch.setattr("trm.runtime.restore.restore_arch", restore)
-    with pytest.raises(Restored):
-        latents._main(["--checkpoint", "nowhere"])
+    assert [r["point"] for r in rows] == ["block1", "block2", "block3"]
+    assert all("step_size" in r and "distance_to_final" in r for r in rows)
+    assert "turning_angle" not in rows[0], "the first block has no previous step to turn from"

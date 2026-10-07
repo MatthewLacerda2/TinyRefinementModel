@@ -8,9 +8,8 @@ code documents** under the f16 compute policy, and on 0% of prose documents:
     best/3121279 (3.20B)      fineweb-edu     0/300   (0.00%)
     champion 3899391 (3.99B)  codeparrot      0/300   (0.00%)
 
-Every parameter array in that checkpoint is finite (150/150 checked) and depth 1
-is enough to trigger it, so this is an overflow in the encoder or the head at
-f16, not corrupt weights and not the refine loop.
+Every parameter array in that checkpoint is finite (150/150 checked), so this is
+an overflow at f16, not corrupt weights.
 
 The reason it needs a guard rather than a note is that **nothing failed**. Both
 samplers accept a NaN row and return an ordinary token id — `jnp.argmax` yields
@@ -37,8 +36,8 @@ TOY_DIM = 32
 TOY_VOCAB = 37
 TOY_HEADS = 4
 TOY_PAD = TOY_VOCAB - 1
-TOY_DEPTH = 2
-WHERE = "token 3, position 11, depth 2"
+TOY_LAYERS = 1
+WHERE = "token 3, position 11"
 
 
 def _healthy_row(size=TOY_VOCAB):
@@ -126,7 +125,7 @@ def test_generation_raises_instead_of_emitting_a_token(monkeypatch):
 
     with pytest.raises(infer.NonFiniteLogits):
         stub = types.SimpleNamespace(max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
-        infer.generate_text(stub, _StubEncoder(), "hello", max_new_tokens=4, depth=1, quiet=True)
+        infer.generate_text(stub, _StubEncoder(), "hello", max_new_tokens=4, quiet=True)
 
 
 def test_a_healthy_model_still_generates(monkeypatch):
@@ -137,7 +136,7 @@ def test_a_healthy_model_still_generates(monkeypatch):
     vocab): an out-of-range id would make this model return all-NaN logits for the
     whole window (#233), a real defect but not the one under test.
     """
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
 
     calls = []
     real_guard = infer.reject_unsampleable
@@ -145,11 +144,11 @@ def test_a_healthy_model_still_generates(monkeypatch):
                         lambda logits, **kw: (calls.append(1),
                                               real_guard(logits, **kw))[1])
 
-    model = RefinerForTraining(
+    model = PlainTransformer(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        encoder_layers=1, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
+        num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD,
     )
     infer.generate_text(model, _StubEncoder(), "hello", max_new_tokens=3,
-                        top_k=8, depth=TOY_DEPTH, seed=0, quiet=True)
+                        top_k=8, seed=0, quiet=True)
 
     assert calls, "the guard never ran, so this proved nothing"

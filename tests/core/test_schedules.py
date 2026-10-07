@@ -3,8 +3,7 @@ so the cosine bottoms out when training ends, not 2.0B tokens in.
 
 Pinned here: the derivation math, the acceptance criteria (end step hits
 end_value, half-budget is mid-cosine), the unset-env default that keeps the
-golden run untouched, the loud failure on a degenerate budget, the deliberate
-decision that the λ anneals keep their own absolute horizon, and the recording
+golden run untouched, the loud failure on a degenerate budget, and the recording
 of budget + resolved horizon in run metadata. A schedule is resolved from a Config
 (`Schedules.of`, #475), so every case builds the Config it asks about in-process.
 """
@@ -12,7 +11,6 @@ of budget + resolved horizon in run metadata. A schedule is resolved from a Conf
 import numpy as np
 import pytest
 
-from trm.model.reasoner import LAMBDA_DECAY_STEPS, diversity_lambda_schedule, forget_lambda_schedule
 from trm.settings import Config
 from trm.train.schedules import (
     Schedules,
@@ -90,15 +88,6 @@ def test_the_whole_schedule_scales_with_the_peak():
 def test_budget_inside_warmup_fails_loud():
     with pytest.raises(ValueError):
         _horizon(WARMUP_STEPS * TOKENS_PER_OPT_STEP // 2)
-
-
-def test_lambda_schedules_keep_their_own_horizon():
-    """Deliberate (#83): the λ anneals relax regularization pressure over early
-    training — absolute-step dynamics — and must not silently stretch with the
-    LR horizon. Their end values land at LAMBDA_DECAY_STEPS regardless."""
-    assert LAMBDA_DECAY_STEPS == 15000
-    assert np.isclose(float(forget_lambda_schedule(WARMUP_STEPS)(LAMBDA_DECAY_STEPS)), 0.001, rtol=1e-6)
-    assert np.isclose(float(diversity_lambda_schedule(WARMUP_STEPS)(LAMBDA_DECAY_STEPS)), 0.1, rtol=1e-6)
 
 
 def test_the_budget_a_config_carries_sets_its_horizon():

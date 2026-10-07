@@ -21,11 +21,11 @@ Static analysis (1) and the HLO scan (2) work even when actually running would O
 this is usable precisely when you need it most. ``--run`` additionally executes one step
 and reads the driver's peak / largest-allocation stats (skip it if the config OOMs).
 
-Set the size you want in config.py (LATENT_DIM, NUM_HEADS) first — every arch reads
-it. `--arch` defaults to MODEL_ARCH, so with no flag this profiles what a launch trains:
+It profiles the model a launch trains, at the size the config sets (LATENT_DIM,
+NUM_HEADS, PLAIN_LAYERS):
 
     python -m instruments.mem_profile
-    python -m instruments.mem_profile --arch refiner --depth 8 --top 15
+    python -m instruments.mem_profile --top 15
 """
 
 import os
@@ -38,10 +38,11 @@ from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from instruments._common import param_count
-from instruments.arch import add_arch_argument, build
-from trm.config import VOCAB_SIZE, MAX_STEPS_LIMIT
+from trm.config import VOCAB_SIZE
+from trm.model import build_model
 from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
@@ -76,29 +77,20 @@ def _top_hlo_shapes(hlo_text, top):
 
 def main():
     ap = argparse.ArgumentParser(description="grad-step VRAM profiler")
-    add_arch_argument(ap)
-    ap.add_argument("--depth", type=int, default=MAX_STEPS_LIMIT,
-                    help="refinement/reasoning depth (the deepest is the peak); inert for plain, "
-                         "which has no depth dial")
     ap.add_argument("--top", type=int, default=12, help="how many largest HLO shapes to list")
     ap.add_argument("--run", action="store_true", help="also execute one step (skip if it OOMs)")
     args = ap.parse_args()
 
     from trm.train.grad_step import compute_grad_step
 
-    # Shared selector (instruments/arch.py), not a private branch: a private one is
-    # how this file kept building the refiner after the default stopped being it.
-    model = build(args.arch, dim=CONFIG.LATENT_DIM)
+    model = build_model(CONFIG, nnx.Rngs(0))
     n_params = param_count(model)
-    print(f"arch={args.arch}  dim={CONFIG.LATENT_DIM}  heads={CONFIG.NUM_HEADS}  "
-          f"params={n_params / 1e6:.1f}M  depth={args.depth}  seq={CONFIG.MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
+    print(f"dim={CONFIG.LATENT_DIM}  heads={CONFIG.NUM_HEADS}  layers={CONFIG.PLAIN_LAYERS}  "
+          f"params={n_params / 1e6:.1f}M  seq={CONFIG.MAX_SEQ_LEN}  vocab={VOCAB_SIZE}")
 
     batch = jax.random.randint(jax.random.PRNGKey(0), (1, 2 * CONFIG.MAX_SEQ_LEN + 1), 0, VOCAB_SIZE, dtype=jnp.int32)
-    doc_boundary = jnp.zeros((1,), dtype=bool)
-    step = jnp.array(0)
 
-    compiled = compute_grad_step.lower(model, batch, step, args.depth, doc_boundary=doc_boundary,
-                                       z_loss_weight=CONFIG.Z_LOSS_WEIGHT).compile()
+    compiled = compute_grad_step.lower(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT).compile()
 
     ma = compiled.memory_analysis()
     arg = getattr(ma, "argument_size_in_bytes", 0)
@@ -121,8 +113,7 @@ def main():
     if args.run:
         print("\n=== executing one step (driver stats) ===")
         try:
-            loss, *_ = compute_grad_step(model, batch, step, args.depth, doc_boundary,
-                                         z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
+            loss, *_ = compute_grad_step(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             loss.block_until_ready()
             ms = jax.devices()[0].memory_stats()
             print(f"  peak_bytes_in_use: {_gib(ms.get('peak_bytes_in_use', 0))}")

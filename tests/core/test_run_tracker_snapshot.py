@@ -47,31 +47,28 @@ def test_resuming_appends_a_session_rather_than_replacing_the_record(tmp_path):
     assert meta["run_id"] == run_id
 
 
-# --- the resume check compares what the selected arch's tree is built from (#317) ---
-
-# This process's config, as a plain run whatever MODEL_ARCH the shell set.
-PLAIN = CONFIG.model_copy(update={"MODEL_ARCH": "plain"})
+# --- the resume check compares what the model's tree is built from (#317) ---
 
 
 def _resume_with(tmp_path, **recorded):
-    """'refused' or 'resumed': a plain resume onto a run whose metadata recorded
+    """'refused' or 'resumed': a resume onto a run whose metadata recorded
     today's parameters with `recorded` changed (None: the key was never recorded)."""
-    params = {**RunTracker.get_hyperparameters(PLAIN), **recorded}
+    params = {**RunTracker.get_hyperparameters(CONFIG), **recorded}
     path = tmp_path / "run_metadata.json"
     path.write_text(json.dumps({"parameters": {k: v for k, v in params.items() if v is not None}}))
     try:
-        RunTracker(PLAIN, runs_root=str(tmp_path))._check_compatibility(str(path))
+        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(str(path))
     except SystemExit:
         return "refused"
     return "resumed"
 
 
-def test_an_unchanged_plain_resume_goes_through(tmp_path):
+def test_an_unchanged_resume_goes_through(tmp_path):
     assert _resume_with(tmp_path) == "resumed"
 
 
-def test_a_plain_resume_with_a_different_layer_count_refuses(tmp_path):
-    assert _resume_with(tmp_path, PLAIN_LAYERS=PLAIN.PLAIN_LAYERS + 1) == "refused"
+def test_a_resume_with_a_different_layer_count_refuses(tmp_path):
+    assert _resume_with(tmp_path, PLAIN_LAYERS=CONFIG.PLAIN_LAYERS + 1) == "refused"
 
 
 def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch):
@@ -79,25 +76,16 @@ def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch)
     and a string SystemExit left uncaught still exits the trainer with code 1."""
     import pytest
     from trm.runtime import run_tracker
-    PLAIN_LAYERS = PLAIN.PLAIN_LAYERS
+    PLAIN_LAYERS = CONFIG.PLAIN_LAYERS
     monkeypatch.setattr(run_tracker.sys, "exit", lambda *a: pytest.fail("sys.exit called"))
     path = tmp_path / "run_metadata.json"
-    path.write_text(json.dumps({"parameters": {**RunTracker.get_hyperparameters(PLAIN),
+    path.write_text(json.dumps({"parameters": {**RunTracker.get_hyperparameters(CONFIG),
                                                "PLAIN_LAYERS": PLAIN_LAYERS + 1}}))
     with pytest.raises(SystemExit) as refused:
-        RunTracker(PLAIN, runs_root=str(tmp_path))._check_compatibility(str(path))
+        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(str(path))
     message = refused.value.code
     assert isinstance(message, str), "a str code is what makes the uncaught exit status 1"
     assert f"PLAIN_LAYERS: run used {PLAIN_LAYERS + 1}" in message and "--new-run" in message
-
-
-def test_a_resume_under_another_arch_refuses(tmp_path):
-    assert _resume_with(tmp_path, MODEL_ARCH="refiner") == "refused"
-
-
-def test_a_knob_only_retired_arches_read_does_not_refuse_a_plain_resume(tmp_path):
-    from trm.config import NUM_BLOCKS, SHARED_SLOTS
-    assert _resume_with(tmp_path, NUM_BLOCKS=NUM_BLOCKS + 1, SHARED_SLOTS=SHARED_SLOTS * 2) == "resumed"
 
 
 def test_metadata_that_predates_a_key_is_skipped_not_refused(tmp_path):

@@ -69,8 +69,9 @@ def batches(n, batch_size, seq_len, vocab):
 
 
 # #533's split-state update, the known-bad variant: one jax.jit over the split model and
-# optimizer state, donating params, optimizer state and grads, that merges both and runs
-# the same `opt.update`. Kept here only as the bug this test must see.
+# optimizer state that merges both and runs the same `opt.update`, donating the params
+# together with the optimizer state (the pair #533 narrowed the divergence to). Kept here
+# only as the bug this test must see.
 @functools.partial(jax.jit, static_argnames=("graphdef", "opt_graphdef"),
                    donate_argnames=("params", "opt_state", "grads"))
 def _apply_split_state(graphdef, params, rest, opt_graphdef, opt_state, grads):
@@ -111,12 +112,11 @@ def train(path_kind, build=shipped, config=CONFIG):
         HotPath if path_kind == "hot" else SplitStateHotPath)(model, opt, z_loss_weight=config.Z_LOSS_WEIGHT)
     scalars = []
     for step, batch in enumerate(tokens):
-        opt_step, depth = jnp.array(step // k), model.training_depth(step)
         if hot is None:
-            loss, _, grads, norm = compute_grad_step(model, batch, opt_step, depth, loss_scale=loss_scale,
+            loss, _, grads, norm = compute_grad_step(model, batch, loss_scale=loss_scale,
                                                      clip_norm=clip_norm, z_loss_weight=config.Z_LOSS_WEIGHT)
         else:
-            loss, _, grads, norm = hot.grad_step(batch, opt_step, depth, loss_scale=loss_scale, clip_norm=clip_norm)
+            loss, _, grads, norm = hot.grad_step(batch, loss_scale=loss_scale, clip_norm=clip_norm)
         scalars.append((float(loss), float(norm)))
         assert np.isfinite(scalars[-1]).all(), f"non-finite micro-step {step}: {scalars[-1]}"
         if hot is None:

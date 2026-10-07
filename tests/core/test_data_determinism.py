@@ -40,7 +40,4 @@ def test_same_seed_yields_identical_batch_stream():
                                       rng=np.random.default_rng(CONFIG.DATA_SEED)) for _ in range(2))
 
     for _ in range(4):
-        batch_a, bound_a = gen_a.get_batch(2)
-        batch_b, bound_b = gen_b.get_batch(2)
-        np.testing.assert_array_equal(np.asarray(batch_a), np.asarray(batch_b))
-        np.testing.assert_array_equal(np.asarray(bound_a), np.asarray(bound_b))
+        np.testing.assert_array_equal(np.asarray(gen_a.get_batch(2)), np.asarray(gen_b.get_batch(2)))
