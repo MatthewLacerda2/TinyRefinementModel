@@ -101,12 +101,17 @@ class Block(nnx.Module):
         self.up_proj = nnx.Linear(dim, hidden, rngs=rngs, dtype=dtype)
         self.down_proj = nnx.Linear(hidden, dim, kernel_init=jax.nn.initializers.zeros, rngs=rngs, dtype=dtype)
 
-    def __call__(self, x, pad_bias=None):
+    def __call__(self, x, pad_bias=None, probe=False):
+        """The block's output; with `probe`, also the peak |output| of each branch
+        (attention, MLP), read in the compute dtype before the add (#536): with an f32
+        stream (#357) these f16 matmul outputs are what can still overflow."""
         attn_out = self.attn(self.norm1(x), pad_bias)
         x = x + (self.attn_out_norm(attn_out) if self.post_norm else attn_out)
         h = self.norm2(x)
         mlp_out = self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
         x = x + (self.mlp_out_norm(mlp_out) if self.post_norm else mlp_out)
+        if probe:
+            return x, jnp.stack([jnp.max(jnp.abs(attn_out)), jnp.max(jnp.abs(mlp_out))]).astype(jnp.float32)
         return x
 
 
@@ -148,7 +153,7 @@ class PlainTransformer(nnx.Module):
 
     def _stream(self, tokens, keep_states=False):
         """The residual stream through the stack: (final z, act_max per state,
-        residual RMS per state, states).
+        residual RMS per state, branch output peaks per block [N, 2], states).
 
         One body for both the forward pass and `capture_trajectory`, so what an
         instrument reads is the computation the model actually runs. `states` is
@@ -195,12 +200,14 @@ class PlainTransformer(nnx.Module):
             rmses.append(jnp.sqrt(jnp.mean(jnp.square(state))))
 
         measure(z)
+        branch_peaks = []
         for blk in self.blocks:
-            z = blk(z, pad_bias)
+            z, peaks = blk(z, pad_bias, probe=True)
+            branch_peaks.append(peaks)
             measure(z)
             if keep_states:
                 states.append(z)
-        return z, jnp.stack(maxes), jnp.stack(rmses), states
+        return z, jnp.stack(maxes), jnp.stack(rmses), jnp.stack(branch_peaks), states
 
     def __call__(self, tokens, training=False, logits_at=None):
         """Score `tokens`: pre-head states when `training`, else logits.
@@ -208,13 +215,17 @@ class PlainTransformer(nnx.Module):
         `logits_at` is the generation seam (#206): when it names a position, fill
         `logits` for that position alone, shaped [b, 1, vocab].
         """
-        z, act_maxes, act_rmses, _ = self._stream(tokens)
+        z, act_maxes, act_rmses, branch_peaks, _ = self._stream(tokens)
         z = self.out_norm(z)
         diag = {
             # The scalar every reader since #235 reads, and the #368 alarm watches.
             "act_max": jax.lax.stop_gradient(jnp.max(act_maxes)),
             "act_max_blocks": jax.lax.stop_gradient(act_maxes),
             "act_rms_blocks": jax.lax.stop_gradient(act_rmses),
+            # Each branch's f16 output before the add (#536): what the margin alarm
+            # watches now that the stream itself is f32.
+            "branch_max": jax.lax.stop_gradient(jnp.max(branch_peaks)),
+            "branch_max_blocks": jax.lax.stop_gradient(branch_peaks),
         }
 
         if training:

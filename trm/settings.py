@@ -407,7 +407,8 @@ class Config(BaseSettings):
     # warning of the failure #235 found only after a 10-day run (the champion finished
     # at 65,120 of f16's 65,504), not the failure itself. Whether any of them should
     # stop a run is the owner's call.
-    #   act_max past a quarter of f16's ceiling: a block's output is climbing toward it.
+    #   branch_max (each branch's f16 output, #536; the stream while it is f16) past a
+    #   quarter of f16's ceiling: a block's output is climbing toward it.
     ACT_MAX_ALARM: float = 65504 / 4
     #   the loss scale at or below this: the backward overflows with no scaling left (#199).
     LOSS_SCALE_FLOOR_ALARM: float = 4.0

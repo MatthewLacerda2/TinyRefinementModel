@@ -87,3 +87,20 @@ def test_it_fires_with_headroom_left_rather_than_after_overflow():
 def test_the_champions_final_value_would_have_been_flagged():
     """Stated as the regression it is: this run completed without a single warning."""
     assert row_violations({"step": 30_464, "act_max": 65_120.0})
+
+
+def test_each_branch_output_is_reported_per_block_and_tracks_a_hot_mlp(toy, tokens):
+    """#536: with an f32 stream the f16 risk is a branch's own output before the add,
+    as it was in #235 (block 7's down_proj at 64,896). down_proj starts at zero, so a
+    fresh model's MLP branch reads exactly 0 and a scaled kernel must show up there."""
+    diag = toy(tokens, training=True).diag
+    assert diag["branch_max_blocks"].shape == (3, 2)
+    assert float(diag["branch_max"]) == float(jnp.max(diag["branch_max_blocks"]))
+    assert float(jnp.max(diag["branch_max_blocks"][:, 1])) == 0.0, "zero-init down_proj outputs zero"
+
+    hot = PlainTransformer(32, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=4,
+                           num_layers=3, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+    hot.blocks[1].down_proj.kernel.value = jnp.ones_like(hot.blocks[1].down_proj.kernel.value)
+    peaks = hot(tokens, training=True).diag["branch_max_blocks"]
+    assert float(peaks[1, 1]) > 0.0 and float(peaks[0, 1]) == 0.0 and float(peaks[2, 1]) == 0.0, \
+        "the hot MLP is named by its block"
