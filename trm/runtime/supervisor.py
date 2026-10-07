@@ -99,7 +99,7 @@ class Limits:
     stall_polls: int = 12
     max_retries: int = 2
     max_hours: float | None = None
-    min_free_gb: float = 20.0
+    min_free_gb: float = 12.0
     # Room kept free beyond the next checkpoint write, once the run is going (#190).
     disk_margin_gb: float = 2.0
 

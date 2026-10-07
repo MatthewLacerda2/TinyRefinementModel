@@ -18,8 +18,7 @@ COMPUTE_DTYPE = jnp.float32 if CONFIG.FORCE_F32_COMPUTE else jnp.float16
 # What accumulates stays f32 (CLAUDE.md's dtype rule): the residual stream of the plain
 # stack (Config.RESIDUAL_DTYPE, #357; tests/core/test_adopted_recipe.py holds it), the
 # gradient accumulator and Adam's variance. Not f32, and why: Adam's and Muon's first
-# moments are stored bf16 (trm/train/optimizers.py, #37), and the retired refiner's and
-# reasoner's streams stay COMPUTE_DTYPE, kept only to load their checkpoints as trained.
+# moments are stored bf16 (trm/train/optimizers.py, #37).
 
 # Persistent compilation cache (#204). Every process used to compile from scratch:
 # each supervisor relaunch, test run, smoke and instrument. It makes nothing
@@ -65,13 +64,3 @@ TOKENIZER_NAME = "r50k_base"
 # The document separator prefill writes between documents: r50k_base's end-of-text.
 # Not the pad any more (PAD_TOKEN_ID, #373).
 EOT_TOKEN_ID = 50256
-
-# ── Retired architectures ───────────────────────────────────────────────────────
-# Constants only the refiner and the reasoner read, kept so their checkpoints still
-# load (MODEL_ARCH=refiner / reasoner). None of them shapes the plain model; #292
-# deletes this block, and the retired knobs on Config, once a plain champion exists.
-NUM_BLOCKS = 8     # reasoner
-SHARED_SLOTS = 32  # reasoner
-# The deepest sampled training depth, for the arches that have one: since #316 the
-# trainer asks the model for its depth, and plain answers None.
-MAX_STEPS_LIMIT = 8

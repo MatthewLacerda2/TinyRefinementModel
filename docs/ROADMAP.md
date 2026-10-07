@@ -114,11 +114,28 @@ its PR.
   the tree task the mechanism was designed for, depth 1 already solves every nesting
   level the setup can learn (#246). Full record:
   `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
-  **Not killed:** the mechanism on tasks that need cumulative computation, and
-  `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
+  **Not killed:** the mechanism on tasks that need cumulative computation.
   `experiments/depth/eval_refiner_finetune.py`, the Stage-2 transfer probe this
   answered, removed 2026-09-16 (#321); `experiments/depth/playground.py`, the
   by-eye depth-sweep generator nothing ran any more, removed 2026-09-16 (#314).
+
+- **Zero-initialising the attention output projection (#361)** — not adopted 2026-10-04
+  by the owner, knob `ZERO_INIT_ATTN_OUT` removed with #292's merge. The 512-step pair
+  (PR #538) leads by 1.5 nats at step 8, crosses at ~270 and ends 0.086 val CE worse
+  (3 seeds); its tokens-to-5.85 bar said KEEP only because 5.85 falls in the first
+  quarter of the run (#547). Full record:
+  `docs/findings/2026-10-04-zero-init-attention-output-starts-fast-and-ends-worse.md`.
+
+- **The refiner and the reasoner as code** — removed 2026-10-04 (#292), once a plain
+  base run (`run_20260920_191351`) replaced the 4B refiner champion. Both had stayed
+  only as checkpoint loaders. The reasoner's cross-window hunch was inert from the start
+  (`docs/findings/2026-06-13-cross-window-hunch-inert.md`). Gone with them: the
+  `MODEL_ARCH` selector and every refiner/reasoner knob, the model contract's depth,
+  carried-state and auxiliary-loss hooks (and the data loader's document-boundary flag
+  that fed them), `experiments/depth/` and `experiments/scratchpad/` code (their
+  `specs/` stay as the record their findings cite), the depth-only instruments and
+  their guards, and the six metrics columns only those arches filled. A retired card's
+  weights still load from its SHA-pinned commit.
 
 - **Chunked (blockwise) attention on the live block** — KILLED 2026-08-03, apparatus
   removed 2026-09-15 (#291). Measured on the card against stock

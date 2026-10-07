@@ -48,7 +48,7 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
-    parser = argparse.ArgumentParser(description="Train the model MODEL_ARCH selects (plain by default)")
+    parser = argparse.ArgumentParser(description="Train the model")
     parser.add_argument("--new-run", action="store_true", help="Force starting a brand new training run from scratch (ignores existing checkpoints)")
     parser.add_argument("--checkpoint-path", type=str, default=None, help="Custom folder for Orbax checkpoints")
     args = parser.parse_args()

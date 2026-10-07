@@ -28,7 +28,6 @@ import trm.train.trainer as trainer_mod
 from trm.train import validation
 
 from trm.runtime import restore
-from experiments.depth import eval_refiner_transfer as depth_transfer
 from trm.train.trainer import samples_from_micro_steps, split_samples
 
 
@@ -54,7 +53,7 @@ class _FakeGen:
         self.calls.append(batch_size)
         rows = np.arange(self._n, self._n + batch_size).reshape(batch_size, 1)
         self._n += batch_size
-        return rows, np.zeros((batch_size,), dtype=bool)
+        return rows
 
 
 def test_eval_loaders_read_one_row_at_a_time():
@@ -66,13 +65,12 @@ def test_eval_loaders_read_one_row_at_a_time():
         # One shared reader (#319): the trainer's probe and the offline tools cannot drift.
         assert "read_heldout_rows(" in inspect.getsource(loader), \
             f"{loader.__qualname__} must read through validation.read_heldout_rows"
-    for loader in (validation.read_heldout_rows, depth_transfer.load_domain_batches):
-        src = inspect.getsource(loader)
-        assert "get_batch(1)" in src, (
-            f"{loader.__qualname__} must read one row per call; a get_batch(BATCH_SIZE) "
-            "read would resize the eval slice when the throughput knob moves."
-        )
-        assert "get_batch(BATCH_SIZE)" not in src
+    src = inspect.getsource(validation.read_heldout_rows)
+    assert "get_batch(1)" in src, (
+        "read_heldout_rows must read one row per call; a get_batch(BATCH_SIZE) "
+        "read would resize the eval slice when the throughput knob moves."
+    )
+    assert "get_batch(BATCH_SIZE)" not in src
 
 
 def test_eval_probe_collects_exactly_eval_rows():
@@ -81,18 +79,10 @@ def test_eval_probe_collects_exactly_eval_rows():
     gen = _FakeGen()
     batches = []
     while len(batches) < CONFIG.EVAL_ROWS:
-        row, _ = gen.get_batch(1)
+        row = gen.get_batch(1)
         batches.append(row)
     assert gen.calls == [1] * CONFIG.EVAL_ROWS
     assert all(b.shape[0] == 1 for b in batches)
-
-
-def test_eval_batch_size_is_pinned_independent_of_training_batch():
-    """Eval builds the reasoner skeleton at batch 1 regardless of BATCH_SIZE:
-    its hunch_cache is shaped [batch, slots, dim] and every checkpoint we hold
-    was written when BATCH_SIZE was 1. Tying this to the training knob would
-    make stored checkpoints unrestorable."""
-    assert restore.EVAL_BATCH_SIZE == 1
 
 
 WEIGHTS = [0.5, 0.3, 0.2]

@@ -13,11 +13,11 @@ from trm.runtime.resume_state import ResumeState
 
 # The three shapes on disk when #477 landed, one real checkpoint's state each
 # (ce_history shortened, data_state cut to its keys' types).
-PRE_24 = {  # the refiner champion: before samples_seen, still with the SFT phase fields
+PRE_24 = {  # the 4B champion: before samples_seen, still with the SFT phase fields
     "ce_history": [4.71, 4.70], "best_ce": 4.52, "best_loss": 4.60, "best_avg_ce": 4.70,
     "last_improvement_step": 2176, "run_id": "run_20260705_120000",
     "sft_active": False, "sft_start_step": None}
-PRE_222 = {**PRE_24, "samples_seen": 3899392}  # the 4B refiner base: no best_val_ce, no data_state
+PRE_222 = {**PRE_24, "samples_seen": 3899392}  # the 4B base: no best_val_ce, no data_state
 CURRENT = {  # the live plain base run
     "ce_history": [3.41, 3.40, 3.40, 3.39], "best_ce": 3.12, "best_loss": 3.20,
     "best_avg_ce": 3.39, "best_val_ce": 3.38, "last_improvement_step": 19072,

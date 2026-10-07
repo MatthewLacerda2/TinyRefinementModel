@@ -6,7 +6,7 @@ emit one machine-readable line per measurement:
 
     RESULT {"point": "d8", "acc": 0.7123, "ce": 0.8310}
 
-`point` names the sweep point — whatever axis the harness is walking (a depth, a
+`point` names the sweep point — whatever axis the harness is walking (an LR, a
 K, a task size). Everything else is a metric; the spec says which one is judged.
 
 Deliberately *not* in the line: the arm and the seed. The runner launched the

@@ -2,8 +2,9 @@
 
 The reconstruction itself (worktree, venv build, GPU eval) is validated by hand on
 the card; these pin the decisions that must never silently go wrong — above all that
-the arch resolver *refuses to guess* (a wrong arch corrupts the restore) and that the
-metric it compares against is read correctly.
+a pre-#292 world is handed its run's own MODEL_ARCH and the resolver *refuses to guess*
+(a wrong arch corrupts the restore), and that the metric it compares against is read
+correctly.
 """
 
 import json
@@ -49,9 +50,21 @@ def test_resolve_arch_reads_legacy_arm_marker(runs):
 
 def test_resolve_arch_refuses_to_guess(runs):
     # No metadata arch, no snapshot: must return None so the caller demands --arch
-    # rather than defaulting and rebuilding the wrong (incompatible) skeleton.
+    # from a world that selects one, rather than rebuilding the wrong skeleton.
     _make_run(runs, "r", meta={"parameters": {}})
     assert tm.resolve_arch("r", tm.load_meta("r")) is None
+
+
+def test_only_a_world_that_reads_model_arch_needs_a_selector(tmp_path):
+    """A pre-#292 world chooses its skeleton by MODEL_ARCH; a world from #292 on has
+    one model, so a run that recorded none is revived without one."""
+    old, new = tmp_path / "old", tmp_path / "new"
+    (old / "trm").mkdir(parents=True)
+    (new / "trm").mkdir(parents=True)
+    (old / "trm" / "settings.py").write_text('MODEL_ARCH: str = "plain"\n')
+    (new / "trm" / "settings.py").write_text("PLAIN_LAYERS: int = 8\n")
+    assert tm.world_selects_arch(str(old))
+    assert not tm.world_selects_arch(str(new))
 
 
 def test_recorded_val_ces_are_the_finite_rows_by_opt_step(runs):

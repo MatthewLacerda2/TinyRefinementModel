@@ -45,10 +45,9 @@ def _trajectory(config):
     opt = nnx.Optimizer(model, optimizer_chain(config, lambda step: 1e-3), wrt=nnx.Param)
     rng = np.random.default_rng(5)
     losses, norms = [], []
-    for i in range(STEPS):
+    for _ in range(STEPS):
         batch = jnp.array(rng.integers(1, 97, size=(2, 2 * WINDOW + 1)), dtype=jnp.int32)
-        loss, _, grads, norm = compute_grad_step(model, batch, jnp.array(i // config.ACCUMULATION_STEPS), None,
-                                                 z_loss_weight=config.Z_LOSS_WEIGHT)
+        loss, _, grads, norm = compute_grad_step(model, batch, z_loss_weight=config.Z_LOSS_WEIGHT)
         apply_grads(opt, grads, model)
         losses.append(float(loss))
         norms.append(float(norm))

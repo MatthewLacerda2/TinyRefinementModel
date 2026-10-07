@@ -39,7 +39,7 @@ def _mixer(tmp_path):
 @pytest.mark.parametrize("cut", [1, 5, 9, 13])  # mid-file, at and past file ends
 def test_a_restored_mixer_serves_the_rows_an_uninterrupted_one_would(tmp_path, cut):
     reference = _mixer(tmp_path)
-    expected = [reference.get_batch(1)[0] for _ in range(18)]
+    expected = [reference.get_batch(1) for _ in range(18)]
 
     first = _mixer(tmp_path)
     for _ in range(cut):
@@ -50,7 +50,7 @@ def test_a_restored_mixer_serves_the_rows_an_uninterrupted_one_would(tmp_path, c
     resumed = _mixer(tmp_path)
     resumed.load_state(snapshot)
     for want in expected[cut:]:
-        got = resumed.get_batch(1)[0]
+        got = resumed.get_batch(1)
         if want is None:
             assert got is None
             break

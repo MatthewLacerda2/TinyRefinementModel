@@ -20,7 +20,7 @@ Three defects in the previous version, all of which made old transcripts unusabl
    path refuses to start next to a busy card.
 
 3. **It recorded almost nothing.** Step, and a timestamp. Not the token count, the
-   CE at the time, the depth, the device, or either of the two commits that matter
+   CE at the time, the device, or either of the two commits that matter
    (the one that trained the weights and the one generating the transcript).
 
 And a fourth, subtler one: it hardcoded `temperature=0.5`, which #192 identified as
@@ -77,10 +77,6 @@ PROMPTS = [
     "Once upon a time, in a small village,",       # long-range coherence, no factual anchor
     "and God said let there be the light",         # memorised scripture, archaic register
 ]
-
-# The live arch has no depth dial. A looped arch (kept to load the 4B champion) is
-# served at the Config's INFERENCE_DEPTH, and its entries record that depth.
-DEPTHLESS_ARCHES = frozenset({"plain"})
 
 DEFAULT_SEED = 42
 REPETITION_NGRAM = 4
@@ -288,7 +284,7 @@ def main(argv=None):
     for index, prompt in enumerate(prompts):
         started = datetime.datetime.now()
         tokens = generate_text(model, enc, prompt, max_new_tokens=args.max_new_tokens,
-                               temperature=temperature, depth=CONFIG.INFERENCE_DEPTH, seed=args.seed,
+                               temperature=temperature, seed=args.seed,
                                quiet=True)
         elapsed = (datetime.datetime.now() - started).total_seconds()
         new_tokens = tokens[len(enc.encode(prompt)):]
@@ -318,14 +314,10 @@ def main(argv=None):
         "tokens": opt_step * CONFIG.TOKENS_PER_OPT_STEP,
         "train_ce": None if train_ce is None else round(train_ce, 4),
         "val_ce": None if val_ce is None else round(val_ce, 4),
-        # Only a looped arch has a depth to record (None is omitted from the frontmatter).
-        "depth": None if CONFIG.MODEL_ARCH in DEPTHLESS_ARCHES else CONFIG.INFERENCE_DEPTH,
-        "val_ce_depth": None if CONFIG.MODEL_ARCH in DEPTHLESS_ARCHES else _val_depth(),
         "device": args.device,
         "seed": args.seed,
         "temperature": temperature,
         "max_new_tokens": args.max_new_tokens,
-        "model_arch": CONFIG.MODEL_ARCH,
         "model_commit": model_commit,
         "model_commit_dirty": model_dirty,
         "tool_commit": tool_commit,
@@ -340,16 +332,6 @@ def main(argv=None):
         handle.write(render_document(fields, results))
     print(f"\n✨ {out_path}")
     announce_written(out_path)
-
-
-def _val_depth():
-    """VAL_FIXED_DEPTH, recorded beside the serving depth for a looped arch: val_ce is
-    measured there, and one `depth:` key would claim the CE and the text share it."""
-    try:
-        from trm.train.validation import VAL_FIXED_DEPTH
-        return VAL_FIXED_DEPTH
-    except ImportError:
-        return None
 
 
 def render_document(fields, results):

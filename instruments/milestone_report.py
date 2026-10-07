@@ -3,18 +3,12 @@
 Convenience layer over the tools we already have; it adds no new instrumentation.
 Against the latest (or a given) checkpoint it runs, in order:
 
-  1. Depth curve — experiments.depth.eval_refiner_transfer (depth-swept held-out CE
-     by domain). Refiner only: the reasoner's depth acted solely through the
-     cross-window hunch, which was measured once and found inert
-     (docs/findings/2026-06-13-cross-window-hunch-inert.md), and its probe was
-     deleted with that line's apparatus.
-  2. Fixed-prompt transcripts — instruments.dump_transcripts (the systematized vibes eval)
-  3. Held-out validation CE — trm.train.validation.ValidationProbe, the same fixed
-     rows and depth the training loop scores, so the number is comparable to the
-     run's curve.
+  1. Fixed-prompt transcripts — instruments.dump_transcripts (the systematized vibes eval)
+  2. Held-out validation CE — trm.train.validation.ValidationProbe, the same fixed
+     rows the training loop scores, so the number is comparable to the run's curve.
 
-Sections 1–2 run as subprocesses (each tool is CLI-shaped, and isolation means one
-crash costs one section, not the report); section 3 runs in-process, last, so this
+Section 1 runs as a subprocess (the tool is CLI-shaped, and isolation means one
+crash costs one section, not the report); section 2 runs in-process, last, so this
 process holds no accelerator memory while the children run. A failed section is
 reported as FAILED with its error and the rest keep going.
 
@@ -79,23 +73,6 @@ def run_section(title, fn):
     return {"title": title, "status": status, "elapsed": time.time() - start, "body": body}
 
 
-def section_depth_curve(arch, fwd_args, batches, timeout):
-    if arch == "plain":
-        return "no depth diagnostic for plain: it has no depth dial, so there is no curve to sweep."
-    if arch != "refiner":
-        # The reasoner's only depth pathway was the cross-window hunch, and the
-        # probe that measured it died with the tombstone it produced (rule 6 —
-        # the finding survives the harness). The reasoner is kept as a frozen
-        # control, not as a subject of depth investigation, so there is nothing
-        # here to sweep.
-        return ("no depth diagnostic for the reasoner: its depth acted only through the "
-                "cross-window hunch, measured once and found inert "
-                "(docs/findings/2026-06-13-cross-window-hunch-inert.md). The probe was "
-                "removed with the rest of that line's apparatus.")
-    batch_args = [] if batches is None else ["--batches", str(batches)]
-    return run_tool("experiments.depth.eval_refiner_transfer", [*fwd_args, *batch_args], timeout)
-
-
 def section_transcripts(fwd_args, quick_args, timeout):
     """Run dump_transcripts and embed the transcript file it wrote, found through its
     contract line (`dump_transcripts.written_transcript`), not its human output. The old
@@ -116,7 +93,7 @@ def section_val_ce(checkpoint_path):
     from trm.config import resolve_root
     from trm.runtime.restore import restore_model
     from trm.settings import CONFIG
-    from trm.train.validation import VAL_FIXED_DEPTH, ValidationProbe
+    from trm.train.validation import ValidationProbe
 
     data_root = os.environ.get("DATA_ROOT", "")
     if not data_root:
@@ -127,7 +104,7 @@ def section_val_ce(checkpoint_path):
     if val_ce is None:
         return f"no held-out validation data under {data_root}"
     return (f"validation CE: {val_ce:.4f} nats "
-            f"(fixed depth {VAL_FIXED_DEPTH}, {probe.rows} rows, "
+            f"({probe.rows} rows, "
             f"skip {probe.skip:,} — same probe the training loop logs)")
 
 
@@ -137,14 +114,13 @@ def main(argv=None):
     parser.add_argument("--out", default=None,
                         help="report path (default: <run dir>/milestone_report_step_<n>.md)")
     parser.add_argument("--quick", action="store_true",
-                        help="tiny settings (2 batches, the first 2 standard prompts, 32 new tokens) "
+                        help="tiny settings (the first 2 standard prompts, 32 new tokens) "
                              "for a fast smoke pass")
     parser.add_argument("--section-timeout", type=float, default=None,
                         help="seconds before a diagnostic subprocess is killed (default: none)")
     args = parser.parse_args(argv)
 
     # Heavy imports after arg parsing so --help stays instant.
-    from trm.settings import CONFIG
     from trm.runtime.checkpoints import discover_latest_checkpoint_run
     import orbax.checkpoint as ocp
 
@@ -165,17 +141,14 @@ def main(argv=None):
     step = ocp.CheckpointManager(checkpoint_path, item_names=CHECKPOINT_ITEMS).latest_step()
     if step is None:
         raise SystemExit(f"No checkpoint found under {checkpoint_path}.")
-    print(f"📋 Milestone report: {source}, step {step}, arch '{CONFIG.MODEL_ARCH}'")
+    print(f"📋 Milestone report: {source}, step {step}")
 
     # Forward the checkpoint only when the user overrode it; otherwise each tool
     # self-discovers the same latest run (and keeps its own output placement).
     fwd_args = ["--checkpoint-path", checkpoint_path] if args.checkpoint_path else []
-    batches = 2 if args.quick else None
     transcript_args = list(QUICK_TRANSCRIPT_ARGS) if args.quick else []
 
     sections = [
-        run_section("Depth curve", lambda: section_depth_curve(
-            CONFIG.MODEL_ARCH, fwd_args, batches, args.section_timeout)),
         run_section("Fixed-prompt transcripts", lambda: section_transcripts(
             fwd_args, transcript_args, args.section_timeout)),
         run_section("Held-out validation CE", lambda: section_val_ce(checkpoint_path)),
@@ -185,7 +158,6 @@ def main(argv=None):
         f"# Milestone report — checkpoint step {step}",
         "",
         f"- generated: {datetime.datetime.now().astimezone().isoformat()}",
-        f"- arch: {CONFIG.MODEL_ARCH}",
         f"- checkpoint: {checkpoint_path}",
         f"- commit: {git_head() or 'unknown'}",
         "",
