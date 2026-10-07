@@ -104,6 +104,28 @@ def last_step(metrics_csv: pathlib.Path) -> int:
         return 0
 
 
+def prepare_resume(run_dir: pathlib.Path, accumulation_steps: int) -> str | None:
+    """Make an interrupted arm resumable before relaunching it (#554).
+
+    The trainer resumes from the newest rolling checkpoint, but a stop leaves best-CE
+    checkpoints newer than it, and orbax refuses to save under a newer step — the arm
+    dies at its first new best. So set aside everything newer than the resume point,
+    as `python -m trm.runtime.rewind` would. With no rolling checkpoint the arm starts
+    over, so the whole run folder is set aside. Returns what was done, or None."""
+    from trm.runtime.rewind import SET_ASIDE_PREFIX, checkpoints_in, rewind
+
+    ckpt_dir = run_dir / "checkpoints"
+    if not run_dir.exists():
+        return None
+    rolling = checkpoints_in(ckpt_dir, accumulation_steps)
+    if rolling:
+        chosen, moved = rewind(ckpt_dir, rolling[-1].opt_step, accumulation_steps)
+        return f"resuming at opt step {chosen.opt_step}; set aside {len(moved)} newer checkpoint(s)" if moved else None
+    shelf = run_dir.with_name(f"{run_dir.name}.{SET_ASIDE_PREFIX}{time.strftime('%Y%m%d_%H%M%S')}")
+    run_dir.rename(shelf)
+    return f"no resume point: the interrupted run is set aside as {shelf.name}; starting over"
+
+
 def parse_knobs(pairs):
     """{KNOB: value} from --set KNOB=VALUE, refusing any name that is not a knob (a
     field of trm.settings.Config): the env var would be read by nothing, and the arm
@@ -190,6 +212,9 @@ def main(argv=None) -> int:
     env.update(knobs)
 
     if last_step(metrics) < args.opt_steps:
+        accumulation = (CONFIG.model_copy(update={"BATCH_SIZE": args.batch}) if args.batch else CONFIG).ACCUMULATION_STEPS
+        if note := prepare_resume(run_dir, accumulation):
+            print(f"{name}: {note}", flush=True)
         run_dir.mkdir(parents=True, exist_ok=True)
         log = (run_dir / "train.log").open("a")
         proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
