@@ -50,3 +50,13 @@ def test_an_alarm_is_announced_once_when_it_appears_and_once_when_it_clears():
 
     cleared = margin_changes(raised, margin_alarms(HEALTHY))
     assert len(cleared) == 1 and cleared[0].startswith("margin cleared: act_max")
+
+
+def test_with_a_branch_column_the_alarm_reads_the_branches_and_not_an_f32_stream():
+    """#536: once the stream is f32 (#357) it cannot overflow at 65,504; each branch's
+    f16 output can. An older run with no branch column is still read on its stream."""
+    assert kinds({**HEALTHY, "branch_max": "20000"}) == ["branch_max"]
+    assert kinds({**HEALTHY, "branch_max": "300", "act_max": "20000"}) == [], "an f32 stream is not an f16 margin"
+    f16_stream = Config.from_env({"RESIDUAL_DTYPE": "float16"})
+    assert [k for k, _ in margin_alarms_against(f16_stream, {**HEALTHY, "branch_max": "300", "act_max": "20000"})] \
+        == ["act_max"], "an f16 stream is still watched"

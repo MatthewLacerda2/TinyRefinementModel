@@ -64,18 +64,20 @@ def residual_blocks(model):
 
 
 def block_headroom(model, tokens):
-    """Peak |activation| after each traced block, and the f16 headroom it leaves.
+    """Peak |activation| in each traced block, and the f16 headroom it leaves.
 
     Reported per block because #235's growth was not gradual: six blocks behaved
     identically on both corpora and the seventh multiplied by ~794. A single
     end-of-stack number says a run is unsafe; the per-block trace says where.
+    A block's peak is the larger of its stream output and its two branch outputs
+    (#536): with an f32 stream (#357) the branches are what runs in f16.
     """
     pad_bias = (((tokens != model.pad_token_id).astype(jnp.float32) - 1.0) * 1e9)[:, None, None, :]
     z = model.embed(tokens)
     peaks = []
     for blk in residual_blocks(model):
-        z = blk(z, pad_bias)
-        peaks.append(float(jnp.max(jnp.abs(z.astype(jnp.float32)))))
+        z, branches = blk(z, pad_bias, probe=True)
+        peaks.append(max(float(jnp.max(jnp.abs(z.astype(jnp.float32)))), float(jnp.max(branches))))
     worst = max(peaks)
     return peaks, worst, 1.0 - worst / F16_MAX
 

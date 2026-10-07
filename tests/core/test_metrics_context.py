@@ -194,3 +194,20 @@ def test_per_block_readings_go_to_blocks_csv_one_row_per_state(tmp_path):
     MetricsLogger(str(other / "metrics.csv")).log(10, 3.2, 3.3, SimpleNamespace(diag={}), 0.1,
                                                    seg1_ce=3.0)
     assert not (other / "blocks.csv").exists()
+
+
+def test_blocks_csv_carries_each_blocks_branch_outputs_and_widens_an_old_file(tmp_path):
+    """#536: row k > 0 is the stream after block k and carries block k's two branch
+    peaks; row 0, the embedding, has none. A blocks.csv from before the columns
+    existed gains them on resume, its old rows left blank."""
+    old = tmp_path / "blocks.csv"
+    old.write_text("step,block,act_max,act_rms\n5,0,1.00,0.0100\n")
+    logger = MetricsLogger(str(tmp_path / "metrics.csv"), start_opt_step=10)
+    diag = {"act_max_blocks": jnp.array([1.5, 20.0, 45.0]), "act_rms_blocks": jnp.array([0.02, 0.9, 1.4]),
+            "branch_max_blocks": jnp.array([[3.0, 4.0], [5.0, 6.5]])}
+    logger.log(10, 3.2, 3.3, SimpleNamespace(diag=diag), 0.1, seg1_ce=3.0)
+    with open(old, newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [(r["step"], r["attn_out_max"], r["mlp_out_max"]) for r in rows] == [
+        ("5", "", ""), ("10", "", ""), ("10", "3.00", "4.00"), ("10", "5.00", "6.50")]
+

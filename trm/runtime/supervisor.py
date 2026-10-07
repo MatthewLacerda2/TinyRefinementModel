@@ -490,8 +490,16 @@ def margin_alarms(config: Config, row: dict) -> tuple:
     log (older runs, CPU) is simply not checked.
     """
     alarms = []
+    # The f16 quantities: each branch's output before the add (#536), and the stream
+    # itself only while it is f16 (#357 made it f32). An older run without the
+    # branch column is read on its stream, as before.
+    branch = _number(row, "branch_max")
+    if branch is not None and branch > config.ACT_MAX_ALARM:
+        alarms.append(("branch_max", f"branch_max {branch:,.0f} > {config.ACT_MAX_ALARM:,.0f} "
+                                     f"(a quarter of f16's 65,504)"))
     act = _number(row, "act_max")
-    if act is not None and act > config.ACT_MAX_ALARM:
+    stream_is_f16 = branch is None or config.RESIDUAL_DTYPE == "float16"
+    if stream_is_f16 and act is not None and act > config.ACT_MAX_ALARM:
         alarms.append(("act_max", f"act_max {act:,.0f} > {config.ACT_MAX_ALARM:,.0f} (a quarter of f16's 65,504)"))
     scale = _number(row, "loss_scale")
     if scale is not None and scale <= config.LOSS_SCALE_FLOOR_ALARM:

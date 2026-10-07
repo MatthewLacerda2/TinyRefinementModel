@@ -51,6 +51,9 @@ COLUMNS = (
     # weeks later, by hand (#235). It then sat in the header from #252 on and was
     # never written, because the header and the row were two separate lists.
     Column("act_max", 1, diag="act_max"),
+    # Peak |output| of any branch (attention or MLP) in the compute dtype, before the
+    # add (#536). With the stream f32 (#357), this is the f16 margin the alarm reads.
+    Column("branch_max", 1, diag="branch_max"),
     Column("val_ce", 4),
     # The opt step the probe measured val_ce at (#351). The value is written on the
     # next logged row, up to LOG_REAL_STEPS - 1 steps later, so the row's own `step`
@@ -116,7 +119,9 @@ def _arena_limit_mib():
 # per (step, state), because the number of states follows PLAIN_LAYERS and a fixed
 # metrics schema cannot. State 0 is the embedding, state k the stream after block k.
 BLOCKS_FILENAME = "blocks.csv"
-BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms")
+# attn_out_max / mlp_out_max (#536): block k's two branch outputs before the add;
+# empty on row 0, the embedding, which has no branches.
+BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms", "attn_out_max", "mlp_out_max")
 
 
 def blocks_file_for(history_file):
@@ -174,12 +179,16 @@ class MetricsLogger:
             if not fs.exists(path) or fs.size(path) == 0:
                 return
             with fsspec.open(self.blocks_file, "r", newline="") as f:
-                rows = list(csv.DictReader(f))
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                old_fields = list(reader.fieldnames or [])
             kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
-            if len(kept) == len(rows):
+            # Widened like metrics.csv: a file from before a column existed gains it.
+            fields = old_fields + [c for c in BLOCKS_FIELDS if c not in old_fields]
+            if len(kept) == len(rows) and fields == old_fields:
                 return
             with fsspec.open(self.blocks_file, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=BLOCKS_FIELDS, extrasaction="ignore")
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore", restval="")
                 writer.writeheader()
                 writer.writerows(kept)
         except (OSError, ValueError, KeyError) as e:
@@ -192,14 +201,20 @@ class MetricsLogger:
             return
         maxes = [float(v) for v in jnp.ravel(diag["act_max_blocks"])]
         rmses = [float(v) for v in jnp.ravel(diag["act_rms_blocks"])]
+        # Row k > 0 is the stream after block k, so it carries block k's two branches;
+        # row 0 (the embedding) has none.
+        branches = [("", "")] * len(maxes)
+        if "branch_max_blocks" in diag:
+            branches[1:] = [(f"{attn:.2f}", f"{mlp:.2f}")
+                            for attn, mlp in jnp.reshape(diag["branch_max_blocks"], (-1, 2)).tolist()]
         fs, path = fsspec.core.url_to_fs(self.blocks_file)
         fresh = not fs.exists(path) or fs.size(path) == 0
         with fsspec.open(self.blocks_file, "a", newline="") as f:
             writer = csv.writer(f)
             if fresh:
                 writer.writerow(BLOCKS_FIELDS)
-            for block, (peak, rms) in enumerate(zip(maxes, rmses)):
-                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}"])
+            for block, (peak, rms, (attn, mlp)) in enumerate(zip(maxes, rmses, branches)):
+                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}", attn, mlp])
 
     def extract_diags(self, diag, jnp_mean_fn):
         """Reduces the diagnostics this model reported to plain floats. Keys the
