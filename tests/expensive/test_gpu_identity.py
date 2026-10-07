@@ -34,6 +34,10 @@ import os
 # runs in one process must fit as the trainer's one does.
 os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "cuda_async")
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
+# Bitwise identity needs deterministic kernels: by default the embedding's backward
+# scatter-adds with atomics, and the reference differed from itself in exactly the
+# embedding's gradient, moments and weights (#540's first card run).
+os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_deterministic_ops=true").strip()
 
 import jax
 import jax.numpy as jnp
@@ -41,6 +45,7 @@ import numpy as np
 import pytest
 from flax import nnx
 
+from trm.config import VOCAB_SIZE
 from trm.settings import CONFIG
 from trm.train.grad_step import HotPath, apply_grads, compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
@@ -104,7 +109,7 @@ def train(path_kind, build=shipped, config=CONFIG):
     """One run from a fresh build: per-micro-step (loss, grad norm) and the final fingerprint."""
     model, opt = build()
     k = config.ACCUMULATION_STEPS
-    tokens = batches(UPDATES * k + min(3, k - 1), config.BATCH_SIZE, config.MAX_SEQ_LEN, config.VOCAB_SIZE)
+    tokens = batches(UPDATES * k + min(3, k - 1), config.BATCH_SIZE, config.MAX_SEQ_LEN, VOCAB_SIZE)
     # The trainer's first-step arguments: its loss scale, no clip ceiling yet.
     loss_scale = jnp.float32(DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL).value)
     clip_norm = jnp.float32(jnp.inf)
