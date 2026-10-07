@@ -96,33 +96,38 @@ def test_metadata_that_predates_a_key_is_skipped_not_refused(tmp_path):
 # --- a recipe default that moved since the run started is refused, not adopted (#535) ---
 
 
-def test_a_recipe_default_that_moved_refuses_and_names_the_knob(tmp_path, monkeypatch):
-    import pytest
-    monkeypatch.delenv("ADAM_B2", raising=False)
+def _resume_as(tmp_path, config, **recorded):
+    """_resume_with, but resolving the launch's Config as `config` (its model_fields_set
+    is what the launch asked for)."""
+    params = {**RunTracker.get_hyperparameters(CONFIG), **recorded}
     path = tmp_path / "run_metadata.json"
-    path.write_text(json.dumps({"parameters": {**RunTracker.get_hyperparameters(CONFIG),
-                                               "ADAM_B2": CONFIG.ADAM_B2 + 0.01}}))
-    with pytest.raises(SystemExit) as refused:
-        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(str(path))
-    assert "ADAM_B2" in refused.value.code and "on purpose" in refused.value.code
+    path.write_text(json.dumps({"parameters": {k: v for k, v in params.items() if v is not None}}))
+    try:
+        RunTracker(config, runs_root=str(tmp_path))._check_compatibility(str(path))
+    except SystemExit as refused:
+        return "refused: " + str(refused.code)
+    return "resumed"
 
 
-def test_a_recipe_knob_set_in_the_environment_resumes_on_purpose(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("ADAM_B2", str(CONFIG.ADAM_B2))
-    assert _resume_with(tmp_path, ADAM_B2=CONFIG.ADAM_B2 + 0.01) == "resumed"
+def test_a_recipe_default_that_moved_refuses_and_names_the_knob(tmp_path):
+    outcome = _resume_as(tmp_path, CONFIG, ADAM_B2=CONFIG.ADAM_B2 + 0.01)
+    assert outcome.startswith("refused") and "ADAM_B2" in outcome and "on purpose" in outcome
+
+
+def test_a_recipe_knob_set_for_the_launch_resumes_on_purpose(tmp_path, capsys):
+    asked = CONFIG.model_copy(update={"ADAM_B2": CONFIG.ADAM_B2})
+    assert _resume_as(tmp_path, asked, ADAM_B2=CONFIG.ADAM_B2 + 0.01) == "resumed"
     assert "changed on purpose" in capsys.readouterr().out
 
 
-def test_a_derived_value_follows_the_knob_it_comes_from(tmp_path, monkeypatch):
-    monkeypatch.delenv("TRAIN_TOKEN_BUDGET", raising=False)
-    assert _resume_with(tmp_path, DECAY_STEPS=1) == "refused"
-    monkeypatch.setenv("TRAIN_TOKEN_BUDGET", "1000000")
-    assert _resume_with(tmp_path, DECAY_STEPS=1) == "resumed"
+def test_a_derived_value_follows_the_knob_it_comes_from(tmp_path):
+    assert _resume_as(tmp_path, CONFIG, DECAY_STEPS=1).startswith("refused")
+    assert _resume_as(tmp_path, CONFIG.model_copy(update={"TRAIN_TOKEN_BUDGET": CONFIG.TRAIN_TOKEN_BUDGET}), DECAY_STEPS=1) == "resumed"
 
 
-def test_the_tree_never_changes_even_when_asked(tmp_path, monkeypatch):
-    monkeypatch.setenv("PLAIN_LAYERS", str(CONFIG.PLAIN_LAYERS + 1))
-    assert _resume_with(tmp_path, PLAIN_LAYERS=CONFIG.PLAIN_LAYERS + 1) == "refused"
+def test_the_tree_never_changes_even_when_asked(tmp_path):
+    asked = CONFIG.model_copy(update={"PLAIN_LAYERS": CONFIG.PLAIN_LAYERS})
+    assert _resume_as(tmp_path, asked, PLAIN_LAYERS=CONFIG.PLAIN_LAYERS + 1).startswith("refused")
 
 
 def test_a_knob_the_code_no_longer_has_is_skipped(tmp_path):

@@ -163,10 +163,11 @@ class RunTracker:
             # A key the run's metadata predates (or that no longer exists) is skipped.
             changed = [k for k in old_params.keys() & current_params.keys() if old_params[k] != current_params[k]]
             # The param tree can never change. A recipe knob may, but only on purpose:
-            # set in the relaunch's environment. A default that moved in the checked-out
-            # code since the run started would otherwise change the run silently (#535).
-            asked = {k for k in changed if k in os.environ
-                     or any(src in os.environ for src in DERIVED_FROM.get(k, ()))}
+            # set for this launch (Config.model_fields_set: the knobs the environment
+            # gave). A default that moved in the checked-out code since the run started
+            # would otherwise change the run silently (#535).
+            set_now = self.config.model_fields_set
+            asked = {k for k in changed if k in set_now or set_now.intersection(DERIVED_FROM.get(k, ()))}
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
                 + ("" if k in TREE_KEYS else " (a recipe default moved; set it in the environment to keep or change it on purpose)")
