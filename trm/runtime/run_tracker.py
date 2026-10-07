@@ -12,6 +12,11 @@ from trm.train.schedules import Schedules
 # cannot load its checkpoint, or loads it into a different network whose tree happens
 # to match.
 TREE_KEYS = ("LATENT_DIM", "VOCAB_SIZE", "NUM_HEADS", "MAX_SEQ_LEN", "PLAIN_LAYERS", "POST_NORM")
+# Recorded values computed from knobs, not knobs themselves: one may differ on a resume
+# only because the knob it comes from was set on purpose (#535).
+DERIVED_FROM = {"ACCUMULATION_STEPS": ("BATCH_SIZE",), "TOKENS_PER_OPT_STEP": ("BATCH_SIZE",),
+                "DECAY_STEPS": ("TRAIN_TOKEN_BUDGET", "LR_SCHEDULE", "WSD_DECAY_START"),
+                "CURRICULUM_STEPS": ("TRAIN_TOKEN_BUDGET",)}
 
 class RunTracker:
     """A run's folder and its run_metadata.json. `config` is the run's Config, the one
@@ -153,12 +158,23 @@ class RunTracker:
             old_params = old_meta.get("parameters", {})
             current_params = self.get_hyperparameters(self.config)
 
-            # A key the run's metadata predates is skipped, not refused.
+            # Compared as recorded: through JSON, so a tuple and its list are equal.
+            current_params = json.loads(json.dumps(current_params))
+            # A key the run's metadata predates (or that no longer exists) is skipped.
+            changed = [k for k in old_params.keys() & current_params.keys() if old_params[k] != current_params[k]]
+            # The param tree can never change. A recipe knob may, but only on purpose:
+            # set in the relaunch's environment. A default that moved in the checked-out
+            # code since the run started would otherwise change the run silently (#535).
+            asked = {k for k in changed if k in os.environ
+                     or any(src in os.environ for src in DERIVED_FROM.get(k, ()))}
             mismatches = [
                 f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                for k in TREE_KEYS
-                if k in old_params and old_params[k] != current_params[k]
+                + ("" if k in TREE_KEYS else " (a recipe default moved; set it in the environment to keep or change it on purpose)")
+                for k in sorted(changed) if k in TREE_KEYS or k not in asked
             ]
+            if asked and not mismatches:
+                print("⚠️ Resuming with knobs changed on purpose (set in the environment): "
+                      + ", ".join(f"{k} {old_params[k]} -> {current_params[k]}" for k in sorted(asked)))
 
             if mismatches:
                 # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
