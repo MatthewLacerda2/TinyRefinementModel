@@ -95,6 +95,7 @@ points = ["run"]
 require = "all"
 
 [verdict]
+recorded = "INCONCLUSIVE"
 keep_if = ["post_norm_needs_fewer_tokens"]
 kill_if = ["post_norm_needs_more_tokens"]
 
@@ -108,3 +109,11 @@ the act_max reduction alone is not worth a default while the stream is f32 (#357
 KILL -> stays off, graveyard line: POST_NORM costs tokens on plain at the architecture
 tier, whatever it does at 512.
 """
+
+# The sweep's own reading at the original target, 3.55, is void (see the amendment in
+# [protocol]): no arm reached it, so every arm read the cap, 262.1440M tokens.
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+control = [230.6867, 230.6867, 230.6867]
+post_norm = [226.4924, 226.4924, 225.4438]

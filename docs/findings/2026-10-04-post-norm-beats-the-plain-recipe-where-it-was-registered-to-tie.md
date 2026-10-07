@@ -53,3 +53,7 @@ against the control's endpoint CE.
 
 512 steps, one shape, Muon with the 2024 quintic. It was not run together with Polar
 Express (adopted from the same PR), so the two gains are not known to add.
+
+## Follow-up (2026-10-07)
+
+The architecture-tier pair answered the horizon question: at 2,000 steps the lead is −0.015, not −0.056, so most of it was the start. See `2026-10-07-post-norms-lead-is-mostly-the-start-and-its-act-max-cap-grows-in-value.md`.
