@@ -74,9 +74,11 @@ def batches(n, batch_size, seq_len, vocab):
 
 
 # #533's split-state update, the known-bad variant: one jax.jit over the split model and
-# optimizer state that merges both and runs the same `opt.update`, donating the params
-# together with the optimizer state (the pair #533 narrowed the divergence to). Kept here
-# only as the bug this test must see.
+# optimizer state that merges both and runs `opt.update` on the window's last gradient,
+# donating the params together with the optimizer state and the gradient (the set #533
+# narrowed the divergence to). It runs on the reference path, not HotPath's: since #293
+# HotPath folds that gradient before an emit that takes none, and the emit does not show
+# the bug. Kept here only as the bug this test must be able to see.
 @functools.partial(jax.jit, static_argnames=("graphdef", "opt_graphdef"),
                    donate_argnames=("params", "opt_state", "grads"))
 def _apply_split_state(graphdef, params, rest, opt_graphdef, opt_state, grads):
@@ -86,17 +88,14 @@ def _apply_split_state(graphdef, params, rest, opt_graphdef, opt_state, grads):
     return nnx.state(model, nnx.Param), nnx.state(opt)
 
 
-class SplitStateHotPath(HotPath):
-    """HotPath with the window's update routed through `_apply_split_state` (#533)."""
-
-    def apply(self, grads):
-        k = int(self._tx._every_k_schedule(self._gstep))
-        if self._mini != k - 1:
-            return super().apply(grads)
-        self._live()
-        self._mini, self._gstep = (self._mini + 1) % k, self._gstep + 1
-        self._params, self._opt_state = _apply_split_state(
-            self._graphdef, self._params, self._rest, self._opt_graphdef, self._opt_state, grads)
+def apply_split_state(opt, grads, model):
+    """apply_grads, with the window's update through `_apply_split_state`."""
+    if not opt.tx.emits_next(nnx.pure(opt.opt_state)):
+        return apply_grads(opt, grads, model)
+    graphdef, params, rest = nnx.split(model, nnx.Param, ...)
+    params, opt_state = _apply_split_state(graphdef, params, rest, nnx.graphdef(opt), nnx.state(opt), grads)
+    nnx.update(model, params)
+    nnx.update(opt, opt_state)
 
 
 def fingerprint(tree, prefix):
@@ -113,26 +112,26 @@ def train(path_kind, build=shipped, config=CONFIG):
     # The trainer's first-step arguments: its loss scale, no clip ceiling yet.
     loss_scale = jnp.float32(DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL).value)
     clip_norm = jnp.float32(jnp.inf)
-    hot = None if path_kind == "reference" else (
-        HotPath if path_kind == "hot" else SplitStateHotPath)(model, opt, z_loss_weight=config.Z_LOSS_WEIGHT)
+    hot = HotPath(model, opt, z_loss_weight=config.Z_LOSS_WEIGHT) if path_kind == "hot" else None
+    apply = apply_split_state if path_kind == "split" else apply_grads
     scalars = []
     for step, batch in enumerate(tokens):
         if hot is None:
             loss, _, grads, norm = compute_grad_step(model, batch, loss_scale=loss_scale,
                                                      clip_norm=clip_norm, z_loss_weight=config.Z_LOSS_WEIGHT)
         else:
-            loss, _, grads, norm = hot.grad_step(batch, loss_scale=loss_scale, clip_norm=clip_norm)
+            loss, _, norm, _ = hot.step(batch, loss_scale=loss_scale, clip_norm=clip_norm)
         scalars.append((float(loss), float(norm)))
         assert np.isfinite(scalars[-1]).all(), f"non-finite micro-step {step}: {scalars[-1]}"
         if hot is None:
-            apply_grads(opt, grads, model)
+            apply(opt, grads, model)
         else:
-            hot.apply(grads)
+            hot.commit()
     if hot is not None:
         model, opt = hot.model, hot.optimizer
     assert int(nnx.pure(opt.opt_state).gradient_step) == UPDATES, "the run must cross two updates"
     prints = {**fingerprint(nnx.state(model, nnx.Param), "params"), **fingerprint(opt.opt_state, "opt")}
-    del model, opt, hot, grads, tokens
+    del model, opt, hot, tokens
     gc.collect()
     return scalars, prints
 

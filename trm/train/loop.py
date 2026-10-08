@@ -28,7 +28,7 @@ from trm.runtime.checkpoints import (
 from trm.runtime.layout import LOG_REAL_STEPS
 from trm.runtime.metrics import MetricsLogger
 from trm.train.grad_guard import GradientNormGuard
-from trm.train.grad_step import HotPath, applied_gradient_stats, dense_zero_frac_max, grad_zero_fractions
+from trm.train.grad_step import HotPath, dense_zero_frac_max
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.schedules import Schedules, mixture_label
 from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
@@ -108,7 +108,7 @@ class LogWindow:
 @dataclass(frozen=True)
 class AppliedStats:
     """The underflow instrument (#82) and the norm the clip sees (#180), read on a
-    logging micro-step before the update donates the gradient buffers (#128). Two
+    logging micro-step inside the step's program (#293). Two
     readings are kept apart (#191): the window's mean, which updates the weights, and
     this one micro-step's, which carries per-draw artifacts that never reach them."""
     zero_fracs: dict
@@ -253,7 +253,8 @@ class TrainLoop:
             loss_scale = np.float32(self.loss_scaler.value)
             clip_norm = np.float32(np.inf if ceiling is None else ceiling)
         with span("grad_step"):
-            loss, out, grads, grad_norm = self.hot.grad_step(batch, loss_scale=loss_scale, clip_norm=clip_norm)
+            loss, out, grad_norm, sampled = self.hot.step(batch, loss_scale=loss_scale, clip_norm=clip_norm,
+                                                          sample=sample_applied)
 
         with span("loss_readback"):  # one blocking read for both scalars, not two (#411)
             current_loss, current_grad_norm = map(float, jax.device_get((loss, grad_norm)))
@@ -272,10 +273,10 @@ class TrainLoop:
                 print(f"🔍 [LossScale] raised to {self.loss_scaler.value:g} after "
                       f"{self.loss_scaler.growth_interval} clean micro-steps (#199)")
 
-        # Sampled BEFORE the update: apply donates the grad buffers and the accumulator.
-        applied = self.sample_applied(grads) if sample_applied else None
+        # Read off the step's own program: the gradient never leaves it (#293).
+        applied = self.sample_applied(sampled) if sample_applied else None
         with span("apply_grads"):
-            self.hot.apply(grads)
+            self.hot.commit()
         if sample_applied:
             self.hot.check_counter()
         self.t_compute += time.time() - t_compute_start
@@ -300,8 +301,8 @@ class TrainLoop:
             raise RuntimeError(f"Training diverged: {MAX_NONFINITE_STREAK} consecutive non-finite "
                                f"micro-steps (last at step {step}).")
 
-    def sample_applied(self, grads):
-        applied_fracs, applied_norm = applied_gradient_stats(self.hot.optimizer, grads)
+    def sample_applied(self, sampled):
+        micro_fracs, applied_fracs, applied_norm = jax.device_get(sampled)
         zero_fracs = {k: float(v) for k, v in applied_fracs.items()}
         # The norm the clip actually sees (#180). grad_norm_avg is per-micro-step and
         # cannot be read against CLIP_NORM; this can: above it, the clip, not the LR
@@ -312,7 +313,7 @@ class TrainLoop:
         return AppliedStats(
             zero_fracs=zero_fracs,
             zero_frac_dense=dense_zero_frac_max(zero_fracs),
-            zero_frac_dense_microstep=float(dense_zero_frac_max(grad_zero_fractions(grads))),
+            zero_frac_dense_microstep=float(dense_zero_frac_max(micro_fracs)),
             grad_norm=applied_grad_norm,
             clip_active=clip_active)
 

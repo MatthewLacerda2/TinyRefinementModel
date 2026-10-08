@@ -1,9 +1,11 @@
-"""HotPath == compute_grad_step + apply_grads in every number (#474).
+"""HotPath == compute_grad_step + apply_grads in every number (#474, #293).
 
-The hot path only changes how often Python walks the NNX graph and where the
-accumulation window's counter is read; the jitted functions, their arguments and
-their donation are the same. So the bar is bit-identical: losses, gradient norms,
-parameters and optimizer state, across two accumulation windows and a partial third.
+The hot path changes how often Python walks the NNX graph, where the accumulation
+window's counter is read, and where the gradient is folded: inside the program that
+computes it, with the window's update emitted from the folded mean. The math is the
+same fold and the same inner step, so the bar is bit-identical: losses, gradient
+norms, parameters and optimizer state, across two accumulation windows and a
+partial third.
 """
 
 import jax
@@ -45,8 +47,8 @@ def _run(inner, hot, touch_at=()):
         if hot:
             if i in touch_at:  # what a checkpoint or the validation probe does mid-run
                 _leaves(nnx.state(path.model, nnx.Param))
-            loss, _, grads, norm = path.grad_step(batch)
-            path.apply(grads)
+            loss, _, norm, _ = path.step(batch)
+            path.commit()
         else:
             loss, _, grads, norm = compute_grad_step(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
             apply_grads(opt, grads, model)
@@ -84,10 +86,10 @@ def test_a_change_made_through_the_module_is_seen_by_the_next_step():
     model, opt = _setup(optax.sgd(1e-3))
     path = HotPath(model, opt, z_loss_weight=0.0)
     batch = _batches()[0]
-    before, *_ = path.grad_step(batch)
+    before, *_ = path.step(batch)
     for leaf in nnx.state(path.model, nnx.Param).flat_state():
         leaf[1].set_value(leaf[1].get_value() * 0)  # a change made through the module object
-    after, *_ = path.grad_step(batch)
+    after, *_ = path.step(batch)
     assert not np.array_equal(np.asarray(before), np.asarray(after))
 
 
@@ -96,10 +98,31 @@ def test_the_host_counter_follows_the_device_and_a_skipped_micro_step_does_not_m
     path = HotPath(model, opt, z_loss_weight=0.0)
     batches = _batches()
     for i, batch in enumerate(batches[:5]):
-        _, _, grads, _ = path.grad_step(batch)
-        if i != 2:  # the trainer skips the update on a non-finite micro-step
-            path.apply(grads)
+        if i == 2:  # an overflowed micro-step: the trainer skips it and commits nothing
+            loss, *_ = path.step(batch, loss_scale=np.float32(np.inf))
+            assert not np.isfinite(float(loss))
+        else:
+            path.step(batch)
+            path.commit()
         path.check_counter()
+
+
+def test_a_non_finite_micro_step_folds_nothing():
+    """#293 moved the skip onto the device: the fold happens in the step's own program,
+    so a non-finite gradient must leave the accumulator exactly as it was (#199, #355)."""
+    model, opt = _setup(optax.sgd(1e-3))
+    path = HotPath(model, opt, z_loss_weight=0.0)
+    path.step(_batches()[0])
+    path.commit()
+    before = _leaves(path.optimizer.opt_state)
+    path.step(_batches()[1], loss_scale=np.float32(np.inf))
+    assert _identical(before, _leaves(path.optimizer.opt_state))
+
+
+def test_it_refuses_an_optimizer_that_does_not_accumulate():
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1, vocab_size=97, max_seq_len=WINDOW)
+    with pytest.raises(TypeError, match="accumulating optimizer"):
+        HotPath(model, nnx.Optimizer(model, optax.sgd(1e-3), wrt=nnx.Param), z_loss_weight=0.0)
 
 
 def test_a_drifted_counter_is_caught():

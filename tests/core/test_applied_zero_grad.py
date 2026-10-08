@@ -20,7 +20,7 @@ def applied_gradient(opt, grads):
     """The reference: the gradient the optimizer applies at this micro-step, built
     whole. optax.MultiSteps with use_grad_mean keeps a running mean of the window's
     first k-1 micro-steps in `acc_grads`; the apply folds this micro-step's grads into
-    it. trm's `applied_gradient_stats` computes its two numbers without building this."""
+    it. trm's HotPath.step reads its two numbers inside the step's program (#293)."""
     state = opt.opt_state
     seen = jax.tree_util.tree_leaves(state.mini_step)[0]
     return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
@@ -74,8 +74,8 @@ def test_the_trainer_logs_both_and_names_them_apart():
     from trm.train import loop
 
     source = inspect.getsource(loop.TrainLoop)
-    assert "applied_gradient_stats(self.hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
-    assert "applied_gradient(" not in source.replace("applied_gradient_stats(", "")
+    assert "sample=sample_applied" in source, "read inside the step's program, never as a materialized tree (#26, #293)"
+    assert "applied_gradient(" not in source
     # That both are LOGGED is observed, not read off the source: a real run's row
     # carries them (tests/apparatus/test_trainer_end_to_end.py).
     fields = MetricsLogger("/dev/null").fields
@@ -108,21 +108,37 @@ def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():
     assert float(optax.global_norm(applied_gradient(optimizer, last))) == 0.0
 
 
-def test_the_jitted_stats_equal_the_materialized_tree():
-    """Same numbers as applied_gradient() + grad_zero_fractions + global_norm, without
-    building the 564 MiB tree eagerly (which OOM'd every Muon arm, #26)."""
-    from trm.train.grad_step import applied_gradient_stats
-    model = Toy()
-    optimizer = nnx.Optimizer(model, optax.MultiSteps(optax.sgd(1.0), every_k_schedule=4, use_grad_mean=True),
-                              wrt=nnx.Param)
-    for _ in range(3):
-        optimizer.update(model, _grads(model, [1.0, 1.0, 1.0, 1.0]))
-    last = _grads(model, [1.0, 1.0, 0.0, 0.0])
-    fracs, norm = applied_gradient_stats(optimizer, last)
-    applied = applied_gradient(optimizer, last)
-    assert {k: float(v) for k, v in fracs.items()} == {k: float(v) for k, v in grad_zero_fractions(applied).items()}
-    assert float(norm) == float(optax.global_norm(applied))
-    import inspect
+def test_the_step_samples_exactly_what_the_reference_applies():
+    """HotPath.step(sample=True) reads the log row's numbers inside its own program
+    (#293). They equal applied_gradient() + grad_zero_fractions + global_norm built
+    whole on the reference path, at the window's last micro-step."""
+    from trm.model import build_model
+    from trm.settings import CONFIG
+    from trm.train.accumulate import multi_steps
+    from trm.train.grad_step import HotPath, apply_grads, compute_grad_step
 
-    from trm.train import grad_step
-    assert "@jax.jit" in inspect.getsource(grad_step).split("def _applied_stats")[0][-40:]
+    k, window = 3, 8
+    rng = np.random.default_rng(0)
+    batches = [jnp.array(rng.integers(0, 97, size=(2, 2 * window + 1)), dtype=jnp.int32) for _ in range(k)]
+
+    def setup():
+        model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=1, vocab_size=97, max_seq_len=window)
+        return model, nnx.Optimizer(model, multi_steps(optax.sgd(1e-3), every_k_schedule=k), wrt=nnx.Param)
+
+    model, opt = setup()
+    for batch in batches[:-1]:
+        _, _, grads, _ = compute_grad_step(model, batch)
+        apply_grads(opt, grads, model)
+    _, _, last, _ = compute_grad_step(model, batches[-1])
+    applied = applied_gradient(opt, last)
+
+    path = HotPath(*setup(), z_loss_weight=0.0)
+    for batch in batches[:-1]:
+        path.step(batch)
+        path.commit()
+    _, _, _, (micro, fracs, norm) = path.step(batches[-1], sample=True)
+
+    assert {k_: float(v) for k_, v in micro.items()} == {k_: float(v) for k_, v in grad_zero_fractions(last).items()}
+    assert {k_: float(v) for k_, v in fracs.items()} == {
+        k_: float(v) for k_, v in grad_zero_fractions(applied).items()}
+    assert np.isclose(float(norm), float(optax.global_norm(applied)), rtol=1e-6)

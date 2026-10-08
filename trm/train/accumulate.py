@@ -80,5 +80,20 @@ class LazyMultiSteps(optax.MultiSteps):
         return final_updates, new_state
 
 
+    def emit(self, state, params=None, **extra_args):
+        """The window's update when `accumulate` has already folded its last gradient
+        (#293): accumulate then emit is `update`, the same fold and the same inner step
+        on the same mean, with no gradient tree held for the call."""
+        final_updates, new_inner_state = self._opt.update(
+            state.acc_grads, state.inner_opt_state, params=params, **extra_args)
+        new_state = MultiStepsState(
+            mini_step=state.mini_step,
+            gradient_step=_increment(state.gradient_step),
+            inner_opt_state=new_inner_state,
+            acc_grads=otree.zeros_like(state.acc_grads),
+            skip_state=state.skip_state)
+        return final_updates, new_state
+
+
 def multi_steps(inner, every_k_schedule, use_grad_mean=True):
     return LazyMultiSteps(inner, every_k_schedule=every_k_schedule, use_grad_mean=use_grad_mean)

@@ -121,8 +121,8 @@ def main(argv=None):
     hot = HotPath(model, optimizer, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
     with CardSampler() as card:
         for _ in range(args.micro_steps):
-            loss, _out, grads, _gn = hot.grad_step(batch)
-            hot.apply(grads)
+            loss, _out, _gn, _ = hot.step(batch)
+            hot.commit()
         float(loss)
         float(_val_ce_sums(hot.model, batch[:1])[0])
         time.sleep(0.5)
