@@ -91,7 +91,7 @@ def init_model_and_optimizer(config):
     # What the loss and the stream are, beside the optimizer (#357, #369).
     print(f"🧮 Loss: z-loss {config.Z_LOSS_WEIGHT:g} x log^2 Z | residual stream "
           f"{config.RESIDUAL_DTYPE}")
-    optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)
+    optimizer = nnx.Optimizer(model, optimizer_chain(config, schedules.learning_rate), wrt=nnx.Param)  # pyright: ignore[reportArgumentType] -- duck-typed: MultiSteps has init/update but is no GradientTransformation
 
     return model, optimizer
 

@@ -25,11 +25,18 @@ way and the numbers are bit-identical to optax.MultiSteps.
 
 from __future__ import annotations
 
+from typing import cast
+
 import jax
 import optax
 from optax import tree as otree
 from optax._src import numerics
 from optax.transforms._accumulation import MultiStepsState
+
+
+def _increment(count) -> jax.Array:
+    # optax annotates safe_increment as returning any chex.Numeric; a counter is an Array.
+    return cast(jax.Array, numerics.safe_increment(count))
 
 
 class LazyMultiSteps(optax.MultiSteps):
@@ -48,7 +55,7 @@ class LazyMultiSteps(optax.MultiSteps):
         """A non-emitting micro-step: fold the gradient into the running mean."""
         k_steps = self._every_k_schedule(state.gradient_step)
         return MultiStepsState(
-            mini_step=numerics.safe_increment(state.mini_step) % k_steps,
+            mini_step=_increment(state.mini_step) % k_steps,
             gradient_step=state.gradient_step,
             inner_opt_state=state.inner_opt_state,
             acc_grads=self._fold(updates, state),
@@ -65,8 +72,8 @@ class LazyMultiSteps(optax.MultiSteps):
         final_updates, new_inner_state = self._opt.update(
             acc_grads, state.inner_opt_state, params=params, **extra_args)
         new_state = MultiStepsState(
-            mini_step=numerics.safe_increment(state.mini_step) % k_steps,
-            gradient_step=numerics.safe_increment(state.gradient_step),
+            mini_step=_increment(state.mini_step) % k_steps,
+            gradient_step=_increment(state.gradient_step),
             inner_opt_state=new_inner_state,
             acc_grads=otree.zeros_like(acc_grads),
             skip_state=state.skip_state)

@@ -2,7 +2,8 @@ import csv
 import datetime
 import math
 import posixpath
-from typing import NamedTuple
+from contextlib import AbstractContextManager
+from typing import NamedTuple, TextIO, cast
 import fsspec
 # jax at module level: the module already needs jax.numpy, so a lazy import in
 # _arena_peak_mib bought nothing.
@@ -124,6 +125,12 @@ BLOCKS_FILENAME = "blocks.csv"
 BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms", "attn_out_max", "mlp_out_max")
 
 
+# fsspec is unannotated, and pyright reads its `open` as maybe handing back a list
+# of files; every csv here is one text file.
+def _open_csv(url, mode) -> AbstractContextManager[TextIO]:
+    return cast(AbstractContextManager[TextIO], fsspec.open(url, mode, newline=""))
+
+
 def blocks_file_for(history_file):
     """blocks.csv beside metrics.csv, for a local path or an fsspec URL alike."""
     return posixpath.join(posixpath.dirname(history_file), BLOCKS_FILENAME)
@@ -152,7 +159,7 @@ class MetricsLogger:
             fs, path = fsspec.core.url_to_fs(self.history_file)
             if not fs.exists(path) or fs.size(path) == 0:
                 return
-            with fsspec.open(self.history_file, "r", newline="") as f:
+            with _open_csv(self.history_file, "r") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 old_fields = reader.fieldnames
@@ -165,7 +172,7 @@ class MetricsLogger:
             if len(kept) == len(rows) and fields == old_fields:
                 return
             print(f"✂️ Trimming {len(rows) - len(kept)} replayed metric rows (step >= {start_opt_step}) from {self.history_file}")
-            with fsspec.open(self.history_file, "w", newline="") as f:
+            with _open_csv(self.history_file, "w") as f:
                 writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore', restval="")
                 writer.writeheader()
                 writer.writerows(kept)
@@ -178,7 +185,7 @@ class MetricsLogger:
             fs, path = fsspec.core.url_to_fs(self.blocks_file)
             if not fs.exists(path) or fs.size(path) == 0:
                 return
-            with fsspec.open(self.blocks_file, "r", newline="") as f:
+            with _open_csv(self.blocks_file, "r") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 old_fields = list(reader.fieldnames or [])
@@ -187,7 +194,7 @@ class MetricsLogger:
             fields = old_fields + [c for c in BLOCKS_FIELDS if c not in old_fields]
             if len(kept) == len(rows) and fields == old_fields:
                 return
-            with fsspec.open(self.blocks_file, "w", newline="") as f:
+            with _open_csv(self.blocks_file, "w") as f:
                 writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore", restval="")
                 writer.writeheader()
                 writer.writerows(kept)
@@ -209,7 +216,7 @@ class MetricsLogger:
                             for attn, mlp in jnp.reshape(diag["branch_max_blocks"], (-1, 2)).tolist()]
         fs, path = fsspec.core.url_to_fs(self.blocks_file)
         fresh = not fs.exists(path) or fs.size(path) == 0
-        with fsspec.open(self.blocks_file, "a", newline="") as f:
+        with _open_csv(self.blocks_file, "a") as f:
             writer = csv.writer(f)
             if fresh:
                 writer.writerow(BLOCKS_FIELDS)
@@ -248,12 +255,12 @@ class MetricsLogger:
         try:
             fs, path = fsspec.core.url_to_fs(self.history_file)
             if fs.exists(path) and fs.size(path) > 0:
-                with fsspec.open(self.history_file, "r", newline="") as f:
+                with _open_csv(self.history_file, "r") as f:
                     header = next(csv.reader(f), None)
         except OSError as e:
             print(f"⚠️ Could not read {self.history_file} ({e}); assuming empty.")
 
-        with fsspec.open(self.history_file, "a", newline="") as f:
+        with _open_csv(self.history_file, "a") as f:
             writer = csv.DictWriter(f, fieldnames=header or self.fields,
                                     extrasaction='ignore', restval="")
             if header is None:

@@ -202,7 +202,7 @@ def chunked_cross_entropy(hidden, embedding, targets, pad_id, chunk_size=128, z_
     aggregated the same way, so single-window callers (tests, tools) see exactly
     the old semantics. Gradients flow through the per-row sums with the correct
     1/total_count scale — identical to the old global-mean backward."""
-    loss_sums, counts, stats = chunked_cross_entropy_rows(
+    loss_sums, counts, stats = chunked_cross_entropy_rows(  # pyright: ignore[reportGeneralTypeIssues] -- jax leaves custom_vjp's return untyped
         hidden, embedding, targets, pad_id, chunk_size, z_weight)
     counts = jax.lax.stop_gradient(counts)
     denom_rows = counts.clip(min=1.0)

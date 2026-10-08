@@ -1,7 +1,8 @@
 # The front door (#169): the incantations live here, not in a session's memory.
 #
 #   make lint                    what CI's lint job runs: ruff, vulture (dead code), then the
-#                                jaxfree tests, without conftest (#325)
+#                                jaxfree tests, without conftest (#325); then pyright over trm/,
+#                                which CI runs in its pytest job, where jax is installed (#478)
 #   make test                    the whole core and apparatus suites, jaxfree tests included
 #                                (CI splits those into its lint job); core, then apparatus,
 #                                separately, since one process for both has been OOM-killed
@@ -33,6 +34,7 @@ lint:
 	$(PY) -m vulture
 	@files="$$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)"; \
 	test -n "$$files" && $(PY) -m pytest --noconftest -p no:cacheprovider -m jaxfree $$files
+	$(PY) -m pyright --pythonpath $(PY)
 
 test:
 	$(PY) -m pytest tests/core -q

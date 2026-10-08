@@ -15,7 +15,8 @@ on:
 
 # Named jobs so each load-bearing check is a separately visible (and
 # separately requireable) status (#45):
-#   pytest (CPU)        — the tiered unit/invariant suite: tests/core (properties
+#   pytest (CPU)        — pyright over trm/ (basic mode, #478), then
+#                         the tiered unit/invariant suite: tests/core (properties
 #                         the model must always have) then tests/apparatus (the
 #                         research harnesses and instruments). Two steps, one
 #                         job: they share the pip install, and a failure names
@@ -174,6 +175,11 @@ jobs:
             echo "the lint job collects:"; echo "$listed"
             exit 1
           fi
+
+      - name: Types (pyright)
+        # Here and not in the lint job: pyright resolves jax, flax and optax, so it
+        # needs the installed packages this job already has (#478).
+        run: pyright --pythonpath "$(which python)"
 
       - name: Core suite
         # jaxfree tests run in the lint job instead (#325).

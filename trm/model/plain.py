@@ -25,8 +25,8 @@ class LMOutput:
     logit tensor is never materialized. Inference fills `logits` instead.
     """
 
-    logits: jnp.ndarray = None
-    hidden: jnp.ndarray = None
+    logits: jnp.ndarray | None = None
+    hidden: jnp.ndarray | None = None
     # Telemetry. Read by the metrics logger, never differentiated.
     diag: Dict[str, Any] = struct.field(default_factory=dict)
 
@@ -205,7 +205,7 @@ class PlainTransformer(nnx.Module):
             z, peaks = blk(z, pad_bias, probe=True)
             branch_peaks.append(peaks)
             measure(z)
-            if keep_states:
+            if states is not None:
                 states.append(z)
         return z, jnp.stack(maxes), jnp.stack(rmses), jnp.stack(branch_peaks), states
 
@@ -251,4 +251,5 @@ class PlainTransformer(nnx.Module):
         carries a flag only instruments read.
         """
         *_, states = self._stream(tokens, keep_states=True)
+        assert states is not None
         return jnp.stack([state.astype(jnp.float32) for state in states])

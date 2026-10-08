@@ -15,7 +15,7 @@ Field name = environment variable = the key in run_metadata.json.
 
 import os
 import pathlib
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator, PositiveInt, ValidationError, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,8 +57,10 @@ class Config(BaseSettings):
 
         Refuses with SystemExit, before a model is built: a typo must not silently
         train the wrong run (#104)."""
+        # Strings from the environment; pydantic converts each to its field's type.
+        given: dict[str, Any] = {name: environ[name] for name in cls.model_fields if name in environ}
         try:
-            return cls(**{name: environ[name] for name in cls.model_fields if name in environ})
+            return cls(**given)
         except ValidationError as error:
             raise SystemExit("\n".join(
                 f"{'.'.join(map(str, e['loc']))}={e['input']!r}: {e['msg']}" for e in error.errors())) from None

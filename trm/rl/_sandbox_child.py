@@ -150,6 +150,7 @@ def main():
     report["nonce"] = request["nonce"]
     # Straight to the real stdout: the program may have replaced sys.stdout, and a
     # candidate that prints must not be able to corrupt the answer.
+    assert sys.__stdout__ is not None  # the parent always hands the child a pipe
     sys.__stdout__.write("\n" + json.dumps(report) + "\n")
     sys.__stdout__.flush()
 

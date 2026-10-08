@@ -208,7 +208,7 @@ def resume(active: pathlib.Path = ACTIVE_RUN) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--budget", type=float, default=None, help="token budget, e.g. 4e9 (required)")
     ap.add_argument("--issue", type=int, default=None, help="pinned issue the supervisor heartbeats into")
     ap.add_argument("--spec", type=pathlib.Path, default=None,
