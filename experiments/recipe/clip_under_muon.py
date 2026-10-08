@@ -31,9 +31,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import math
 import pathlib
+from collections.abc import Callable, Iterator
+from typing import Any
 
 import numpy as np
 
@@ -94,7 +97,7 @@ def token_batches(data_dir: pathlib.Path, vocab: int, seq: int, batch: int, seed
         yield (rows % vocab).astype(np.int32)
 
 
-def main(argv=None):
+def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--metrics", type=pathlib.Path, required=True,
                     help="a run's metrics.csv — its applied_grad_norm is the norm profile replayed")
@@ -114,8 +117,43 @@ def main(argv=None):
                     help="multiplies the step-to-step noise put back between logged norms; "
                          "0 replays the smooth trend alone")
     ap.add_argument("--csv-out", type=pathlib.Path, default=None)
-    args = ap.parse_args(argv)
+    return ap.parse_args(argv)
 
+
+@dataclasses.dataclass(frozen=True)
+class Rig:
+    """What both arms share: the small model's starting parameters, each parameter
+    leaf's optimizer partition ("muon" | "adam"), the jitted gradient, the shipped
+    optimizer with its jitted update, and the clip that goes in front of it."""
+    params: Any
+    labels: list[str]
+    grad_fn: Callable
+    optimizer: Any
+    update: Callable
+    clip: Any
+
+    def flat(self, tree, which: str) -> np.ndarray:
+        import jax
+        leaves = [np.asarray(leaf, dtype=np.float64).ravel()
+                  for leaf, label in zip(jax.tree_util.tree_leaves(tree), self.labels, strict=True) if label == which]
+        return np.concatenate(leaves)
+
+    def compare(self, a, b) -> dict[str, tuple[float, float]]:
+        """{partition: (cosine of a with b, norm of a / norm of b)}."""
+        out = {}
+        for which in ("muon", "adam"):
+            x, y = self.flat(a, which), self.flat(b, which)
+            nx, ny = np.linalg.norm(x), np.linalg.norm(y)
+            out[which] = (float(x @ y / (nx * ny)), float(nx / ny))
+        return out
+
+
+def rescale(tree, factor):
+    import jax
+    return jax.tree_util.tree_map(lambda g: g * factor, tree)
+
+
+def build_rig(args: argparse.Namespace) -> Rig:
     import jax
     import jax.numpy as jnp
     import optax
@@ -128,66 +166,62 @@ def main(argv=None):
     model = build_model(CONFIG, nnx.Rngs(args.seed), dim=args.dim, vocab_size=args.vocab,
                         num_heads=4, num_layers=args.layers, max_seq_len=args.seq)
     graphdef, params, rest = nnx.split(model, nnx.Param, ...)
-    labels = jax.tree_util.tree_leaves(muon_partition(params))
 
     def loss_fn(p, tokens):
         logits = nnx.merge(graphdef, p, rest)(tokens[:, :-1], training=False).logits
         return optax.softmax_cross_entropy_with_integer_labels(
             logits.astype(jnp.float32), tokens[:, 1:]).mean()
 
-    grad_fn = jax.jit(jax.grad(loss_fn))
     optimizer = inner_optimizer(CONFIG, optax.constant_schedule(args.lr))
-    update = jax.jit(optimizer.update)
-    clip = optax.clip_by_global_norm(args.clip)
+    return Rig(params=params, labels=jax.tree_util.tree_leaves(muon_partition(params)),
+               grad_fn=jax.jit(jax.grad(loss_fn)), optimizer=optimizer, update=jax.jit(optimizer.update),
+               clip=optax.clip_by_global_norm(args.clip))
 
-    def flat(tree, which):
-        leaves = [np.asarray(leaf, dtype=np.float64).ravel()
-                  for leaf, label in zip(jax.tree_util.tree_leaves(tree), labels, strict=True) if label == which]
-        return np.concatenate(leaves)
 
-    def compare(a, b):
-        out = {}
-        for which in ("muon", "adam"):
-            x, y = flat(a, which), flat(b, which)
-            nx, ny = np.linalg.norm(x), np.linalg.norm(y)
-            out[which] = (float(x @ y / (nx * ny)), float(nx / ny))
-        return out
+def exact_checks(rig: Rig, profile: np.ndarray, batches: Iterator[np.ndarray]) -> tuple[float, dict]:
+    """The two exact checks — what the clip cannot do. A uniform x0.25 rescale over 40
+    steps (the worst update cosine across partitions), and the first step from a fresh
+    state, clipped against unclipped. Returns both readings."""
+    import jax.numpy as jnp
+    import optax
 
-    def rescale(tree, factor):
-        return jax.tree_util.tree_map(lambda g: g * factor, tree)
-
-    profile = norm_profile(args.metrics, args.steps, args.seed, args.scatter_scale)
-    batches = token_batches(args.data, args.vocab, args.seq, args.batch, args.seed)
-
-    # ── the two exact checks: what the clip cannot do ──────────────────────────
-    probe = [grad_fn(params, jnp.asarray(next(batches))) for _ in range(40)]
+    params, update, optimizer = rig.params, rig.update, rig.optimizer
+    probe = [rig.grad_fn(params, jnp.asarray(next(batches))) for _ in range(40)]
     fresh_a, fresh_b = optimizer.init(params), optimizer.init(params)
     worst_uniform = 1.0
     for g in probe:
         big, fresh_a = update(g, fresh_a, params)
         small, fresh_b = update(rescale(g, 0.25), fresh_b, params)
-        worst_uniform = min(worst_uniform, *(cos for cos, _ in compare(big, small).values()))
+        worst_uniform = min(worst_uniform, *(cos for cos, _ in rig.compare(big, small).values()))
     g0 = rescale(probe[0], float(profile[0]) / float(optax.global_norm(probe[0])))
-    first_a, _ = update(clip.update(g0, clip.init(params))[0], optimizer.init(params), params)
+    first_a, _ = update(rig.clip.update(g0, rig.clip.init(params))[0], optimizer.init(params), params)
     first_b, _ = update(g0, optimizer.init(params), params)
-    first = compare(first_a, first_b)
+    first = rig.compare(first_a, first_b)
     print(f"uniform x0.25 rescale, 40 steps: worst update cosine {worst_uniform:.9f}")
     print(f"first step from fresh state at norm {profile[0]:.2f}: "
           + "  ".join(f"{k} cos {c:.9f} ratio {r:.6f}" for k, (c, r) in first.items()))
+    return worst_uniform, first
 
-    # ── the replay ─────────────────────────────────────────────────────────────
-    state_clipped, state_raw = optimizer.init(params), optimizer.init(params)
-    clip_state = clip.init(params)
+
+def replay(rig: Rig, profile: np.ndarray, batches: Iterator[np.ndarray], steps: int, ceiling: float) -> list[dict]:
+    """One row per step comparing the clipped arm's update with the raw arm's; every
+    gradient is rescaled to the profile's norm, and the parameters follow the raw arm."""
+    import jax.numpy as jnp
+    import optax
+
+    params, update = rig.params, rig.update
+    state_clipped, state_raw = rig.optimizer.init(params), rig.optimizer.init(params)
+    clip_state = rig.clip.init(params)
     rows = []
-    for step in range(args.steps):
-        g = grad_fn(params, jnp.asarray(next(batches)))
+    for step in range(steps):
+        g = rig.grad_fn(params, jnp.asarray(next(batches)))
         g = rescale(g, float(profile[step]) / float(optax.global_norm(g)))
-        clipped, clip_state = clip.update(g, clip_state)
+        clipped, clip_state = rig.clip.update(g, clip_state)
         upd_clipped, state_clipped = update(clipped, state_clipped, params)
         upd_raw, state_raw = update(g, state_raw, params)
-        cmp = compare(upd_clipped, upd_raw)
+        cmp = rig.compare(upd_clipped, upd_raw)
         rows.append({"step": step, "norm": float(profile[step]),
-                     "clip_active": int(profile[step] > args.clip),
+                     "clip_active": int(profile[step] > ceiling),
                      "muon_cos": cmp["muon"][0], "muon_ratio": cmp["muon"][1],
                      "adam_cos": cmp["adam"][0], "adam_ratio": cmp["adam"][1]})
         params = optax.apply_updates(params, upd_raw)
@@ -195,7 +229,11 @@ def main(argv=None):
             print(f"step {step:5d}  norm {profile[step]:6.3f}  "
                   f"muon cos {cmp['muon'][0]:.5f} ratio {cmp['muon'][1]:.4f}  "
                   f"adam cos {cmp['adam'][0]:.5f} ratio {cmp['adam'][1]:.4f}", flush=True)
+    return rows
 
+
+def report_bands(rows: list[dict], steps: int) -> None:
+    """The readout table over BANDS, and one RESULT point per (quantity, band)."""
     print("\nband            clip on   muon cos (min/median)   muon ratio   adam cos (min/median)   adam ratio")
     for lo, hi in BANDS:
         band = [r for r in rows if lo <= r["step"] < hi]
@@ -206,21 +244,34 @@ def main(argv=None):
         mr = float(np.median([r["muon_ratio"] for r in band]))
         ar = float(np.median([r["adam_ratio"] for r in band]))
         on = sum(r["clip_active"] for r in band) / len(band)
-        print(f"{lo:>5}-{min(hi, args.steps):<6}  {on:7.1%}   {min(mc):.5f} / {np.median(mc):.5f}"
+        print(f"{lo:>5}-{min(hi, steps):<6}  {on:7.1%}   {min(mc):.5f} / {np.median(mc):.5f}"
               f"      {mr:.4f}     {min(ac):.5f} / {np.median(ac):.5f}      {ar:.4f}")
         # One point per (quantity, band), all under one metric name: a spec judges a
         # single metric_key, and these are four different quantities.
-        span = f"{lo}-{min(hi, args.steps)}"
+        span = f"{lo}-{min(hi, steps)}"
         for quantity, value in (("muon_cos", float(np.median(mc))), ("muon_ratio", mr),
                                 ("adam_cos", float(np.median(ac))), ("adam_ratio", ar)):
             emit(f"{quantity}@{span}", value=value)
 
+
+def write_rows(rows: list[dict], path: pathlib.Path) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"per-step rows: {path}")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    rig = build_rig(args)
+    profile = norm_profile(args.metrics, args.steps, args.seed, args.scatter_scale)
+    batches = token_batches(args.data, args.vocab, args.seq, args.batch, args.seed)
+    worst_uniform, first = exact_checks(rig, profile, batches)
+    rows = replay(rig, profile, batches, args.steps, args.clip)
+    report_bands(rows, args.steps)
     if args.csv_out:
-        with args.csv_out.open("w", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
-        print(f"per-step rows: {args.csv_out}")
+        write_rows(rows, args.csv_out)
     print(json.dumps({"uniform_worst_cos": worst_uniform,
                       "first_step": {k: {"cos": c, "ratio": r} for k, (c, r) in first.items()}}))
     return 0 if math.isfinite(worst_uniform) else 1

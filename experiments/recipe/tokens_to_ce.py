@@ -30,9 +30,13 @@ import signal
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
 
 from instruments import results
 from instruments.curves import ValCurve
+
+if TYPE_CHECKING:
+    from trm.settings import Config
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -131,7 +135,7 @@ def parse_knobs(pairs):
     return knobs
 
 
-def main(argv=None) -> int:
+def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--optimizer", required=True, choices=["adamw", "muon"])
     ap.add_argument("--lr-mult", type=float, default=None, help="MUON_LR_MULT for the muon arm")
@@ -162,11 +166,13 @@ def main(argv=None) -> int:
                          "(#359). Repeatable. A name that is not a knob is refused, so a typo "
                          "cannot run as a silent control.")
     ap.add_argument("--tag", default="026", help="run dirs are runs/run_<tag>_<optimizer>[_m<mult>]_s<seed>")
-    args = ap.parse_args(argv)
-    knobs = parse_knobs(args.set)
+    return ap.parse_args(argv)
 
-    from trm.settings import CONFIG
-    name = (f"run_{args.tag}_{args.optimizer}"
+
+def run_name(args: argparse.Namespace, knobs: dict[str, str]) -> str:
+    """The arm's run dir name. A stopped or finished arm is found again by it, so a change
+    to how any flag is spelled here re-trains every existing arm from scratch."""
+    return (f"run_{args.tag}_{args.optimizer}"
             + (f"_m{args.lr_mult:g}" if args.lr_mult is not None else "")
             + (f"_lr{args.peak_lr:g}" if args.peak_lr is not None else "")
             + (f"_pad{args.pad_token_id}" if args.pad_token_id is not None else "")
@@ -175,14 +181,16 @@ def main(argv=None) -> int:
             + (f"_b{args.batch}" if args.batch is not None else "")
             + "".join(f"_{k.lower()}{v}" for k, v in knobs.items())
             + f"_s{args.seed}")
-    run_dir = REPO / "runs" / name
-    metrics = run_dir / "metrics.csv"
+
+
+def trainer_env(args: argparse.Namespace, knobs: dict[str, str], config: Config) -> dict[str, str]:
+    """This process's environment plus the arm's knobs; a flag left unset leaves the env's value."""
     env = {
         **os.environ,
         "PYTHONPATH": str(REPO),
         "TRM_OPTIMIZER": args.optimizer,
         "MODEL_SEED": str(args.seed), "DATA_SEED": str(args.seed),
-        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * CONFIG.TOKENS_PER_OPT_STEP),
+        "TRAIN_TOKEN_BUDGET": str(args.opt_steps * config.TOKENS_PER_OPT_STEP),
         "WARMUP_STEPS": str(args.warmup),
         "VAL_EVERY_OPT_STEPS": str(args.val_every),
         "CHECKPOINT_EVERY_OPT_STEPS": "256",
@@ -201,43 +209,62 @@ def main(argv=None) -> int:
     if args.layers is not None:
         env["PLAIN_LAYERS"] = str(args.layers)
     env.update(knobs)
+    return env
 
-    if last_step(metrics) < args.opt_steps:
-        accumulation = (CONFIG.model_copy(update={"BATCH_SIZE": args.batch}) if args.batch else CONFIG).ACCUMULATION_STEPS
-        if note := prepare_resume(run_dir, accumulation):
-            print(f"{name}: {note}", flush=True)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        log = (run_dir / "train.log").open("a")
-        proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
-                                 str(run_dir / "checkpoints")], cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
-        print(f"{name}: trainer pid {proc.pid}, to opt step {args.opt_steps}", flush=True)
-        try:
-            while proc.poll() is None and last_step(metrics) < args.opt_steps:
-                time.sleep(30)
-        finally:
-            if proc.poll() is None:
-                print(f"{name}: stopping trainer pid {proc.pid} at opt step {last_step(metrics)} "
-                      f"(cap {args.opt_steps}; harness exiting)", flush=True)
-                proc.send_signal(signal.SIGTERM)
-                try:
-                    proc.wait(timeout=120)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        if last_step(metrics) < args.opt_steps:
-            raise SystemExit(f"{name}: trainer ended at step {last_step(metrics)} < {args.opt_steps} "
-                             f"(exit {proc.returncode}); see {run_dir / 'train.log'}")
-    else:
-        print(f"{name}: already at the cap, reading the recorded run", flush=True)
 
-    tokens_m, final, reached, aligned, interp_m = tokens_to_target(metrics, args.target_ce, args.opt_steps,
-                                                                   CONFIG.TOKENS_PER_OPT_STEP)
-    print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
+def train_to_cap(run_dir: pathlib.Path, env: dict[str, str], cap: int, accumulation_steps: int) -> None:
+    """Run the trainer in `run_dir` until its metrics.csv reaches opt step `cap`, then stop
+    it (an interrupted arm is made resumable first). Exits if the trainer ends short of the cap."""
+    name, metrics = run_dir.name, run_dir / "metrics.csv"
+    if note := prepare_resume(run_dir, accumulation_steps):
+        print(f"{name}: {note}", flush=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log = (run_dir / "train.log").open("a")
+    proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
+                             str(run_dir / "checkpoints")], cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
+    print(f"{name}: trainer pid {proc.pid}, to opt step {cap}", flush=True)
+    try:
+        while proc.poll() is None and last_step(metrics) < cap:
+            time.sleep(30)
+    finally:
+        if proc.poll() is None:
+            print(f"{name}: stopping trainer pid {proc.pid} at opt step {last_step(metrics)} "
+                  f"(cap {cap}; harness exiting)", flush=True)
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    if last_step(metrics) < cap:
+        raise SystemExit(f"{name}: trainer ended at step {last_step(metrics)} < {cap} "
+                         f"(exit {proc.returncode}); see {run_dir / 'train.log'}")
+
+
+def report(run_dir: pathlib.Path, target_ce: float, cap: int, tokens_per_opt_step: int) -> None:
+    """Read the arm's metrics.csv up to the cap: one line for a person, one RESULT line for the referee."""
+    metrics = run_dir / "metrics.csv"
+    tokens_m, final, reached, aligned, interp_m = tokens_to_target(metrics, target_ce, cap, tokens_per_opt_step)
+    print(f"{run_dir.name}: target {target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
     results.emit("run", run_dir=run_dir, tokens_to_target_M=tokens_m, tokens_to_target_interp_M=interp_m,
                  final_val_ce=final if final is not None else float("nan"),
                  reached=float(reached), probe_aligned=float(aligned),
                  minutes_to_target=minutes if (minutes := minutes_to_target(
-                     metrics, args.target_ce, args.opt_steps)) is not None else float("nan"))
+                     metrics, target_ce, cap)) is not None else float("nan"))
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    knobs = parse_knobs(args.set)
+
+    from trm.settings import CONFIG
+    run_dir = REPO / "runs" / run_name(args, knobs)
+    if last_step(run_dir / "metrics.csv") < args.opt_steps:
+        accumulation = (CONFIG.model_copy(update={"BATCH_SIZE": args.batch}) if args.batch else CONFIG).ACCUMULATION_STEPS
+        train_to_cap(run_dir, trainer_env(args, knobs, CONFIG), args.opt_steps, accumulation)
+    else:
+        print(f"{run_dir.name}: already at the cap, reading the recorded run", flush=True)
+    report(run_dir, args.target_ce, args.opt_steps, CONFIG.TOKENS_PER_OPT_STEP)
     return 0
 
 
