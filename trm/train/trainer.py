@@ -140,7 +140,7 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
         skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
                  # Pre-#24 checkpoints come from runs that counted from 1 (#355).
                  else samples_from_micro_steps(start_step - 1, avg_weights, config.BATCH_SIZE))
-        for gen, skip in zip(pretrain_sources, skips):
+        for gen, skip in zip(pretrain_sources, skips, strict=True):
             gen.skip_count = skip
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)

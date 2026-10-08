@@ -91,7 +91,7 @@ def clean_column(log, name, suspect=None):
     """
     bad = suspect_rows(log) if suspect is None else suspect
     steps, values = log.column(name)
-    kept = [(s, v) for s, v in zip(steps, values) if s not in bad]
+    kept = [(s, v) for s, v in zip(steps, values, strict=True) if s not in bad]
     return [s for s, _ in kept], [v for _, v in kept]
 
 

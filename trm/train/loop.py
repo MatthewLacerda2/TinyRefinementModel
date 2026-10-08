@@ -210,7 +210,7 @@ class TrainLoop:
         finally:
             # The module objects get the loop's last state, for whoever reads them after
             # this returns (#474: the live state is the hot path's while the loop runs).
-            self.hot.model
+            self.hot.sync()
             # An asynchronous checkpoint write may still be landing (#218) — a crash, a
             # budget stop's TERM, or a divergence kill must not cut the last one short.
             wait_for_pending_saves()

@@ -205,7 +205,7 @@ def test_the_runner_restores_and_scores_a_checkpoint(tmp_path, monkeypatch):
     saved_leaves = jax.tree_util.tree_leaves(nnx.state(saved))
     restored_leaves = jax.tree_util.tree_leaves(nnx.state(restored["model"]))
     assert len(saved_leaves) == len(restored_leaves), "a restore that drops leaves must not pass"
-    assert all(np.array_equal(a, b) for a, b in zip(saved_leaves, restored_leaves)), \
+    assert all(np.array_equal(a, b) for a, b in zip(saved_leaves, restored_leaves, strict=True)), \
         "the checkpoint's weights, not the skeleton's own initialization"
     row = json.loads(out.read_text())
     assert row["checkpoint"]["step"] == 7
@@ -259,8 +259,8 @@ def test_a_named_step_restores_that_step_not_the_newest(tmp_path):
 
     at_3, step = restore_model(CONFIG, str(tmp_path), step=3, **TINY_PLAIN)
     assert len(leaves(older)) == len(leaves(at_3))
-    assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3)))
-    assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3))), \
+    assert step == 3 and all(np.array_equal(a, b) for a, b in zip(leaves(older), leaves(at_3), strict=True))
+    assert not all(np.array_equal(a, b) for a, b in zip(leaves(newer), leaves(at_3), strict=True)), \
         "the two saved models must differ, or this test cannot tell the steps apart"
     _, default_step = restore_model(CONFIG, str(tmp_path), **TINY_PLAIN)
     assert default_step == 9, "with no step named, the newest stays the default"

@@ -50,6 +50,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import argparse
 import datetime
+import itertools
 import math
 import pathlib
 import re
@@ -139,7 +140,7 @@ def _clean(steps, values):
     step. A torn last CSV row and a resumed run that rewinds its step counter
     are both normal here, and neither should put a spike in the hero image."""
     out_s, out_v, last = [], [], -1
-    for s, v in zip(steps, values):
+    for s, v in zip(steps, values, strict=True):
         if s is None or v is None or s <= last:
             continue
         try:
@@ -530,8 +531,9 @@ def training_curve(runlog, outdir):
         ax.plot(val_tokens, val_ce, color=ORANGE, linewidth=1.8, marker="o",
                 markersize=3, label="held-out val CE")
     # The other corpora's held-out CE (#363), thinner: the cost side of the mixture.
+    # Cycled, so a run probing more or fewer corpora than today's two still plots each.
     for (source, (steps, values)), colour in zip(sorted(runlog.val_by_source().items()),
-                                                 (AQUA, INK_DIM)):
+                                                 itertools.cycle((AQUA, INK_DIM))):
         src_tokens, src_ce = _clean(steps, values)
         ax.plot(src_tokens * tokens_per_step, src_ce, color=colour, linewidth=1.2,
                 linestyle="--", marker="o", markersize=2.5, label=f"held-out {source}")
@@ -927,7 +929,7 @@ def main():
     try:
         build(log=args.log, outdir=args.out)
     except FileNotFoundError as missing:
-        raise SystemExit(str(missing))
+        raise SystemExit(str(missing)) from None
 
 
 if __name__ == "__main__":

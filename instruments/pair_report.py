@@ -65,7 +65,7 @@ def _number(text):
 def _pace(stamps):
     """Median seconds per opt step between consecutive log rows. The median, so a
     pause and resume (a gap of hours between two rows) does not count as training."""
-    rates = [(t1 - t0) / (s1 - s0) for (s0, t0), (s1, t1) in zip(stamps, stamps[1:]) if s1 > s0]
+    rates = [(t1 - t0) / (s1 - s0) for (s0, t0), (s1, t1) in zip(stamps, stamps[1:], strict=False) if s1 > s0]
     return statistics.median(rates) if rates else None
 
 

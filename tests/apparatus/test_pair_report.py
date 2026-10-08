@@ -40,7 +40,7 @@ def _run(root: pathlib.Path, name: str, ces, act_max) -> pathlib.Path:
     run = root / name
     run.mkdir()
     rows, clock = [], 0
-    for i, (ce, act) in enumerate(zip(ces, act_max)):
+    for i, (ce, act) in enumerate(zip(ces, act_max, strict=True)):
         clock += 80 + (3600 if i == 2 else 0)
         stamp = f"2026-10-01T{clock // 3600:02d}:{clock % 3600 // 60:02d}:{clock % 60:02d}Z"
         rows.append(f"{8 * (i + 1)},{ce},{8 * (i + 1)},{act},{act / 4},{stamp}\n")

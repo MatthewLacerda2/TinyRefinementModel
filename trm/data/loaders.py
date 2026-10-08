@@ -183,7 +183,7 @@ class DataMixer:
             raise ValueError(f"data state has {len(state['sources'])} sources, "
                              f"the mixer {len(self._all)}: a different DATA_MIXTURE")
         self.rng.bit_generator.state = state["rng"]
-        for source, source_state in zip(self._all, state["sources"]):
+        for source, source_state in zip(self._all, state["sources"], strict=True):
             source.load_state(source_state)
         self._alive = list(state["alive"])
         self.sources = [self._all[i] for i in self._alive]
@@ -202,10 +202,10 @@ class DataMixer:
         if len(names) != len(state["sources"]):
             raise ValueError(f"data state has {len(state['sources'])} sources for "
                              f"{len(names)} names: cannot tell which reader is which")
-        saved = dict(zip(names, state["sources"]))
+        saved = dict(zip(names, state["sources"], strict=True))
         if self.names is None:
             raise ValueError("branching matches readers by bucket name, and this mixer was built without names")
-        for name, source in zip(self.names, self._all):
+        for name, source in zip(self.names, self._all, strict=True):
             if name in saved:
                 source.load_state(saved[name])
             if skip:
@@ -228,7 +228,7 @@ class DataMixer:
             exhausted_indices = []
             drawn_from = []
 
-            for i, (source, count) in enumerate(zip(self.sources, counts)):
+            for i, (source, count) in enumerate(zip(self.sources, counts, strict=True)):
                 if count > 0:
                     res = source.get_batch(count)
                     if res is None or getattr(source, "exhausted", False):
@@ -239,7 +239,7 @@ class DataMixer:
 
             if exhausted_indices:
                 new_sources, new_weights, new_alive = [], [], []
-                for i, (s, w) in enumerate(zip(self.sources, self.weights)):
+                for i, (s, w) in enumerate(zip(self.sources, self.weights, strict=True)):
                     if i not in exhausted_indices:
                         new_sources.append(s)
                         new_weights.append(w)

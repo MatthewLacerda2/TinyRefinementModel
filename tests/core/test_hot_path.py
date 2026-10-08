@@ -58,7 +58,7 @@ def _run(inner, hot, touch_at=()):
 
 
 def _identical(a, b):
-    return len(a) == len(b) and all(x.shape == y.shape and np.array_equal(x, y) for x, y in zip(a, b))
+    return len(a) == len(b) and all(x.shape == y.shape and np.array_equal(x, y) for x, y in zip(a, b, strict=True))
 
 
 @pytest.mark.parametrize("inner", [
@@ -68,7 +68,7 @@ def _identical(a, b):
 def test_the_hot_path_is_bit_identical_across_two_windows_and_a_partial_third(inner):
     ref = _run(inner(), hot=False)
     got = _run(inner(), hot=True)
-    for a, b in zip(ref, got):
+    for a, b in zip(ref, got, strict=True):
         assert _identical(a, b)
 
 
@@ -76,7 +76,7 @@ def test_reading_the_modules_mid_run_changes_nothing():
     inner = lambda: optax.chain(optax.clip_by_global_norm(1.0), _adamw(CONFIG, lambda s: 1e-3))  # noqa: E731
     ref = _run(inner(), hot=False)
     got = _run(inner(), hot=True, touch_at=(1, 3, 4))
-    for a, b in zip(ref, got):
+    for a, b in zip(ref, got, strict=True):
         assert _identical(a, b)
 
 

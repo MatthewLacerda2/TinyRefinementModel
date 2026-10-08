@@ -23,9 +23,9 @@ def _run(tx_cls, inner, k, steps, seed=0):
     model = build_model(CONFIG, nnx.Rngs(seed), dim=60, num_layers=1)
     opt = nnx.Optimizer(model, tx_cls(inner, every_k_schedule=k, use_grad_mean=True), wrt=nnx.Param)
     key = jax.random.PRNGKey(1)
-    for i in range(steps):
+    for _ in range(steps):
         key, sub = jax.random.split(key)
-        grads = jax.tree_util.tree_map(lambda x: 0.01 * jax.random.normal(sub, x.shape, x.dtype),
+        grads = jax.tree_util.tree_map(lambda x, sub=sub: 0.01 * jax.random.normal(sub, x.shape, x.dtype),
                                        nnx.state(model, nnx.Param))
         apply_grads(opt, grads, model)  # optax.MultiSteps has no emits_next: updates every call, as optax does
     return ([np.asarray(x) for x in jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))],
@@ -33,7 +33,7 @@ def _run(tx_cls, inner, k, steps, seed=0):
 
 
 def _identical(a, b):
-    return len(a) == len(b) and all(x.shape == y.shape and np.array_equal(x, y) for x, y in zip(a, b))
+    return len(a) == len(b) and all(x.shape == y.shape and np.array_equal(x, y) for x, y in zip(a, b, strict=True))
 
 
 def test_adamw_params_and_state_are_bit_identical_across_two_windows_and_a_partial_third():
@@ -61,7 +61,7 @@ def test_the_inner_optimizer_runs_once_per_window_and_never_inside_a_branch():
     tx = LazyMultiSteps(inner, every_k_schedule=4, use_grad_mean=True)
     state = tx.init(nnx.state(model, nnx.Param))
     grads = jax.tree_util.tree_map(jnp.ones_like, nnx.state(model, nnx.Param))
-    for i in range(8):
+    for _ in range(8):
         if tx.emits_next(state):
             _, state = tx.update(grads, state)
         else:

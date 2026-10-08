@@ -39,7 +39,7 @@ def _todays_curriculum(step, ramp_steps):
     if step >= ramp_steps:
         return list(end)
     fraction = float(step) / ramp_steps
-    return [s + (e - s) * fraction for s, e in zip(start, end)]
+    return [s + (e - s) * fraction for s, e in zip(start, end, strict=True)]
 
 
 def test_the_default_mixture_is_the_one_every_run_trained_with():
@@ -185,7 +185,7 @@ def test_a_branch_continues_each_bucket_it_read_and_starts_a_new_one_fresh(tmp_p
     for _ in range(4):
         parent.get_batch(1)
     state = json.loads(json.dumps(parent.state()))
-    expected = {name: _first_row(source) for name, source in zip(parent.names, parent._all)}
+    expected = {name: _first_row(source) for name, source in zip(parent.names, parent._all, strict=True)}
 
     child = _branch_mixer(tmp_path, ("web", "math", "code"))
     child.branch_state(state, legacy_names=())

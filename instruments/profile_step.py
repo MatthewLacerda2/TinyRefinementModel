@@ -136,7 +136,7 @@ def summarize(spans, dispatch, device):
     if len(starts) <= 1:  # a micro-step is the span between two boundaries
         raise SystemExit(f"{len(starts)} trm/{BOUNDARY} spans in the trace: no whole micro-step to read")
     lo, hi, n = starts[0], starts[-1], len(starts) - 1
-    walls = sorted(b - a for a, b in zip(starts, starts[1:]))
+    walls = sorted(b - a for a, b in zip(starts, starts[1:], strict=False))
     busy = merged(device)
     calls = merged(dispatch)
     per_span = {}

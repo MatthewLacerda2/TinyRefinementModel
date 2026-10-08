@@ -142,7 +142,7 @@ def main(argv=None):
 
     def flat(tree, which):
         leaves = [np.asarray(leaf, dtype=np.float64).ravel()
-                  for leaf, label in zip(jax.tree_util.tree_leaves(tree), labels) if label == which]
+                  for leaf, label in zip(jax.tree_util.tree_leaves(tree), labels, strict=True) if label == which]
         return np.concatenate(leaves)
 
     def compare(a, b):

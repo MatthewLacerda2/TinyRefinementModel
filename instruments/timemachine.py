@@ -238,7 +238,7 @@ def recorded_val_ces(run_id):
     except FileNotFoundError:
         return {}
     # At the probe's own step when the run recorded it (#351), else the logged row's.
-    return {s: v for s, v in zip(*log.val_readings()) if math.isfinite(v)}
+    return {s: v for s, v in zip(*log.val_readings(), strict=True) if math.isfinite(v)}
 
 
 def checkpoint_opt_step(checkpoint_step, accumulation_steps):

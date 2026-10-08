@@ -98,7 +98,7 @@ def test_scaling_does_not_change_the_gradients():
         rtol, atol, norm_rel = 0.0, float(jnp.finfo(jnp.float16).eps) * largest, 1e-4
     else:
         rtol, atol, norm_rel = 1e-6, 1e-8, 1e-6
-    for a, b in zip(flat_plain, flat_scaled):
+    for a, b in zip(flat_plain, flat_scaled, strict=True):
         np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=rtol, atol=atol)
     assert float(scaled_norm) == pytest.approx(float(plain_norm), rel=norm_rel)
 

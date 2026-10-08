@@ -22,7 +22,7 @@ def _labels(model):
     params = nnx.state(model, nnx.Param)
     labels = optimizers.muon_partition(params)
     return {jax.tree_util.keystr(p): (lab, leaf.ndim) for (p, lab), (_, leaf) in
-            zip(jax.tree_util.tree_flatten_with_path(labels)[0], jax.tree_util.tree_flatten_with_path(params)[0])}
+            zip(jax.tree_util.tree_flatten_with_path(labels)[0], jax.tree_util.tree_flatten_with_path(params)[0], strict=True)}
 
 
 def test_matrices_go_to_muon_and_the_embedding_norms_and_biases_to_adam():
@@ -46,7 +46,7 @@ def test_the_muon_chain_takes_a_step_and_stores_bf16_momentum_on_both_partitions
     opt.update(model, grads)
     after = nnx.state(model, nnx.Param)
     moved = [not np.array_equal(b, np.asarray(a)) for b, a in
-             zip(jax.tree_util.tree_leaves(before), jax.tree_util.tree_leaves(after))]
+             zip(jax.tree_util.tree_leaves(before), jax.tree_util.tree_leaves(after), strict=True)]
     assert all(moved), "every parameter must receive an update"
     assert all(np.isfinite(np.asarray(a)).all() for a in jax.tree_util.tree_leaves(after))
     mus = [leaf for path, leaf in jax.tree_util.tree_flatten_with_path(opt.opt_state)[0]
