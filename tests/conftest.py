@@ -18,6 +18,12 @@ if not os.environ.get("RUN_TESTS_ON_GPU"):
     # CPU XLA cannot lower the model's f16-with-f32-accumulation matmuls
     # (see config.py). GPU mode exercises the real f16 path.
     os.environ.setdefault("FORCE_F32_COMPUTE", "1")
+else:
+    # The embedding backward is an atomic scatter-add on the card, so the same step
+    # differs from itself run to run; the identity tests need it pinned. Tests only:
+    # runs leave it off for its +13% per micro-step (#540, #556).
+    os.environ["XLA_FLAGS"] = (
+        os.environ.get("XLA_FLAGS", "") + " --xla_gpu_deterministic_ops=true").strip()
 
 import numpy as np
 import pytest

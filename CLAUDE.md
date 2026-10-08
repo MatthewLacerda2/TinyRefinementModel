@@ -313,6 +313,11 @@ literature has settled; then our own hypotheses.
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
 
+- **`agent`** — Claude filed the issue on its own initiative, or opened the PR
+  without an issue. Claude may file issues without asking, and applies the label by
+  its own judgment. The label only tells the owner where the item came from. It
+  ranks and is handled exactly like an issue the owner filed.
+
 **Spotting a bug mid-task.** Claude decides what to do with it — fix it in the current
 task, record it on a related issue, open its own issue, or surface it for the owner to
 call. **If there is nothing to decide, don't ask:** fix it in the next related PR, or
