@@ -4,7 +4,6 @@ import ast
 import datetime
 import json
 import pathlib
-import re
 
 import pytest
 
@@ -33,27 +32,6 @@ def test_listing_reads_opt_steps_from_disk(tmp_path):
     assert [(c.step, c.opt_step) for c in found] == [(630783, 4928), (638975, 4992), (647167, 5056)]
 
 
-# --- a checkpoint from the retired SFT phase is refused, not resumed (#323) ----
-
-def test_a_pretraining_monitor_state_resumes_with_or_without_the_legacy_phase_fields():
-    """Checkpoints written before #323 carry sft_active/sft_start_step; new ones
-    carry neither. Both read as pretraining."""
-    rw.refuse_sft_phase_resume({"samples_seen": 5}, 638975, "ckpts", ACCUM)
-    rw.refuse_sft_phase_resume({"sft_active": False, "sft_start_step": None}, 638975, "ckpts", ACCUM)
-
-
-def test_an_sft_phase_monitor_state_is_refused_and_names_the_rewind():
-    """A flip at micro-step 647,167 (opt step 5,056). Resuming a checkpoint past
-    it as pretraining would silently change the mixture and the LR, so the loader
-    stops and points at the last clean opt step."""
-    with pytest.raises(SystemExit) as refused:
-        rw.refuse_sft_phase_resume({"sft_active": True, "sft_start_step": 647167},
-                                   655359, "runs/run_X/checkpoints", ACCUM)
-    message = str(refused.value)
-    assert "655359" in message and "647167" in message
-    assert "python -m trm.runtime.rewind runs/run_X/checkpoints --to-opt-step 5056" in message
-
-
 def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     """The on-disk check fires on the newest finalized checkpoint and writes
     nothing: run_metadata.json is byte-for-byte what it was."""
@@ -66,10 +44,10 @@ def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     _ckpt(checkpoints, 4992)
     newest = _ckpt(checkpoints, 5120)
     (newest / "monitor_state").mkdir()
-    (newest / "monitor_state" / "metadata").write_text(json.dumps({"sft_start_step": 5056 * ACCUM - 1}))
+    (newest / "monitor_state" / "metadata").write_text(json.dumps({**PRETRAINING, "sampels_seen": 5}))
     _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
 
-    assert "--to-opt-step 5056" in rw.unresumable(checkpoints, ACCUM)
+    assert "sampels_seen" in rw.unresumable(checkpoints, ACCUM)
     assert metadata.read_bytes() == before
 
 
@@ -111,19 +89,6 @@ def test_the_trainer_refuses_before_it_starts_a_session():
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             lines[name] = min(lines.get(name, node.lineno), node.lineno)
     assert lines["unresumable"] < lines["start_session"]
-
-
-def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
-    """The checkpoint saved on the flip's own boundary was written before the flip,
-    so it is clean; the suggested opt step must select it and nothing later."""
-    for opt in (4992, 5056, 5120):
-        _ckpt(tmp_path, opt)
-    flip_micro_step = 5056 * ACCUM - 1
-    with pytest.raises(SystemExit) as refused:
-        rw.refuse_sft_phase_resume({"sft_start_step": flip_micro_step}, 5120 * ACCUM - 1, tmp_path, ACCUM)
-    to_opt_step = int(re.search(r"--to-opt-step (\d+)", str(refused.value)).group(1))
-    chosen = rw.resolve(rw.checkpoints_in(tmp_path, ACCUM), to_opt_step)
-    assert chosen.step == flip_micro_step
 
 
 def test_rewind_sets_aside_newer_checkpoints_in_both_dirs_and_deletes_nothing(tmp_path):

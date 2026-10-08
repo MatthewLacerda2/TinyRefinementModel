@@ -13,11 +13,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-# Fields a retired feature wrote: declared so its checkpoints still load, never
-# written again.
-_READ_ONLY = {"sft_active", "sft_start_step"}
-
-
 class ResumeState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -39,11 +34,6 @@ class ResumeState(BaseModel):
     # (`load_state`); absent, the resume estimates the position from samples_seen.
     data_state: dict[str, Any] | None = None
 
-    # ── Read, never written: the SFT phase removed in #323 ──────────────────
-    # A checkpoint inside that phase is refused by `refuse_sft_phase_resume`.
-    sft_active: bool | None = None
-    sft_start_step: int | None = None
-
     @classmethod
     def of(cls, monitor, run_id):
         """The state of a LossMonitor, as a save records it."""
@@ -64,7 +54,7 @@ class ResumeState(BaseModel):
 
     def saved(self):
         """The JSON a checkpoint writes."""
-        return self.model_dump(exclude=_READ_ONLY)
+        return self.model_dump()
 
     @classmethod
     def load(cls, saved, where):

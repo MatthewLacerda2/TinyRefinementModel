@@ -64,35 +64,11 @@ def checkpoints_in(directory: pathlib.Path, accumulation_steps: int) -> list[Che
     return sorted(found, key=lambda c: c.step)
 
 
-def refuse_sft_phase_resume(monitor_state: dict, step: int, checkpoint_dir,
-                            accumulation_steps: int) -> None:
-    """Refuse to resume a checkpoint written inside the retired SFT phase (#323).
-
-    The in-run SFT flip is gone, so the trainer would resume such a checkpoint as
-    pretraining: a different data mixture and 10x the LR, with nothing in the log
-    to say so. Checkpoints from before the removal still carry the phase fields;
-    ones without them (every checkpoint written since) read as pretraining.
-    """
-    sft_start_step = monitor_state.get("sft_start_step")
-    if sft_start_step is None:
-        return
-    # The flip happened on an opt-step boundary, after that boundary's saves, so
-    # every checkpoint at or below this opt step is still pretraining.
-    last_clean_opt_step = (sft_start_step + 1) // accumulation_steps
-    raise SystemExit(
-        f"❌ checkpoint step {step} is in the SFT phase that began at micro-step {sft_start_step} "
-        f"(opt step {last_clean_opt_step}). The in-run SFT flip was removed (#323), so resuming it "
-        f"would silently continue as pretraining on a different mixture and LR. Rewind to the "
-        f"last pretraining checkpoint first:\n"
-        f"    python -m trm.runtime.rewind {checkpoint_dir} --to-opt-step {last_clean_opt_step}")
-
-
 def unresumable(checkpoint_dir, accumulation_steps: int) -> str | None:
     """Why the checkpoint a resume of `checkpoint_dir` would load must be refused, or
     None. Read from disk before a launch touches anything: no run session appended,
     no model built, no orbax restore, no jax. The checkpoint is the newest finalized
-    one; it is refused when it is from the retired SFT phase (#323) or when its
-    resume state is not a ResumeState (#477). The trainer asks before its session
+    one; it is refused when its resume state is not a ResumeState (#477). The trainer asks before its session
     starts, and the supervisor before it launches or relaunches one (#505). An
     unreadable state is left for the restore to report."""
     found = checkpoints_in(pathlib.Path(checkpoint_dir), accumulation_steps)
@@ -104,7 +80,6 @@ def unresumable(checkpoint_dir, accumulation_steps: int) -> str | None:
     except (OSError, ValueError):
         return None
     try:
-        refuse_sft_phase_resume(state, newest.step, checkpoint_dir, accumulation_steps)
         ResumeState.load(state, f"checkpoint step {newest.step} in {checkpoint_dir}")
     except SystemExit as refused:
         return str(refused)
