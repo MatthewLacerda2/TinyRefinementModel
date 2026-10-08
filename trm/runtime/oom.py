@@ -56,16 +56,18 @@ def user_manager_problem() -> str | None:
 
 
 def systemd_run(argv: list[str], env: dict[str, str], cwd: pathlib.Path, unit: str, *,
-                stdout: pathlib.Path | None = None) -> list[str]:
+                stdout: pathlib.Path | None = None, properties: tuple[str, ...] = ()) -> list[str]:
     """The `systemd-run --user` command that starts `argv` as unit `unit` at OOM_SCORE_ADJ,
     in `cwd` with `env`. With `stdout`, detached: it returns once the process has
     started, output appended to that file, and only the main process is stopped with
     the unit (a milestone scorer outlives the supervisor, as it did before). Without
-    it, in the foreground: stdio piped through and the exit code returned."""
+    it, in the foreground: stdio piped through and the exit code returned. `properties`
+    are further unit properties, `-p` each."""
     how = (["-p", f"StandardOutput=append:{stdout}", "-p", "StandardError=inherit", "-p", "KillMode=process"]
            if stdout is not None else ["--pipe", "--wait"])
     return ["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}", "-p", "Type=exec",
             "-p", f"OOMScoreAdjust={OOM_SCORE_ADJ}", f"--working-directory={cwd}", *how,
+            *(arg for prop in properties for arg in ("-p", prop)),
             *(f"--setenv={k}={v}" for k, v in sorted(env.items())
               if _ENV_NAME.fullmatch(k) and k not in _SYSTEMD_OWNED),
             "--", *argv]
