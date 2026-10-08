@@ -8,26 +8,14 @@ and cannot attribute cause, so nothing here decides KEEP/KILL. That stays with
 so a future session can *see* what a checkpoint sounded like, with enough recorded
 context to know what it was looking at.
 
-Three defects in the previous version, all of which made old transcripts unusable:
-
-1. **Not reproducible.** `generate_text` seeded its RNG from the wall clock, so the
-   same checkpoint on the same prompts gave different text every run. The docstring
-   claimed comparability the tool did not have. Fixed with an explicit seed.
-
-2. **It would have killed the training run.** The module set
-   `XLA_PYTHON_CLIENT_MEM_FRACTION=0.5` at import — ~3GB of a 6GB card, while the
-   #157 base run holds 5.2GB. Device is now explicit, defaults to CPU, and the GPU
-   path refuses to start next to a busy card.
-
-3. **It recorded almost nothing.** Step, and a timestamp. Not the token count, the
-   CE at the time, the device, or either of the two commits that matter
-   (the one that trained the weights and the one generating the transcript).
-
-And a fourth, subtler one: it hardcoded `temperature=0.5`, which #192 identified as
-*below* the useful range — cold enough to make an undertrained model loop on its own
-("the ratio of the ratio of the ratio"). Transcripts taken at 0.5 were reading the
-decoder's failure mode, not the weights'. The default now follows
-`trm.infer.DEFAULT_TEMPERATURE` so the logbook and the CLI show the same model.
+What it guarantees, each one a fix of the version before it (#203, #192):
+- reproducible: an explicit seed, so the same checkpoint and prompts give the same text;
+- safe beside training: the device is explicit and defaults to CPU, and the GPU path
+  refuses a busy card;
+- self-describing: each transcript records the step, tokens, CE, device and both commits
+  (the one that trained the weights and the one that generated the text);
+- the CLI's sampler: the temperature follows `trm.infer.DEFAULT_TEMPERATURE`, so the
+  logbook and the CLI show the same model.
 
 Usage — safe to run while training, as long as you leave --device alone:
 
