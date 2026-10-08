@@ -26,7 +26,11 @@ extend-exclude = ["venv"]
 # name's comment says why that value. Tests are exempt: their numbers are the expected values.
 # B: flake8-bugbear (#563), e.g. a zip() that must say whether unequal lengths are a bug.
 # I: import order (#563), so an import diff shows what changed and not where it moved.
-select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B", "I"]
+# SIM: simplifications (#563), less two of them that trade clarity for brevity: SIM300
+# reads `F16_MAX > x` as a Yoda condition because the name is upper case, and SIM108
+# folds a two-branch if into a ternary however long the line gets.
+select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B", "I", "SIM"]
+ignore = ["SIM300", "SIM108"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004"]

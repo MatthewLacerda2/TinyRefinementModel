@@ -140,9 +140,10 @@ def score_rows(model, rows):
 def memory_available_gib():
     """MemAvailable from /proc/meminfo, or None where there is no such file."""
     try:
-        for line in open("/proc/meminfo"):
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) / 2 ** 20
+        with open("/proc/meminfo") as meminfo:
+            for line in meminfo:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / 2 ** 20
     except OSError:
         return None
     return None

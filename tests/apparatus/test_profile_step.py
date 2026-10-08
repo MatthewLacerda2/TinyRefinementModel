@@ -8,6 +8,7 @@ trace *says* about the card needs the card (the PR's resume protocol).
 
 import glob
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -89,7 +90,7 @@ def test_the_trace_holds_every_named_span_of_the_default_window(profile):
 
 def test_the_summary_is_written_beside_a_perfetto_trace(profile):
     run_dir, stdout = profile
-    summary = open(os.path.join(run_dir, "summary.txt")).read()
+    summary = pathlib.Path(run_dir, "summary.txt").read_text()
     assert "profile: 4 micro-steps" in summary and summary.strip() in stdout
     assert all(f"  {name} " in summary for name in SPANS)
     assert "#474 gate" in summary

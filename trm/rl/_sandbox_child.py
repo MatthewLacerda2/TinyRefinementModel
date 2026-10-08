@@ -34,6 +34,7 @@ answer is a container, not another name in the list.
 """
 
 import builtins
+import contextlib
 import json
 import resource
 import signal
@@ -78,10 +79,8 @@ def lock_down(memory_bytes, cpu_seconds):
     were installed first.
     """
     for name in ALLOWED:
-        try:
+        with contextlib.suppress(ImportError):  # a stdlib that moved or was trimmed; one name fewer
             _real_import(name)
-        except ImportError:
-            pass  # a stdlib that moved or was trimmed; the candidate loses one name
 
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
