@@ -124,7 +124,7 @@ def nearest_metric(steps, values, target):
     alternative is leaving the field blank on almost every entry.
     """
     best = None
-    for step, value in zip(steps, values):
+    for step, value in zip(steps, values, strict=True):
         if step <= target and (best is None or step > best[0]):
             best = (step, value)
     return None if best is None else best[1]

@@ -220,7 +220,7 @@ class MetricsLogger:
             writer = csv.writer(f)
             if fresh:
                 writer.writerow(BLOCKS_FIELDS)
-            for block, (peak, rms, (attn, mlp)) in enumerate(zip(maxes, rmses, branches)):
+            for block, (peak, rms, (attn, mlp)) in enumerate(zip(maxes, rmses, branches, strict=True)):
                 writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}", attn, mlp])
 
     def extract_diags(self, diag, jnp_mean_fn):

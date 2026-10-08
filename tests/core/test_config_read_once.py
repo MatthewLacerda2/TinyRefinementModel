@@ -59,7 +59,7 @@ def _environment_reads(source):
             continue
         parent = parents.get(node)
         handed_off = isinstance(parent, ast.Dict) and any(
-            key is None and value is node for key, value in zip(parent.keys, parent.values))
+            key is None and value is node for key, value in zip(parent.keys, parent.values, strict=True))
         setting = isinstance(parent, ast.Attribute) and parent.attr == "setdefault"
         if not (handed_off or setting):
             reads.append((enclosing(node), node.lineno))

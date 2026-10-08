@@ -65,7 +65,7 @@ def cli(tmp_path_factory, repo_root):
                           cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, f"the CLI child itself failed:\n{proc.stderr[-2000:]}"
     line = [ln for ln in proc.stdout.splitlines() if ln.startswith("CLI ")][-1]
-    return dict(zip(CLI_CASES, json.loads(line[len("CLI "):])))
+    return dict(zip(CLI_CASES, json.loads(line[len("CLI "):]), strict=True))
 
 
 def test_help_is_fast_and_clean(cli):

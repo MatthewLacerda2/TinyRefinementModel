@@ -158,5 +158,5 @@ def test_an_infinite_ceiling_is_exactly_todays_behaviour():
 
     _, _, default, _ = compute_grad_step(model, batch)
     _, _, explicit, _ = compute_grad_step(model, batch, clip_norm=jnp.float32(jnp.inf))
-    for a, b in zip(jax.tree_util.tree_leaves(default), jax.tree_util.tree_leaves(explicit)):
+    for a, b in zip(jax.tree_util.tree_leaves(default), jax.tree_util.tree_leaves(explicit), strict=True):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))

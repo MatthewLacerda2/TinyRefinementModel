@@ -25,7 +25,7 @@ def _reference_nucleus_kept_indices(logits, temperature, top_p):
 
     cum = 0.0
     kept = []
-    for idx, p in zip(order, probs):
+    for idx, p in zip(order, probs, strict=True):
         if cum < top_p:
             kept.append(idx)
         cum += p

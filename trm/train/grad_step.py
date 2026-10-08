@@ -137,7 +137,7 @@ def grad_zero_fractions(grads):
         level += 1
 
     zeros, sizes = {}, {}
-    for p, (_, leaf) in zip(paths, leaves):
+    for p, (_, leaf) in zip(paths, leaves, strict=True):
         group = p[min(level, len(p) - 1)]
         zeros[group] = zeros.get(group, 0) + jnp.sum(leaf == 0)
         sizes[group] = sizes.get(group, 0) + leaf.size
@@ -289,13 +289,13 @@ class HotPath:
 
     @property
     def model(self):
-        return self._sync()[0]
+        return self.sync()[0]
 
     @property
     def optimizer(self):
-        return self._sync()[1]
+        return self.sync()[1]
 
-    def _sync(self):
+    def sync(self):
         """The module objects, up to date; whatever is done through them is read back
         by the next hot call."""
         if self._objects_behind:
@@ -330,7 +330,7 @@ class HotPath:
                 self._mini = (self._mini + 1) % k
                 return
             self._mini, self._gstep = (self._mini + 1) % k, self._gstep + 1
-        model, opt = self._sync()
+        model, opt = self.sync()
         _apply(opt, model, grads)
 
     def check_counter(self):

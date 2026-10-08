@@ -187,7 +187,7 @@ def test_best_follows_val_ce_when_train_ce_gets_lucky_early():
     train = [3.9, 1.4, 3.7, 3.6, 3.5, 3.4]        # 1.4 is the lucky window
     val = [3.95, 3.90, 3.80, 3.70, 3.72, 3.60]    # steady, with one uptick
     saved = []
-    for step, (t, v) in enumerate(zip(train, val)):
+    for step, (t, v) in enumerate(zip(train, val, strict=True)):
         monitor.push(step, t, t)
         if monitor.push_val(v):
             saved.append(step)

@@ -23,7 +23,7 @@ def mixture_label(sources, weights):
     """`fineweb-edu=0.600 codeparrot=0.250 finemath=0.150` — the mixture a CE was
     measured on, readable without today's curriculum constants (#186)."""
     assert len(sources) == len(weights), "a mixture must name every source it weights"
-    return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights))
+    return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights, strict=True))
 
 
 def resolve_decay_steps(token_budget, tokens_per_opt_step, warmup_steps):
@@ -200,7 +200,7 @@ class Schedules:
         fraction = step / self.curriculum_steps
         return [
             start + (end - start) * fraction
-            for start, end in zip(self.start_weights, self.end_weights)
+            for start, end in zip(self.start_weights, self.end_weights, strict=True)
         ]
 
     def average_curriculum_weights(self, loader_step):
@@ -216,10 +216,10 @@ class Schedules:
             post_fraction = 1.0 - ramp_fraction
             return [
                 (start + end) / 2.0 * ramp_fraction + end * post_fraction
-                for start, end in zip(self.start_weights, self.end_weights)
+                for start, end in zip(self.start_weights, self.end_weights, strict=True)
             ]
         curr = self.curriculum_weights(step)
         return [
             (start + current) / 2.0
-            for start, current in zip(self.start_weights, curr)
+            for start, current in zip(self.start_weights, curr, strict=True)
         ]

@@ -112,7 +112,7 @@ def test_throughput_uses_logged_rows_thinned_to_end_to_end_intervals(tmp_path):
     rows = [(5 * i, 150 * i) for i in range(1, 100)]
     samples, source = clock_samples(_clocked_run(tmp_path, rows))
     assert source == "metrics"
-    gaps = [(b[0] - a[0]).total_seconds() for a, b in zip(samples, samples[1:])]
+    gaps = [(b[0] - a[0]).total_seconds() for a, b in zip(samples, samples[1:], strict=False)]
     assert all(g >= 1800 for g in gaps[:-1]), "every interval but the tail is end-to-end"
     assert samples[0][1] == 5 and samples[-1][1] == rows[-1][0], "first and last rows always kept"
 

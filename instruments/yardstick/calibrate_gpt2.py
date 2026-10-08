@@ -26,7 +26,7 @@ try:
     import torch
     from transformers import GPT2LMHeadModel
 except ImportError:
-    raise SystemExit("calibration needs torch + transformers — see the module docstring.")
+    raise SystemExit("calibration needs torch + transformers — see the module docstring.") from None
 
 import tiktoken
 

@@ -29,7 +29,7 @@ def crossings(marks, run_opt_steps, tokens_per_opt_step=TOKENS_PER_OPT_STEP):
 def test_the_schedule_doubles_and_stops_at_the_cap():
     marks = todays_marks()
     assert marks[0] == DEFAULTS.MILESTONE_FIRST_TOKENS and len(marks) == DEFAULTS.MILESTONE_MAX_COUNT
-    assert all(b == int(a * DEFAULTS.MILESTONE_RATIO) for a, b in zip(marks, marks[1:]))
+    assert all(b == int(a * DEFAULTS.MILESTONE_RATIO) for a, b in zip(marks, marks[1:], strict=False))
 
 
 def test_disk_grows_with_the_logarithm_of_the_run():
@@ -46,7 +46,7 @@ def test_a_milestone_lands_once_per_threshold_and_at_the_step_that_crosses_it():
     marks = todays_marks()
     due = crossings(marks, 30_518)  # the 4B run
     assert len(due) == sum(1 for m in marks if m <= 30_518 * TOKENS_PER_OPT_STEP) == 9
-    for step, mark in zip(due, marks):
+    for step, mark in zip(due, marks, strict=False):  # marks run past the run's end
         assert (step - 1) * TOKENS_PER_OPT_STEP < mark <= step * TOKENS_PER_OPT_STEP
 
 

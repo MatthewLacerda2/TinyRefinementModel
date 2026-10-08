@@ -90,7 +90,7 @@ def frequent_tokens(data_root, sources, count, budget):
     for source in sources:
         for shard in sorted(pathlib.Path(f"{data_root}/pretrain/{source}").glob("chunk_*.npy"))[:1]:
             ids, tally = np.unique(np.asarray(np.load(shard, mmap_mode="r")[:budget]), return_counts=True)
-            counts.update(dict(zip(ids.tolist(), tally.tolist())))
+            counts.update(dict(zip(ids.tolist(), tally.tolist(), strict=True)))
     return np.array([tid for tid, _ in counts.most_common(count)], dtype=np.int64)
 
 
@@ -206,7 +206,7 @@ def figure(frames, kinds, out, run_label):
         fig, axes = plt.subplots(rows, columns, figsize=(3.9 * columns, 4.1 * rows), squeeze=False)
         for ax in axes.ravel()[len(frames):]:
             ax.axis("off")
-        for ax, (label, points, reading) in zip(axes.ravel(), frames):
+        for ax, (label, points, reading) in zip(axes.ravel(), frames, strict=False):
             panel(ax, points, kinds, label, limit)
             ax.set_xlabel(f"separation {reading['separation']:+.3f}   rms {reading['rms']:.2f}",
                           fontsize=7.5, color=INK_DIM)
@@ -347,7 +347,7 @@ def main(argv=None):
 
     centre, axes = projection(embeddings[-1])
     frames, rows = [], []
-    for step, rows_at_step in zip(steps, embeddings):
+    for step, rows_at_step in zip(steps, embeddings, strict=True):
         reading = readings(rows_at_step, kinds)
         frames.append((f"step {step:,}", (rows_at_step - centre) @ axes.T, reading))
         rows.append({"step": int(step), **reading})

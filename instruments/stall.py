@@ -181,7 +181,7 @@ def floor_row(series, hours):
     third = len(series) // 3
     out = {}
     for name, part in (("first third", series[:third]), ("last third", series[-third:] if third else [])):
-        steps = [b - a for (_, a), (_, b) in zip(part, part[1:])]
+        steps = [b - a for (_, a), (_, b) in zip(part, part[1:], strict=False)]
         gains = [g for g in (window_gain(series, t, hours) for t, _ in part) if g is not None]
         out[name] = (statistics.stdev(steps) if len(steps) > 1 else None,
                      statistics.median(gains) if gains else None,

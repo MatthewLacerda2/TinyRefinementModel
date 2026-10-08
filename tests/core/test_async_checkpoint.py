@@ -48,7 +48,7 @@ def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_i
         model=ocp.args.StandardRestore(nnx.state(fresh)),
         optimizer=ocp.args.StandardRestore(nnx.state(nnx.Optimizer(fresh, optax.adam(1e-2), wrt=nnx.Param))),
         monitor_state=ocp.args.JsonRestore(), step=ocp.args.JsonRestore()))
-    assert all(np.array_equal(a, b) for a, b in zip(snapshot, _leaves(restored["model"])))
+    assert all(np.array_equal(a, b) for a, b in zip(snapshot, _leaves(restored["model"]), strict=True))
     assert restored["monitor_state"]["ce_history"] == [3.0, 2.9], "history as of the save, not after"
 
 

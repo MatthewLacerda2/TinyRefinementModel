@@ -140,7 +140,7 @@ def train(path_kind, build=shipped, config=CONFIG):
 def differences(a, b):
     """What differs between two runs, first steps and leaves first; [] when bitwise equal."""
     (sa, pa), (sb, pb) = a, b
-    out = [f"micro-step {i}: (loss, grad norm) {x} vs {y}" for i, (x, y) in enumerate(zip(sa, sb)) if x != y]
+    out = [f"micro-step {i}: (loss, grad norm) {x} vs {y}" for i, (x, y) in enumerate(zip(sa, sb, strict=True)) if x != y]
     out += [f"{name} differs" for name in sorted(pa.keys() | pb.keys()) if pa.get(name) != pb.get(name)]
     return out
 

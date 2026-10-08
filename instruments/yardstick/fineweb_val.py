@@ -95,7 +95,7 @@ def score(logits_fn, tokens, seq, batch=4):
     total = 0.0
     for start in range(0, len(inputs), batch):
         logits = np.asarray(logits_fn(inputs[start:start + batch]))
-        for row, target in zip(logits, targets[start:start + batch]):
+        for row, target in zip(logits, targets[start:start + batch], strict=True):
             row = row.astype(np.float64)
             top = row.max(-1, keepdims=True)
             logz = np.log(np.exp(row - top).sum(-1)) + top[:, 0]
