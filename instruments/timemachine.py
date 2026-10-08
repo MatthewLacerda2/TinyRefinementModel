@@ -31,6 +31,7 @@ import hashlib
 import json
 import math
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -77,7 +78,7 @@ def resolve_arch(run_id, meta):
         return arch
     snap = os.path.join(run_dir(run_id), "system_snapshot.txt")
     if os.path.exists(snap):
-        text = open(snap).read()
+        text = pathlib.Path(snap).read_text()
         for marker in ("MODEL_ARCH ", "arm="):  # new structured line, then legacy
             if marker in text:
                 return text.split(marker, 1)[1].split()[0].strip("();,")
@@ -89,7 +90,7 @@ def world_selects_arch(wt):
     selector handed to it; one from #292 on has a single model."""
     for rel in ("trm/settings.py", "trm/config.py", "config.py"):
         path = os.path.join(wt, rel)
-        if os.path.exists(path) and "MODEL_ARCH" in open(path).read():
+        if os.path.exists(path) and "MODEL_ARCH" in pathlib.Path(path).read_text():
             return True
     return False
 
@@ -133,7 +134,7 @@ def ensure_worktree(run_id, commit):
 
     untracked = os.path.join(run_dir(run_id), "worktree.untracked.txt")
     if os.path.exists(untracked):
-        n = len([line for line in open(untracked) if line.strip()])
+        n = len([line for line in pathlib.Path(untracked).read_text().splitlines() if line.strip()])
         if n:
             print(f"  note: {n} untracked non-ignored files existed at launch "
                   f"(not restored; see {os.path.relpath(untracked, REPO_ROOT)})")
@@ -147,7 +148,7 @@ def venv_key(run_id):
     freeze = os.path.join(run_dir(run_id), "env_freeze.txt")
     if not os.path.exists(freeze):
         return None, None
-    digest = hashlib.sha256(open(freeze, "rb").read()).hexdigest()[:16]
+    digest = hashlib.sha256(pathlib.Path(freeze).read_bytes()).hexdigest()[:16]
     return digest, freeze
 
 

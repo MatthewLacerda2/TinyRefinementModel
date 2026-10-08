@@ -74,9 +74,8 @@ def test_releasing_never_removes_someone_elses_lock(tmp_path):
 
 def test_the_lock_releases_on_the_way_out_of_a_with_block(tmp_path):
     path = tmp_path / "gpu.lock"
-    with pytest.raises(RuntimeError):
-        with GpuLock(path, label="x"):
-            raise RuntimeError("the run blew up")
+    with pytest.raises(RuntimeError), GpuLock(path, label="x"):
+        raise RuntimeError("the run blew up")
     assert not path.exists()
 
 

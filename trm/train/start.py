@@ -1,3 +1,4 @@
+import contextlib
 import os
 
 # Must be set before JAX initializes (imported transitively via trainer).
@@ -44,10 +45,8 @@ from trm.train.schedules import Schedules
 from trm.train.trainer import DATA_ROOT, init_model_and_optimizer, setup_data_pipeline
 
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(RuntimeError):
         mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        pass
 
     parser = argparse.ArgumentParser(description="Train the model")
     parser.add_argument("--new-run", action="store_true", help="Force starting a brand new training run from scratch (ignores existing checkpoints)")

@@ -70,19 +70,19 @@ def _last_step(metrics):
 def _train_until(tmp_path, run_dir, opt_steps, timeout=900):
     env = {**os.environ, **ENV, "PYTHONPATH": REPO, "DATA_ROOT": str(tmp_path / "data"),
            "JAX_COMPILATION_CACHE_DIR": str(tmp_path / "jax-cache")}
-    log = open(run_dir / "leg.log", "a")
-    proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
-                             str(run_dir / "checkpoints")], cwd=tmp_path, env=env,
-                            stdout=log, stderr=subprocess.STDOUT)
-    deadline = time.time() + timeout
-    try:
-        while proc.poll() is None and _last_step(run_dir / "metrics.csv") < opt_steps:
-            assert time.time() < deadline, (run_dir / "leg.log").read_text()[-3000:]
-            time.sleep(2)
-    finally:
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-            proc.wait(timeout=180)
+    with open(run_dir / "leg.log", "a") as log:
+        proc = subprocess.Popen([sys.executable, "-m", "trm.train.start", "--checkpoint-path",
+                                 str(run_dir / "checkpoints")], cwd=tmp_path, env=env,
+                                stdout=log, stderr=subprocess.STDOUT)
+        deadline = time.time() + timeout
+        try:
+            while proc.poll() is None and _last_step(run_dir / "metrics.csv") < opt_steps:
+                assert time.time() < deadline, (run_dir / "leg.log").read_text()[-3000:]
+                time.sleep(2)
+        finally:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                proc.wait(timeout=180)
     return (run_dir / "leg.log").read_text()
 
 
