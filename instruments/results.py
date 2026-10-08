@@ -14,6 +14,10 @@ process, so it already knows both, and a harness that had to be told its own
 arm name would need to understand the spec format — which would couple every
 research line to the runner. The harness reports what it measured; the runner
 knows what it asked for.
+
+What the line may carry beside the numbers: `run_dir`, the directory the harness
+trained into. Only the harness knows it, and `instruments.pair_report` reads the
+arms' curves from it (#564).
 """
 
 from __future__ import annotations
@@ -24,10 +28,12 @@ from typing import Any
 PREFIX = "RESULT "
 
 
-def emit(point: Any, **metrics: float) -> None:
+def emit(point: Any, *, run_dir: str | None = None, **metrics: float) -> None:
     """Print one machine-readable measurement. Flushed, because a sweep is long
     and a runner reading a dead process's buffer gets nothing."""
     row = {"point": str(point), **{k: float(v) for k, v in metrics.items()}}
+    if run_dir is not None:
+        row["run_dir"] = str(run_dir)
     print(PREFIX + json.dumps(row, sort_keys=True), flush=True)
 
 

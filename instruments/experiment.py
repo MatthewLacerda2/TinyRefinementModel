@@ -45,6 +45,7 @@ import sys
 import time
 from dataclasses import dataclass
 
+from instruments import pair_report
 from instruments import results as result_lines
 from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
@@ -334,7 +335,7 @@ def collect(rows: list[dict], metric: str) -> dict[str, dict[str, list[float]]]:
         if metric not in row:
             raise KeyError(
                 f"{row['arm']} seed {row['seed']} at point {row['point']}: no {metric!r} "
-                f"in its RESULT line (has {sorted(k for k in row if k not in ('arm', 'seed', 'fingerprint', 'elapsed_s', 'point'))})")
+                f"in its RESULT line (has {sorted(k for k in row if k not in ('arm', 'seed', 'fingerprint', 'elapsed_s', 'point', 'run_dir'))})")
         grouped.setdefault(row["point"], {}).setdefault(row["arm"], {})[row["seed"]] = float(row[metric])
     return {point: {arm: [v for _, v in sorted(by_seed.items())] for arm, by_seed in sorted(arms.items())}
             for point, arms in sorted(grouped.items())}
@@ -644,6 +645,10 @@ def main(argv=None) -> int:
     verdict = evaluate(spec, results)
     print()
     print(verdict.describe())
+    # The rest of the story beside the bar's one number (#564): the curve, the seeds, the margins.
+    if report := pair_report.render(spec, rows, RUNS_DIR.parent):
+        print()
+        print(report)
 
     today = datetime.date.today().isoformat()
     draft = RUNS_DIR / spec.id / "finding-draft.md"
