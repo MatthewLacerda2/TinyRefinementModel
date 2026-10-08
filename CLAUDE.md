@@ -246,36 +246,41 @@ live state live in issues, *not* in the codebase. Knowledge that is coupled to t
 (rule 5 above); forward-looking state (what's running, what's next) belongs outside,
 in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
-**Type labels (what kind of work it is) — in priority order:**
+**Type labels (what kind of work it is) — in priority order.** The order is the
+owner's phases: first a codebase that reads clearly and stays lean, with the tools that
+measure it and the optimizations that make everything after it cheaper; then what the
+literature has settled; then our own hypotheses.
 
-1. **`tools`** — the infrastructure: code that is *not* LLM research per se, built to
-   develop, measure and investigate — the harness, instruments, runners, telemetry,
-   CI. Comes first because every later judgment stands on it. Above all, an instrument
-   prints a **plain, reproducible report of how something ran** — what it measured,
-   the result, the speed, and what it cost in CPU, GPU, RAM and VRAM — numbers a
-   person can compare across runs to say whether a change made things faster or
-   better, never prose a model wrote about them.
-2. **`architecture`** — how things are *defined*, for both the codebase and the model.
-   For the repo: **code that reads clearly and stays lean**, with modules whose shape
-   is obvious; **automation that keeps it on the rails**, so a regression or a drift
-   fails a test or a gate; **rules that make Claude's work unambiguous**, written where
-   a fresh session finds them. For the model: what it is and how it trains — its
-   shape (GQA → multi-head latent attention), its recipe (LR, mix, weight decay) and
-   its hypotheses. Within the tier, **the repo's own issues (`codebase`) lead; the rest
-   in any order, your judgment**. A model change whose
-   *outcome is uncertain* — "maybe this works, I don't know" — is judged by a matched
-   pair. A directed fix with a known method (the document separator masked as pad,
-   #373) also carries **`bug`**: nobody is wondering whether to do it, so a smoke
-   check that it breaks nothing gates it, not a pair. **Before filing a model change,
-   ask whether the literature settled it.** If it did, it is a `bug` from birth: title
-   it "Adopt X", and put the source and expected effect in the body.
-3. **`optimization`** — makes the *code* cheaper in memory or compute **without changing
-   what the model is**. Same model, fewer resources. (GQA → MLA changes the model, so
-   it is `architecture`; chunking the cross-entropy to free activation memory is an
-   optimization.) Speed and memory make every later run cheaper, and they decide what
-   the model can be — freed memory decides whether a layer, a batch or a longer window
+1. **`codebase`** — the repo itself: **code that reads clearly and stays lean**, with
+   modules whose shape is obvious and functions split by responsibility; **automation
+   that keeps it on the rails**, so a regression or a drift fails a test, a lint or a
+   gate; **rules that make Claude's work unambiguous**, written where a fresh session
+   finds them. First because every later change lands in this code.
+2. **`tools`** — the infrastructure: code that is *not* LLM research per se, built to
+   develop, measure and investigate — the harness, instruments, referees, runners,
+   telemetry, CI. Every later judgment stands on it, and it is what turns a result
+   found by accident into one found automatically. Above all, an instrument prints a
+   **plain, reproducible report of how something ran** — what it measured, the result,
+   the speed, and what it cost in CPU, GPU, RAM and VRAM — numbers a person can compare
+   across runs to say whether a change made things faster or better, never prose a
+   model wrote about them.
+3. **`optimization`** — makes the *code* cheaper in memory, compute or tokens-to-quality
+   **without changing what the model is**. Same model, fewer resources. (GQA → MLA
+   changes the model, so it is not this; chunking the cross-entropy to free activation
+   memory is.) Speed and memory make every later run cheaper, and they decide what the
+   model can be — freed memory decides whether a layer, a batch or a longer window
    fits, and speed decides how many tokens a base run buys in its days.
-4. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
+4. **`adopt`** — what the literature has **settled** and we do not have yet: title it
+   "Adopt X", with the source and the expected effect in the body. Nobody is wondering
+   whether it works, so a smoke check that it breaks nothing gates it, never a matched
+   pair; where our setting differs (f16, a 6GB card, batch 2), measure *only that part*
+   (see "How we work"). **Before filing a model change, ask whether the literature
+   settled it** — if so it is `adopt`, not a hypothesis.
+5. **`architecture`** — the model's **uncertain** changes: its shape, its recipe (LR,
+   mix, weight decay) and its hypotheses, where the outcome is genuinely open — "maybe
+   this works, I don't know" — judged by a pre-registered matched pair. Within the
+   tier, **any order, your judgment**.
+6. **`documentation`** — changes to `.md`, skills, findings. Can land **any time**, even
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
 
@@ -298,9 +303,6 @@ in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
   A draft that touches the hot path (`trm/train/grad_step.py`) lists
   `RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py` in its resume
   protocol: the CPU ignores buffer donation, so only the card shows that class (#540).
-- **`codebase`** — an `architecture` issue about the repo itself (the shape of the
-  code, the automation that keeps it on the rails, the rules), not the model. It leads
-  its tier: every later change lands in that code.
 - **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
   session without them (a cloud session) cannot finish it. Orthogonal to lane: a
   `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
@@ -331,16 +333,15 @@ found, because now nobody will look again. Two habits follow:
 and its lane is free. The principle behind the priority order: anything that *affects
 another item* leads — whether it changes the implementation or changes how we *think*
 (a result that reframes the question). Tools ripple downstream into every measurement,
-so they lead; within `architecture`, the repo's structure (`codebase`) and a result that
-reframes the model's question lead a pair or sweep nothing depends on. The queue computes
-the first; a reframing result is a judgment call nobody can label in advance. A base run is the opposite: ablations cannot be read without it and warm-starts
+so they lead; within `architecture`, a result that reframes the model's question leads a
+pair or sweep nothing depends on, a judgment call nobody can label in advance. A base run is the opposite: ablations cannot be read without it and warm-starts
 need it, so the `base-gate` list is a launch checklist to close or waive, not a queue to
 drain.
 
 **`python -m instruments.queue` computes it.** It ranks only what these rules decide —
 tier order, then issues other open issues are blocked by, and **when the card is idle,
 `gpu`-lane items first within their tier** (an idle card is the scarce resource going
-to waste; see "measure there" above), then `codebase` issues — and says so where they stop deciding (within a
+to waste; see "measure there" above) — and says so where they stop deciding (within a
 tier is judgment). It also surfaces labels it can check and that fail:
 a `blocked` whose blockers are all closed (an open PR named as a blocker counts as
 open), an issue with no type label. And it surfaces every issue untouched for more
