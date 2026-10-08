@@ -12,6 +12,7 @@ cannot hide a knob that was silently left on.
 """
 
 import json
+import os
 import pathlib
 
 import jax
@@ -65,6 +66,9 @@ def test_the_defaults_are_the_adopted_values_and_the_run_records_them():
     assert {k: recorded[k] for k in ADOPTED} == ADOPTED
 
 
+@pytest.mark.skipif(bool(os.environ.get("RUN_TESTS_ON_GPU")), reason=(
+    "the fixture is a CPU f32 trajectory; GPU kernels reduce in another order, so it "
+    "cannot match to RTOL there (#452)"))
 def test_setting_all_three_back_reproduces_main_before_them():
     recorded = json.loads(FIXTURE.read_text())
     losses, norms = _trajectory(_config(**SET_BACK))

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from flax import nnx
 
+from trm.config import COMPUTE_DTYPE
 from trm.train.grad_step import compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
 from trm.settings import CONFIG
@@ -78,7 +79,13 @@ def test_the_default_scale_is_a_power_of_two():
 def test_scaling_does_not_change_the_gradients():
     """The whole justification for turning this on mid-run. Same model, same batch:
     the gradients the optimizer receives must be identical whether the
-    loss was scaled by 32,768 or not at all."""
+    loss was scaled by 32,768 or not at all.
+
+    Exact only in f32. Under f16 compute the unscaled backward rounds its smallest
+    values to subnormals and zeros, which is the loss the scale exists to rescue,
+    so the two paths agree only to within one f16 ulp of the largest gradient.
+    Measured on the RTX 2060 (#452): max |Δ| 4.9e-4 at max |g| 0.90, i.e. 0.55 ulp,
+    and the global norm to 3.6e-5."""
     model, batch = _tiny_model_and_batch()
     _, _, plain, plain_norm = compute_grad_step(model, batch)
     _, _, scaled, scaled_norm = compute_grad_step(model, batch, loss_scale=jnp.float32(2.0 ** 15))
@@ -86,9 +93,14 @@ def test_scaling_does_not_change_the_gradients():
     flat_plain = jax.tree_util.tree_leaves(plain)
     flat_scaled = jax.tree_util.tree_leaves(scaled)
     assert len(flat_plain) == len(flat_scaled) and flat_plain
+    if COMPUTE_DTYPE == jnp.float16:
+        largest = max(float(jnp.max(jnp.abs(b))) for b in flat_scaled)
+        rtol, atol, norm_rel = 0.0, float(jnp.finfo(jnp.float16).eps) * largest, 1e-4
+    else:
+        rtol, atol, norm_rel = 1e-6, 1e-8, 1e-6
     for a, b in zip(flat_plain, flat_scaled):
-        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-6, atol=1e-8)
-    assert float(scaled_norm) == pytest.approx(float(plain_norm), rel=1e-6)
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=rtol, atol=atol)
+    assert float(scaled_norm) == pytest.approx(float(plain_norm), rel=norm_rel)
 
 
 def test_the_reported_loss_is_unscaled():

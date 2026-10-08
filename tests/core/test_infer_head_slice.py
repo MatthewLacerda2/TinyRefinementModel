@@ -20,6 +20,7 @@ import pytest
 from flax import nnx
 
 from trm import infer
+from trm.config import COMPUTE_DTYPE
 from trm.settings import CONFIG
 
 TOY_DIM = 32
@@ -29,6 +30,9 @@ TOY_PAD = TOY_VOCAB - 1
 TOY_LAYERS = 2
 TOY_TOP_K = 8
 PROMPT = [1, 2, 3, 4]
+# f32 kernel-selection noise moves the last ulp; f16 compute moves up to one f16 ulp
+# (measured 8.3e-4 relative on the RTX 2060, #452), so the bound is the larger of the two.
+RTOL = max(1e-4, 2 * float(jnp.finfo(COMPUTE_DTYPE).eps))
 
 # Every position that has ever been an off-by-one: the first, a live one in the
 # middle of the prompt, and the last valid index.
@@ -58,8 +62,8 @@ def test_the_sliced_row_is_bit_identical_to_the_full_projection(
     full = toy(padded_tokens, training=False).logits
     one = toy(padded_tokens, training=False, logits_at=position).logits
 
-    assert jnp.allclose(one[0, 0], full[0, position], rtol=1e-4, atol=1e-5), (
-        f"row {position} differs by more than f32 kernel-selection noise — that is a "
+    assert jnp.allclose(one[0, 0], full[0, position], rtol=RTOL, atol=1e-5), (
+        f"row {position} differs by more than kernel-selection noise — that is a "
         f"real numerical change, not a different reduction order")
     assert int(jnp.argmax(one[0, 0])) == int(jnp.argmax(full[0, position])), (
         f"the winning token at row {position} changed — generation reads only the "
@@ -88,7 +92,7 @@ def test_the_jitted_sampling_step_reads_the_row_it_asked_for(toy, padded_tokens)
     # -inf survives allclose (equal infinities compare equal), which is what we
     # want: the truncation mask itself must match exactly, only the surviving
     # logits may move in their last ulp.
-    assert jnp.allclose(got, expected, rtol=1e-4, atol=1e-5, equal_nan=False)
+    assert jnp.allclose(got, expected, rtol=RTOL, atol=1e-5, equal_nan=False)
     assert jnp.array_equal(jnp.isinf(got), jnp.isinf(expected)), (
         "top-k/top-p kept a different set of tokens")
     assert int(jnp.argmax(got)) == int(jnp.argmax(expected))
