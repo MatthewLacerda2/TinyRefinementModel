@@ -33,6 +33,13 @@ from datetime import datetime
 from instruments._common import REPO_ROOT
 from instruments.verdict import load_spec
 
+REPORTS = {
+    "held-out CE": ("measured", "metrics.csv val_ce at its val_step, mean over seeds"),
+    "final_val_ce": ("measured", "the harness's RESULT line, per seed"),
+    "act_max / branch_max": ("sampled", "the logged rows only: peak over seeds and rows, mean of the last"),
+    "s/opt step": ("estimated", "median wall_clock delta between log rows, mean over seeds"),
+}
+
 # Where on the run the CE table reads, as fractions of the last probed step.
 FRACTIONS = (0.1, 0.25, 0.5, 0.75, 1.0)
 # Telemetry columns whose peak and end tell whether an arm ran near the f16 range.
