@@ -23,6 +23,8 @@ from numpy.polynomial import Polynomial
 # the reference's own PolarExpress() does, so step 5 of 5 still carries the safety
 # factor; more than 10 repeats the last.
 LOWER_BOUND, SAFETY_EPS, CUSHION, SCHEDULE_STEPS = 1e-3, 1e-2, 0.02, 10
+# The Remez exchange stops once its max error moves less than this between rounds.
+CONVERGED = 1e-15
 
 
 def optimal_quintic(lo, hi):
@@ -34,7 +36,7 @@ def optimal_quintic(lo, hi):
         return (15 / 8) / hi, (-10 / 8) / (hi ** 3), (3 / 8) / (hi ** 5)
     q, r = (3 * lo + hi) / 4, (lo + 3 * hi) / 4
     E, old_E = inf, None
-    while not old_E or abs(old_E - E) > 1e-15:
+    while not old_E or abs(old_E - E) > CONVERGED:
         old_E = E
         lhs = np.array([[lo, lo ** 3, lo ** 5, 1], [q, q ** 3, q ** 5, -1],
                         [r, r ** 3, r ** 5, 1], [hi, hi ** 3, hi ** 5, -1]])

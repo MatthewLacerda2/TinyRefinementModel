@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
@@ -82,7 +83,7 @@ def verify(program: str, tests, *, timeout_s: float = DEFAULT_TIMEOUT_S,
     # attempt by the model.
     if done.returncode in (-24, -14):
         return Outcome("timeout", 0, len(tests), "killed on its CPU allowance")
-    if done.returncode == -9:
+    if done.returncode == -signal.SIGKILL:
         return Outcome("memory", 0, len(tests), "killed from outside, most likely memory")
     return Outcome("crash", 0, len(tests),
                    f"verifier returned {done.returncode}: {done.stderr.strip()[-400:]}")

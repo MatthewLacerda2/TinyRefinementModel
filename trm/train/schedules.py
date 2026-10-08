@@ -15,6 +15,8 @@ import optax
 # planned token budget (TRAIN_TOKEN_BUDGET). With no budget set it stays at the
 # historical 15000 opt steps, so existing configs and the golden run resolve unchanged.
 DEFAULT_DECAY_STEPS = 15000
+# A mixture's weights must sum to 1 up to float rounding.
+WEIGHT_SUM_TOLERANCE = 1e-9
 
 
 def mixture_label(sources, weights):
@@ -144,7 +146,7 @@ def parse_mixture(text):
     if not buckets:
         raise SystemExit("DATA_MIXTURE names no bucket")
     for column, weights in (("start", starts), ("end", ends)):
-        if abs(sum(weights) - 1.0) > 1e-9:
+        if abs(sum(weights) - 1.0) > WEIGHT_SUM_TOLERANCE:
             raise SystemExit(f"DATA_MIXTURE {column} weights sum to {sum(weights):.6g}, not 1: {text!r}")
     return tuple(buckets), starts, ends
 

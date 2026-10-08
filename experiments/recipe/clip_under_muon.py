@@ -39,6 +39,11 @@ import numpy as np
 
 from instruments.results import emit
 
+# The log-norm trend is a moving average over TREND_WINDOW logged steps; the scatter
+# around it is read only from a curve long enough to leave points between the ends.
+TREND_WINDOW = 5
+SCATTER_MIN_POINTS = 8
+
 # Step bands the readout is summarised over: the base run's clip was active 100% of
 # the time in the first three, 28% in the fourth, and not once after step 1,000.
 # Past the last logged step the norm is held at its last logged trend value.
@@ -67,8 +72,9 @@ def norm_profile(metrics_csv: pathlib.Path, steps: int, seed: int, scatter_scale
         raise SystemExit(f"{metrics_csv} has no applied_grad_norm column values")
     xs = np.array([p[0] for p in points], dtype=float)
     logs = np.log([p[1] for p in points])
-    trend = np.convolve(logs, np.ones(5) / 5, mode="same")
-    scatter = float(np.std((logs - trend)[2:-2])) if len(logs) > 8 else 0.0
+    trend = np.convolve(logs, np.ones(TREND_WINDOW) / TREND_WINDOW, mode="same")
+    edge = TREND_WINDOW // 2  # where the moving average runs off the ends
+    scatter = float(np.std((logs - trend)[edge:-edge])) if len(logs) > SCATTER_MIN_POINTS else 0.0
     wanted = np.arange(steps, dtype=float)
     smooth = np.interp(wanted, xs, logs)
     noise = np.random.default_rng(seed).normal(0.0, scatter * scatter_scale, size=steps)
