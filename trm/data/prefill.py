@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
@@ -224,6 +225,98 @@ def write_chunk(save_path, file_idx, token_acc, stride):
     return file_idx + 1, [remainder] if len(remainder) > 0 else []
 
 
+@dataclass
+class Tally:
+    """Where one dataset's prefill stands: the next chunk index, the tokens and source
+    items counted so far, and what is tokenized (token_acc) or read (buffer) but not
+    yet saved."""
+    file_idx: int
+    total_tokens: int
+    items_processed: int
+    token_acc: list = field(default_factory=list)
+    buffer: list = field(default_factory=list)
+
+
+def start_prefetcher(ds_cfg, name, start_offset):
+    """Starts the streaming producer thread; returns its queue and stop event."""
+    prefetch_queue = queue.Queue(maxsize=PREFETCH_BUFFER)
+    stop_event = threading.Event()
+    threading.Thread(
+        target=stream_with_retries,
+        args=(ds_cfg, name, start_offset, prefetch_queue, stop_event),
+        daemon=True,
+    ).start()
+    return prefetch_queue, stop_event
+
+
+def stop_prefetcher(prefetch_queue, stop_event):
+    stop_event.set()
+    # Empty queue to unblock the producer thread
+    while not prefetch_queue.empty():
+        try:
+            prefetch_queue.get_nowait()
+        except queue.Empty:
+            break
+
+
+def tokenize_pending(pool, tally):
+    """Moves the buffered raw texts into token_acc and counts them."""
+    flat_batch = tokenize_buffer(pool, tally.buffer)
+    tally.token_acc.append(flat_batch)
+    tally.total_tokens += len(flat_batch)
+    tally.items_processed += len(tally.buffer)
+    tally.buffer = []
+
+
+def print_progress(tally, initial_tokens, target, t_start):
+    elapsed = time.time() - t_start
+    tokens_sec = (tally.total_tokens - initial_tokens) / max(1e-3, elapsed)
+    progress = (tally.total_tokens / target) * 100
+    sys.stdout.write(
+        f"\rProgress: {tally.total_tokens/1e6:.1f}M/{target/1e6:.0f}M tokens ({progress:.1f}%) | "
+        f"Speed: {tokens_sec/1e3:.1f}k tok/s | Elapsed: {elapsed/60:.1f}m"
+    )
+    sys.stdout.flush()
+
+
+def fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name):
+    """Consumes the stream batch by batch, saving a chunk (and status.json) every
+    TOKENS_PER_FILE tokens, until the stream ends or the target is reached."""
+    t_start = time.time()
+    initial_tokens = tally.total_tokens
+    while True:
+        txt = prefetch_queue.get()
+        if txt is None:  # Sentinel: stream completed
+            return
+
+        tally.buffer.append(txt)
+        if len(tally.buffer) < TOKENIZE_BATCH_ITEMS:
+            continue
+
+        tokenize_pending(pool, tally)
+        print_progress(tally, initial_tokens, target, t_start)
+
+        if sum(len(x) for x in tally.token_acc) >= TOKENS_PER_FILE:
+            tally.file_idx, tally.token_acc = write_chunk(save_path, tally.file_idx, tally.token_acc, stride)
+            save_progress(save_path, tally.file_idx, tally.total_tokens, tally.items_processed)
+
+        if tally.total_tokens >= target:
+            print(f"\n✅ {name} target reached.")
+            return
+
+
+def flush_remainder(pool, tally, save_path, stride, target, name):
+    """Final flush for this dataset: what the stream left short of a full chunk."""
+    if not ((tally.token_acc or tally.buffer) and tally.total_tokens < target):
+        return
+    if tally.buffer:
+        tokenize_pending(pool, tally)
+    if tally.token_acc:
+        tally.file_idx, _ = write_chunk(save_path, tally.file_idx, tally.token_acc, stride)
+        save_progress(save_path, tally.file_idx, tally.total_tokens, tally.items_processed)
+        print(f"\n🏁 Finished {name}. Total: {tally.total_tokens/1e9:.2f}B tokens")
+
+
 def process_dataset(pool, ds_cfg, stride):
     name = ds_cfg.get('alias') or ds_cfg['path'].split('/')[-1]
     target = ds_cfg['target_tokens']
@@ -232,80 +325,22 @@ def process_dataset(pool, ds_cfg, stride):
 
     print(f"\n🚀 Processing {name} | Target: {target/1e9:.2f}B tokens")
 
-    file_idx, total_tokens_ds, items_processed = load_progress(save_path, name)
-    if total_tokens_ds >= target:
+    tally = Tally(*load_progress(save_path, name))
+    if tally.total_tokens >= target:
         print(f"⏩ {name} already completed. Skipping.")
         return
 
-    prefetch_queue = queue.Queue(maxsize=PREFETCH_BUFFER)
-    stop_event = threading.Event()
-    threading.Thread(
-        target=stream_with_retries,
-        args=(ds_cfg, name, items_processed, prefetch_queue, stop_event),
-        daemon=True,
-    ).start()
-
-    buffer = []
-    token_acc = []
-    t_start = time.time()
-    initial_tokens = total_tokens_ds
-
+    prefetch_queue, stop_event = start_prefetcher(ds_cfg, name, tally.items_processed)
     try:
-        while True:
-            txt = prefetch_queue.get()
-            if txt is None:  # Sentinel: stream completed
-                break
-
-            buffer.append(txt)
-            if len(buffer) < TOKENIZE_BATCH_ITEMS:
-                continue
-
-            flat_batch = tokenize_buffer(pool, buffer)
-            token_acc.append(flat_batch)
-            total_tokens_ds += len(flat_batch)
-            items_processed += len(buffer)
-            buffer = []
-
-            elapsed = time.time() - t_start
-            tokens_sec = (total_tokens_ds - initial_tokens) / max(1e-3, elapsed)
-            progress = (total_tokens_ds / target) * 100
-            sys.stdout.write(
-                f"\rProgress: {total_tokens_ds/1e6:.1f}M/{target/1e6:.0f}M tokens ({progress:.1f}%) | "
-                f"Speed: {tokens_sec/1e3:.1f}k tok/s | Elapsed: {elapsed/60:.1f}m"
-            )
-            sys.stdout.flush()
-
-            if sum(len(x) for x in token_acc) >= TOKENS_PER_FILE:
-                file_idx, token_acc = write_chunk(save_path, file_idx, token_acc, stride)
-                save_progress(save_path, file_idx, total_tokens_ds, items_processed)
-
-            if total_tokens_ds >= target:
-                print(f"\n✅ {name} target reached.")
-                break
+        fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name)
     except KeyboardInterrupt:
         print("\n🛑 Interrupted by user. Cleaning up background threads...")
-        stop_event.set()
-        # Empty queue to unblock the producer thread
-        while not prefetch_queue.empty():
-            try:
-                prefetch_queue.get_nowait()
-            except queue.Empty:
-                break
+        stop_prefetcher(prefetch_queue, stop_event)
         raise
     finally:
         stop_event.set()
 
-    # Final flush for this dataset
-    if (token_acc or buffer) and total_tokens_ds < target:
-        if buffer:
-            flat_batch = tokenize_buffer(pool, buffer)
-            token_acc.append(flat_batch)
-            total_tokens_ds += len(flat_batch)
-            items_processed += len(buffer)
-        if token_acc:
-            file_idx, _ = write_chunk(save_path, file_idx, token_acc, stride)
-            save_progress(save_path, file_idx, total_tokens_ds, items_processed)
-            print(f"\n🏁 Finished {name}. Total: {total_tokens_ds/1e9:.2f}B tokens")
+    flush_remainder(pool, tally, save_path, stride, target, name)
 
 
 def run_prefill():

@@ -101,7 +101,7 @@ def heldout_perplexity(model):
     return {"val_ce": ce, "ppl": float(np.exp(ce))}
 
 
-def main(argv=None):
+def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="GPT-2-small yardstick: LAMBADA acc/ppl + held-out ppl")
     add_checkpoint_argument(ap)
     ap.add_argument("--step", type=int, default=None,
@@ -119,10 +119,11 @@ def main(argv=None):
                          f"set is {fineweb_val.SPEEDRUN_VAL_TOKENS})")
     ap.add_argument("--fineweb-window", type=int, default=CONFIG.MAX_SEQ_LEN,
                     help="context window the FineWeb shard is cut into (default: the trained MAX_SEQ_LEN)")
-    args = ap.parse_args(argv)
+    return ap.parse_args(argv)
 
-    model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
 
+def lambada_pairs(args) -> list:
+    """The LAMBADA examples, encoded; a degenerate one is skipped and counted."""
     path = args.data_path or fetch_lambada()
     texts = load_examples(path)
     if args.limit:
@@ -137,28 +138,29 @@ def main(argv=None):
             encoded.append(pair)
     if skipped:
         print(f"⚠️ Skipped {skipped} degenerate examples (no context/target after encoding).")
+    return encoded
 
-    print(f"📏 LAMBADA: {len(encoded)} examples | batch {args.batch}")
-    scores = score_examples(
-        make_logits_fn(model), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
-        progress=lambda done, total: print(f"  … {done}/{total}", flush=True) if done % 512 < args.batch else None,
-    )
-    result = summarize(scores)
-    heldout = None if args.no_heldout else heldout_perplexity(model)
-    fineweb = None
-    if args.fineweb_tokens:
-        # An added reading must not cost a milestone the LAMBADA score it always had:
-        # a fetch, sha or scoring failure is recorded in the row, not raised.
-        try:
-            tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
-            print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
-            fineweb = fineweb_val.score(make_logits_fn(model), tokens, args.fineweb_window,
-                                        batch=args.batch)
-            fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
-        except Exception as err:  # recorded in the row; the rest of the eval stands
-            print(f"⚠️ FineWeb val skipped: {err!r}")
-            fineweb = {"error": repr(err)}
 
+def fineweb_reading(model, args) -> dict | None:
+    """CE on the speedrun's FineWeb val shard, or None when --fineweb-tokens is 0."""
+    if not args.fineweb_tokens:
+        return None
+    # An added reading must not cost a milestone the LAMBADA score it always had:
+    # a fetch, sha or scoring failure is recorded in the row, not raised.
+    try:
+        tokens = fineweb_val.read_tokens(fineweb_val.fetch_fineweb_val(), args.fineweb_tokens + 1)
+        print(f"📏 FineWeb val: {args.fineweb_tokens} targets | window {args.fineweb_window}")
+        fineweb = fineweb_val.score(make_logits_fn(model), tokens, args.fineweb_window,
+                                    batch=args.batch)
+        fineweb["sha256"] = fineweb_val.FINEWEB_VAL_SHA256
+    except Exception as err:  # recorded in the row; the rest of the eval stands
+        print(f"⚠️ FineWeb val skipped: {err!r}")
+        fineweb = {"error": repr(err)}
+    return fineweb
+
+
+def print_table(result: dict, heldout: dict | None, fineweb: dict | None, limit: int | None) -> None:
+    """Ours beside the gate (GPT-2-small) and the neighbour (SmolLM2-135M)."""
     ref_acc, ref_ppl = GPT2_SMALL_REFERENCE["lambada_acc"], GPT2_SMALL_REFERENCE["lambada_ppl"]
     nb_acc, nb_ppl = SMOLLM2_135M_REFERENCE["lambada_acc"], SMOLLM2_135M_REFERENCE["lambada_ppl"]
     print()
@@ -175,9 +177,12 @@ def main(argv=None):
         print(f"{'FineWeb val CE':<28} {fineweb['val_ce']:>10.4f} {gpt2 if gpt2 else float('nan'):>12.4f}   "
               f"(GPT-2 measured at this {fineweb['window']}-token window; the speedrun's target is "
               f"{fineweb_val.REFERENCE['val_ce']} at 1,024)")
-    if args.limit:
-        print(f"⚠️ --limit {args.limit}: a smoke reading, not the bar.")
+    if limit:
+        print(f"⚠️ --limit {limit}: a smoke reading, not the bar.")
 
+
+def write_row(args, step, result: dict, heldout: dict | None, fineweb: dict | None) -> None:
+    """The model-card row (docs/registry/MODEL_CARD_TEMPLATE.md), as JSON."""
     row = {
         "commit": git_head(short=False),
         "checkpoint": {"path": args.checkpoint_path or "latest", "step": int(step)},
@@ -193,6 +198,23 @@ def main(argv=None):
     with open(out, "w") as f:
         json.dump(row, f, indent=2)
     print(f"🧾 Model-card row -> {out}")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
+
+    encoded = lambada_pairs(args)
+    print(f"📏 LAMBADA: {len(encoded)} examples | batch {args.batch}")
+    scores = score_examples(
+        make_logits_fn(model), encoded, CONFIG.PAD_TOKEN_ID, batch_size=args.batch,
+        progress=lambda done, total: print(f"  … {done}/{total}", flush=True) if done % 512 < args.batch else None,
+    )
+    result = summarize(scores)
+    heldout = None if args.no_heldout else heldout_perplexity(model)
+    fineweb = fineweb_reading(model, args)
+    print_table(result, heldout, fineweb, args.limit)
+    write_row(args, step, result, heldout, fineweb)
 
 
 if __name__ == "__main__":

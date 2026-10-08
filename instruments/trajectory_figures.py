@@ -103,82 +103,107 @@ def draw(states, gaps, outdir, label, seed=0):
     test can drive it without a model or a checkpoint."""
     import matplotlib.pyplot as plt
 
-    from instruments.plots import AQUA, BLUE, INK_DIM, ORANGE, STYLE, _note
+    from instruments.plots import STYLE
 
     outdir = pathlib.Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     blocks = np.arange(1, states.shape[0])
     rel = relative_steps(states)
-    written = []
-
-    def save(fig, ax, name):
-        ax.set_title(label, loc="right", fontsize=7.5, fontweight="normal", color=INK_DIM)
-        path = outdir / name
-        fig.savefig(path)
-        plt.close(fig)
-        written.append(str(path))
-
-    def band(ax, values, colour, text):
-        median = np.median(values, axis=1)
-        low, high = np.percentile(values, [25, 75], axis=1)
-        ax.fill_between(blocks, low, high, color=colour, alpha=0.18, linewidth=0)
-        ax.plot(blocks, median, color=colour, linewidth=2.0, marker="o", markersize=4, label=text)
-
     with plt.rc_context(STYLE):
-        # ── each token's path, in the plane its displacements vary most in
-        coords, explained = displacement_pca(states)
-        rng = np.random.default_rng(seed)
-        chosen = rng.choice(coords.shape[1], size=min(PATHS_DRAWN, coords.shape[1]), replace=False)
-        fig, ax = plt.subplots(figsize=(11.0, 5.2))
-        for p in chosen:
-            ax.plot(coords[:, p, 0], coords[:, p, 1], color=INK_DIM, alpha=0.18, linewidth=0.7)
-        cmap = plt.get_cmap("viridis")
-        for k in blocks:
-            ax.scatter(coords[k, chosen, 0], coords[k, chosen, 1], s=9, color=cmap(k / blocks[-1]),
-                       label=f"after block {k}", zorder=3)
-        ax.scatter([0], [0], s=40, color=ORANGE, zorder=4, label="the embedding (z₀)")
-        ax.set_xlabel(f"PC1 ({explained[0]:.0%} of the displacement variance)")
-        ax.set_ylabel(f"PC2 ({explained[1]:.0%})")
-        ax.set_title("Each token's path through the blocks", loc="left")
-        ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)
-        _note(ax, f"{len(chosen)} of {coords.shape[1]:,} token positions. The axes are fitted on "
-                  "z_k − z₀ for every block and position together, so all paths share one plane; "
-                  "a path is one token's state as the stack rewrites it.")
-        save(fig, ax, "trajectory_pca.png")
+        return [_save(*_paths_figure(states, blocks, seed), outdir / "trajectory_pca.png", label),
+                _save(*_steps_figure(states, rel, blocks), outdir / "trajectory_steps.png", label),
+                _save(*_difficulty_figure(rel, gaps, blocks), outdir / "trajectory_difficulty.png", label)]
 
-        # ── how much of the stream each block rewrites
-        fig, ax = plt.subplots(figsize=(11.0, 5.2))
-        band(ax, rel, BLUE, "median, with the middle 50% of positions")
-        ax.set_xticks(blocks)
-        ax.set_xlabel("block")
-        ax.set_ylabel("‖z_k − z_{k−1}‖ / ‖z_{k−1}‖")
-        # Log: block 1 writes a stream tens of times the embedding it starts from,
-        # which on a linear axis flattens every later block onto the floor.
-        ax.set_yscale("log")
-        ax.set_title("How much of the stream each block rewrites", loc="left")
-        ax.legend(loc="upper right", fontsize=9, frameon=False)
-        norms = np.median(np.linalg.norm(states, axis=-1), axis=1)
-        _note(ax, "scale-free: each step over the size of the stream it was added to, on a log "
-                  "axis because block 1 rewrites an embedding far smaller than its output. Median "
-                  "‖z_k‖ by block: " + ", ".join(f"{n:.1f}" for n in norms) + ".")
-        save(fig, ax, "trajectory_steps.png")
 
-        # ── the same, for the tokens the model ends up unsure of vs sure of
-        tie, sure = np.quantile(gaps, [TIE_QUANTILE, SURE_QUANTILE])
-        fig, ax = plt.subplots(figsize=(11.0, 5.2))
-        band(ax, rel[:, gaps <= tie], ORANGE, f"near a tie (top-2 gap ≤ {tie:.3f})")
-        band(ax, rel[:, gaps >= sure], AQUA, f"confident (top-2 gap ≥ {sure:.3f})")
-        ax.set_xticks(blocks)
-        ax.set_xlabel("block")
-        ax.set_ylabel("‖z_k − z_{k−1}‖ / ‖z_{k−1}‖")
-        ax.set_yscale("log")
-        ax.set_title("Unsure tokens against confident ones", loc="left")
-        ax.legend(loc="upper right", fontsize=9, frameon=False)
-        _note(ax, "tokens split by the gap between the final top-2 next-token probabilities: the "
-                  "bottom quarter against the top quarter. A picture to form a question with, "
-                  "not an answer.")
-        save(fig, ax, "trajectory_difficulty.png")
-    return written
+def _save(fig, ax, path, label):
+    import matplotlib.pyplot as plt
+
+    from instruments.plots import INK_DIM
+
+    ax.set_title(label, loc="right", fontsize=7.5, fontweight="normal", color=INK_DIM)
+    fig.savefig(path)
+    plt.close(fig)
+    return str(path)
+
+
+def _band(ax, blocks, values, colour, text):
+    """The median over positions per block, with the middle 50% shaded around it."""
+    median = np.median(values, axis=1)
+    low, high = np.percentile(values, [25, 75], axis=1)
+    ax.fill_between(blocks, low, high, color=colour, alpha=0.18, linewidth=0)
+    ax.plot(blocks, median, color=colour, linewidth=2.0, marker="o", markersize=4, label=text)
+
+
+def _paths_figure(states, blocks, seed):
+    """Each token's path, in the plane its displacements vary most in."""
+    import matplotlib.pyplot as plt
+
+    from instruments.plots import INK_DIM, ORANGE, _note
+
+    coords, explained = displacement_pca(states)
+    rng = np.random.default_rng(seed)
+    chosen = rng.choice(coords.shape[1], size=min(PATHS_DRAWN, coords.shape[1]), replace=False)
+    fig, ax = plt.subplots(figsize=(11.0, 5.2))
+    for p in chosen:
+        ax.plot(coords[:, p, 0], coords[:, p, 1], color=INK_DIM, alpha=0.18, linewidth=0.7)
+    cmap = plt.get_cmap("viridis")
+    for k in blocks:
+        ax.scatter(coords[k, chosen, 0], coords[k, chosen, 1], s=9, color=cmap(k / blocks[-1]),
+                   label=f"after block {k}", zorder=3)
+    ax.scatter([0], [0], s=40, color=ORANGE, zorder=4, label="the embedding (z₀)")
+    ax.set_xlabel(f"PC1 ({explained[0]:.0%} of the displacement variance)")
+    ax.set_ylabel(f"PC2 ({explained[1]:.0%})")
+    ax.set_title("Each token's path through the blocks", loc="left")
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)
+    _note(ax, f"{len(chosen)} of {coords.shape[1]:,} token positions. The axes are fitted on "
+              "z_k − z₀ for every block and position together, so all paths share one plane; "
+              "a path is one token's state as the stack rewrites it.")
+    return fig, ax
+
+
+def _relative_step_axes(ax, blocks, title):
+    """The axes the two relative-step figures share."""
+    ax.set_xticks(blocks)
+    ax.set_xlabel("block")
+    ax.set_ylabel("‖z_k − z_{k−1}‖ / ‖z_{k−1}‖")
+    # Log: block 1 writes a stream tens of times the embedding it starts from,
+    # which on a linear axis flattens every later block onto the floor.
+    ax.set_yscale("log")
+    ax.set_title(title, loc="left")
+    ax.legend(loc="upper right", fontsize=9, frameon=False)
+
+
+def _steps_figure(states, rel, blocks):
+    """How much of the stream each block rewrites."""
+    import matplotlib.pyplot as plt
+
+    from instruments.plots import BLUE, _note
+
+    fig, ax = plt.subplots(figsize=(11.0, 5.2))
+    _band(ax, blocks, rel, BLUE, "median, with the middle 50% of positions")
+    _relative_step_axes(ax, blocks, "How much of the stream each block rewrites")
+    norms = np.median(np.linalg.norm(states, axis=-1), axis=1)
+    _note(ax, "scale-free: each step over the size of the stream it was added to, on a log "
+              "axis because block 1 rewrites an embedding far smaller than its output. Median "
+              "‖z_k‖ by block: " + ", ".join(f"{n:.1f}" for n in norms) + ".")
+    return fig, ax
+
+
+def _difficulty_figure(rel, gaps, blocks):
+    """The same, for the tokens the model ends up unsure of vs sure of."""
+    import matplotlib.pyplot as plt
+
+    from instruments.plots import AQUA, ORANGE, _note
+
+    tie, sure = np.quantile(gaps, [TIE_QUANTILE, SURE_QUANTILE])
+    fig, ax = plt.subplots(figsize=(11.0, 5.2))
+    _band(ax, blocks, rel[:, gaps <= tie], ORANGE, f"near a tie (top-2 gap ≤ {tie:.3f})")
+    _band(ax, blocks, rel[:, gaps >= sure], AQUA, f"confident (top-2 gap ≥ {sure:.3f})")
+    _relative_step_axes(ax, blocks, "Unsure tokens against confident ones")
+    _note(ax, "tokens split by the gap between the final top-2 next-token probabilities: the "
+              "bottom quarter against the top quarter. A picture to form a question with, "
+              "not an answer.")
+    return fig, ax
 
 
 def _main(argv=None):

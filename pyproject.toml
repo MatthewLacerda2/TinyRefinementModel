@@ -17,7 +17,7 @@ line-length = 120
 extend-exclude = ["venv"]
 
 [tool.ruff.lint]
-# Errors and bugs only (pyflakes + pycodestyle errors); formatting is not enforced.
+# Errors, bugs and code shape; formatting is not enforced.
 # RUF100: a `# noqa` that suppresses nothing is dead weight too.
 # W291/W293: trailing whitespace, the one formatting pair enforced — invisible, and
 # noise in every later diff that touches the line (#324).
@@ -29,19 +29,12 @@ extend-exclude = ["venv"]
 # SIM: simplifications (#563), less two of them that trade clarity for brevity: SIM300
 # reads `F16_MAX > x` as a Yoda condition because the name is upper case, and SIM108
 # folds a two-branch if into a ternary however long the line gets.
-select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B", "I", "SIM"]
+# C901: no function past cyclomatic complexity 10 (#563), the partner of PLR0915.
+select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B", "I", "SIM", "C901"]
 ignore = ["SIM300", "SIM108"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004"]
-# Over the statement limit when it landed; each is split on #563, not grandfathered.
-"experiments/recipe/clip_under_muon.py" = ["PLR0915"]
-"experiments/recipe/tokens_to_ce.py" = ["PLR0915"]
-"instruments/python_world.py" = ["PLR0915"]
-"instruments/trajectory_figures.py" = ["PLR0915"]
-"instruments/yardstick/eval_yardstick.py" = ["PLR0915"]
-"trm/data/prefill.py" = ["PLR0915"]
-"trm/runtime/supervisor.py" = ["PLR0915"]
 
 [tool.pyright]
 # Type-checks the package (#478). Basic mode: errors only, no strictness on the

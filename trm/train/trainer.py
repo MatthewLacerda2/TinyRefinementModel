@@ -95,6 +95,45 @@ def init_model_and_optimizer(config):
 
     return model, optimizer
 
+
+def resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_step, samples_seen, data_state):
+    """Puts a resumed run's readers and mixer where its checkpoint left them."""
+    if config.DATA_BRANCH:
+        # A branch onto this run's mixture (#489): the weights continue, the stream
+        # is rebuilt, and each seed reads its own rows.
+        if data_state is None:
+            raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
+        pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
+                                    skip=config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE)
+        print(f"🌿 Data stream branched onto {', '.join(schedules.sources)}: seed {config.DATA_SEED} "
+              f"skips {config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
+    elif data_state is not None:
+        # Exact (#424): the reader and mixer state saved with the last batch the
+        # checkpointed run consumed, so the next row is the one it would have read.
+        pretrain_mixer.load_state(data_state)
+        print("📍 Data stream restored exactly from the checkpoint (#424)")
+    else:
+        # A checkpoint from before #424: the position is estimated, and the stream
+        # after it is not the one the run would have read.
+        print("⚠️ Data position estimated from the sample count: this checkpoint predates "
+              "the saved data state (#424)")
+        skips = estimated_skips(config, schedules, start_step, samples_seen)
+        for gen, skip in zip(pretrain_sources, skips, strict=True):
+            gen.skip_count = skip
+
+
+def estimated_skips(config, schedules, start_step, samples_seen):
+    """Per-source sample offsets for a checkpoint without a saved data state."""
+    start_opt_step = start_step // config.ACCUMULATION_STEPS
+    # Prefer the recorded sample count over re-deriving it from micro-steps
+    # (#24): only the recorded figure survives a change in BATCH_SIZE between
+    # the run that wrote the checkpoint and the one resuming it.
+    avg_weights = schedules.average_curriculum_weights(start_opt_step)
+    return (split_samples(samples_seen, avg_weights) if samples_seen is not None
+            # Pre-#24 checkpoints come from runs that counted from 1 (#355).
+            else samples_from_micro_steps(start_step - 1, avg_weights, config.BATCH_SIZE))
+
+
 def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
@@ -113,35 +152,8 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
         # A branch that found no checkpoint would train a fresh model on the arm's
         # mixture and report it as the branch.
         raise SystemExit("DATA_BRANCH=1 but no checkpoint was restored: a branch starts from one (#489)")
-    if start_step > 0 and config.DATA_BRANCH:
-        # A branch onto this run's mixture (#489): the weights continue, the stream
-        # is rebuilt, and each seed reads its own rows.
-        if data_state is None:
-            raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
-        pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
-                                    skip=config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE)
-        print(f"🌿 Data stream branched onto {', '.join(schedules.sources)}: seed {config.DATA_SEED} "
-              f"skips {config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
-    elif start_step > 0 and data_state is not None:
-        # Exact (#424): the reader and mixer state saved with the last batch the
-        # checkpointed run consumed, so the next row is the one it would have read.
-        pretrain_mixer.load_state(data_state)
-        print("📍 Data stream restored exactly from the checkpoint (#424)")
-    elif start_step > 0:
-        # A checkpoint from before #424: the position is estimated, and the stream
-        # after it is not the one the run would have read.
-        print("⚠️ Data position estimated from the sample count: this checkpoint predates "
-              "the saved data state (#424)")
-        start_opt_step = start_step // config.ACCUMULATION_STEPS
-        # Prefer the recorded sample count over re-deriving it from micro-steps
-        # (#24): only the recorded figure survives a change in BATCH_SIZE between
-        # the run that wrote the checkpoint and the one resuming it.
-        avg_weights = schedules.average_curriculum_weights(start_opt_step)
-        skips = (split_samples(samples_seen, avg_weights) if samples_seen is not None
-                 # Pre-#24 checkpoints come from runs that counted from 1 (#355).
-                 else samples_from_micro_steps(start_step - 1, avg_weights, config.BATCH_SIZE))
-        for gen, skip in zip(pretrain_sources, skips, strict=True):
-            gen.skip_count = skip
+    if start_step > 0:
+        resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_step, samples_seen, data_state)
 
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 

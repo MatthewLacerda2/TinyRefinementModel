@@ -159,6 +159,77 @@ def days_untouched(issue: dict, claiming: list[dict], now: datetime.datetime) ->
 CLOUD_CARD = Card(False, "cloud session — no card")
 
 
+def dependents_of(issues: list[dict], open_numbers: set[int]) -> dict[int, list[int]]:
+    """Open issue → the issues whose body names it as a blocker."""
+    dependents: dict[int, list[int]] = {}
+    for issue in issues:
+        for n in blockers_named(issue.get("body", "")):
+            if n in open_numbers:
+                dependents.setdefault(n, []).append(issue["number"])
+    return dependents
+
+
+@dataclass
+class Blocks:
+    """What an issue's body says blocks it, read against what is still open."""
+    named: list[int]    # every number the body names as a blocker
+    live: list[int]     # the named ones still open, issue or PR
+    shown: str          # the live ones as printed, a PR as "PR #n"
+    on_condition: bool  # blocked by prose, not by a number
+
+
+def read_blocks(body: str, open_numbers: set[int], open_prs: set[int]) -> Blocks:
+    named = blockers_named(body)
+    live = [b for b in named if b in open_numbers | open_prs]
+    shown = ", ".join(f"PR #{b}" if b in open_prs else f"#{b}" for b in live)
+    return Blocks(named, live, shown, bool(not named and BLOCKED_ON_CONDITION.search(body)))
+
+
+def label_problem(labels: set[str], blocks: Blocks) -> str | None:
+    """Where the `blocked` label and the blockers the body names disagree."""
+    if "blocked" in labels and not blocks.named and not blocks.on_condition:
+        return "labelled blocked but says nothing about what blocks it"
+    if "blocked" in labels and blocks.named and not blocks.live:
+        return "stale block — every blocker it names is closed (" + ", ".join(f"#{b}" for b in blocks.named) + ")"
+    if blocks.live and "blocked" not in labels:
+        return f"says blocked by open {blocks.shown} but carries no blocked label"
+    return None
+
+
+def untouched_problem(issue: dict, claiming: list[dict], blocks: Blocks,
+                      now: datetime.datetime | None) -> str | None:
+    """An issue nobody has touched in STALE_DAYS, unless it waits on an open blocker or
+    on the card as a parked draft (#482). `now` None turns the check off."""
+    if now is None or blocks.live or any(map(parked_on_card, claiming)):
+        return None
+    days = days_untouched(issue, claiming, now)
+    if days <= STALE_DAYS:
+        return None
+    return f"untouched for {days} days — keep it (comment why) or close it (wont-fix: <reason> / superseded-by #N)"
+
+
+def why_not_ready(issue: dict, labels: set[str], blocks: Blocks, claimed_by: int | None,
+                  card: Card, cloud: bool) -> str | None:
+    """Why the issue cannot be started now, or None when nothing listed here holds it."""
+    if issue.get("assignees"):
+        return "claimed by " + ", ".join(a["login"] for a in issue["assignees"])
+    if claimed_by is not None:
+        return f"claimed by open PR #{claimed_by}"
+    if "plan" in labels:
+        return "plan — not ready to start"
+    if blocks.live:
+        return f"blocked by open {blocks.shown}"
+    if "blocked" in labels:
+        # With no reason, the label failed its own check: build_queue surfaced it as
+        # needing a human and keeps it out of every tier.
+        return "blocked on a condition, not an issue — the queue cannot check it" if blocks.on_condition else None
+    if cloud and "local" in labels:
+        return "local — needs this machine's weights, corpus or HDD"
+    if "gpu" in labels and "cpu" not in labels and not card.free:
+        return f"gpu lane, card busy ({card.why})"
+    return None
+
+
 def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = False,
                 now: datetime.datetime | None = None) -> Queue:
     """Pure: the open issues, the open PRs, and the card's state in; the queue out.
@@ -169,55 +240,23 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
     open_numbers = {i["number"] for i in issues}
     open_prs = {p["number"] for p in prs}
     claims = claimed_by_pr(prs)
-    dependents: dict[int, list[int]] = {}
-    for issue in issues:
-        for n in blockers_named(issue.get("body", "")):
-            if n in open_numbers:
-                dependents.setdefault(n, []).append(issue["number"])
+    dependents = dependents_of(issues, open_numbers)
 
     tiers: dict[str, list[Entry]] = {t: [] for t in TYPE_ORDER}
     not_ready, needs_human = [], []
     for issue in sorted(issues, key=lambda i: i["number"]):
         n, labels = issue["number"], {lb["name"] for lb in issue.get("labels", [])}
-        body = issue.get("body") or ""
-        named = blockers_named(body)
-        live_blockers = [b for b in named if b in open_numbers | open_prs]
-        live = ", ".join(f"PR #{b}" if b in open_prs else f"#{b}" for b in live_blockers)
-
-        on_condition = not named and BLOCKED_ON_CONDITION.search(body)
-        if "blocked" in labels and not named and not on_condition:
-            needs_human.append((n, "labelled blocked but says nothing about what blocks it"))
-        elif "blocked" in labels and named and not live_blockers:
-            needs_human.append((n, "stale block — every blocker it names is closed ("
-                                + ", ".join(f"#{b}" for b in named) + ")"))
-        elif live_blockers and "blocked" not in labels:
-            needs_human.append((n, f"says blocked by open {live} but carries no blocked label"))
+        blocks = read_blocks(issue.get("body") or "", open_numbers, open_prs)
         tier = next((t for t in TYPE_ORDER if t in labels), None)
-        if tier is None:
-            needs_human.append((n, "no type label — cannot be placed in a tier"))
         claiming = [pr for pr in prs if n in issues_claimed(pr)]
-        if (now is not None and not live_blockers and not any(map(parked_on_card, claiming))
-                and (days := days_untouched(issue, claiming, now)) > STALE_DAYS):
-            needs_human.append((n, f"untouched for {days} days — keep it (comment why) or close "
-                                   "it (wont-fix: <reason> / superseded-by #N)"))
+        problems = (label_problem(labels, blocks),
+                    "no type label — cannot be placed in a tier" if tier is None else None,
+                    untouched_problem(issue, claiming, blocks, now))
+        needs_human += [(n, why) for why in problems if why]
 
-        if issue.get("assignees"):
-            not_ready.append((n, "claimed by " + ", ".join(a["login"] for a in issue["assignees"])))
-        elif n in claims:
-            not_ready.append((n, f"claimed by open PR #{claims[n]}"))
-        elif "plan" in labels:
-            not_ready.append((n, "plan — not ready to start"))
-        elif live_blockers:
-            not_ready.append((n, f"blocked by open {live}"))
-        elif on_condition and "blocked" in labels:
-            not_ready.append((n, "blocked on a condition, not an issue — the queue cannot check it"))
-        elif "blocked" in labels:
-            continue  # surfaced above; a label that fails its own check is not obeyed
-        elif cloud and "local" in labels:
-            not_ready.append((n, "local — needs this machine's weights, corpus or HDD"))
-        elif "gpu" in labels and "cpu" not in labels and not card.free:
-            not_ready.append((n, f"gpu lane, card busy ({card.why})"))
-        elif tier is not None:
+        if reason := why_not_ready(issue, labels, blocks, claims.get(n), card, cloud):
+            not_ready.append((n, reason))
+        elif tier is not None and "blocked" not in labels:  # a blocked label is never ready
             tiers[tier].append(Entry(n, issue["title"], tier, labels, sorted(dependents.get(n, []))))
 
     for entries in tiers.values():
