@@ -425,8 +425,9 @@ the checkout (`git worktree add ../trm-<name>`), never inside it: a checkout rea
 its own `.env` (#541), so a sibling gets an absolute `DATA_ROOT` from the shell. Entry points are run
 as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -m trm.infer`.
 The front door is the `Makefile` (`make test`, `make test-affected`, `make gate`,
-`make launch BUDGET=…`, `make report RUN=…`): launch a base run through it, never by
-assembling supervisor flags by hand.
+`make launch BUDGET=…`, `make report RUN=…`, `make pair SPEC=…` with `pair-pause`, `pair-resume`
+and `pair-status`): launch a base run or a sweep through it, never by assembling
+supervisor flags or a `systemd-run` line by hand.
 
 **The direction is enforced, not just intended:** `trm/` never imports from
 `experiments/` or `instruments/`, and one research line never imports another — so

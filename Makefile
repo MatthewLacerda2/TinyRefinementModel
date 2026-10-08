@@ -13,6 +13,11 @@
 #   make gate                    VRAM headroom of the config a launch would train (#161)
 #   make launch SPEC=… BUDGET=…  a supervised base run; refuses without a committed spec or BUDGET
 #   make report RUN=run_...      the terminal report and plots for a run
+#   make pair SPEC=…             a pre-registered sweep on the card, detached as unit trm-pair at
+#                                oom_score_adj 100, logged to runs/<spec id>.log (#565)
+#   make pair-pause              stop the sweep; make pair-resume continues it from each arm's last
+#                                checkpoint (`make resume` is the base run's)
+#   make pair-status             the unit, the arms recorded, the running arm's step, disk free
 #   make ready PR=N              undraft PR N and wait for the CI run the undraft started (#539)
 #   make ci-wait PR=N            wait for CI on PR N's current head; never reads a stale check set
 #
@@ -21,7 +26,7 @@
 
 PY ?= venv/bin/python
 
-.PHONY: lint test test-affected test-gpu audit gate launch resume report ready ci-wait
+.PHONY: lint test test-affected test-gpu audit gate launch resume report pair pair-pause pair-resume pair-status ready ci-wait
 
 lint:
 	$(PY) -m ruff check .
@@ -63,6 +68,19 @@ report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }
 	$(PY) -m instruments.report --log runs/$(RUN)/metrics.csv
 	$(PY) -m instruments.plots --log runs/$(RUN)/metrics.csv --out runs/$(RUN)
+
+pair:
+	@test -n "$(SPEC)" || { echo "which spec? make pair SPEC=experiments/<line>/specs/<id>.toml"; exit 2; }
+	$(PY) -m instruments.pair start $(SPEC)
+
+pair-pause:
+	$(PY) -m instruments.pair pause
+
+pair-resume:
+	$(PY) -m instruments.pair resume
+
+pair-status:
+	$(PY) -m instruments.pair status
 
 ready:
 	@test -n "$(PR)" || { echo "which PR? make ready PR=123"; exit 2; }
