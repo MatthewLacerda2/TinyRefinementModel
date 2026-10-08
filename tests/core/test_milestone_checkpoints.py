@@ -94,8 +94,14 @@ def test_a_saved_milestone_holds_weights_and_no_optimizer(tmp_path):
 
 
 def test_the_trainer_saves_a_milestone_every_optimizer_step_it_is_due():
-    from trm.train import trainer
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    from types import SimpleNamespace
+
+    from trm.settings import CONFIG
+    from trm.train import loop
+    names = SimpleNamespace(config=CONFIG, validate="validate", save_rolling="rolling",
+                            save_milestone_if_due="milestone", log_row="log")
+    assert dict((hook, every) for every, hook in loop.TrainLoop.cadence(names))["milestone"] == 1
+    tree = ast.parse(inspect.getsource(loop.TrainLoop))
     saves = [c for c in ast.walk(tree) if isinstance(c, ast.Call)
              and getattr(c.func, "id", None) == "save_milestone"]
     assert len(saves) == 1
@@ -105,7 +111,7 @@ def test_the_trainer_saves_a_milestone_every_optimizer_step_it_is_due():
     # and never the full-state save into the milestone manager
     assert not [c for c in ast.walk(tree) if isinstance(c, ast.Call)
                 and getattr(c.func, "id", None) == "save_checkpoint"
-                and getattr(c.args[0], "id", None) == "milestone_mngr"]
+                and "milestone_mngr" in ast.unparse(c.args[0])]
 
 
 def test_rewind_sets_milestones_aside_too(tmp_path):

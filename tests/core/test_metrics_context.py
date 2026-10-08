@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from trm.runtime.metrics import MetricsLogger
 from trm.settings import CONFIG
 from trm.train.schedules import Schedules
-from trm.train.trainer import mixture_label
+from trm.train.schedules import mixture_label
 
 PRETRAIN_SOURCES = Schedules.of(CONFIG).sources
 

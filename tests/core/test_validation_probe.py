@@ -1,6 +1,6 @@
 """The in-loop validation probe: scores held-out data without touching training.
 
-Also serves as the import canary for trainer.py and its split-out modules — a
+Also serves as the import canary for trainer.py, loop.py and their split-out modules — a
 syntax or wiring error there would otherwise only surface at the next launch.
 """
 
@@ -10,6 +10,7 @@ import pytest
 
 
 def test_trainer_imports():
+    from trm.train import loop  # noqa: F401
     from trm.train import trainer  # noqa: F401
     from trm.train import optimizers  # noqa: F401
     from trm.train import validation  # noqa: F401

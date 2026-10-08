@@ -70,10 +70,10 @@ def test_a_micro_step_artifact_does_not_reach_the_applied_reading():
 def test_the_trainer_logs_both_and_names_them_apart():
     import inspect
     from trm.runtime.metrics import MetricsLogger
-    from trm.train import trainer
+    from trm.train import loop
 
-    source = inspect.getsource(trainer.train_loop)
-    assert "applied_gradient_stats(hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
+    source = inspect.getsource(loop.TrainLoop)
+    assert "applied_gradient_stats(self.hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
     assert "applied_gradient(" not in source.replace("applied_gradient_stats(", "")
     # That both are LOGGED is observed, not read off the source: a real run's row
     # carries them (tests/apparatus/test_trainer_end_to_end.py).

@@ -82,9 +82,9 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
 def test_the_trainer_saves_asynchronously_and_waits_on_the_way_out():
     import ast
     import inspect
-    from trm.train import trainer
+    from trm.train import loop
 
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    tree = ast.parse(inspect.getsource(loop.TrainLoop))
     saves = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "save_checkpoint"]
     assert saves and all(any(k.arg == "wait" and k.value.value is False for k in c.keywords) for c in saves)
     finals = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]

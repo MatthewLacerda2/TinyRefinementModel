@@ -21,7 +21,18 @@ extend-exclude = ["venv"]
 # RUF100: a `# noqa` that suppresses nothing is dead weight too.
 # W291/W293: trailing whitespace, the one formatting pair enforced — invisible, and
 # noise in every later diff that touches the line (#324).
-select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100"]
+# PLR0915: no function over 50 statements (#476): split by responsibility instead.
+select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915"]
+
+[tool.ruff.lint.per-file-ignores]
+# Over the statement limit when it landed; each is split on #563, not grandfathered.
+"experiments/recipe/clip_under_muon.py" = ["PLR0915"]
+"experiments/recipe/tokens_to_ce.py" = ["PLR0915"]
+"instruments/python_world.py" = ["PLR0915"]
+"instruments/trajectory_figures.py" = ["PLR0915"]
+"instruments/yardstick/eval_yardstick.py" = ["PLR0915"]
+"trm/data/prefill.py" = ["PLR0915"]
+"trm/runtime/supervisor.py" = ["PLR0915"]
 
 [tool.vulture]
 # Dead code: functions, classes, variables and attributes nothing references. Ruff

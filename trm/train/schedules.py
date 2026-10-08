@@ -17,6 +17,13 @@ import optax
 DEFAULT_DECAY_STEPS = 15000
 
 
+def mixture_label(sources, weights):
+    """`fineweb-edu=0.600 codeparrot=0.250 finemath=0.150` — the mixture a CE was
+    measured on, readable without today's curriculum constants (#186)."""
+    assert len(sources) == len(weights), "a mixture must name every source it weights"
+    return " ".join(f"{src.rsplit('/', 1)[-1]}={w:.3f}" for src, w in zip(sources, weights))
+
+
 def resolve_decay_steps(token_budget, tokens_per_opt_step, warmup_steps):
     """Opt-step horizon for the run: token budget / tokens per opt step
     (None → the historical default). A budget that doesn't clear warmup is a

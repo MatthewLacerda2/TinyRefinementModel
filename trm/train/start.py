@@ -32,11 +32,8 @@ import multiprocessing as mp
 from trm.settings import CONFIG
 from trm.runtime.run_budget import horizon_mismatch, with_recorded_budget
 from trm.train.schedules import Schedules
-from trm.train.trainer import (
-    init_model_and_optimizer,
-    setup_data_pipeline,
-    train_loop,
-)
+from trm.train.loop import train_loop
+from trm.train.trainer import DATA_ROOT, init_model_and_optimizer, setup_data_pipeline
 from trm.runtime.rewind import unresumable
 from trm.runtime.run_tracker import RunTracker
 from trm.runtime.checkpoints import (discover_latest_run, discover_latest_checkpoint_run, exit_cleanly_on_sigterm,
@@ -128,4 +125,4 @@ if __name__ == "__main__":
                                      data_state=monitor.data_state)
 
     exit_cleanly_on_sigterm()  # so a TERM waits for an in-flight checkpoint write (#218)
-    train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
+    train_loop(config, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker, DATA_ROOT)

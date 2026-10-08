@@ -40,24 +40,24 @@ def test_push_val_without_a_step_only_tracks_the_best():
 
 def test_the_trainer_reads_the_plateau_from_the_probe():
     import inspect
-    from trm.train import trainer
-    src = inspect.getsource(trainer.train_loop)
-    assert "monitor.push_val(val_ce, opt_step)" in src and "monitor.plateaued" in src
-    assert "plateaued = monitor.push(" not in src
+    from trm.train import loop
+    src = inspect.getsource(loop.TrainLoop)
+    assert "monitor.push_val(val_ce, at.opt_step)" in src and "monitor.plateaued" in src
+    assert "= self.monitor.push(" not in src
 
 
 def test_the_plateau_notice_is_rate_limited():
     """`monitor.plateaued` stays True on every logging step until held-out CE
     improves, so an unthrottled notice would bury the log. The throttle is inline
-    in train_loop, which needs data and a device to run, so its structure is
+    in the loop, which needs data and a device to run, so its structure is
     checked instead: the print sits under a condition on PLATEAU_NOTICE_EVERY and
     last_plateau_notice, and that branch records when it fired."""
     import ast
     import inspect
-    from trm.train import trainer
+    from trm.train import loop
 
-    assert trainer.PLATEAU_NOTICE_EVERY >= 50, "the notice should be occasional, not per-step"
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    assert loop.PLATEAU_NOTICE_EVERY >= 50, "the notice should be occasional, not per-step"
+    tree = ast.parse(inspect.getsource(loop.TrainLoop))
     notices = [node for node in ast.walk(tree) if isinstance(node, ast.If)
                and "PLATEAU_NOTICE_EVERY" in ast.unparse(node.test)
                and "last_plateau_notice" in ast.unparse(node.test)]

@@ -195,28 +195,28 @@ def test_best_follows_val_ce_when_train_ce_gets_lucky_early():
     assert monitor.best_val_ce == 3.60
 
 
-def test_the_trainer_saves_best_only_on_a_val_improvement():
-    """The trigger lives inside train_loop, which needs data and a device to run
-    end to end. So guard the wiring directly: the one save into best_mngr sits
-    under `monitor.push_val(...)`, and nothing train-CE-shaped can trigger it."""
-    import ast
-    import inspect
-    from trm.train import trainer
+def test_the_trainer_saves_best_only_on_a_val_improvement(monkeypatch):
+    """The one save into best_mngr is the validation hook's, on a held-out improvement
+    only, and the hook runs on the probe's cadence, so best writes are bounded to one
+    per probe (#174), not one per improving log step."""
+    from types import SimpleNamespace
+    from trm.train import loop
 
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
-    saves = [call for call in ast.walk(tree)
-             if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "save_checkpoint"
-             and isinstance(call.args[0], ast.Name) and call.args[0].id == "best_mngr"]
-    assert len(saves) == 1, "exactly one best save"
-    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If)
-              and "push_val" in ast.unparse(node.test)
-              and any(save in list(ast.walk(node)) for save in saves)]
-    assert guards, "the best save must be guarded by monitor.push_val"
-    cadenced = [node for node in ast.walk(tree) if isinstance(node, ast.If)
-                and "VAL_EVERY_OPT_STEPS" in ast.unparse(node.test)
-                and any(save in list(ast.walk(node)) for save in saves)]
-    assert cadenced, ("the best save must sit inside the probe's cadence, so best writes "
-                      "are bounded to one per probe (#174), not one per improving log step")
+    saves = []
+    monkeypatch.setattr(loop, "save_checkpoint", lambda mngr, step, *a, **k: saves.append((mngr, step)))
+    readings = iter([3.70, 3.60, 3.65])
+    hook_self = SimpleNamespace(
+        config=CONFIG, val_probe=SimpleNamespace(run=lambda model: next(readings)), source_probes=[],
+        monitor=LossMonitor.of(CONFIG), hot=SimpleNamespace(model=None, optimizer=None),
+        best_mngr="best", run_tracker=SimpleNamespace(run_id="r"))
+    for opt_step in (64, 128, 192):
+        loop.TrainLoop.validate(hook_self, loop.Boundary(opt_step * 2 - 1, opt_step, None, None))
+    assert saves == [("best", 127), ("best", 255)], "a new best saves; a worse reading does not"
+
+    names = SimpleNamespace(config=CONFIG, validate="validate", save_rolling="rolling",
+                            save_milestone_if_due="milestone", log_row="log")
+    assert dict((hook, every) for every, hook in loop.TrainLoop.cadence(names))["validate"] == \
+        CONFIG.VAL_EVERY_OPT_STEPS
     assert not hasattr(LossMonitor.of(CONFIG), "is_new_best"), "the train-CE trigger is gone"
 
 
@@ -230,7 +230,7 @@ def test_the_best_dir_is_named_for_its_criterion():
 
 def _probe_opt_steps(total_micro_steps, accumulation_steps, val_every):
     """Replays exactly the step-gating the trainer uses and returns the list of
-    opt-steps at which the probe fires. Mirrors trainer.train_loop's conditions."""
+    opt-steps at which the probe fires. Mirrors TrainLoop.run's boundary and cadence()."""
     fired = []
     for step in range(total_micro_steps):
         if (step + 1) % accumulation_steps == 0:
