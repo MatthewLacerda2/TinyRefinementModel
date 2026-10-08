@@ -108,8 +108,8 @@ class Config(BaseSettings):
     # Back to 8 for the base run (#385, owner 2026-09-20): the depth pays for itself
     # only if the card cannot spend the memory better, and it can. Measured on the real
     # trainer, 40 opt steps each with checkpoints every 16 and the validation probe
-    # running (instruments/bench_train_step never ran either, which is why #24's batch-2
-    # win was real and irrelevant):
+    # running (a device-only bench never did, which is why #24's batch-2 win was real and
+    # irrelevant):
     #   9 layers, batch 1   4,424 tok/s   arena peak 4058 MiB, 825 MiB headroom
     #   8 layers, batch 2   6,149 tok/s   arena peak 4502 MiB, 381 MiB headroom  <- this
     # +39% throughput, which is 531M tokens a day against 382M. The ninth layer costs
@@ -201,7 +201,7 @@ class Config(BaseSettings):
     # 6,149 tok/s and 381 MiB of arena headroom on 2026-09-20 (#385's smoke: 382), and
     # batch 4 OOMs (#548). The headroom is thin, so the supervisor's fit gate (#168)
     # watches this knob; if a long run OOMs, drop to batch 1 rather than adding a layer
-    # back. bench_train_step misranks this knob (#561): judge it with the real trainer.
+    # back. Judge it with the real loop: `python -m instruments.profile_step --pace` (#561).
     BATCH_SIZE: int = 2
 
     @field_validator("BATCH_SIZE")
