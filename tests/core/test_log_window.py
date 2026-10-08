@@ -8,8 +8,8 @@ outlived the row.
 
 import inspect
 
-from trm.train import trainer
-from trm.train.trainer import LogWindow
+from trm.train import loop
+from trm.train.loop import LogWindow
 
 
 def _logged_rows(start_step, accum, log_real, value_at):
@@ -40,8 +40,8 @@ def test_the_mean_is_over_the_steps_actually_held():
 
 
 def test_the_trainer_logs_through_the_window_not_a_nominal_divisor():
-    """The replay above is only evidence if train_loop uses the same object."""
-    source = inspect.getsource(trainer.train_loop)
+    """The replay above is only evidence if the loop uses the same object."""
+    source = inspect.getsource(loop.TrainLoop)
     assert "window.means()" in source and "window.add(" in source and "window.reset()" in source
     assert "/ divisor" not in source, "a nominal divisor is the bug"
 
@@ -52,11 +52,19 @@ def test_a_skipped_micro_step_does_not_advance_the_step():
     applied-gradient telemetry) drifted off the optimizer's window by one micro-step per
     skip. The branch that skips must therefore leave `step` alone."""
     import ast
+    import textwrap
 
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
-    skip_branches = [node for node in ast.walk(tree) if isinstance(node, ast.If)
-                     and ast.unparse(node.test).startswith("not (math.isfinite(current_loss)")]
-    assert len(skip_branches) == 1, "the non-finite branch moved; point this test at it"
-    advances = [node for node in ast.walk(skip_branches[0]) if isinstance(node, ast.AugAssign)
+    def branches(method, test):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
+        return [node for node in ast.walk(tree) if isinstance(node, ast.If) and ast.unparse(node.test) == test]
+
+    nonfinite = branches(loop.TrainLoop.micro_step,
+                         "not (math.isfinite(current_loss) and math.isfinite(current_grad_norm))")
+    assert len(nonfinite) == 1, "the non-finite branch moved; point this test at it"
+    assert "return None" in ast.unparse(nonfinite[0]), "a non-finite micro-step reports itself skipped"
+    skips = branches(loop.TrainLoop.run, "outcome is None")
+    assert len(skips) == 1, "the skip branch moved; point this test at it"
+    assert any(isinstance(node, ast.Continue) for node in ast.walk(skips[0]))
+    advances = [node for node in ast.walk(skips[0]) if isinstance(node, ast.AugAssign)
                 and isinstance(node.target, ast.Name) and node.target.id == "step"]
     assert not advances, "a skipped micro-step must not advance `step`"

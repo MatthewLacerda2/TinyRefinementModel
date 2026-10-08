@@ -24,7 +24,7 @@ from trm.settings import CONFIG
 from trm.runtime.resume_state import ResumeState
 
 
-import trm.train.trainer as trainer_mod
+import trm.train.loop as loop_mod
 from trm.train import validation
 
 from trm.runtime import restore
@@ -134,7 +134,7 @@ def test_samples_seen_is_counted_not_derived():
     assert "BATCH_SIZE" not in save_src
     assert "ResumeState.of(monitor, run_id)" in inspect.getsource(checkpoints._monitor_state)
     assert "_monitor_state(monitor, run_id)" in inspect.getsource(checkpoints.save_checkpoint)
-    assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(trainer_mod.train_loop)
+    assert "monitor.samples_seen += batch.shape[0]" in inspect.getsource(loop_mod.TrainLoop.run)
 
 
 def test_pre_24_checkpoints_resume_exactly():

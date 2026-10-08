@@ -72,8 +72,8 @@ def test_the_loss_scaler_growth_interval_is_named_and_unchanged():
     import inspect
 
     from trm.runtime.run_tracker import RunTracker
-    from trm.train import loss_scale, trainer
+    from trm.train import loop, loss_scale
 
     assert CONFIG.LOSS_SCALE_GROWTH_INTERVAL == 256 == loss_scale.LOSS_SCALE_GROWTH_INTERVAL
-    assert "DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL)" in inspect.getsource(trainer)
+    assert "DynamicLossScale(growth_interval=config.LOSS_SCALE_GROWTH_INTERVAL)" in inspect.getsource(loop)
     assert RunTracker.get_hyperparameters(CONFIG)["LOSS_SCALE_GROWTH_INTERVAL"] == 256

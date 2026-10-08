@@ -2,13 +2,13 @@
 
 Everything we knew about training time was inferred from wall-clock deltas (#411:
 24.2 s per opt step in the trainer against 18.7 s for `bench_train_step`'s loop mode).
-This runs the trainer's own `train_loop` (data pipeline, loss scaler, grad guard,
+This runs the trainer's own `loop.train_loop` (data pipeline, loss scaler, grad guard,
 logging) on a fresh model, lets --warmup micro-steps compile, records the next
 --micro-steps under `jax.profiler`, and prints where each one's time went:
 
   - wall ms/micro-step, measured between consecutive `trm/data_get` span starts;
   - the device's busy and idle time inside that window;
-  - host ms per named span (`trainer.span`), and how much of it the device sat idle;
+  - host ms per named span (`loop.span`), and how much of it the device sat idle;
   - the Python around the two `nnx.jit` calls, dispatch excluded (the #474 gate).
 
 The trace lands under runs/profile/<run_id>/trace (open perfetto_trace.json.gz in
@@ -37,7 +37,7 @@ import jax
 from trm.runtime.checkpoints import load_or_create_checkpoint
 from trm.runtime.run_tracker import RunTracker
 from trm.settings import CONFIG
-from trm.train import trainer
+from trm.train import loop, trainer
 
 REPORTS = {
     "ms/micro-step": ("measured", "between consecutive trm/data_get span starts on the trainer thread, "
@@ -106,7 +106,7 @@ def covered(cover, lo, hi):
     return sum(max(0, min(end, hi) - max(start, lo)) for start, end in cover)
 
 
-def read_trace(path, prefix=trainer.SPAN_PREFIX):
+def read_trace(path, prefix=loop.SPAN_PREFIX):
     """(spans, dispatch, device, device_lines) from an .xplane.pb, times in ns.
 
     spans: (name, start, end) of the trainer's named spans, prefix stripped.
@@ -203,7 +203,8 @@ def main():
     data_queue = TracedQueue(
         trainer.setup_data_pipeline(CONFIG, start_step), args.warmup, args.micro_steps, trace_dir,
         settle=lambda: jax.block_until_ready(jax.live_arrays()))
-    trainer.train_loop(CONFIG, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker)
+    loop.train_loop(CONFIG, model, optimizer, data_queue, mngr, best_mngr, monitor, start_step, run_tracker,
+                    trainer.DATA_ROOT)
     if data_queue.served <= data_queue.stop_at:
         raise SystemExit("the loop ended before the traced window closed")
 

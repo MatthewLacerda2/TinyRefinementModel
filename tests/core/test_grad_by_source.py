@@ -35,7 +35,7 @@ def test_a_batch_that_mixes_sources_is_filed_as_mixed():
 
 
 def test_the_window_label_is_mean_max_clipped_count_per_source():
-    from trm.train.trainer import SourceGrads
+    from trm.train.loop import SourceGrads
 
     grads = SourceGrads(("pretrain/fineweb-edu", "pretrain/codeparrot"))
     for norm, clipped in ((10.0, False), (30.0, True)):

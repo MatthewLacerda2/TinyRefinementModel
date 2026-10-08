@@ -125,7 +125,7 @@ def test_the_scaler_can_reach_its_floor_before_the_streak_abort_fires():
     launch would abort as 'diverged' when nothing had diverged at all."""
     import math
 
-    from trm.train.trainer import MAX_NONFINITE_STREAK
+    from trm.train.loop import MAX_NONFINITE_STREAK
 
     scale = DynamicLossScale()
     halvings = math.ceil(math.log(scale.value / scale.min_scale, scale.factor))
