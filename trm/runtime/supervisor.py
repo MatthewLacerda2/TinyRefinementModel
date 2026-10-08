@@ -184,6 +184,115 @@ def _new_launch(state: State) -> None:
     state.stalled_polls = 0
 
 
+def _track_progress(obs: Observation, limits: Limits, state: State) -> None:
+    """Count polls without step progress, and arm the high-CE guard once CE is in band."""
+    if obs.step > state.last_step:
+        state.last_step = obs.step
+        state.stalled_polls = 0
+    elif obs.alive:
+        state.stalled_polls += 1
+
+    if obs.ce is not None and math.isfinite(obs.ce) and obs.ce <= limits.max_ce:
+        state.entered_band = True
+
+
+def _diverged(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    if not _is_diverged(obs.ce, limits.max_ce, state.entered_band):
+        state.divergence_streak = 0
+        return None
+    streak = state.divergence_streak + 1
+    state.divergence_streak = streak
+    if streak >= limits.divergence_checks:
+        return Decision(KILL, KILLED_DIVERGENCE,
+                        f"CE={obs.ce} outside the sane band for {streak} consecutive checks")
+    return None
+
+
+def _over_budget(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    if obs.step >= limits.stop_step:
+        return Decision(STOP, BUDGET_COMPLETE,
+                        f"reached opt step {obs.step} >= budget stop {limits.stop_step}")
+    return None
+
+
+def _over_wallclock(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    if limits.max_hours is not None and obs.elapsed_hours >= limits.max_hours:
+        return Decision(STOP, WALLCLOCK_COMPLETE,
+                        f"ran {obs.elapsed_hours:.1f}h >= the {limits.max_hours}h cap")
+    return None
+
+
+def _out_of_disk(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    """The launch precheck asks for a flat min_free_gb, once. A run then consumes its
+    own headroom — #157 settled at 19GB free against a 20GB floor — so the check
+    that mattered never ran again, and a run that fills the disk mid-flight dies
+    with a corrupt final checkpoint: the compute AND the artifact (#190). Once a
+    run has written a checkpoint the real requirement is known: the next write,
+    which can land in the rolling, best and milestone dirs at the same step (#187),
+    plus a margin.
+
+    This one floor serves both a running run and its relaunch, so a relaunch is
+    never refused over space the run it is recovering already holds.
+    """
+    if (obs.free_gb is not None and obs.checkpoint_gb is not None
+            and obs.free_gb < CHECKPOINTS_PER_WRITE * obs.checkpoint_gb + limits.disk_margin_gb):
+        return Decision(STOP, KILLED_DISK,
+                        f"{obs.free_gb:.1f}GB free; the next checkpoint write needs "
+                        f"~{CHECKPOINTS_PER_WRITE * obs.checkpoint_gb:.1f}GB plus a {limits.disk_margin_gb}GB margin — "
+                        f"stopping cleanly instead of dying mid-write (never delete runs/data/)")
+    return None
+
+
+def _wedged(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    """A wedged run is the hazard that motivated all of this: a detached job once
+    stalled for three days unnoticed, because a process that is alive and doing
+    nothing looks exactly like a process that is working. It is alive, so it
+    has to be killed before it can be relaunched."""
+    if not (obs.alive and state.stalled_polls >= limits.stall_polls):
+        return None
+    if state.retries_used >= limits.max_retries:
+        return Decision(GIVE_UP, GAVE_UP,
+                        f"wedged at step {obs.step} and {limits.max_retries} relaunches were used")
+    state.retries_used += 1
+    _new_launch(state)
+    return Decision(RESTART, STALLED,
+                    f"no progress past step {obs.step} for {limits.stall_polls} polls "
+                    f"(restart {state.retries_used}/{limits.max_retries})")
+
+
+def _died(obs: Observation, limits: Limits, state: State) -> Decision | None:
+    if obs.alive:
+        return None
+    # An OOM is not a crash worth retrying. It is deterministic: the same
+    # config, on the same card, allocating the same tensors, fails the same
+    # way. Relaunching burns the retry budget and ~15 minutes to arrive at
+    # the identical failure, and — worse — it reports GAVE_UP, which reads
+    # like flakiness and sends the next reader looking for a race.
+    # Naming it is most of the value: "died of an OOM" points at memory,
+    # "crashed twice, gave up" points nowhere. (2026-08-13 lost three
+    # launches to this loop, each stopped by hand.)
+    if obs.oom_detected:
+        return Decision(STOP, KILLED_OOM,
+                        f"died at step {obs.step} with an out-of-memory failure; "
+                        f"relaunching would repeat it exactly")
+    # The same for a checkpoint the trainer refuses to resume: every relaunch
+    # would be refused alike, then read as GAVE_UP (#505).
+    if obs.resume_refusal:
+        return Decision(STOP, REFUSED_RESUME, obs.resume_refusal)
+    if state.retries_used >= limits.max_retries:
+        return Decision(GIVE_UP, GAVE_UP,
+                        f"died before budget and {limits.max_retries} relaunches were used")
+    state.retries_used += 1
+    _new_launch(state)
+    return Decision(RELAUNCH, CRASHED,
+                    f"died at step {obs.step} before budget "
+                    f"(relaunch {state.retries_used}/{limits.max_retries})")
+
+
+# The order is the design: see decide().
+_GUARDS = (_diverged, _over_budget, _over_wallclock, _out_of_disk, _wedged, _died)
+
+
 def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     """What to do about the run right now. Pure: no I/O, no signals, no clock.
 
@@ -196,88 +305,11 @@ def decide(obs: Observation, limits: Limits, state: State) -> Decision:
     A CE plateau is not a guard: the trainer only reports it. The plateau kill
     existed to stop the in-run SFT flip, and went with it (#323).
     """
-    if obs.step > state.last_step:
-        state.last_step = obs.step
-        state.stalled_polls = 0
-    elif obs.alive:
-        state.stalled_polls += 1
-
-    if obs.ce is not None and math.isfinite(obs.ce) and obs.ce <= limits.max_ce:
-        state.entered_band = True
-
-    if _is_diverged(obs.ce, limits.max_ce, state.entered_band):
-        streak = state.divergence_streak + 1
-        state.divergence_streak = streak
-        if streak >= limits.divergence_checks:
-            return Decision(KILL, KILLED_DIVERGENCE,
-                            f"CE={obs.ce} outside the sane band for {streak} consecutive checks")
-    else:
-        state.divergence_streak = 0
-
-    if obs.step >= limits.stop_step:
-        return Decision(STOP, BUDGET_COMPLETE,
-                        f"reached opt step {obs.step} >= budget stop {limits.stop_step}")
-
-    if limits.max_hours is not None and obs.elapsed_hours >= limits.max_hours:
-        return Decision(STOP, WALLCLOCK_COMPLETE,
-                        f"ran {obs.elapsed_hours:.1f}h >= the {limits.max_hours}h cap")
-
-    # A wedged run is the hazard that motivated all of this: a detached job once
-    # stalled for three days unnoticed, because a process that is alive and doing
-    # nothing looks exactly like a process that is working. It is alive, so it
-    # has to be killed before it can be relaunched.
-    # The launch precheck asks for a flat min_free_gb, once. A run then consumes its
-    # own headroom — #157 settled at 19GB free against a 20GB floor — so the check
-    # that mattered never ran again, and a run that fills the disk mid-flight dies
-    # with a corrupt final checkpoint: the compute AND the artifact (#190). Once a
-    # run has written a checkpoint the real requirement is known: the next write,
-    # which can land in the rolling, best and milestone dirs at the same step (#187),
-    # plus a margin.
-    # This one floor serves both a running run and its relaunch, so a relaunch is
-    # never refused over space the run it is recovering already holds.
-    if (obs.free_gb is not None and obs.checkpoint_gb is not None
-            and obs.free_gb < CHECKPOINTS_PER_WRITE * obs.checkpoint_gb + limits.disk_margin_gb):
-        return Decision(STOP, KILLED_DISK,
-                        f"{obs.free_gb:.1f}GB free; the next checkpoint write needs "
-                        f"~{CHECKPOINTS_PER_WRITE * obs.checkpoint_gb:.1f}GB plus a {limits.disk_margin_gb}GB margin — "
-                        f"stopping cleanly instead of dying mid-write (never delete runs/data/)")
-
-    if obs.alive and state.stalled_polls >= limits.stall_polls:
-        if state.retries_used >= limits.max_retries:
-            return Decision(GIVE_UP, GAVE_UP,
-                            f"wedged at step {obs.step} and {limits.max_retries} relaunches were used")
-        state.retries_used += 1
-        _new_launch(state)
-        return Decision(RESTART, STALLED,
-                        f"no progress past step {obs.step} for {limits.stall_polls} polls "
-                        f"(restart {state.retries_used}/{limits.max_retries})")
-
-    if not obs.alive:
-        # An OOM is not a crash worth retrying. It is deterministic: the same
-        # config, on the same card, allocating the same tensors, fails the same
-        # way. Relaunching burns the retry budget and ~15 minutes to arrive at
-        # the identical failure, and — worse — it reports GAVE_UP, which reads
-        # like flakiness and sends the next reader looking for a race.
-        # Naming it is most of the value: "died of an OOM" points at memory,
-        # "crashed twice, gave up" points nowhere. (2026-08-13 lost three
-        # launches to this loop, each stopped by hand.)
-        if obs.oom_detected:
-            return Decision(STOP, KILLED_OOM,
-                            f"died at step {obs.step} with an out-of-memory failure; "
-                            f"relaunching would repeat it exactly")
-        # The same for a checkpoint the trainer refuses to resume: every relaunch
-        # would be refused alike, then read as GAVE_UP (#505).
-        if obs.resume_refusal:
-            return Decision(STOP, REFUSED_RESUME, obs.resume_refusal)
-        if state.retries_used >= limits.max_retries:
-            return Decision(GIVE_UP, GAVE_UP,
-                            f"died before budget and {limits.max_retries} relaunches were used")
-        state.retries_used += 1
-        _new_launch(state)
-        return Decision(RELAUNCH, CRASHED,
-                        f"died at step {obs.step} before budget "
-                        f"(relaunch {state.retries_used}/{limits.max_retries})")
-
+    _track_progress(obs, limits, state)
+    for guard in _GUARDS:
+        decision = guard(obs, limits, state)
+        if decision is not None:
+            return decision
     return Decision(CONTINUE, RUNNING, f"step {obs.step}/{limits.stop_step}")
 
 
@@ -350,6 +382,54 @@ def _without_path_flags(trainer_args):
     return out
 
 
+def _fit_gate_env() -> dict[str, str]:
+    """The probe's environment: this one's, with validation and a checkpoint on every opt step."""
+    # The trainer would find DATA_ROOT in .env and resolve it against ITS cwd, which is
+    # the probe dir. Read only this one key; nothing else in .env is touched.
+    data_root = local_location("DATA_ROOT")
+    env = {**os.environ, **FIT_GATE_ENV, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1"}
+    if data_root is not None:
+        env["DATA_ROOT"] = str(data_root)  # the probe runs from another cwd
+    return env
+
+
+def _await_first_row(proc, log_path: pathlib.Path, metrics_csv: pathlib.Path, *, tokens_per_opt_step,
+                     started: float, timeout_s: float, poll_s: float) -> FitResult:
+    """Poll the probe until it logs its first metrics row, runs out of memory, exits or times out."""
+    while True:
+        text = read_log_since(log_path)
+        if oom_in(text):
+            return FitResult(False, "out of memory before the first logged row — this config does not fit",
+                             seconds=time.time() - started)
+        row = _first_row(metrics_csv)
+        if row is not None:
+            peak = row.get("arena_peak_mib") or None
+            compute = _COMPUTE.search(text)
+            rate = (FIT_GATE_LOG_ROWS_OPT_STEPS * tokens_per_opt_step / float(compute.group(1))
+                    if compute and float(compute.group(1)) > 0 else None)
+            return FitResult(True, "survived five optimizer applies, validation passes and checkpoint saves",
+                             float(peak) if peak else None, rate, time.time() - started)
+        if proc.poll() is not None:
+            tail = " | ".join(text.strip().splitlines()[-3:])
+            return FitResult(False, f"the trainer exited ({proc.returncode}) before its first logged row: {tail}",
+                             seconds=time.time() - started)
+        if time.time() - started > timeout_s:
+            return FitResult(False, f"no logged row within {timeout_s / 60:.0f} minutes",
+                             seconds=time.time() - started)
+        time.sleep(poll_s)
+
+
+def _stop_probe(proc) -> None:
+    """SIGTERM a probe still running, and SIGKILL it if that does not end it within a minute."""
+    if proc is not None and proc.poll() is None:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
 def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout_s=1800.0, poll_s=5.0,
                   workroot: pathlib.Path = RUNS_DIR, on_launch=lambda pid: None) -> FitResult:
     """Run the real trainer until its first metrics row, then throw it away (#168).
@@ -379,12 +459,7 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
     run_dir = work / "runs" / "run_fitgate"
     log_path = work / "fitgate.log"
     run_dir.mkdir(parents=True)
-    # The trainer would find DATA_ROOT in .env and resolve it against ITS cwd, which is
-    # the probe dir. Read only this one key; nothing else in .env is touched.
-    data_root = local_location("DATA_ROOT")
-    env = {**os.environ, **FIT_GATE_ENV, "PYTHONPATH": str(REPO_ROOT), "PYTHONUNBUFFERED": "1"}
-    if data_root is not None:
-        env["DATA_ROOT"] = str(data_root)  # the probe runs from another cwd
+    env = _fit_gate_env()
     argv = command or [sys.executable, "-m", "trm.train.start",
                        *_without_path_flags(trainer_args),
                        "--checkpoint-path", str(run_dir / "checkpoints")]
@@ -393,35 +468,10 @@ def preflight_fit(trainer_args=(), *, tokens_per_opt_step, command=None, timeout
         with log_path.open("w") as log:
             proc = subprocess.Popen(argv, cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
         on_launch(proc.pid)
-        while True:
-            text = read_log_since(log_path)
-            if oom_in(text):
-                return FitResult(False, "out of memory before the first logged row — this config does not fit",
-                                 seconds=time.time() - started)
-            row = _first_row(run_dir / "metrics.csv")
-            if row is not None:
-                peak = row.get("arena_peak_mib") or None
-                compute = _COMPUTE.search(text)
-                rate = (FIT_GATE_LOG_ROWS_OPT_STEPS * tokens_per_opt_step / float(compute.group(1))
-                        if compute and float(compute.group(1)) > 0 else None)
-                return FitResult(True, "survived five optimizer applies, validation passes and checkpoint saves",
-                                 float(peak) if peak else None, rate, time.time() - started)
-            if proc.poll() is not None:
-                tail = " | ".join(text.strip().splitlines()[-3:])
-                return FitResult(False, f"the trainer exited ({proc.returncode}) before its first logged row: {tail}",
-                                 seconds=time.time() - started)
-            if time.time() - started > timeout_s:
-                return FitResult(False, f"no logged row within {timeout_s / 60:.0f} minutes",
-                                 seconds=time.time() - started)
-            time.sleep(poll_s)
+        return _await_first_row(proc, log_path, run_dir / "metrics.csv", tokens_per_opt_step=tokens_per_opt_step,
+                                started=started, timeout_s=timeout_s, poll_s=poll_s)
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-            try:
-                proc.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=30)
+        _stop_probe(proc)
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -961,7 +1011,7 @@ def github_reporter(issue: int):
     return report
 
 
-def main(argv=None) -> int:
+def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--stop-step", type=int, required=True,
                     help="opt step whose checkpoint covers the token budget (the trainer has no hard stop)")
@@ -999,37 +1049,29 @@ def main(argv=None) -> int:
                     help="for a CPU run; the lock exists for the single card")
     ap.add_argument("trainer_args", nargs="*",
                     help="passed through to trm.train.start (put them after --)")
-    args = ap.parse_args(argv)
+    return ap
 
-    limits = Limits(stop_step=args.stop_step, max_ce=args.max_ce,
-                    stall_polls=args.stall_polls, max_retries=args.max_retries,
-                    max_hours=args.max_hours, min_free_gb=args.min_free_gb)
 
-    try:
-        free = check_disk_headroom(RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT, limits.min_free_gb)
-    except Preflight as exc:
-        print(f"preflight: {exc}", file=sys.stderr)
-        return 1
-    print(f"preflight: {free:.1f}GB free")
-    cold = None
-    if args.cold_root is not None:
-        # A warning here, not a refusal: `make launch` refuses a bad cold root, and a
-        # resume after a reboot (#384) must not stay down because the HDD mounted late.
-        # Each tick asks again and copies nothing until the problem is gone.
-        problem = cold_root_problem(args.cold_root, RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT)
-        if problem:
-            print(f"preflight: ⚠ cold tier waits — {problem}", file=sys.stderr)
-        cold = ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
-                        fullstate_every_hours=stall_window_hours(args.spec),
-                        protected=protected_roots())
-    print(f"cold tier: {describe_cold(cold)}")
+def _cold_tier(args) -> ColdTier | None:
+    if args.cold_root is None:
+        return None
+    # A warning here, not a refusal: `make launch` refuses a bad cold root, and a
+    # resume after a reboot (#384) must not stay down because the HDD mounted late.
+    # Each tick asks again and copies nothing until the problem is gone.
+    problem = cold_root_problem(args.cold_root, RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT)
+    if problem:
+        print(f"preflight: ⚠ cold tier waits — {problem}", file=sys.stderr)
+    return ColdTier(run_dir=args.run_dir, cold_root=args.cold_root, keep_free_gb=CONFIG.SSD_KEEP_FREE_GB,
+                    fullstate_every_hours=stall_window_hours(args.spec),
+                    protected=protected_roots())
 
-    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
-    lock = GpuLock(label=f"stop_step={args.stop_step}")
+
+def _build_supervisor(args, limits: Limits, cold: ColdTier | None, checkpoint_dir: pathlib.Path | None,
+                      lock: GpuLock) -> Supervisor:
     # Unset leaves the Supervisor's own heartbeat_every default.
     cadence: dict[str, Any] = ({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
                                if args.heartbeat_hours is not None else {})
-    supervisor = Supervisor(
+    return Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
         log_path=args.log,
@@ -1045,27 +1087,29 @@ def main(argv=None) -> int:
         **cadence,
     )
 
-    # Refused before the lock, the fit gate and the first launch: a trainer launched
-    # onto this checkpoint would only be refused the same way (#505).
-    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
-    if why:
-        supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
-        return 1
 
+def _fit_gate(args, lock: GpuLock) -> None:
+    """Prove the config survives an apply, a probe and a checkpoint (#168); Preflight if not."""
+    print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
+    fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP,
+                        on_launch=lock.name_child)
+    if not fit.ok:
+        raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
+    print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
+          f"{fit.arena_peak_mib if fit.arena_peak_mib is not None else '?'} MiB, "
+          + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
+          flush=True)
+
+
+def _run_on_the_card(args, supervisor: Supervisor, lock: GpuLock) -> int:
+    """Take the card, pass the fit gate, supervise the run to its outcome; the card is
+    released (or left to a survivor) however this ends."""
     previous_sigterm = exit_on_sigterm()
     try:
         if not args.no_gpu_lock:
             lock.acquire()
         if not args.skip_fit_gate:
-            print("fit gate: running the real trainer to its first logged row (#168)…", flush=True)
-            fit = preflight_fit(args.trainer_args, tokens_per_opt_step=CONFIG.TOKENS_PER_OPT_STEP,
-                                on_launch=lock.name_child)
-            if not fit.ok:
-                raise Preflight(f"fit gate refused after {fit.seconds / 60:.1f} min: {fit.reason}")
-            print(f"fit gate: passed in {fit.seconds / 60:.1f} min — {fit.reason}; arena peak "
-                  f"{fit.arena_peak_mib if fit.arena_peak_mib is not None else '?'} MiB, "
-                  + (f"{fit.tokens_per_second:,.0f} tok/s" if fit.tokens_per_second else "tok/s unknown"),
-                  flush=True)
+            _fit_gate(args, lock)
         outcome = supervisor.run()
         print(f"outcome: {outcome}")
         if args.spec is not None and outcome == BUDGET_COMPLETE:
@@ -1084,6 +1128,36 @@ def main(argv=None) -> int:
         else:
             lock.release()
         signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
+
+
+def main(argv=None) -> int:
+    args = _parser().parse_args(argv)
+
+    limits = Limits(stop_step=args.stop_step, max_ce=args.max_ce,
+                    stall_polls=args.stall_polls, max_retries=args.max_retries,
+                    max_hours=args.max_hours, min_free_gb=args.min_free_gb)
+
+    try:
+        free = check_disk_headroom(RUNS_DIR if RUNS_DIR.exists() else REPO_ROOT, limits.min_free_gb)
+    except Preflight as exc:
+        print(f"preflight: {exc}", file=sys.stderr)
+        return 1
+    print(f"preflight: {free:.1f}GB free")
+    cold = _cold_tier(args)
+    print(f"cold tier: {describe_cold(cold)}")
+
+    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
+    lock = GpuLock(label=f"stop_step={args.stop_step}")
+    supervisor = _build_supervisor(args, limits, cold, checkpoint_dir, lock)
+
+    # Refused before the lock, the fit gate and the first launch: a trainer launched
+    # onto this checkpoint would only be refused the same way (#505).
+    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
+    if why:
+        supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
+        return 1
+
+    return _run_on_the_card(args, supervisor, lock)
 
 
 def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
