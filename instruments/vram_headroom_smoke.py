@@ -96,6 +96,17 @@ class CardSampler:
         self._thread.join(timeout=1.0)
 
 
+def micro_step(hot, batch):
+    """One of the trainer's micro-steps; its loss. A function, as `TrainLoop.micro_step` is,
+    so the gradient tree is freed before the next step runs: the accumulate's donation
+    of it is unusable (no output has its shape), so a reference held across steps keeps
+    523 MiB alive through the next backward. That reference was the old `train_loop`'s,
+    and this smoke's, ~520 MiB above the real loop's peak (#293)."""
+    loss, _out, grads, _gn = hot.grad_step(batch)
+    hot.apply(grads)
+    return loss
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dim", type=int, default=CONFIG.LATENT_DIM, help="LATENT_DIM (must be divisible by --heads)")
@@ -121,8 +132,7 @@ def main(argv=None):
     hot = HotPath(model, optimizer, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
     with CardSampler() as card:
         for _ in range(args.micro_steps):
-            loss, _out, grads, _gn = hot.grad_step(batch)
-            hot.apply(grads)
+            loss = micro_step(hot, batch)
         float(loss)
         float(_val_ce_sums(hot.model, batch[:1])[0])
         time.sleep(0.5)
