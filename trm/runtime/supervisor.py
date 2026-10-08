@@ -43,6 +43,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -579,6 +580,10 @@ def margin_changes(raised: dict, now: tuple) -> list:
 # JAX/XLA surface out-of-memory differently depending on the allocator: BFC says
 # RESOURCE_EXHAUSTED, cuda_async says CUDA_ERROR_OUT_OF_MEMORY, and the command
 # buffer path says it a third way. Match any of them.
+# The final score is stopped TERM-first, then KILLed after this long: the eval it runs
+# holds no state worth a long grace, and the supervisor's own stop is waiting (#527).
+SCORE_STOP_GRACE_S = 30
+
 OOM_MARKERS = ("RESOURCE_EXHAUSTED", "CUDA_ERROR_OUT_OF_MEMORY", "ran out of memory")
 
 
@@ -1115,7 +1120,7 @@ def _run_on_the_card(args, supervisor: Supervisor, lock: GpuLock) -> int:
         if args.spec is not None and outcome == BUDGET_COMPLETE:
             # Inside the try: the final yardstick runs on the card, so the lock is held
             # through it and released after, never before (#523).
-            return final_yardstick(args, supervisor, outcome)
+            return final_yardstick(args, supervisor, outcome, lock)
         return 0 if outcome in DELIBERATE else 1
     except Preflight as exc:
         print(f"preflight: {exc}", file=sys.stderr)
@@ -1160,7 +1165,42 @@ def main(argv=None) -> int:
     return _run_on_the_card(args, supervisor, lock)
 
 
-def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
+def _stop_group(proc) -> None:
+    """TERM the process group `proc` leads, then KILL it after SCORE_STOP_GRACE_S."""
+    for sig, grace in ((signal.SIGTERM, SCORE_STOP_GRACE_S), (signal.SIGKILL, None)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def score_on_the_card(argv, env, lock) -> tuple[int, str]:
+    """Run the full-set score, the only step that puts a process on the card (#527).
+
+    `instruments.base_run score` spawns the eval that holds the card, so it runs as
+    its own process group, named in the lock. A supervisor killed outright leaves a
+    lock that reads live while the score (and the eval it waits on) runs. One stopped
+    with TERM takes the whole group down on the way out, so the lock it then releases
+    is never free above an orphaned eval."""
+    with tempfile.TemporaryFile(mode="w+") as out:
+        proc = subprocess.Popen(argv, cwd=REPO_ROOT, env=env, stdout=out, stderr=subprocess.STDOUT, text=True,
+                                start_new_session=True)
+        lock.name_child(proc.pid)
+        try:
+            code = proc.wait()
+        finally:
+            if proc.poll() is None:
+                _stop_group(proc)
+        out.seek(0)
+        return code, out.read().strip()
+
+
+def final_yardstick(args, supervisor: Supervisor, outcome: str, lock) -> int:
     """Score a completed budget run's final checkpoint on the full LAMBADA set, then
     judge it and draft its model card. Called while main() still holds the card."""
     if supervisor.survivor is not None:
@@ -1170,14 +1210,17 @@ def final_yardstick(args, supervisor: Supervisor, outcome: str) -> int:
 
     # The referee and the card live in instruments/, which trm/ never imports
     # (tests/core/test_package_layout.py); they are run as commands.
-    def instrument(*what):
-        proc = subprocess.run([sys.executable, "-m", "instruments.base_run", *what,
-                               "--spec", str(args.spec), "--run", str(args.run_dir)],
-                              cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-                              capture_output=True, text=True)
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+
+    def argv(what):
+        return [sys.executable, "-m", "instruments.base_run", what, "--spec", str(args.spec), "--run", str(args.run_dir)]
+
+    def instrument(what):  # the CPU-only steps: the verdict and the card
+        proc = subprocess.run(argv(what), cwd=REPO_ROOT, env=env, capture_output=True, text=True)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
+
     print("yardstick: scoring the final checkpoint on the full LAMBADA set", flush=True)
-    code, out = instrument("score")
+    code, out = score_on_the_card(argv("score"), env, lock)
     if code != 0:
         print(f"yardstick FAILED — no verdict:\n{out[-2000:]}", file=sys.stderr)
         return 1
