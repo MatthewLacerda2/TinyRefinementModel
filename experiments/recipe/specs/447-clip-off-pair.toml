@@ -83,6 +83,7 @@ points = ["run"]
 require = "all"
 
 [verdict]
+recorded = "INCONCLUSIVE"
 keep_if = ["clip_off_needs_fewer_tokens"]
 kill_if = ["clip_off_needs_more_tokens"]
 
@@ -96,3 +97,8 @@ record trained with it), recorded as measured-inert on this recipe.
 KILL -> removing the clip costs tokens: 1.0 stays, now chosen rather than inherited, and
 #447 closes with that record.
 """
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+clip_off = [59.7688, 60.8174, 59.7688]
+control = [57.6717, 58.7203, 57.6717]
