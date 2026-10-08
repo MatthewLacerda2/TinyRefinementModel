@@ -333,9 +333,15 @@ def test_the_final_yardstick_scores_while_the_lock_still_names_this_supervisor(t
         calls.append(cmd[3])
         assert GpuLock(lock_path).holder()[0] == os.getpid(), f"{cmd[3]} ran on a card the lock calls free"
         return subprocess.CompletedProcess(cmd, 0, stdout="KEEP\n", stderr="")
+
+    def score(argv, env, lock):
+        calls.append(argv[3])
+        assert GpuLock(lock_path).holder()[0] == os.getpid(), "the score ran on a card the lock calls free"
+        return 0, "scored"
     monkeypatch.setattr(sup_mod, "Supervisor", Stub)
     monkeypatch.setattr(sup_mod, "GpuLock", lambda label="": GpuLock(lock_path, label))
     monkeypatch.setattr(sup_mod.subprocess, "run", instrument)
+    monkeypatch.setattr(sup_mod, "score_on_the_card", score)
     code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"), "--log", str(tmp_path / "t.log"),
                          "--min-free-gb", "0", "--skip-fit-gate", "--spec", str(tmp_path / "spec.toml")])
     assert code == 0
@@ -459,3 +465,61 @@ def test_a_lock_whose_holder_and_named_child_both_died_is_stale(tmp_path):
     path.write_text(f"{dead[0].pid} run-a\nchild {dead[1].pid}\n")
     GpuLock(path, label="run-b").acquire()
     assert GpuLock(path).holder() == (os.getpid(), "run-b")
+
+
+# --- the final score's eval is held by the lock, however the supervisor ends (#527) ---
+
+# Stands in for `base_run score`: it spawns the "eval" that would hold the card, names
+# it in a file, and waits on it, as base_run waits on eval_yardstick.
+_SCORE_STUB = ("import subprocess, sys, time; "
+               "e = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)']); "
+               "open(sys.argv[1], 'w').write(str(e.pid)); e.wait()")
+
+
+def _supervisor_scoring(tmp_path):
+    """A process that holds the lock and runs score_on_the_card over the stub, as the
+    supervisor does at the end of a budget run. Returns it and the eval's pid."""
+    eval_pid = tmp_path / "eval.pid"
+    script = tmp_path / "scoring.py"
+    script.write_text(textwrap.dedent(f"""
+        import pathlib, sys
+        from trm.runtime.gpu_lock import GpuLock, exit_on_sigterm
+        from trm.runtime import supervisor
+        exit_on_sigterm()
+        lock = GpuLock(pathlib.Path({str(tmp_path / "gpu.lock")!r}), label="score")
+        lock.acquire()
+        try:
+            supervisor.score_on_the_card([sys.executable, "-c", {_SCORE_STUB!r}, {str(eval_pid)!r}], None, lock)
+        finally:
+            lock.release()
+    """))
+    root = str(sup_mod.REPO_ROOT)
+    proc = subprocess.Popen([sys.executable, str(script)], cwd=root, env={**os.environ, "PYTHONPATH": root})
+    deadline = time.time() + 60
+    while not (eval_pid.exists() and eval_pid.read_text()):
+        assert time.time() < deadline and proc.poll() is None, "the stub score never started its eval"
+        time.sleep(0.1)
+    return proc, int(eval_pid.read_text())
+
+
+def test_a_sigterm_during_the_score_takes_its_eval_down_before_the_lock_goes(tmp_path):
+    supervisor, eval_ = _supervisor_scoring(tmp_path)
+    try:
+        supervisor.send_signal(signal.SIGTERM)
+        supervisor.wait(timeout=90)
+        assert _gone(eval_), "an orphaned eval would keep the card under a free lock"
+        assert not (tmp_path / "gpu.lock").exists()
+    finally:
+        _clean_up(supervisor, eval_)
+
+
+def test_a_supervisor_killed_outright_during_the_score_leaves_the_card_held(tmp_path):
+    supervisor, eval_ = _supervisor_scoring(tmp_path)
+    try:
+        supervisor.kill()
+        supervisor.wait(timeout=30)
+        assert not _gone(eval_)
+        with pytest.raises(Preflight, match=rf"child of dead pid {supervisor.pid}"):
+            GpuLock(tmp_path / "gpu.lock", label="run-b").acquire()
+    finally:
+        _clean_up(supervisor, eval_)
