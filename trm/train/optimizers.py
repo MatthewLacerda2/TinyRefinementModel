@@ -58,10 +58,9 @@ def _adamw(config, learning_rate, weight_decay=None):
         # Storage-only, Turing-safe — tensor cores never see bf16. Frees ~2 bytes/
         # param (~0.23GB at dim960), which is exactly what lets the dim960 / 138.7M
         # model fit the 6GB card — it OOMs with f32 moments. The variance estimate
-        # (nu) stays f32: bf16 is too coarse near zero there. Verified sound by
-        # instruments.bf16_mu_smoke at commit 3859e57 (#37): a RefinerForTraining at
-        # dim 512, 16 heads, 7 encoder layers, f32 compute, tracked an f32-mu run to
-        # 0.06% of loss. Not re-measured at the dim-960 shipping config.
+        # (nu) stays f32: bf16 is too coarse near zero there. instruments.bf16_mu_smoke
+        # measured bf16 mu within 0.06% of f32 mu's loss (#37), on an older, smaller
+        # model; not re-measured at the dim-960 shipping config.
         mu_dtype=jnp.bfloat16,
     )
 

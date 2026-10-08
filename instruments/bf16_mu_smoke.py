@@ -13,10 +13,9 @@ stored as bfloat16 while the variance (nu) stays f32.
 
     PYTHONPATH=. ./venv/bin/python -m instruments.bf16_mu_smoke
 
-The one recorded result — bf16-mu tracks f32-mu to 0.06% of loss, cited in
-trm/train/optimizers.py — was measured at commit 3859e57 on the refiner of the day at
-dim 512, 16 heads, 7 encoder layers; reproducing it exactly needs that commit. The
-defaults here follow config (#167, #319). At config's dim 960 the A/B runs in f32
+The one recorded result, bf16-mu within 0.06% of f32-mu's loss (cited in
+trm/train/optimizers.py), was measured at commit 3859e57 (#37); reproducing it exactly
+needs that commit. The defaults here follow config (#167, #319). At config's dim 960 the A/B runs in f32
 compute with two models' optimizer state in one process, which may not fit the 6GB card.
 """
 

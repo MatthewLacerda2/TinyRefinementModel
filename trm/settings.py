@@ -191,35 +191,15 @@ class Config(BaseSettings):
     Z_LOSS_WEIGHT: float = 1e-4
 
     # ── Batching ──────────────────────────────────────────────────────────────
-    # BATCH_SIZE and ACCUMULATION_STEPS move together, always keeping their product
-    # fixed (#24): the optimizer + global-norm clip over 138.7M params costs a flat
-    # ~69ms per micro-step regardless of batch — 25% of a batch-1 step — so fewer,
-    # fatter micro-steps amortize it. #24 measured that on an idle card with
-    # instruments.bench_train_step: +43% at depth 4 (5.0k -> 7.2k tok/s) and +40% at
-    # depth 8 (4.2k -> 5.9k), and flipped this pair to 2/64.
+    # BATCH_SIZE x ACCUMULATION_STEPS stays 128, so tokens per optimizer step, the LR
+    # schedule and the learning dynamics are the same at any split; fatter micro-steps
+    # only amortize the flat per-micro-step optimizer cost (#24).
     #
-    # BATCH_SIZE IS 2 since 2026-09-20, at 8 layers. It was 1 for as long as the stack
-    # was 9 layers deep, and for good reason: batch 2 OOMed the real trainer on its first
-    # optimizer step at dim960/depth8 in 2026-08-13, and the 2026-09-13 re-measurement
-    # found 45 MiB of headroom at 8 layers and -371 at 9 — the lever was dead at dim 960.
-    # Muon's 380 MiB (#388) and #316's single compiled program changed that arithmetic.
-    #
-    # What flipped it is a real trainer launch, which is what the old note here demanded
-    # and what a bench number could never give: 40 opt steps at 8 layers and batch 2,
-    # checkpoints every 16 steps, validation probe running, 6,149 tok/s against 4,424 for
-    # 9 layers at batch 1, arena peak 4502 of 4883 MiB (381 MiB headroom, matching the
-    # #385 smoke's 382). Note that instruments.vram_headroom_smoke still will NOT catch a
-    # regression here: it defaults to --batch 1 and samples nvidia-smi under the
-    # `platform` allocator rather than the trainer's preallocated arena.
-    #
-    # 381 MiB is thinner than the 834 MiB the only completed 10-day run had, so this is
-    # the knob the supervisor's fit gate (#168) is for; if a long run OOMs, drop to
-    # batch 1 at 8 layers rather than adding the layer back.
-    #
-    # The product with ACCUMULATION_STEPS stays 128, so tokens per optimizer step, the LR
-    # schedule, the token budget and the learning dynamics are identical either way: same
-    # model, same run, fewer and fatter micro-steps amortizing the flat ~69ms optimizer +
-    # global-norm clip over 138.7M params (#24).
+    # 2 is the widest that fits at dim 960 / 8 layers: a real trainer launch measured
+    # 6,149 tok/s and 381 MiB of arena headroom on 2026-09-20 (#385's smoke: 382), and
+    # batch 4 OOMs (#548). The headroom is thin, so the supervisor's fit gate (#168)
+    # watches this knob; if a long run OOMs, drop to batch 1 rather than adding a layer
+    # back. bench_train_step misranks this knob (#561): judge it with the real trainer.
     BATCH_SIZE: int = 2
 
     @field_validator("BATCH_SIZE")
@@ -242,22 +222,13 @@ class Config(BaseSettings):
         return self.ACCUMULATION_STEPS * self.BATCH_SIZE * 2 * self.MAX_SEQ_LEN
 
     # ── Held-out evaluation ───────────────────────────────────────────────────
-    # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs)
-    # and scores them ONE ROW AT A TIME, deliberately ignoring BATCH_SIZE. Sizing or
-    # chunking the eval slice by a training throughput knob would silently redefine
-    # what "val CE" means and break comparability with every number already recorded
-    # (the champion's 4.7092, the #17 noise floor of sigma~0.03, the time machine's
-    # +/-0.06 reproduction check). Eval is a handful of rows, so there is nothing to
-    # gain by batching it — and batch-1 scoring is also the shape every stored
-    # checkpoint was written at.
+    # Held-out evaluation reads a fixed number of *rows* (prediction-window pairs) and
+    # scores them one row at a time, deliberately ignoring BATCH_SIZE: a throughput knob
+    # must never redefine what "val CE" means.
     #
-    # CHANGEOVER 2026-09-15 (#184): 4 -> 64 rows. Four rows gave val CE a per-probe
-    # noise of ~0.011 nats per interval, more than twice the plateau detector's
-    # 0.005 bar, so a detector reading it read noise. The cost is comparability:
-    # a plain run's val CE is NOT comparable to any number recorded before this
-    # line (the refiner champion's 3.6474, the July 4.7092, the #17 sigma~0.03
-    # floor) — those were measured on the first 4 rows of the same slice. The new
-    # probe's own sigma is measured, not assumed: instruments/probe_sigma.py.
+    # 64 since 2026-09-15 (#184); 4 rows were noisier than the plateau detector's bar.
+    # Val CE recorded before that change is NOT comparable to val CE after it. The
+    # probe's own sigma is measured by instruments/probe_sigma.py.
     EVAL_ROWS: int = 64
     # Where the fineweb validation slice starts: far past any plausible training
     # consumption (an 8k-opt-step run consumes under 1M fineweb samples; fineweb holds
