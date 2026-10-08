@@ -163,7 +163,8 @@ class Config(BaseSettings):
     # lookup tables; norms and biases stay undecayed.
     EMBED_WEIGHT_DECAY: float = 6e-5
     # The global-norm clip on the accumulation window's MEAN gradient. The trainer logs that
-    # norm (applied_grad_norm, #180) and whether the clip bit (clip_active).
+    # norm (applied_grad_norm, #180) and whether the clip bit (clip_active). 1.0 is a
+    # measured choice since #447's pair: removing it cost +0.046 val CE at 512 steps (PR #560).
     CLIP_NORM: float = 1.0
     # Muon's own (optax.contrib.scale_by_muon): momentum, Newton-Schulz iterations, the
     # normalization epsilon, Nesterov.

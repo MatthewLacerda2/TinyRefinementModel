@@ -1,0 +1,104 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "447-clip-off"
+status = "open"
+title = "CLIP_NORM 1.0 vs no global clip, on today's plain Muon recipe"
+hypothesis = """
+The global-norm clip (CLIP_NORM 1.0, never chosen, #358) binds on 70-85% of logged steps
+(#447). Step 1 of #447 (CPU, 2026-09-20) showed that under Muon it barely changes the
+matrix partition's step size (within 0.6% even at a 10,000x spike: Newton-Schulz drives
+the singular values to ~1), caps the AdamW partition (embedding, norms) at ~0.79 of its
+unclipped update, and still rescales the gradient entering Muon's momentum, so it changes
+the matrices' DIRECTION. Whether that costs or saves tokens on a real run is unknown.
+
+Prediction registered: parity. The clip mostly reaches the embedding through Adam, which
+is itself scale-invariant in steady state, and Muon's step size ignores it, so removing
+it moves tokens-to-target by less than 5%: INCONCLUSIVE. My last three predictions on
+recipe knobs (#361, #494 x2) misjudged how much an early effect survives; this one has no
+early-start mechanism, so I expect the curves to sit on top of each other throughout.
+"""
+issue = 447
+
+[protocol]
+floor_note = """
+Tokens to a target near the control's endpoint, capped at the run (67.1M). The target,
+4.50, is read off today's default config BEFORE this pair ran: #375's Polar Express arms
+(now main's default, the same recipe as this control) crossed 4.50 at opt steps 440, 448,
+440 of 512 (86-88% of the run), the late reading #547 asks for, not the first quarter.
+Tokens are quantized to the probe interval (8 opt steps = 1.05M tokens, #547), so
+min_delta carries the decision when seeds tie. If the control does not reach 4.50, the
+verdict is void: re-read at a target the control reached, before reading the treatment.
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 4.50 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only CLIP_NORM differs; both arms new runs"
+notes = """
+Recipe: main after #559 (plain 8 x 960, batch 2, Muon x16.667 with Polar Express on a 6e-4
+schedule completing in-run, warmup 100, f32 stream, z-loss 1e-4, Adam b2 0.95), val every
+8 on 64 rows. The treatment sets CLIP_NORM=1e9, which never binds (applied_grad_norm on
+this recipe sits around 1.5-1.8). The per-micro-step guard clip (#201) and the loss
+scaler are unchanged in both arms: this removes only the optimizer chain's global clip.
+min_delta = 2.9M tokens, 5% of the ~58M the control needs to reach 4.50.
+Readouts, no weight: final_val_ce at the cap (if its sign disagrees with the verdict,
+the owner decides, as on #361); clip_active (should read 0 in the treatment); applied
+grad norm; act_max and branch_max (#536).
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "4.50", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--tag", "clip447"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64" }
+
+[arms.control]
+role = "control"
+flags = []
+
+[arms.clip_off]
+role = "treatment"
+flags = ["--set", "CLIP_NORM=1e9"]
+
+# Tokens: LOWER is better, so a win for clip_off is the CONTROL's number being larger.
+[criteria.clip_off_needs_fewer_tokens]
+rule = "beats"
+treatment = "control"
+control = "clip_off"
+sigmas = 2.0
+min_delta = 2.9
+points = ["run"]
+require = "all"
+
+[criteria.clip_off_needs_more_tokens]
+rule = "loses"
+treatment = "control"
+control = "clip_off"
+sigmas = 2.0
+min_delta = 2.9
+points = ["run"]
+require = "all"
+
+[verdict]
+recorded = "INCONCLUSIVE"
+keep_if = ["clip_off_needs_fewer_tokens"]
+kill_if = ["clip_off_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers:
+KEEP -> the clip costs tokens: CLIP_NORM's default moves off (1e9) in the recording PR,
+and a value sweep (#447) is the follow-up only if the owner wants a gentler cap kept.
+INCONCLUSIVE -> the clip is not worth a decision: CLIP_NORM stays 1.0 (every run on
+record trained with it), recorded as measured-inert on this recipe.
+KILL -> removing the clip costs tokens: 1.0 stays, now chosen rather than inherited, and
+#447 closes with that record.
+"""
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+clip_off = [59.7688, 60.8174, 59.7688]
+control = [57.6717, 58.7203, 57.6717]

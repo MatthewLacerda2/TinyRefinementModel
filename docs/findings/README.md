@@ -45,6 +45,7 @@ things, it doesn't go in this folder.
 - `2026-10-04-polar-express-coefficients-hold-on-the-2060-recipe.md` — #375: Polar Express's per-step Newton-Schulz coefficients beat the 2024 quintic by 0.023 val CE at 512 steps (3 seeds), same speed; not novel (Amsel et al. 2025), recorded as the Muon pairs were; adopted
 - `2026-10-04-post-norm-beats-the-plain-recipe-where-it-was-registered-to-tie.md` — #494: POST_NORM on the plain recipe, −0.056 val CE at 512 steps (3 seeds) and act_max peak ~37 vs ~86, at +1.4% wall-clock; INCONCLUSIVE only because a win was not a registered branch; adoption open on #494
 - `2026-10-07-post-norms-lead-is-mostly-the-start-and-its-act-max-cap-grows-in-value.md` — #494 at 2,000 steps: the 512-step lead shrinks to −0.015 val CE (13σ, 2% fewer tokens to 3.70, bar 5%): INCONCLUSIVE; the control's act_max grows past 600 where POST_NORM's stays ~70
+- `2026-10-07-the-global-clip-matters-under-muon-though-it-barely-moves-muons-step.md` — #447: removing CLIP_NORM 1.0 costs +0.046 val CE at 512 steps (3 seeds, every clipped seed better), though the clip barely changes Muon's step size; INCONCLUSIVE by the 5% tokens bar; 1.0 stays, now chosen
 
 ## Entry template
 
