@@ -50,6 +50,9 @@ ignore_names = [
     "pytestmark",
     # What pydantic reads off a model class by name (trm/settings.py).
     "model_config", "settings_customise_sources",
+    # Prose a spec may carry (instruments/spec_file.py): declared so a misspelled key
+    # fails, read by people and never by code.
+    "readouts_note", "recorded_note", "config_delta",
 ]
 # Pydantic calls a validator through its decorator; nothing references it by name.
 ignore_decorators = ["@field_validator"]

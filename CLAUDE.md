@@ -160,6 +160,10 @@ test, or by an open issue that adds one; this file keeps only the *why*.
   caller hands it, and only entry points read this process's `CONFIG`. Import-time
   reads scattered over eleven files froze values in whatever order modules loaded and
   forced the `start.py` / `run_budget` ordering dance (#475).
+- **Outside data is parsed into a typed object at the boundary.** The environment
+  goes through `Config`, a spec TOML through `instruments/spec_file.py`, the resume
+  state through `ResumeState`. A misspelled key fails where the file is read, naming
+  it, never as a `KeyError` mid-run or as a key silently ignored (#475, #477, #478).
 - **The dtype policy is about compute, not state.** Matmuls run f16; anything that
   *accumulates* — the residual stream, the gradient accumulator, an optimizer
   moment — belongs in f32: past ~4k, f16's 10 mantissa bits round a block's O(1)

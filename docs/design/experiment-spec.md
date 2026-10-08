@@ -32,6 +32,12 @@ its research line like everything else there (#143).
 | `[stall]` | a base run's early-stop rule: which held-out CE it reads, window, bar, decay (read by `python -m instruments.stall`, #468) |
 | `[results.<point>]` | per-arm numbers, written **after** the run |
 
+Every reader goes through `instruments/spec_file.py`, which types each table (#478).
+A key the machine acts on is strict: an unknown key in `[experiment]`, `[arms.*]`,
+`[criteria.*]`, `[execution]`, `[verdict]` or `[readouts]` fails the load, naming
+the table and the key. `[protocol]` types the keys tools read and keeps the rest
+as written, since retrofits record their own setup there.
+
 Three comparison rules, which is all the recorded experiments have ever needed:
 
 - `within` — `|Δ| ≤ n·σ_pooled`, i.e. parity / no harm

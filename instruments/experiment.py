@@ -47,6 +47,7 @@ from dataclasses import dataclass
 
 from instruments import pair_report
 from instruments import results as result_lines
+from instruments.spec_file import LegTable, SpecFile
 from instruments._common import REPO_ROOT, module_env
 from instruments.verdict import (
     Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
@@ -115,24 +116,18 @@ class Execution:
 
 
 def load_execution(spec: Spec) -> Execution:
-    """Read the `[execution]`, `[arms.*]` and `[protocol]` keys the runner needs.
+    """The `[execution]`, `[arms.*]` and `[protocol]` keys the runner needs, typed by
+    instruments/spec_file.py and checked against each other here.
 
     Validated up front and loudly: a spec whose command is missing must fail
     before the gate runs, not two hours into a sweep.
     """
-    ex = spec.meta.get("execution")
-    if not ex:
+    file = spec.file
+    ex = file.execution if file is not None else None
+    if file is None or ex is None:
         raise ValueError(
             f"spec {spec.id} has no [execution] section — it can be judged but not run")
-    if "command" not in ex:
-        raise ValueError(f"spec {spec.id}: [execution] is missing 'command'")
-
-    if isinstance(ex["command"], str):
-        raise ValueError(
-            f"spec {spec.id}: [execution] command must be a LIST of arguments, not a "
-            f'string. Write ["python", "-m", "pkg.mod", "--flag", "value"], because a '
-            f"string here would be iterated character by character.")
-    command = tuple(str(part) for part in ex["command"])
+    command = ex.command
     if not command:
         raise ValueError(f"spec {spec.id}: [execution] command is empty")
     if command[0] in ("python", "python3"):
@@ -143,7 +138,6 @@ def load_execution(spec: Spec) -> Execution:
         # venv path into a committed spec, which is worse.
         command = (sys.executable, *command[1:])
 
-    all_arms = spec.meta.get("arms", {})
     # An arm marked `constant = true` is NOT run: its values are supplied in the
     # spec's [results] as a Summary. This exists because the referee can otherwise
     # only express RELATIVE comparisons, and some questions need an absolute floor --
@@ -151,47 +145,37 @@ def load_execution(spec: Spec) -> Execution:
     # and without a floor that reads as parity rather than as a null result. Declaring
     # it explicitly (rather than inferring "no flags means constant") keeps the
     # typo check below honest: a misspelled arm name still fails loudly.
-    arm_flags = {name: tuple(str(f) for f in body.get("flags", ()))
-                 for name, body in all_arms.items() if not body.get("constant")}
+    arm_flags = {name: arm.flags for name, arm in file.runnable_arms().items()}
     if not arm_flags:
         raise ValueError(f"spec {spec.id}: no runnable [arms.*] — every arm is constant")
 
     named = {c.treatment for c in spec.criteria.values()} | {c.control for c in spec.criteria.values()}
-    missing = sorted(named - set(all_arms))
+    missing = sorted(named - set(file.arms))
     if missing:
         raise ValueError(
             f"spec {spec.id}: criteria compare arms that no [arms.*] section defines: {missing}")
 
-    metric = spec.meta.get("protocol", {}).get("metric_key")
+    metric = file.protocol.metric_key
     if not metric:
         raise ValueError(
             f"spec {spec.id}: [protocol] needs metric_key — which number in the "
             f"harness's RESULT line the criteria are about")
 
-    default_seeds = tuple(int(s) for s in ex.get("seeds", ()))
-    raw_legs = ex.get("legs") or {"": {}}
     legs = []
-    for name, body in raw_legs.items():
-        seeds = tuple(int(s) for s in body.get("seeds", default_seeds))
+    for name, body in (ex.legs or {"": LegTable()}).items():
+        seeds = body.seeds if body.seeds is not None else ex.seeds
         if not seeds:
             raise ValueError(
                 f"spec {spec.id}: leg {name or '(unnamed)'!r} has no seeds, and "
                 f"[execution] declares no default 'seeds'")
-        arms = tuple(body.get("arms", tuple(arm_flags)))
+        arms = body.arms if body.arms is not None else tuple(arm_flags)
         unknown = sorted(set(arms) - set(arm_flags))
         if unknown:
             raise ValueError(f"spec {spec.id}: leg {name!r} names undefined arms: {unknown}")
-        legs.append(Leg(name=str(name), flags=tuple(str(f) for f in body.get("flags", ())),
-                        seeds=seeds, arms=arms))
+        legs.append(Leg(name=name, flags=body.flags, seeds=seeds, arms=arms))
 
-    return Execution(
-        command=command,
-        seed_flag=str(ex.get("seed_flag", "--seed")),
-        env={str(k): str(v) for k, v in ex.get("env", {}).items()},
-        arm_flags=arm_flags,
-        legs=tuple(legs),
-        metric=str(metric),
-    )
+    return Execution(command=command, seed_flag=ex.seed_flag, env=dict(ex.env), arm_flags=arm_flags,
+                     legs=tuple(legs), metric=metric)
 
 
 # --- the journal --------------------------------------------------------------
@@ -381,8 +365,7 @@ def merge_constants(spec, results, spec_path):
     handed results with no floor arm at all, failing with "point has no arm
     'chance'" only after every run had completed.
     """
-    constants = {name for name, body in (spec.meta.get("arms") or {}).items()
-                 if body.get("constant")}
+    constants = spec.file.constant_arms() if spec.file is not None else set()
     if not constants:
         return results
     # Parsed, not raw: verdict.py needs a Summary object, and the raw TOML table
@@ -410,8 +393,7 @@ def record_results(spec_path: pathlib.Path, results, metric: str, *, force: bool
     18 runs completed and were then dropped on the floor.
     """
     text = spec_path.read_text()
-    constants = {name for name, body in (load_spec(spec_path).meta.get("arms") or {}).items()
-                 if body.get("constant")}
+    constants = SpecFile.load(spec_path).constant_arms()
     measured = re.findall(r"^\s*([A-Za-z_][\w-]*)\s*=", text[text.index("[results."):], re.M) \
         if "[results." in text else []
     if measured and set(measured) - constants and not force:
@@ -452,7 +434,7 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
         "## Protocol",
         "",
         f"- command: `{' '.join(execution.command)}`",
-        f"- metric: {spec.meta.get('protocol', {}).get('metric', execution.metric)}",
+        f"- metric: {spec.file.protocol.metric if spec.file is not None else execution.metric}",
         "",
         "| leg | flags | arms | seeds |",
         "|---|---|---|---|",

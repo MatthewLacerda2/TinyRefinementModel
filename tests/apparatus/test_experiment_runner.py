@@ -146,7 +146,9 @@ def test_a_spec_with_no_execution_section_is_judge_only(tmp_path):
         control = "b"
         sigmas = 2.0
         [arms.a]
+        role = "treatment"
         [arms.b]
+        role = "control"
         [verdict]
         keep_if = ["c"]
     """))
@@ -570,9 +572,9 @@ chance = { mean = 0.2106, sigma = 0.0001, n = 3 }
     assert experiment.record_results(
         spec_path, {"d1": {"control": [0.5], "treated": [0.7]}}, "acc")
 
-    reloaded = load_spec(spec_path).meta["results"]["d1"]
+    reloaded = load_spec(spec_path).file.results["d1"]
     assert set(reloaded) == {"chance", "control", "treated"}
-    assert reloaded["chance"]["mean"] == 0.2106
+    assert reloaded["chance"].mean == 0.2106
     assert spec_path.read_text().count("[results.d1]") == 1, "one table per point"
 
 

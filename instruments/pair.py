@@ -28,10 +28,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 
 from instruments._common import REPO_ROOT
 from instruments.experiment import journal_path, load_execution, read_journal
+from instruments.spec_file import SpecFile
 from instruments.verdict import load_spec
 from trm.runtime.oom import systemd_run
 
@@ -81,8 +81,7 @@ def launch(spec_path, *, gate: bool) -> str:
 
 def announce(spec_path, spec_id: str) -> None:
     """The "▶ started" comment on the spec's issue, when the spec names one."""
-    with open(spec_path, "rb") as f:
-        issue = tomllib.load(f)["experiment"].get("issue")
+    issue = SpecFile.load(spec_path).experiment.issue
     if issue is None or shutil.which("gh") is None:
         return
     body = f"▶ started: `{spec_id}` on the card (`make pair`), log `runs/{spec_id}.log`"
