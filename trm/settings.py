@@ -197,11 +197,11 @@ class Config(BaseSettings):
     # schedule and the learning dynamics are the same at any split; fatter micro-steps
     # only amortize the flat per-micro-step optimizer cost (#24).
     #
-    # 2 is the widest that fits at dim 960 / 8 layers: a real trainer launch measured
-    # 6,149 tok/s and 381 MiB of arena headroom on 2026-09-20 (#385's smoke: 382), and
-    # batch 4 OOMs (#548). The headroom is thin, so the supervisor's fit gate (#168)
-    # watches this knob; if a long run OOMs, drop to batch 1 rather than adding a layer
-    # back. Judge it with the real loop: `python -m instruments.profile_step --pace` (#561).
+    # 2 is the widest that fits at dim 960 / 8 layers: the real loop peaks at 3757 of
+    # 4883 MiB (1126 headroom, 2026-10-08; the 381 measured on 2026-09-20 held a stale
+    # gradient tree, #293), batch 4 reaches 5238 (#548), and 3 does not divide 128. The
+    # supervisor's fit gate (#168) still watches this knob; if a long run OOMs, drop to
+    # batch 1 rather than adding a layer back. Judge it with the real loop: `python -m instruments.profile_step --pace` (#561).
     BATCH_SIZE: int = 2
 
     @field_validator("BATCH_SIZE")
