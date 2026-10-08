@@ -146,5 +146,5 @@ def test_z_loss_gradient_matches_naive_and_the_reported_ce_excludes_it(ce_batch)
 def test_the_trainer_hands_the_z_loss_to_the_hot_path():
     import inspect
 
-    from trm.train import trainer
-    assert "HotPath(model, optimizer, z_loss_weight=config.Z_LOSS_WEIGHT)" in inspect.getsource(trainer)
+    from trm.train import loop
+    assert "HotPath(model, optimizer, z_loss_weight=config.Z_LOSS_WEIGHT)" in inspect.getsource(loop)
