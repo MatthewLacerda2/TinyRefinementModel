@@ -22,13 +22,13 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "champion_run_metadata.js
 
 def test_the_committed_base_spec_is_a_valid_base_spec():
     spec = base_run.load_base_spec(SPEC)
-    assert spec.meta["protocol"]["budget_tokens"] > 0
+    assert spec.file.protocol.budget_tokens > 0
     assert set(spec.criteria) == {"meets_the_bar", "misses_by_a_margin"}
 
 
 @pytest.mark.parametrize("mutation, message", [
     ("[arms.gpt2_small]\nrole = \"floor\"\nconstant = true\n", "constant="),
-    ("[results.run]\ngpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }\n", "declares no"),
+    ("gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }\n", "declares no"),
     ("budget_tokens = 5000000000\n", "budget_tokens"),
 ])
 def test_a_spec_missing_its_reference_or_budget_fails_to_load(tmp_path, mutation, message):

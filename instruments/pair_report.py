@@ -112,8 +112,8 @@ def find_run(row, runs: pathlib.Path) -> pathlib.Path | None:
 
 def control_arm(spec) -> str | None:
     """The one arm whose role is "control"; None for a spec that is not a pair."""
-    arms = spec.meta.get("arms", {})
-    controls = [name for name, body in arms.items() if body.get("role") == "control"]
+    arms = spec.file.arms if spec.file is not None else {}
+    controls = [name for name, arm in arms.items() if arm.role == "control"]
     return controls[0] if len(controls) == 1 else None
 
 

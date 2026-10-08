@@ -24,6 +24,7 @@ import sys
 
 from instruments import runlog
 from instruments import verdict as referee
+from instruments.spec_file import SummaryTable
 from instruments._common import REPO_ROOT, module_env
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR, YARDSTICK_JOURNAL as JOURNAL
 
@@ -41,15 +42,14 @@ REPORTS = {
 def load_base_spec(path) -> referee.Spec:
     """A base-run spec: exactly one runnable arm, one constant reference, a budget."""
     spec = referee.load_spec(path)
-    arms = spec.meta.get("arms") or {}
-    runnable = [n for n, b in arms.items() if not b.get("constant")]
-    constant = [n for n, b in arms.items() if b.get("constant")]
+    assert spec.file is not None, "load_spec always reads the file"
+    runnable, constant = list(spec.file.runnable_arms()), sorted(spec.file.constant_arms())
     if len(runnable) != 1 or len(constant) != 1:
         raise ValueError(f"{path}: a base-run spec has exactly one runnable arm and one constant "
                          f"reference arm, found runnable={runnable} constant={constant}")
-    if constant[0] not in (spec.meta.get("results") or {}).get("run", {}):
+    if constant[0] not in spec.file.results.get("run", {}):
         raise ValueError(f"{path}: the reference arm {constant[0]!r} declares no [results.run] value")
-    if "budget_tokens" not in (spec.meta.get("protocol") or {}):
+    if spec.file.protocol.budget_tokens is None:
         raise ValueError(f"{path}: [protocol] must declare budget_tokens")
     return spec
 
@@ -121,9 +121,9 @@ def verdict_for(spec_path, run_dir) -> referee.Verdict:
     entry = completion_entry(run_dir)
     if entry is None:
         raise ValueError(f"{run_dir}: no full-set yardstick in {JOURNAL} — score the final checkpoint first")
-    arms = spec.meta["arms"]
-    runnable = next(n for n, b in arms.items() if not b.get("constant"))
-    metric = spec.meta["protocol"]["metric_key"]
+    assert spec.file is not None and spec.file.protocol.metric_key is not None
+    (runnable,) = spec.file.runnable_arms()
+    metric = spec.file.protocol.metric_key
     results = {"run": {runnable: [float(entry[metric])]}}
     from instruments.experiment import merge_constants
     results = merge_constants(spec, results, pathlib.Path(spec_path))
@@ -178,7 +178,9 @@ def card_fields(run_dir, spec_path=None) -> dict:
     ref = None
     if spec_path:
         spec = load_base_spec(spec_path)
-        ref = spec.meta["results"]["run"]
+        assert spec.file is not None
+        ref = {arm: v.model_dump() if isinstance(v, SummaryTable) else v
+               for arm, v in spec.file.results["run"].items()}
     yard = completion_entry(run_dir)
     step_name, sha = _weights_sha(run_dir / "checkpoints")
     return {

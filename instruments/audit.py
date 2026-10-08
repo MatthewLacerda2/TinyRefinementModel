@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 from instruments._common import REPO_ROOT
 from instruments.changed import changed_paths
+from instruments.spec_file import SpecFile
 from instruments.verdict import (
     KEEP, KILL, Spec, Summary, Verdict, evaluate, load_recorded_results, load_spec,
     mean_sigma, pooled_sigma,
@@ -93,7 +94,7 @@ class Audited:
     path: pathlib.Path
     rel: str                    # how the spec is named in output and in citations
     repo: pathlib.Path
-    raw: dict
+    file: SpecFile
     spec: Spec
     results: dict
     verdict: Verdict | None
@@ -103,7 +104,7 @@ class Audited:
 
     @property
     def constants(self) -> set[str]:
-        return {n for n, b in self.raw.get("arms", {}).items() if b.get("constant")}
+        return self.file.constant_arms()
 
     @property
     def measured(self) -> bool:
@@ -134,7 +135,7 @@ class Audited:
         return []
 
     def role(self, arm: str) -> str:
-        return self.raw.get("arms", {}).get(arm, {}).get("role", "")
+        return self.file.arms[arm].role if arm in self.file.arms else ""
 
     def floors(self) -> dict[str, Summary]:
         """{point: floor} from constant floor arms declared in [results]."""
@@ -144,26 +145,25 @@ class Audited:
 
     @property
     def cap(self) -> float | None:
-        cap = self.raw.get("protocol", {}).get("cap")
-        return float(cap) if cap is not None else None
+        return self.file.protocol.cap
 
     def voided(self, point: str, arm: str) -> list[int]:
         """Seeds declared void at a point, with a reason: [void.<point>.<arm>]."""
-        entry = self.raw.get("void", {}).get(point, {}).get(arm, {})
-        return list(entry.get("seeds", ())) if str(entry.get("reason", "")).strip() else []
+        entry = self.file.void.get(point, {}).get(arm)
+        return list(entry.seeds) if entry is not None and entry.reason.strip() else []
 
     def registered_seeds(self, point: str) -> int | None:
         """How many seeds the spec registered for a point, or None if it never said."""
-        execution = self.raw.get("execution")
+        execution = self.file.execution
         if execution:
-            default = execution.get("seeds", ())
+            default = execution.seeds
             leg = point.split("/", 1)[0] if "/" in point else ""
-            legs = execution.get("legs", {})
-            if leg in legs:
-                return len(legs[leg].get("seeds", default))
+            if leg in execution.legs:
+                seeds = execution.legs[leg].seeds
+                return len(seeds if seeds is not None else default)
             return len(default) if default else None
-        seeds = self.raw.get("protocol", {}).get("seeds")
-        return len(seeds) if isinstance(seeds, list) else None
+        seeds = self.file.protocol.seeds
+        return len(seeds) if isinstance(seeds, tuple) else None
 
     def history(self) -> list[Commit] | None:
         """Every committed version of the spec, oldest first. [] if never committed,
@@ -181,9 +181,8 @@ class Audited:
 
 def load(path: pathlib.Path, repo: pathlib.Path = REPO) -> Audited:
     path, repo = path.resolve(), repo.resolve()
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
     spec = load_spec(path)
+    assert spec.file is not None, "load_spec always reads the file"
     results = load_recorded_results(path)
     verdict, error = None, None
     try:
@@ -191,7 +190,7 @@ def load(path: pathlib.Path, repo: pathlib.Path = REPO) -> Audited:
     except (KeyError, ValueError) as exc:
         error = str(exc)
     rel = path.relative_to(repo).as_posix() if path.is_relative_to(repo) else str(path)
-    return Audited(path, rel, repo, raw, spec, results, verdict, error)
+    return Audited(path, rel, repo, spec.file, spec, results, verdict, error)
 
 
 def spec_history(repo: pathlib.Path, rel: str) -> list[Commit] | None:
@@ -283,13 +282,13 @@ def control_reached_target(a: Audited) -> Status:
     rule = "control-reached-target"
     if blocked := _unjudgeable(a, rule):
         return blocked
-    metric_key = str(a.raw.get("protocol", {}).get("metric_key", ""))
+    metric_key = a.file.protocol.metric_key or ""
     if "tokens_to" not in metric_key and a.cap is None:
         return Status(rule, NA, "not a tokens-to-target metric")
     if a.cap is None:
         return Status(rule, RED, f"{metric_key} is a tokens-to-target metric with no [protocol] cap — "
                                  f"declare the cap so a control seed that never reached the target is visible")
-    controls = {n for n in a.raw.get("arms", {}) if a.role(n) == "control"}
+    controls = {n for n in a.file.arms if a.role(n) == "control"}
     for c in a.spec.criteria.values():
         for point in a.points_of(c):
             for arm in (c.treatment, c.control):
@@ -413,7 +412,7 @@ def criteria_predate_results(a: Audited) -> Status:
         return Status(rule, GREEN, f"criteria committed in {criteria.sha} ({criteria.date}); "
                                    f"results not yet committed")
     if criteria.sha == results.sha:
-        if a.raw.get("experiment", {}).get("status") == "retrofit":
+        if a.file.experiment.status == "retrofit":
             return Status(rule, GRANDFATHERED, f"retrofit: both halves transcribed from the finding in "
                                                f"{criteria.sha} ({criteria.date})")
         if criteria.date < AUDIT_CUTOFF:
@@ -451,10 +450,10 @@ def finding_cites_spec(a: Audited, citations: dict[str, list[str]], graveyard: s
         return Status(rule, NA, f"verdict {a.outcome or 'undecidable'} — nothing claimed, nothing to cite")
     if a.rel in citations:
         return Status(rule, GREEN, f"cited by {', '.join(citations[a.rel])}")
-    finding = a.raw.get("experiment", {}).get("finding")
+    finding = a.file.experiment.finding
     if finding and (a.repo / finding).exists():
         return Status(rule, GREEN, f"links its own finding, {finding}")
-    issue = a.raw.get("experiment", {}).get("issue")
+    issue = a.file.experiment.issue
     if a.rel in graveyard or (issue and re.search(rf"(?<![\d#])#{int(issue)}(?!\d)", graveyard)):
         return Status(rule, GREEN, "named in the ROADMAP graveyard")
     return Status(rule, RED, f"{a.outcome} with no findings entry citing this spec (a `Spec:` line) and no "
@@ -466,13 +465,13 @@ def run_ended_by_budget(a: Audited) -> Status:
     kill. Applies only when the spec names its logs: `[runs.<arm>] logs = [...]` or
     `dirs = [...]` (a run dir contributes its train.log and supervisor log)."""
     rule = "run-ended-by-budget"
-    runs = a.raw.get("runs")
+    runs = a.file.runs
     if not runs:
         return Status(rule, NA, "the spec records no run log or run dir")
     logs, missing, bad = [], [], []
     for arm, body in runs.items():
-        paths = [a.repo / p for p in body.get("logs", ())]
-        for d in body.get("dirs", ()):
+        paths = [a.repo / p for p in body.logs]
+        for d in body.dirs:
             run_dir = a.repo / d
             paths += [run_dir / "train.log", run_dir.parent / f"{run_dir.name}.supervisor.log"]
         for path in paths:
@@ -630,7 +629,7 @@ def render_spec(a: Audited, statuses: list[Status]) -> str:
 
 
 def render_pending(a: Audited) -> str:
-    status = a.raw.get("experiment", {}).get("status", "?")
+    status = a.file.experiment.status or "?"
     return f"{a.rel}  [pending]  no measured results yet (status = {status}); nothing to audit"
 
 

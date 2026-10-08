@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import math
 import statistics
-import tomllib
-from dataclasses import dataclass, field
-from typing import Any, Sequence
+from dataclasses import dataclass
+from typing import Sequence
+
+from instruments.spec_file import SpecFile, SummaryTable
 
 # Comparison rules a criterion may use. Each takes the signed separation in
 # sigmas (treatment minus control) and the bar, and says whether it holds.
@@ -148,7 +149,9 @@ class Spec:
     # transcription error shows up as a test failure rather than as a spec that
     # quietly disagrees with the record it was copied from.
     recorded: str | None = None
-    meta: dict[str, Any] = field(default_factory=dict)
+    # The whole file, typed: arms, protocol, execution, results. None for a Spec built
+    # in code rather than read from a file.
+    file: SpecFile | None = None
 
     def __post_init__(self):
         unknown = [n for n in (*self.keep_if, *self.kill_if) if n not in self.criteria]
@@ -239,39 +242,22 @@ def evaluate(spec: Spec, results: dict[str, dict[str, Arm]]) -> Verdict:
 
 
 def load_spec(path) -> Spec:
-    """Read a spec TOML. Every key is validated here rather than at use time —
-    a malformed spec must fail before a run burns GPU hours, not after."""
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-
-    for section in ("experiment", "criteria", "verdict"):
-        if section not in raw:
-            raise ValueError(f"{path}: missing [{section}] section")
-
-    exp = raw["experiment"]
-    criteria = {}
-    for name, body in raw["criteria"].items():
-        criteria[name] = Criterion(
-            name=name,
-            rule=body["rule"],
-            treatment=body["treatment"],
-            control=body["control"],
-            sigmas=float(body["sigmas"]),
-            points=tuple(body.get("points", ())),
-            require=body.get("require", "all"),
-            min_delta=float(body["min_delta"]) if "min_delta" in body else None,
-        )
-
+    """Read a spec TOML through its typed tables (instruments/spec_file.py): a
+    malformed spec must fail before a run burns GPU hours, not after."""
+    file = SpecFile.load(path)
+    criteria = {name: Criterion(name=name, rule=c.rule, treatment=c.treatment, control=c.control,
+                                sigmas=c.sigmas, points=c.points, require=c.require, min_delta=c.min_delta)
+                for name, c in file.criteria.items()}
     return Spec(
-        id=str(exp["id"]),
-        title=exp["title"],
-        hypothesis=exp["hypothesis"],
+        id=file.experiment.id,
+        title=file.experiment.title,
+        hypothesis=file.experiment.hypothesis,
         criteria=criteria,
-        keep_if=tuple(raw["verdict"].get("keep_if", ())),
-        kill_if=tuple(raw["verdict"].get("kill_if", ())),
-        readouts=tuple(raw.get("readouts", {}).get("names", ())),
-        recorded=raw["verdict"].get("recorded"),
-        meta={k: v for k, v in raw.items() if k not in ("experiment", "criteria", "verdict")},
+        keep_if=file.verdict.keep_if,
+        kill_if=file.verdict.kill_if,
+        readouts=file.readouts.names,
+        recorded=file.verdict.recorded,
+        file=file,
     )
 
 
@@ -288,13 +274,10 @@ def load_recorded_results(path) -> dict[str, dict[str, Arm]]:
     already published, both arrive together and the finding is the source; those
     are marked `status = "retrofit"`.
     """
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
-
     def parse(arm):
-        if isinstance(arm, dict):
-            return Summary(mean=float(arm["mean"]), sigma=float(arm["sigma"]), n=int(arm["n"]))
-        return [float(v) for v in arm]
+        if isinstance(arm, SummaryTable):
+            return Summary(mean=arm.mean, sigma=arm.sigma, n=arm.n)
+        return list(arm)
 
     return {point: {name: parse(arm) for name, arm in arms.items()}
-            for point, arms in raw.get("results", {}).items()}
+            for point, arms in SpecFile.load(path).results.items()}
