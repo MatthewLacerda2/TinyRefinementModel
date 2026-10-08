@@ -32,6 +32,7 @@ import sys
 import time
 
 from instruments import results
+from instruments.curves import ValCurve
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -70,29 +71,19 @@ def minutes_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: in
 
 
 def tokens_to_target(metrics_csv: pathlib.Path, target_ce: float, cap_steps: int, tokens_per_opt_step: int):
-    """(tokens in millions to first reach target, final val CE, reached, probe_aligned).
+    """(tokens in millions to first reach target, final val CE, reached, probe_aligned,
+    interpolated tokens in millions).
 
-    Read at the probe's own step (`val_step`, #351) when the run recorded it; older
-    runs only have the logged row's step, which is late by up to LOG_REAL_STEPS - 1
-    opt steps. `probe_aligned` says which, so a pair that mixes the two readings
-    (a reused old control against a new treatment) is visible in its RESULT lines."""
-    final, hit, aligned = None, None, False
-    with metrics_csv.open() as f:
-        for row in csv.DictReader(f):
-            try:
-                val = row.get("val_ce") or ""
-                probe = row.get("val_step") or ""
-                aligned = aligned or bool(probe)
-                step = int(probe) if probe else int(row["step"])
-            except (KeyError, ValueError):
-                continue
-            if step > cap_steps or not val:
-                continue
-            final = float(val)
-            if hit is None and final <= target_ce:
-                hit = step
-    steps = hit if hit is not None else cap_steps
-    return steps * tokens_per_opt_step / 1e6, final, hit is not None, aligned
+    The first figure is the first probe at or below the target, quantized to the probe
+    interval; the last interpolates between the probes that bracket it (#547). Both are
+    the cap when the target is never reached. `probe_aligned` says whether the run
+    recorded its probes' own steps (instruments/curves.py), so a pair that mixes the two
+    readings (a reused old control against a new treatment) is visible in its RESULT lines."""
+    curve = ValCurve.read(metrics_csv, cap_steps)
+    hit, crossed = curve.first_at_or_below(target_ce), curve.crossing(target_ce)
+    to_millions = tokens_per_opt_step / 1e6
+    return ((hit if hit is not None else cap_steps) * to_millions, curve.final, hit is not None, curve.aligned,
+            (crossed if crossed is not None else cap_steps) * to_millions)
 
 
 def last_step(metrics_csv: pathlib.Path) -> int:
@@ -238,11 +229,12 @@ def main(argv=None) -> int:
     else:
         print(f"{name}: already at the cap, reading the recorded run", flush=True)
 
-    tokens_m, final, reached, aligned = tokens_to_target(metrics, args.target_ce, args.opt_steps,
-                                                         CONFIG.TOKENS_PER_OPT_STEP)
+    tokens_m, final, reached, aligned, interp_m = tokens_to_target(metrics, args.target_ce, args.opt_steps,
+                                                                   CONFIG.TOKENS_PER_OPT_STEP)
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
-    results.emit("run", run_dir=run_dir, tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
+    results.emit("run", run_dir=run_dir, tokens_to_target_M=tokens_m, tokens_to_target_interp_M=interp_m,
+                 final_val_ce=final if final is not None else float("nan"),
                  reached=float(reached), probe_aligned=float(aligned),
                  minutes_to_target=minutes if (minutes := minutes_to_target(
                      metrics, args.target_ce, args.opt_steps)) is not None else float("nan"))

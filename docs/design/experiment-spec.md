@@ -118,6 +118,7 @@ rewritten:
 |---|---|
 | `floor-both-arms` | a criterion the verdict rests on passed with both arms at a declared floor arm or `[protocol] cap` |
 | `control-reached-target` | a tokens-to-target metric (`metric_key` contains `tokens_to`) has no `[protocol] cap`, or a control seed sits at the cap and is not voided |
+| `target-reached-late` | a tokens-to-target metric's control reaches the target in the first half of the cap: the bar then judges the start of the run, not the run (#361, #547). Specs whose criteria predate 2026-10-08 are grandfathered |
 | `seeds-complete` | an arm a criterion compares has fewer seeds than `[execution]` (or `[protocol] seeds`) registered, and the rest are not voided |
 | `sigma-plausible` | σ_pooled is 0 at a criterion point (one seed, or identical seeds); a σ over 10× the gap is *noted* on green, since an honest null lands there one time in ten |
 | `prediction-registered` | the hypothesis registers no prediction (rule 3) |
@@ -134,6 +135,13 @@ reason is declared rather than silently absent:
 seeds = [1]
 reason = "never reached CE 5.85 inside the cap; re-registered as 027"
 ```
+
+A tokens-to-target spec sets its target from the control's own curve, near its
+endpoint (~85-90% of the run), never from an estimate; read it off a control seed
+before any treatment result and commit it (#494's amendment). Prefer the harness's
+`tokens_to_target_interp_M`, which interpolates between the probes that bracket the
+target: `tokens_to_target_M` is quantized to the probe interval, so seeds inside one
+interval tie exactly and their sigma reads 0 (#547).
 
 and a tokens-to-target metric declares its cap once, in the metric's own units,
 so a control that never reached the target is visible to a machine:

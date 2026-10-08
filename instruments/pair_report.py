@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from instruments._common import REPO_ROOT
+from instruments.curves import ValCurve
 from instruments.verdict import load_spec
 
 REPORTS = {
@@ -74,9 +75,6 @@ def read_curve(metrics: pathlib.Path) -> Curve:
     with metrics.open() as f:
         for row in csv.DictReader(f):
             step = _number(row.get("step"))
-            val_ce, val_step = _number(row.get("val_ce")), _number(row.get("val_step"))
-            if val_ce is not None:
-                curve.val[int(val_step if val_step is not None else step)] = val_ce
             for column in MARGIN_COLUMNS:
                 if (value := _number(row.get(column))) is not None:
                     curve.margins.setdefault(column, []).append(value)
@@ -84,6 +82,8 @@ def read_curve(metrics: pathlib.Path) -> Curve:
             if step is not None and stamp:
                 stamps.append((step, _timestamp(stamp)))
     curve.seconds_per_step = _pace(stamps)
+    val = ValCurve.read(metrics)
+    curve.val = {s: ce for s, ce in zip(val.steps, val.ces, strict=True) if math.isfinite(ce)}
     return curve
 
 

@@ -339,6 +339,34 @@ def test_an_accuracy_metric_has_no_target_to_reach(repo):
     assert audit.control_reached_target(load(repo, spec_text())).state == NA
 
 
+# --- target-reached-late (#547) --------------------------------------------------------
+
+EARLY = dict(metric_key="tokens_to_target_M", protocol_extra="cap = 67.1",
+             control=(18.8, 18.9, 18.9), treated=(13.6, 13.6, 13.7))
+
+
+def test_a_target_the_control_reaches_in_the_first_half_is_red(repo):
+    """#361: the control reached 5.85 at 18.9M of 67.1M tokens; the bar judged the start."""
+    s = audit.target_reached_late(load(repo, spec_text(**EARLY)))
+    assert s.state == RED and "judges the start" in s.reason
+
+
+def test_a_target_near_the_controls_endpoint_is_green(repo):
+    late = {**EARLY, "control": (58.0, 59.0, 60.0), "treated": (55.0, 56.0, 57.0)}
+    assert audit.target_reached_late(load(repo, spec_text(**late))).state == GREEN
+
+
+def test_a_spec_registered_before_the_rule_is_grandfathered(git_repo):
+    path = write_spec(git_repo, spec_text(**EARLY))
+    git(git_repo, "add", "."), git(git_repo, "commit", "-qm", "the 512-step pairs", date="2026-10-03T12:00:00")
+    s = audit.target_reached_late(audit.load(path, git_repo))
+    assert s.state == GRANDFATHERED and "2026-10-03" in s.reason
+
+
+def test_a_metric_with_no_cap_has_no_target_to_place(repo):
+    assert audit.target_reached_late(load(repo, spec_text())).state == NA
+
+
 # --- prediction-registered / verdict-current ---------------------------------------------
 
 def test_a_hypothesis_without_a_prediction_is_red_outside_git(repo):
@@ -529,7 +557,7 @@ def test_the_scope_map(repo):
 
 def test_the_rule_names_are_the_ones_the_issue_registers(repo):
     result = states(repo, load(repo, spec_text()))
-    assert list(result) == ["floor-both-arms", "control-reached-target", "seeds-complete", "sigma-plausible",
+    assert list(result) == ["floor-both-arms", "control-reached-target", "target-reached-late", "seeds-complete", "sigma-plausible",
                             "prediction-registered", "criteria-predate-results", "verdict-current",
                             "finding-cites-spec", "run-ended-by-budget"]
 
