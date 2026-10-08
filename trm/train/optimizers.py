@@ -52,7 +52,7 @@ def _adamw(config, learning_rate, weight_decay=None):
         b1=config.ADAM_B1,
         b2=config.ADAM_B2,
         eps=config.ADAM_EPS,
-        weight_decay=_weight_decay(config) if weight_decay is None else weight_decay,
+        weight_decay=_weight_decay(config) if weight_decay is None else weight_decay,  # pyright: ignore[reportArgumentType] -- optax types it float, add_decayed_weights takes a schedule
         mask=weight_decay_mask,
         # Store Adam's first moment in bf16 (upcast to f32 for the update math).
         # Storage-only, Turing-safe — tensor cores never see bf16. Frees ~2 bytes/

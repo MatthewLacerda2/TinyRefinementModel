@@ -23,7 +23,7 @@ load_env()
 DEFAULT_TEMPERATURE = 0.7
 
 
-def _temperature_truncate(logits, temperature, top_k, top_p):
+def _temperature_truncate(logits: jax.Array, temperature, top_k, top_p) -> jax.Array:
     """Scale by temperature first, then truncate — top-p's cutoff must be
     computed on the distribution actually being sampled (HF/nanoGPT/llama.cpp
     convention), not on the untempered one."""

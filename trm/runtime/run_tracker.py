@@ -266,7 +266,7 @@ class RunTracker:
         return self.run_id
 
     def update_session_duration(self):
-        if self.run_dir is None or self.session_index is None:
+        if self.run_dir is None or self.session_index is None or self.start_time is None:
             return
         metadata_path = os.path.join(self.run_dir, "run_metadata.json")
         if not os.path.exists(metadata_path):
@@ -288,6 +288,7 @@ class RunTracker:
             print(f"⚠️ Could not update session duration in {metadata_path}: {e}")
 
     def save_metadata(self, metadata):
+        assert self.run_dir is not None, "save_metadata before start_session"
         metadata_path = os.path.join(self.run_dir, "run_metadata.json")
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)

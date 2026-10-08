@@ -105,6 +105,7 @@ class TextDataGenerator:
         if self.data is None or self.pointer + total_tokens > len(self.data):
             if not self._load_next_file():
                 return None
+            assert self.data is not None  # a True load mapped a file
             if self.exhausted or self.pointer + total_tokens > len(self.data):
                 return self.get_batch(batch_size)
 
@@ -202,6 +203,8 @@ class DataMixer:
             raise ValueError(f"data state has {len(state['sources'])} sources for "
                              f"{len(names)} names: cannot tell which reader is which")
         saved = dict(zip(names, state["sources"]))
+        if self.names is None:
+            raise ValueError("branching matches readers by bucket name, and this mixer was built without names")
         for name, source in zip(self.names, self._all):
             if name in saved:
                 source.load_state(saved[name])

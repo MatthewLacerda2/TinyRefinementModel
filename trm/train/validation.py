@@ -57,7 +57,7 @@ def _val_ce_sums(model, batch):
     out1 = model(seq1_in, training=True)
     out2 = model(seq2_in, training=True)
     targets = heldout_targets(jnp.concatenate([seq1_out, seq2_out], axis=0), model.pad_token_id)
-    loss_sums, counts, _ = chunked_cross_entropy_rows(
+    loss_sums, counts, _ = chunked_cross_entropy_rows(  # pyright: ignore[reportGeneralTypeIssues] -- jax leaves custom_vjp's return untyped
         jnp.concatenate([out1.hidden, out2.hidden], axis=0),
         model.embed.embedding[...],
         targets,

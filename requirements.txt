@@ -19,5 +19,6 @@ fsspec==2025.10.0
 
 # Dev tooling
 pytest==9.0.3
+pyright==1.1.414
 ruff==0.15.16
 vulture==2.16

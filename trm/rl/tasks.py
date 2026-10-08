@@ -397,6 +397,7 @@ def _body(function) -> str:
     """The reference solution's body — its source with the def line and docstring cut."""
     source = textwrap.dedent(inspect.getsource(function))
     node = ast.parse(source).body[0]
+    assert isinstance(node, ast.FunctionDef)
     statements = node.body
     if (isinstance(statements[0], ast.Expr)
             and isinstance(statements[0].value, ast.Constant)
@@ -428,7 +429,10 @@ def build(family: Family, args: tuple, tests: int = 5) -> Task:
     rng = random.Random(hashlib.sha256(key.encode()).digest())
     cases = list(family.edges) + [family.sampler(rng) for _ in range(tests)]
 
-    docstring = "\n    ".join(inspect.getdoc(family.solution).splitlines())
+    doc = inspect.getdoc(family.solution)
+    if doc is None:
+        raise ValueError(f"{name}: a family's solution needs a docstring, it is the prompt")
+    docstring = "\n    ".join(doc.splitlines())
     prompt = (f"{_signature(family.solution)}\n"
               f'    """{docstring}\n\n'
               f"    >>> {_call(name, args)}\n"

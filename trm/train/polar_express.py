@@ -40,7 +40,7 @@ def optimal_quintic(lo, hi):
                         [r, r ** 3, r ** 5, 1], [hi, hi ** 3, hi ** 5, -1]])
         a, b, c, E = np.linalg.solve(lhs, np.ones(4))
         q, r = np.sqrt((-3 * b + np.array([-1, 1]) * sqrt(9 * b ** 2 - 20 * a * c)) / (10 * c))
-    return float(a), float(b), float(c)
+    return float(a), float(b), float(c)  # pyright: ignore[reportPossiblyUnboundVariable] -- old_E starts None, so the loop runs once
 
 
 def polar_express_coeffs(steps):

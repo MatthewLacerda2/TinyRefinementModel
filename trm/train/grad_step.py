@@ -34,7 +34,7 @@ def compute_grad_step(model, batch_tokens, loss_scale=1.0, clip_norm=jnp.inf, z_
         b = seq1_in.shape[0]
         hidden = jnp.concatenate([out1.hidden, out2.hidden], axis=0)
         targets = jnp.concatenate([seq1_out, seq2_out], axis=0)
-        loss_sums, counts, row_stats = chunked_cross_entropy_rows(
+        loss_sums, counts, row_stats = chunked_cross_entropy_rows(  # pyright: ignore[reportGeneralTypeIssues] -- jax leaves custom_vjp's return untyped
             hidden, embedding, targets, model.pad_token_id, z_weight=z_loss_weight)
         counts = jax.lax.stop_gradient(counts).clip(min=1.0)
         ce1 = loss_sums[:b].sum() / counts[:b].sum()
@@ -311,7 +311,8 @@ class HotPath:
             self._state_behind = False
         self._objects_behind = True
 
-    def grad_step(self, batch_tokens, loss_scale=1.0, clip_norm=jnp.inf):
+    def grad_step(self, batch_tokens, loss_scale: jax.typing.ArrayLike = 1.0,
+                  clip_norm: jax.typing.ArrayLike = jnp.inf):
         """compute_grad_step(model, ...), on the live state."""
         self._live()
         self._rest, loss, out, grads, grad_norm = _grad_step_pure(

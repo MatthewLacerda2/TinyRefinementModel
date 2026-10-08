@@ -118,7 +118,7 @@ def rewind(checkpoint_dir: pathlib.Path, to_opt_step: int, accumulation_steps: i
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("checkpoint_dir", type=pathlib.Path)
     ap.add_argument("--to-opt-step", type=int, default=None,
                     help="set aside every checkpoint newer than the newest one at or below this opt step")

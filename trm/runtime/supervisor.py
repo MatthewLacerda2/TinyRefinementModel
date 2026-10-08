@@ -44,7 +44,9 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
 from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
@@ -629,7 +631,7 @@ class Supervisor:
     # the plateau diagnosis — under a wall of identical RUNNING lines. A status
     # feed nobody can read is not a status feed.
     heartbeat_every: int = 288
-    report: object = print  # callable(str); the heartbeat's destination
+    report: Callable[[str], None] = print  # the heartbeat's destination
     # The supervisor's own record, appended by the supervisor itself (#224). It
     # used to be whatever stdout the launching shell redirected, so any relaunch
     # that didn't redirect lost it: run_20260813_214725 kept beating for 6 days
@@ -659,7 +661,7 @@ class Supervisor:
     survivor: int | None = field(default=None, init=False)
     # Told each trainer's pid as it launches; main() names it in the GPU lock, so a
     # supervisor killed outright leaves a lock its orphaned trainer still holds (#516).
-    on_launch: object = lambda pid: None
+    on_launch: Callable[[int], None] = lambda pid: None
     _child: subprocess.Popen | None = field(default=None, init=False)  # the latest launch(); run() stops it on the way out
     _scored: set = field(default_factory=set)  # steps this supervisor launched a scorer for
     _scorers: dict = field(default_factory=dict)  # step -> the handle of its still-running scorer
@@ -960,7 +962,7 @@ def github_reporter(issue: int):
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("--stop-step", type=int, required=True,
                     help="opt step whose checkpoint covers the token budget (the trainer has no hard stop)")
     ap.add_argument("--run-dir", type=pathlib.Path, required=True,
@@ -1024,6 +1026,9 @@ def main(argv=None) -> int:
 
     checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
     lock = GpuLock(label=f"stop_step={args.stop_step}")
+    # Unset leaves the Supervisor's own heartbeat_every default.
+    cadence: dict[str, Any] = ({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
+                               if args.heartbeat_hours is not None else {})
     supervisor = Supervisor(
         command=(sys.executable, "-m", "trm.train.start", *args.trainer_args),
         limits=limits,
@@ -1037,8 +1042,7 @@ def main(argv=None) -> int:
         heartbeat_log=args.supervisor_log or args.run_dir.parent / f"{args.run_dir.name}.supervisor.log",
         checkpoint_dir=checkpoint_dir,
         on_launch=lock.name_child,
-        **({"heartbeat_every": max(1, round(args.heartbeat_hours * 3600 / args.poll_seconds))}
-           if args.heartbeat_hours is not None else {}),
+        **cadence,
     )
 
     # Refused before the lock, the fit gate and the first launch: a trainer launched

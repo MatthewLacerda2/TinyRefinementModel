@@ -111,6 +111,7 @@ if __name__ == "__main__":
         raise SystemExit(f"❌ {complaint}")
 
     if active_checkpoint_path is None:
+        assert run_tracker.run_dir is not None  # start_session set it
         active_checkpoint_path = os.path.join(run_tracker.run_dir, "checkpoints")
 
     active_checkpoint_path = os.path.abspath(active_checkpoint_path)
