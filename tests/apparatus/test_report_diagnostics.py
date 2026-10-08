@@ -6,7 +6,7 @@ from instruments.runlog import NOT_LOGGED, RunLog
 
 
 def test_a_blank_column_is_named_as_not_logged(capsys):
-    log = RunLog("run_x", [{"step": 64, "logz_mean": 2.0, "max_abs_logit": 9.0}], {})
+    log = RunLog("run_x", [{"step": 64, "logz_mean": 2.0, "max_abs_logit": 9.0}], None)
     report._print_diagnostics(log)
     line = next(line for line in capsys.readouterr().out.splitlines() if NOT_LOGGED in line)
     assert "out_entropy" in line

@@ -38,13 +38,13 @@ from __future__ import annotations
 import csv
 import datetime
 import glob
-import json
 import os
 import pathlib
 from dataclasses import dataclass, field
 
+from trm.runtime.run_metadata import RunMetadata
+
 METRICS_FILENAME = "metrics.csv"
-METADATA_FILENAME = "run_metadata.json"
 
 # Why a run left a column blank, in the reader's words — shared by report.py and
 # plots.py so the two cannot disagree (#319).
@@ -117,7 +117,7 @@ class RunLog:
 
     run_id: str
     metrics: list[dict]      # rows; every CSV column, value float or None
-    metadata: dict           # run_metadata.json contents, {} if absent
+    metadata: RunMetadata | None  # run_metadata.json, None if absent
 
     # Provenance and what the parse had to throw away. Everything below has a
     # default so `RunLog(run_id, metrics, metadata)` stays constructible.
@@ -258,8 +258,8 @@ class RunLog:
         the run proceeds; a session still in flight before its first update has
         `duration_seconds: null` and is skipped.
         """
-        durations = [s.get("duration_seconds") for s in self.metadata.get("sections", [])]
-        known = [float(d) for d in durations if isinstance(d, (int, float))]
+        sections = self.metadata.sections if self.metadata is not None else []
+        known = [s.duration_seconds for s in sections if s.duration_seconds is not None]
         return sum(known) if known else None
 
 
@@ -276,26 +276,19 @@ def _discover_latest_csv(runs_root="runs"):
 
 
 def read_metadata(run_dir):
-    """A run's `run_metadata.json` as a dict.
+    """A run's metadata (trm/runtime/run_metadata.py), or None.
 
-    Failure policy: `{}` for a missing, unreadable, or half-written file, never an
+    Failure policy: None for a missing, unreadable, or half-written file, never an
     exception. A run assembled by hand or from before the tracker is still readable
     without it, and RunTracker rewrites the file in place at session start and end,
     so a reader running beside training (the milestone scorer) can catch it torn.
-    A caller for which metadata is required checks for `{}` and says so itself."""
-    path = os.path.join(run_dir, METADATA_FILENAME)
-    try:
-        with open(path) as f:
-            metadata = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return metadata if isinstance(metadata, dict) else {}
+    A caller for which metadata is required checks for None and says so itself."""
+    return RunMetadata.read(run_dir)
 
 
 def recorded_params(metadata):
-    """The metadata's `parameters` block, {} if absent or malformed."""
-    params = (metadata or {}).get("parameters")
-    return params if isinstance(params, dict) else {}
+    """The metadata's `parameters` block, {} without metadata."""
+    return metadata.parameters if metadata is not None else {}
 
 
 def recorded_tokens_per_opt_step(params):

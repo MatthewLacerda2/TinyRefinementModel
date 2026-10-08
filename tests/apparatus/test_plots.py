@@ -25,6 +25,8 @@ import sys
 
 import pytest
 
+from trm.runtime.run_metadata import RunMetadata
+
 HEADER = ("step,ce,loss,seg1_ce,grad_norm_avg,zero_frac_dense_max,out_entropy,logz_mean,"
           "max_abs_logit,val_ce,arena_peak_mib")
 
@@ -305,7 +307,7 @@ def test_a_fact_the_run_did_not_record_is_named_as_missing(tmp_path):
     it was 8 before 2026-09-13."""
     from instruments import plots
 
-    older = plots.RunConfig({"parameters": {"LATENT_DIM": 960}})
+    older = plots.RunConfig(RunMetadata(parameters={"LATENT_DIM": 960}))
     assert plots.describe(older) == "dim 960 · layer count not recorded · optimizer not recorded"
 
 
@@ -390,9 +392,9 @@ def test_the_arena_limit_is_the_runs_own_when_logged_and_flagged_when_assumed():
     from instruments import plots
     from instruments.runlog import RunLog
 
-    logged = RunLog("r", [{"step": 5, "arena_limit_mib": 5100.0}, {"step": 10, "arena_limit_mib": 5120.0}], {})
+    logged = RunLog("r", [{"step": 5, "arena_limit_mib": 5100.0}, {"step": 10, "arena_limit_mib": 5120.0}], None)
     assert plots.arena_limit_mib(logged) == (5120.0, True)
-    assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], {})) == (plots.ARENA_LIMIT_MIB, False)
+    assert plots.arena_limit_mib(RunLog("r", [{"step": 5}], None)) == (plots.ARENA_LIMIT_MIB, False)
 
 
 def test_the_reason_for_a_blank_column_is_the_one_report_gives():
@@ -400,7 +402,7 @@ def test_the_reason_for_a_blank_column_is_the_one_report_gives():
     from instruments import plots
     from instruments.runlog import NOT_LOGGED, RunLog
 
-    blank = RunLog("r", [{"step": 5, "grad_norm_avg": None}], {})
+    blank = RunLog("r", [{"step": 5, "grad_norm_avg": None}], None)
     assert plots.why_omitted(blank, ["grad_norm_avg"]) == NOT_LOGGED
 
 

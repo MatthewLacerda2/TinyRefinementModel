@@ -15,6 +15,7 @@ weights.
 
 import json
 
+from trm.runtime.run_metadata import RunMetadata
 from trm.runtime.run_tracker import RunTracker
 from trm.settings import CONFIG
 
@@ -57,7 +58,7 @@ def _resume_with(tmp_path, **recorded):
     path = tmp_path / "run_metadata.json"
     path.write_text(json.dumps({"parameters": {k: v for k, v in params.items() if v is not None}}))
     try:
-        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(str(path))
+        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(RunMetadata.read(tmp_path))
     except SystemExit:
         return "refused"
     return "resumed"
@@ -83,7 +84,7 @@ def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch)
     path.write_text(json.dumps({"parameters": {**RunTracker.get_hyperparameters(CONFIG),
                                                "PLAIN_LAYERS": PLAIN_LAYERS + 1}}))
     with pytest.raises(SystemExit) as refused:
-        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(str(path))
+        RunTracker(CONFIG, runs_root=str(tmp_path))._check_compatibility(RunMetadata.read(tmp_path))
     message = refused.value.code
     assert isinstance(message, str), "a str code is what makes the uncaught exit status 1"
     assert f"PLAIN_LAYERS: run used {PLAIN_LAYERS + 1}" in message and "--new-run" in message
@@ -104,7 +105,7 @@ def _resume_as(tmp_path, config, **recorded):
     path = tmp_path / "run_metadata.json"
     path.write_text(json.dumps({"parameters": {k: v for k, v in params.items() if v is not None}}))
     try:
-        RunTracker(config, runs_root=str(tmp_path))._check_compatibility(str(path))
+        RunTracker(config, runs_root=str(tmp_path))._check_compatibility(RunMetadata.read(tmp_path))
     except SystemExit as refused:
         return "refused: " + str(refused.code)
     return "resumed"

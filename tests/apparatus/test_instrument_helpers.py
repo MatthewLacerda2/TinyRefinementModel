@@ -52,12 +52,12 @@ def test_one_checkpoint_flag_keeps_the_old_spellings_working():
 
 # ── runlog's artefact readers ────────────────────────────────────────────────
 
-def test_metadata_that_is_missing_or_half_written_reads_as_empty(tmp_path):
+def test_metadata_that_is_missing_or_half_written_reads_as_none(tmp_path):
     """RunTracker rewrites run_metadata.json in place, so a reader beside training can
-    catch it torn. That is `{}`, the same as no file, never an exception."""
-    assert runlog.read_metadata(tmp_path) == {}
+    catch it torn. That is None, the same as no file, never an exception."""
+    assert runlog.read_metadata(tmp_path) is None
     (tmp_path / "run_metadata.json").write_text('{"parameters": {"TRM_OPT')
-    assert runlog.read_metadata(tmp_path) == {}
+    assert runlog.read_metadata(tmp_path) is None
     (tmp_path / "run_metadata.json").write_text(json.dumps({"parameters": {"TRM_OPTIMIZER": "muon"}}))
     assert runlog.recorded_params(runlog.read_metadata(tmp_path)) == {"TRM_OPTIMIZER": "muon"}
 

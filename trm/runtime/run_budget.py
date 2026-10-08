@@ -15,11 +15,11 @@ for a horizon that still disagrees: a budget set explicitly to something else.
 Stdlib only: `trm.runtime.launch` reads BUDGET_ENV from here and stays jax-free.
 """
 
-import json
 import os
 
+from trm.runtime.run_metadata import METADATA_FILENAME, RunMetadata
+
 BUDGET_ENV = "TRAIN_TOKEN_BUDGET"
-METADATA_FILENAME = "run_metadata.json"
 
 
 def metadata_for_checkpoint(checkpoint_path):
@@ -30,17 +30,13 @@ def metadata_for_checkpoint(checkpoint_path):
     """
     if not checkpoint_path:
         return {}
-    path = os.path.join(os.path.dirname(os.path.abspath(checkpoint_path)), METADATA_FILENAME)
-    return read_metadata(path)
+    return recorded_parameters(os.path.dirname(os.path.abspath(checkpoint_path)))
 
 
-def read_metadata(path):
-    """The `parameters` block of a run_metadata.json, or {} if it can't be read."""
-    try:
-        with open(path) as handle:
-            return json.load(handle).get("parameters") or {}
-    except (OSError, ValueError):
-        return {}
+def recorded_parameters(run_dir):
+    """The `parameters` block of the run's metadata, or {} when it has no readable file."""
+    metadata = RunMetadata.read(run_dir)
+    return metadata.parameters if metadata is not None else {}
 
 
 def with_recorded_budget(config, checkpoint_path):
@@ -64,7 +60,7 @@ def horizon_mismatch(run_dir, decay_steps):
     A stopped run is recoverable; fifteen thousand steps at the wrong learning rate
     is not.
     """
-    recorded = read_metadata(os.path.join(run_dir, METADATA_FILENAME)).get("DECAY_STEPS")
+    recorded = recorded_parameters(run_dir).get("DECAY_STEPS")
     if recorded is None or int(recorded) == int(decay_steps):
         return None
     return (

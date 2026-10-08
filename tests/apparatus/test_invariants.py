@@ -12,7 +12,7 @@ from instruments.runlog import RunLog
 
 
 def _log(rows):
-    return RunLog(run_id="test", metrics=[{"step": s, **r} for s, r in rows], metadata={})
+    return RunLog(run_id="test", metrics=[{"step": s, **r} for s, r in rows], metadata=None)
 
 
 def test_a_condemned_row_takes_its_whole_row_with_it():

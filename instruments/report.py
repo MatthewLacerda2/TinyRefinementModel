@@ -193,7 +193,7 @@ def print_run(log):
     if not log.metrics:
         print("  no metric rows yet (header-only CSV) — nothing to summarize.")
         return
-    if not log.metadata:
+    if log.metadata is None:
         print("  (no run_metadata.json — throughput, budget and LR fall back to config)")
 
     tokens_per_step, recipe_matches = _tokens_per_opt_step(log)
