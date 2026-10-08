@@ -25,9 +25,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import pathlib
 import shutil
-import json
 from dataclasses import dataclass
 
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR

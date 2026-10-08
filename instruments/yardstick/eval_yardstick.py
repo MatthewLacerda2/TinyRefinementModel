@@ -33,9 +33,7 @@ import tiktoken
 from flax import nnx
 
 from instruments._common import add_checkpoint_argument, git_head, load_env
-
-from trm.config import TOKENIZER_NAME
-from trm.runtime.restore import restore_model
+from instruments.yardstick import fineweb_val
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
@@ -46,7 +44,8 @@ from instruments.yardstick.yardstick import (
     score_examples,
     summarize,
 )
-from instruments.yardstick import fineweb_val
+from trm.config import TOKENIZER_NAME
+from trm.runtime.restore import restore_model
 from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.

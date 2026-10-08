@@ -6,8 +6,8 @@ before importing jax through this module).
 
 import os
 
-from flax import nnx
 import orbax.checkpoint as ocp
+from flax import nnx
 
 from trm.config import resolve_root
 from trm.model import build_model
@@ -15,6 +15,7 @@ from trm.runtime.checkpoints import discover_latest_checkpoint_run
 from trm.runtime.layout import CHECKPOINT_ITEMS
 from trm.settings import location
 from trm.train.validation import read_heldout_rows
+
 
 def restore_model(config, checkpoint_path=None, *, step=None, dim=None, **overrides):
     """Model-only restore, shaped by `config`, from a checkpoint dir (default: the

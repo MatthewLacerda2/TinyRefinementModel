@@ -3,12 +3,13 @@ import glob
 import os
 import signal
 
-from flax import nnx
 import orbax.checkpoint as ocp
-from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_ITEMS, MILESTONE_SUBDIR,
-                                ROLLING_KEEP)
+from flax import nnx
+
+from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_ITEMS, MILESTONE_SUBDIR, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
 from trm.runtime.resume_state import ResumeState
+
 
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):

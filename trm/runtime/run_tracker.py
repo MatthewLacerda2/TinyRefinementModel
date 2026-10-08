@@ -1,9 +1,9 @@
-import os
-import sys
-import json
-import time
 import datetime
+import json
+import os
 import subprocess
+import sys
+import time
 
 from trm.config import VOCAB_SIZE
 from trm.train.schedules import Schedules

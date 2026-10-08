@@ -15,8 +15,16 @@ import shutil
 import pytest
 
 from trm.runtime import cold
-from trm.runtime.cold import (FULLSTATE_SUBDIR, MARKER, ColdTier, cold_root_problem, committed_at,
-                              finalized_steps, mirror, stall_window_hours)
+from trm.runtime.cold import (
+    FULLSTATE_SUBDIR,
+    MARKER,
+    ColdTier,
+    cold_root_problem,
+    committed_at,
+    finalized_steps,
+    mirror,
+    stall_window_hours,
+)
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
 
 REPO = pathlib.Path(__file__).resolve().parents[2]

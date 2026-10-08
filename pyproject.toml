@@ -25,7 +25,8 @@ extend-exclude = ["venv"]
 # PLR2004: no unnamed number in a comparison (#563): a threshold gets a name, and the
 # name's comment says why that value. Tests are exempt: their numbers are the expected values.
 # B: flake8-bugbear (#563), e.g. a zip() that must say whether unequal lengths are a bug.
-select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B"]
+# I: import order (#563), so an import diff shows what changed and not where it moved.
+select = ["E4", "E7", "E9", "F", "W6", "W291", "W293", "RUF100", "PLR0915", "PLR2004", "B", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004"]

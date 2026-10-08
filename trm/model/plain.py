@@ -13,7 +13,7 @@ import jax.numpy as jnp
 from flax import nnx, struct
 
 from trm.config import COMPUTE_DTYPE, VOCAB_SIZE
-from trm.model.rope import rope_tables, apply_rope
+from trm.model.rope import apply_rope, rope_tables
 
 
 @struct.dataclass

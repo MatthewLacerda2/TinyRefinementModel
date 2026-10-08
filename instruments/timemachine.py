@@ -26,18 +26,19 @@ Usage:
     python -m instruments.timemachine fork <run-id> <new-name> [--no-venv]
 """
 
-import os
-import sys
+import argparse
+import hashlib
 import json
 import math
+import os
 import shutil
-import hashlib
-import argparse
 import subprocess
+import sys
 
 from instruments import runlog
+from instruments._common import REPO_ROOT as _REPO_ROOT
+from instruments._common import module_env
 from trm.runtime.layout import LOG_REAL_STEPS  # jax-free
-from instruments._common import REPO_ROOT as _REPO_ROOT, module_env
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # reconstructs a run's world; prints paths and provenance, no quantities

@@ -20,6 +20,7 @@ import os
 import pathlib
 import signal
 
+
 def shared_runs_dir(checkout: pathlib.Path) -> pathlib.Path:
     """`runs/` in the main checkout, even when the caller is in a linked worktree.
 

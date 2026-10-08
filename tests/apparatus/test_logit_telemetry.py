@@ -13,9 +13,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step
 from trm.train.losses import chunked_cross_entropy
-from trm.settings import CONFIG
 
 
 def _naive_stats(hidden, embedding, targets, pad_id):

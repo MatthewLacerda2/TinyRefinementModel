@@ -22,6 +22,7 @@ def test_the_factory_imports_the_model_lazily():
     inside build_model, when it is called."""
     import ast
     from pathlib import Path
+
     import trm.model
     tree = ast.parse(Path(trm.model.__file__).read_text())
 

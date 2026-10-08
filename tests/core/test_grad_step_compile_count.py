@@ -16,8 +16,8 @@ import pytest
 from flax import nnx
 
 from trm.model.plain import PlainTransformer
-from trm.train.grad_step import compute_grad_step
 from trm.settings import CONFIG
+from trm.train.grad_step import compute_grad_step
 
 MICRO_STEPS = 16
 TRACES = []  # one entry per forward traced, appended at trace time only

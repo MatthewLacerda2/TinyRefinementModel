@@ -18,16 +18,12 @@ import inspect
 import numpy as np
 import pytest
 
-from trm.runtime import checkpoints
-from trm.runtime.monitor import LossMonitor
-from trm.settings import CONFIG
-from trm.runtime.resume_state import ResumeState
-
-
 import trm.train.loop as loop_mod
+from trm.runtime import checkpoints, restore
+from trm.runtime.monitor import LossMonitor
+from trm.runtime.resume_state import ResumeState
+from trm.settings import CONFIG
 from trm.train import validation
-
-from trm.runtime import restore
 from trm.train.trainer import samples_from_micro_steps, split_samples
 
 

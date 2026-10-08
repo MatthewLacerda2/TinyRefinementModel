@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+
 class ResumeState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

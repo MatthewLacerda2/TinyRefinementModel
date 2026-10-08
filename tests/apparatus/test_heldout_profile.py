@@ -69,8 +69,8 @@ def test_per_token_losses_average_to_the_trainers_val_ce():
     from flax import nnx
 
     from trm.config import EOT_TOKEN_ID
-    from trm.settings import CONFIG
     from trm.model import build_model
+    from trm.settings import CONFIG
     from trm.train.validation import ValidationProbe
 
     rng = np.random.default_rng(2)

@@ -14,8 +14,7 @@ import jax.numpy as jnp
 
 from trm.runtime.metrics import MetricsLogger
 from trm.settings import CONFIG
-from trm.train.schedules import Schedules
-from trm.train.schedules import mixture_label
+from trm.train.schedules import Schedules, mixture_label
 
 PRETRAIN_SOURCES = Schedules.of(CONFIG).sources
 
@@ -92,6 +91,7 @@ def test_arena_peak_is_empty_where_the_allocator_keeps_no_statistics(monkeypatch
     """CPU and the platform allocator have no peak to report; an empty cell says so,
     where a 0 would read as a measurement (#105)."""
     import jax
+
     from trm.runtime import metrics
 
     class Device:

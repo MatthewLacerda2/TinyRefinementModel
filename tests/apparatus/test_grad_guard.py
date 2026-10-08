@@ -16,9 +16,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from trm.settings import CONFIG
 from trm.train.grad_guard import GradientNormGuard
 from trm.train.grad_step import compute_grad_step
-from trm.settings import CONFIG
 
 
 def _settled(norm=10.0, warmup=8, **kwargs):
@@ -122,8 +122,9 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
     """grad_norm is the run's oldest continuous telemetry and its docstring promises
     it is pre-clip. Rewriting that meaning would silently break every historical
     comparison in metrics.csv, so the clip must show in the gradients only."""
-    from trm.model.plain import PlainTransformer
     from flax import nnx
+
+    from trm.model.plain import PlainTransformer
 
     model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
                              num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
@@ -148,8 +149,9 @@ def test_the_clip_is_applied_to_the_gradients_and_the_reported_norm_is_not():
 
 def test_an_infinite_ceiling_is_exactly_todays_behaviour():
     """The default, and what every caller that has not opted in still gets."""
-    from trm.model.plain import PlainTransformer
     from flax import nnx
+
+    from trm.model.plain import PlainTransformer
 
     model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
                              num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)

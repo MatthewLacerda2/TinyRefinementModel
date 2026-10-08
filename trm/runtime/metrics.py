@@ -4,7 +4,9 @@ import math
 import posixpath
 from contextlib import AbstractContextManager
 from typing import NamedTuple, TextIO, cast
+
 import fsspec
+
 # jax at module level: the module already needs jax.numpy, so a lazy import in
 # _arena_peak_mib bought nothing.
 import jax

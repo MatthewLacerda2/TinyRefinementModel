@@ -22,8 +22,8 @@ import numpy as np
 
 from trm.config import VOCAB_SIZE
 from trm.settings import CONFIG
+from trm.train.grad_step import HotPath, apply_grads, compute_grad_step
 from trm.train.trainer import init_model_and_optimizer
-from trm.train.grad_step import HotPath, compute_grad_step, apply_grads
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

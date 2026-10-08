@@ -37,10 +37,10 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 import argparse
 import math
 
-from trm.config import VOCAB_SIZE
-from trm.settings import CONFIG
 from instruments import model_stats, runlog
 from instruments.invariants import clean_column, describe, suspect_rows
+from trm.config import VOCAB_SIZE
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

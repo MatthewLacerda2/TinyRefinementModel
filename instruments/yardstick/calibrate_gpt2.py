@@ -30,7 +30,6 @@ except ImportError:
 
 import tiktoken
 
-from trm.config import TOKENIZER_NAME
 from instruments.yardstick import fineweb_val
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
@@ -40,6 +39,7 @@ from instruments.yardstick.yardstick import (
     score_examples,
     summarize,
 )
+from trm.config import TOKENIZER_NAME
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

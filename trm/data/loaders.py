@@ -1,6 +1,8 @@
-import numpy as np
 import fsspec
+import numpy as np
+
 from trm.config import VOCAB_SIZE
+
 
 class TextDataGenerator:
     """Reads one corpus's rows (two `max_seq_len` windows and the target after them)

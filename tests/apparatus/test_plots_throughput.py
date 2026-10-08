@@ -87,6 +87,7 @@ def test_empty_and_single_beat_are_handled():
 
 def _clocked_run(tmp_path, rows, header="step,ce,wall_clock,mix"):
     import datetime
+
     from instruments import runlog
 
     run_dir = tmp_path / "run_20990101_000000"
