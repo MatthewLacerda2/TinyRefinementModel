@@ -75,6 +75,13 @@ DOCTRINE_CUTOFF = datetime.date(2026, 9, 12)
 # results commit; every earlier spec was squash-merged and the order is gone.
 AUDIT_CUTOFF = datetime.date(2026, 9, 15)
 
+# The target-reached-late rule (#547): specs whose criteria were committed before it
+# are grandfathered, so the three 512-step pairs that set it off stay on record as run.
+TARGET_RULE_CUTOFF = datetime.date(2026, 10, 8)
+# A tokens-to-target bar judges the run only when the control needs at least this
+# fraction of the cap to reach the target; earlier, it judges the start (#361).
+TARGET_EARLIEST_FRACTION = 0.5
+
 GREEN, RED, NA, GRANDFATHERED = "green", "red", "n/a", "grandfathered"
 
 # What a training log's tail must say for a run to count (trm/runtime/supervisor.py).
@@ -315,6 +322,35 @@ def control_reached_target(a: Audited) -> Status:
     return Status(rule, GREEN)
 
 
+def target_reached_late(a: Audited) -> Status:
+    """For a tokens-to-target metric, the control reaches the target in the second half
+    of the run. #361's target fell at opt step ~145 of 512: the bar judged the first
+    quarter, KEEP, and the arm ended 0.086 val CE worse. Set the target from the
+    control's own curve, near its endpoint, before any treatment result."""
+    rule = "target-reached-late"
+    if blocked := _unjudgeable(a, rule):
+        return blocked
+    if a.cap is None:
+        return Status(rule, NA, "no [protocol] cap: not a tokens-to-target metric")
+    controls = {n for n in a.file.arms if a.role(n) == "control"}
+    early = []
+    for point, arms in a.results.items():
+        for arm in controls & set(arms):
+            mean, _ = mean_sigma(arms[arm])
+            if mean < TARGET_EARLIEST_FRACTION * a.cap:
+                early.append(f"control {arm} at {point} reaches it at {mean:g} of {a.cap:g}")
+    if not early:
+        return Status(rule, GREEN)
+    history = a.history()
+    criteria = next((c for c in history or () if _has_criteria(c.text)), None)
+    if criteria is not None and criteria.date < TARGET_RULE_CUTOFF:
+        return Status(rule, GRANDFATHERED, f"criteria committed {criteria.date}, before this rule "
+                                           f"({TARGET_RULE_CUTOFF}): {'; '.join(early)}")
+    return Status(rule, RED, f"{'; '.join(early)}: the target judges the start of the run, not the run "
+                             f"(under {TARGET_EARLIEST_FRACTION:.0%} of the cap). Read it off the control's curve "
+                             f"near its endpoint (#547)")
+
+
 def seeds_complete(a: Audited) -> Status:
     """Every arm a criterion compares has every registered seed, or the missing ones
     are marked void (`[void.<point>.<arm>] seeds = [...], reason = "..."`)."""
@@ -509,6 +545,7 @@ def audit_spec(a: Audited, citations: dict[str, list[str]], graveyard: str) -> l
     return [
         floor_both_arms(a),
         control_reached_target(a),
+        target_reached_late(a),
         seeds_complete(a),
         sigma_plausible(a),
         prediction_registered(a),
