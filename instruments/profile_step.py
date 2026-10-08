@@ -1,7 +1,7 @@
 """A profiler trace of the real trainer's micro-step: where the time goes, by name (#473).
 
-Everything we knew about training time was inferred from wall-clock deltas (#411:
-24.2 s per opt step in the trainer against 18.7 s for `bench_train_step`'s loop mode).
+Everything we knew about training time was inferred from wall-clock deltas, and a
+bench that skipped the trainer's host work disagreed with the trainer by 30% (#411).
 This runs the trainer's own `loop.train_loop` (data pipeline, loss scaler, grad guard,
 logging) on a fresh model, lets --warmup micro-steps compile, records the next
 --micro-steps under `jax.profiler`, and prints where each one's time went:
@@ -15,6 +15,12 @@ The trace lands under runs/profile/<run_id>/trace (open perfetto_trace.json.gz i
 ui.perfetto.dev), with the summary beside it in summary.txt:
 
   venv/bin/python -m instruments.profile_step [--warmup N] [--micro-steps N]
+
+`--pace` runs the same loop with no profiler and prints only how fast it went and
+what it held: s/opt step, tok/s, the arena peak. That is the throughput instrument
+for any knob that changes the micro-step count (batch, accumulation, #561). A trace
+inflates the host spans, and those scale with the number of micro-steps: profiled,
+batch 1 read 1.41x slower than batch 2, where the real trainer reads 1.15x.
 
 Needs DATA_ROOT (the real loader is part of what is measured). The window starts on a
 fresh init, so it holds opt-step boundaries but not the rare ones: a log row every
@@ -31,6 +37,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 import argparse
 import glob
 import queue
+import time
 
 import jax
 
@@ -43,6 +50,9 @@ from trm.train import loop, trainer
 MIN_WARMUP = 2
 
 REPORTS = {
+    "pace s/opt step, tok/s": ("measured", "--pace: perf_counter between the window's first and last batch "
+                                           "fetch, device settled at both ends, no profiler; one run"),
+    "arena peak / limit": ("measured", "--pace: memory_stats() peak_bytes_in_use and bytes_limit, compile included"),
     "ms/micro-step": ("measured", "between consecutive trm/data_get span starts on the trainer thread, "
                                   "over the traced window; one run, mean with p50 and max"),
     "s/opt step": ("estimated", "mean ms/micro-step x ACCUMULATION_STEPS"),
@@ -51,8 +61,6 @@ REPORTS = {
     "nnx.jit wrapper ms": ("measured", "grad_step and apply_grads spans minus the PjitFunction events inside them"),
 }
 
-# #411's readings, per opt step at batch 1 x 128 micro-steps: what the trace attributes.
-REFERENCE_S_PER_OPT_STEP = {"trainer": 24.2, "bench loop": 18.7, "bench kernel": 15.7}
 # The #474 gate: nnx.jit's own host time, both calls together, ms per micro-step.
 NNX_JIT_GATE_MS = 5.0
 # Device-plane lines the profiler derives from the kernel lines; counting them again
@@ -77,15 +85,24 @@ class TracedQueue:
         self.inner, self.trace_dir, self.settle = inner, trace_dir, settle
         self.start_at, self.stop_at = warmup - 1, warmup + micro_steps + 1
         self.served = 0
+        # With no trace_dir (--pace), the window is timed instead of traced: from the
+        # settle before get start_at to the settle at get stop_at, every micro-step
+        # from start_at to stop_at - 1 ran.
+        self.opened = self.closed = None
+        self.timed = self.stop_at - self.start_at
 
     def get(self):
         k, self.served = self.served, self.served + 1
         if k == self.start_at:
             self.settle()
-            jax.profiler.start_trace(self.trace_dir, create_perfetto_trace=True)
+            self.opened = time.perf_counter()
+            if self.trace_dir:
+                jax.profiler.start_trace(self.trace_dir, create_perfetto_trace=True)
         if k == self.stop_at:
             self.settle()
-            jax.profiler.stop_trace()
+            self.closed = time.perf_counter()
+            if self.trace_dir:
+                jax.profiler.stop_trace()
             return None, None, None
         try:
             return self.inner.get(timeout=QUEUE_TIMEOUT_S)
@@ -155,13 +172,12 @@ def format_summary(summary, device_lines, trace_path):
     n, wall = summary["micro_steps"], summary["wall"]
     ms = lambda ns: ns / n / 1e6  # noqa: E731 - ns over the window -> ms per micro-step
     mean = ms(wall)
-    reference = ", ".join(f"{k} {v}" for k, v in REFERENCE_S_PER_OPT_STEP.items())
     lines = [
         f"profile: {n} micro-steps | batch {CONFIG.BATCH_SIZE} x {CONFIG.ACCUMULATION_STEPS} "
         f"micro-steps per opt step",
         f"trace:   {trace_path}",
         f"wall     {mean:8.1f} ms/micro-step (p50 {summary['p50'] / 1e6:.1f}, max {summary['max'] / 1e6:.1f})"
-        f" -> {mean * CONFIG.ACCUMULATION_STEPS / 1000:.2f} s/opt step (#411, batch 1: {reference})",
+        f" -> {mean * CONFIG.ACCUMULATION_STEPS / 1000:.2f} s/opt step under the profiler (--pace for the pace)",
     ]
     if device_lines:
         busy = ms(summary["busy"])
@@ -183,6 +199,20 @@ def format_summary(summary, device_lines, trace_path):
     return "\n".join(lines)
 
 
+def format_pace(seconds, timed):
+    """The --pace report over `timed` micro-steps (TracedQueue.timed)."""
+    per_micro = seconds / timed
+    tokens = CONFIG.BATCH_SIZE * 2 * CONFIG.MAX_SEQ_LEN
+    stats = jax.local_devices()[0].memory_stats() or {}
+    peak, limit = stats.get("peak_bytes_in_use"), stats.get("bytes_limit")
+    arena = (f"arena peak {peak / 2**20:.0f} of {limit / 2**20:.0f} MiB (headroom {(limit - peak) / 2**20:.0f})"
+             if peak is not None and limit is not None else "arena: memory_stats unavailable under this allocator")
+    return (f"pace: batch {CONFIG.BATCH_SIZE} x {CONFIG.ACCUMULATION_STEPS} micro-steps per opt step, "
+            f"{timed} micro-steps timed\n"
+            f"{per_micro * 1e3:.1f} ms/micro-step -> {per_micro * CONFIG.ACCUMULATION_STEPS:.2f} s/opt step, "
+            f"{tokens / per_micro:,.0f} tok/s\n{arena}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     # Warmup crosses one opt step, so both apply_grads paths compile before the trace.
@@ -191,6 +221,8 @@ def main():
     parser.add_argument("--micro-steps", type=int, default=CONFIG.ACCUMULATION_STEPS,
                         help="micro-steps measured; the default window holds one optimizer update")
     parser.add_argument("--out", default="runs/profile", help="where the profile's run folder goes")
+    parser.add_argument("--pace", action="store_true",
+                        help="no profiler: time the window and read the arena, the throughput reading (#561)")
     args = parser.parse_args()
     if not trainer.DATA_ROOT:
         raise SystemExit("DATA_ROOT is not set: the real loader is part of what this measures")
@@ -202,7 +234,7 @@ def main():
     model, optimizer = trainer.init_model_and_optimizer(CONFIG)
     mngr, best_mngr, monitor, start_step = load_or_create_checkpoint(
         CONFIG, model, optimizer, os.path.abspath(os.path.join(run_tracker.run_dir, "checkpoints")), force_new_run=True)
-    trace_dir = os.path.join(run_tracker.run_dir, "trace")
+    trace_dir = None if args.pace else os.path.join(run_tracker.run_dir, "trace")
     data_queue = TracedQueue(
         trainer.setup_data_pipeline(CONFIG, start_step), args.warmup, args.micro_steps, trace_dir,
         settle=lambda: jax.block_until_ready(jax.live_arrays()))
@@ -210,6 +242,12 @@ def main():
                     trainer.DATA_ROOT)
     if data_queue.served <= data_queue.stop_at:
         raise SystemExit("the loop ended before the traced window closed")
+    if args.pace:
+        text = format_pace(data_queue.closed - data_queue.opened, data_queue.timed)
+        with open(os.path.join(run_tracker.run_dir, "summary.txt"), "w") as f:
+            f.write(text + "\n")
+        print(text)
+        return
 
     xplane = glob.glob(os.path.join(trace_dir, "**", "*.xplane.pb"), recursive=True)
     perfetto = glob.glob(os.path.join(trace_dir, "**", "perfetto_trace.json.gz"), recursive=True)

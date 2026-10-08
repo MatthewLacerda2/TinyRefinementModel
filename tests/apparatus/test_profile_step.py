@@ -95,3 +95,20 @@ def test_the_summary_is_written_beside_a_perfetto_trace(profile):
     assert all(f"  {name} " in summary for name in SPANS)
     assert "#474 gate" in summary
     assert glob.glob(os.path.join(run_dir, "trace", "**", "perfetto_trace.json.gz"), recursive=True)
+
+
+def test_pace_times_the_real_loop_without_a_trace(tmp_path):
+    """#561: the throughput reading for any knob that changes the micro-step count runs
+    the trainer's own loop, unprofiled. It counts every micro-step between the two
+    settles: the window's micro-steps plus the two that bracket it."""
+    _corpus(tmp_path)
+    env = {**os.environ, **ENV, "PYTHONPATH": REPO, "DATA_ROOT": str(tmp_path / "data"),
+           "JAX_COMPILATION_CACHE_DIR": str(tmp_path / "jax-cache")}
+    out = subprocess.run([sys.executable, "-m", "instruments.profile_step", "--pace", "--out",
+                          str(tmp_path / "profile")], cwd=tmp_path, env=env, capture_output=True, text=True,
+                         timeout=600)
+    assert out.returncode == 0, (out.stdout + out.stderr)[-4000:]
+    assert "pace: batch 32 x 4 micro-steps per opt step, 6 micro-steps timed" in out.stdout
+    assert "s/opt step" in out.stdout and "tok/s" in out.stdout
+    (run_dir,) = glob.glob(str(tmp_path / "profile" / "run_*"))
+    assert not os.path.exists(os.path.join(run_dir, "trace")), "--pace runs no profiler"

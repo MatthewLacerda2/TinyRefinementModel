@@ -17,7 +17,7 @@ Now, in one fresh process per config:
     sets (tests/apparatus/test_instrument_environment.py holds them together);
   * production's optimizer chain (bf16 first moment, masked weight decay, MultiSteps);
   * ACCUMULATION_STEPS + 1 micro-steps, so the optimizer apply is inside the
-    measurement, through the one grad-step program the trainer compiles (#316);
+    measurement, through the trainer's HotPath (#316, #474);
   * then one validation probe, as the trainer runs on its cadence.
 
 Two numbers, kept apart because they fail differently:
@@ -56,7 +56,7 @@ from instruments._common import gpu_memory_used_mib, param_count
 from trm.config import VOCAB_SIZE
 from trm.model import build_model
 from trm.settings import CONFIG
-from trm.train.grad_step import apply_grads, compute_grad_step
+from trm.train.grad_step import HotPath
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules
 from trm.train.validation import _val_ce_sums
@@ -117,12 +117,14 @@ def main(argv=None):
                                dtype=jnp.int32)
     device = jax.local_devices()[0]
 
+    # The trainer's own step (#474): split state, one graph walk, donated buffers (#548).
+    hot = HotPath(model, optimizer, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
     with CardSampler() as card:
         for _ in range(args.micro_steps):
-            loss, _out, grads, _gn = compute_grad_step(model, batch, z_loss_weight=CONFIG.Z_LOSS_WEIGHT)
-            apply_grads(optimizer, grads, model)
+            loss, _out, grads, _gn = hot.grad_step(batch)
+            hot.apply(grads)
         float(loss)
-        float(_val_ce_sums(model, batch[:1])[0])
+        float(_val_ce_sums(hot.model, batch[:1])[0])
         time.sleep(0.5)
 
     stats = device.memory_stats()
