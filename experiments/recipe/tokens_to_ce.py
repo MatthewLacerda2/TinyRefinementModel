@@ -242,7 +242,7 @@ def main(argv=None) -> int:
                                                          CONFIG.TOKENS_PER_OPT_STEP)
     print(f"{name}: target {args.target_ce} {'reached' if reached else 'NOT reached (cap)'} at "
           f"{tokens_m:.1f}M tokens; final val CE {final}", flush=True)
-    results.emit("run", tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
+    results.emit("run", run_dir=run_dir, tokens_to_target_M=tokens_m, final_val_ce=final if final is not None else float("nan"),
                  reached=float(reached), probe_aligned=float(aligned),
                  minutes_to_target=minutes if (minutes := minutes_to_target(
                      metrics, args.target_ce, args.opt_steps)) is not None else float("nan"))
