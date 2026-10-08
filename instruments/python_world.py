@@ -130,7 +130,7 @@ def score_level(level: int, attempts, k: int) -> dict:
     }
 
 
-def main(argv=None):
+def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="pass@k on generated Python tasks, per difficulty level")
     add_checkpoint_argument(ap)
     ap.add_argument("--step", type=int, default=None,
@@ -153,9 +153,40 @@ def main(argv=None):
                     help="seconds one attempt may run before it counts as a timeout")
     ap.add_argument("--json-out", default=None, help="write the per-level rows here too")
     args = ap.parse_args(argv)
-
     if args.k > args.samples:
         ap.error(f"--k {args.k} needs at least that many --samples (got {args.samples})")
+    return args
+
+
+def run_level(level: int, args, model, enc, limits: dict) -> tuple[dict, int]:
+    """(the level's row, the k it was scored at): the reference solutions are one
+    attempt each, so they are scored at k=1."""
+    drawn = tasks.generate(args.tasks, seed=args.seed, split=args.split, level=level)
+    started = time.time()
+    if args.reference:
+        attempts = [[sandbox.verify_task(task.reference, task, **limits)] for task in drawn]
+        k = 1
+    else:
+        attempts = [attempts_for(model, enc, task, args.samples, seed=args.seed,
+                                 temperature=args.temperature,
+                                 max_new_tokens=args.max_new_tokens, limits=limits)
+                    for task in drawn]
+        k = args.k
+    row = score_level(level, attempts, k)
+    row["seconds"] = round(time.time() - started, 1)
+    return row, k
+
+
+def report_level(level: int, row: dict, k: int) -> None:
+    reasons = " ".join(f"{name}={count}" for name, count in sorted(row["reasons"].items()))
+    print(f"level {level}: pass@1 {row['pass_1']:.3f}  pass@{k} {row[f'pass_{k}']:.3f}  "
+          f"tests {row['test_fraction']:.3f}  ({row['tasks']} tasks, {row['seconds']}s)  {reasons}")
+    emit(f"level{level}", **{"pass_1": row["pass_1"], f"pass_{k}": row[f"pass_{k}"],
+                             "test_fraction": row["test_fraction"], "tasks": row["tasks"]})
+
+
+def main(argv=None):
+    args = parse_args(argv)
     levels = [int(x) for x in args.levels.split(",") if x.strip()]
     limits = {"timeout_s": args.timeout}
 
@@ -170,26 +201,9 @@ def main(argv=None):
 
     rows = []
     for level in levels:
-        drawn = tasks.generate(args.tasks, seed=args.seed, split=args.split, level=level)
-        started = time.time()
-        if args.reference:
-            attempts = [[sandbox.verify_task(task.reference, task, **limits)] for task in drawn]
-            k = 1
-        else:
-            attempts = [attempts_for(model, enc, task, args.samples, seed=args.seed,
-                                     temperature=args.temperature,
-                                     max_new_tokens=args.max_new_tokens, limits=limits)
-                        for task in drawn]
-            k = args.k
-        row = score_level(level, attempts, k)
-        row["seconds"] = round(time.time() - started, 1)
+        row, k = run_level(level, args, model, enc, limits)
         rows.append(row)
-
-        reasons = " ".join(f"{name}={count}" for name, count in sorted(row["reasons"].items()))
-        print(f"level {level}: pass@1 {row['pass_1']:.3f}  pass@{k} {row[f'pass_{k}']:.3f}  "
-              f"tests {row['test_fraction']:.3f}  ({row['tasks']} tasks, {row['seconds']}s)  {reasons}")
-        emit(f"level{level}", **{"pass_1": row["pass_1"], f"pass_{k}": row[f"pass_{k}"],
-                                 "test_fraction": row["test_fraction"], "tasks": row["tasks"]})
+        report_level(level, row, k)
 
     if args.json_out:
         with open(args.json_out, "w") as handle:
