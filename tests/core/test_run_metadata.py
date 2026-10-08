@@ -7,9 +7,6 @@ import pytest
 
 from trm.runtime.run_metadata import METADATA_FILENAME, RunMetadata, Section
 
-# Needs neither jax nor tests/conftest.py: CI runs it in the lint job (#325).
-pytestmark = pytest.mark.jaxfree
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 # Every era this machine still holds; a clone without runs/ has none and skips.
 LOCAL = sorted(ROOT.glob("runs/**/" + METADATA_FILENAME))
