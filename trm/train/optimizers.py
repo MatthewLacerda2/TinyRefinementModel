@@ -10,12 +10,15 @@ import optax
 from trm.train.accumulate import multi_steps
 from trm.train.polar_express import polar_express_coeffs
 
+# Weight decay and Muon act on the matrices; vectors (norm gains, biases) are left alone.
+MATRIX_NDIM = 2
+
 # Keller Jordan's 2024 quintic, reused at every Newton-Schulz step.
 KELLER_NS_COEFFS = (3.4445, -4.775, 2.0315)
 
 
 def weight_decay_mask(params):
-    return jax.tree_util.tree_map(lambda x: x.ndim >= 2, params)
+    return jax.tree_util.tree_map(lambda x: x.ndim >= MATRIX_NDIM, params)
 
 
 def muon_partition(params):
@@ -28,7 +31,7 @@ def muon_partition(params):
     """
     def label(path, leaf):
         name = jax.tree_util.keystr(path)
-        return "muon" if getattr(leaf, "ndim", 0) == 2 and "embed" not in name else "adam"
+        return "muon" if getattr(leaf, "ndim", 0) == MATRIX_NDIM and "embed" not in name else "adam"
     return jax.tree_util.tree_map_with_path(label, params)
 
 

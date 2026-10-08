@@ -39,6 +39,9 @@ from trm.runtime.run_tracker import RunTracker
 from trm.settings import CONFIG
 from trm.train import loop, trainer
 
+# Untraced micro-steps before the window opens, at the least: the compile, and one after it.
+MIN_WARMUP = 2
+
 REPORTS = {
     "ms/micro-step": ("measured", "between consecutive trm/data_get span starts on the trainer thread, "
                                   "over the traced window; one run, mean with p50 and max"),
@@ -130,7 +133,7 @@ def read_trace(path, prefix=loop.SPAN_PREFIX):
 def summarize(spans, dispatch, device):
     """Per-micro-step accounting of the window between the first and last boundary."""
     starts = sorted(s for name, s, _ in spans if name == BOUNDARY)
-    if len(starts) < 2:
+    if len(starts) <= 1:  # a micro-step is the span between two boundaries
         raise SystemExit(f"{len(starts)} trm/{BOUNDARY} spans in the trace: no whole micro-step to read")
     lo, hi, n = starts[0], starts[-1], len(starts) - 1
     walls = sorted(b - a for a, b in zip(starts, starts[1:]))
@@ -191,8 +194,8 @@ def main():
     args = parser.parse_args()
     if not trainer.DATA_ROOT:
         raise SystemExit("DATA_ROOT is not set: the real loader is part of what this measures")
-    if args.warmup < 2 or args.micro_steps < 1:
-        raise SystemExit("need --warmup >= 2 and --micro-steps >= 1")
+    if args.warmup < MIN_WARMUP or args.micro_steps < 1:
+        raise SystemExit(f"need --warmup >= {MIN_WARMUP} and --micro-steps >= 1")
 
     run_tracker = RunTracker(CONFIG, runs_root=args.out)
     run_tracker.start_session()

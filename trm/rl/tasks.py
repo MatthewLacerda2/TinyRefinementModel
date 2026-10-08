@@ -179,7 +179,7 @@ def fibonacci(n):
 
 def is_prime(number):
     """Return True if the number is prime, otherwise False."""
-    if number < 2:
+    if number < 2:  # noqa: PLR2004 -- a task's reference solution, run and shown as written
         return False
     divisor = 2
     while divisor * divisor <= number:

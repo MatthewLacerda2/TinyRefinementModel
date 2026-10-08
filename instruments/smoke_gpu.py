@@ -43,6 +43,9 @@ from trm.settings import CONFIG
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules
 
+# A dense kernel's zero-gradient fraction above this prints a warning (#82); not a gate.
+DENSE_ZERO_WARN = 0.05
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "f16 headroom": ("sampled", "worst |activation| over the probed rows only, against the f16 max"),
@@ -176,9 +179,9 @@ def main():
     print(f"(loss ≈ 2·ln(vocab) = {2 * math.log(VOCAB_SIZE):.2f} at init, both windows summed)")
     # Loud reading, not an assert: the #82 decision rule ("~0 through the smoke
     # and the first base-run stretch") is applied in the finding, and elevated
-    # means "file loss-scaling adoption", not "this smoke is broken". 0.05 is
-    # only the warn-loudly heuristic.
-    if worst_dense > 0.05:
+    # means "file loss-scaling adoption", not "this smoke is broken".
+    # DENSE_ZERO_WARN is only the warn-loudly heuristic.
+    if worst_dense > DENSE_ZERO_WARN:
         print(f"⚠️ dense-kernel zero-fraction reached {worst_dense:.4f} — possible f16 "
               f"underflow; per #82, file the loss-scaling adoption issue.")
     else:

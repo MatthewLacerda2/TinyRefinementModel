@@ -42,6 +42,11 @@ from instruments.verdict import (
 )
 from trm.runtime.supervisor import BUDGET_COMPLETE, KILLED_DIVERGENCE, WALLCLOCK_COMPLETE
 
+# Path shapes the diff scope recognizes: experiments/<line>/specs/<id>.toml, and a
+# research line's own code, experiments/<line>/<file>.py or deeper.
+SPEC_PATH_PARTS = 4
+LINE_FILE_PARTS = 3
+
 # What each headline number is, and how it was obtained (#175): none — the audit
 # prints rule states and reasons; every number in a reason is the referee's own
 # (verdict.py's sigma_pooled and means) or a count read straight from the spec.
@@ -600,11 +605,11 @@ def affected(changed: list[str], repo: pathlib.Path = REPO) -> Scope:
         if rel in REFEREE_FILES:
             scope.everything = True
             scope.why.append(f"{rel} -> every spec and finding")
-        elif parts[:1] == ("experiments",) and len(parts) == 4 and parts[2] == "specs" and p.suffix == ".toml":
+        elif parts[:1] == ("experiments",) and len(parts) == SPEC_PATH_PARTS and parts[2] == "specs" and p.suffix == ".toml":
             if (repo / rel).exists():
                 scope.specs.add(rel)
                 scope.why.append(f"{rel} -> itself")
-        elif parts[:1] == ("experiments",) and len(parts) >= 3 and p.suffix == ".py":
+        elif parts[:1] == ("experiments",) and len(parts) >= LINE_FILE_PARTS and p.suffix == ".py":
             line = sorted(q.relative_to(repo).as_posix()
                           for q in (repo / "experiments" / parts[1] / "specs").glob("*.toml"))
             scope.specs.update(line)

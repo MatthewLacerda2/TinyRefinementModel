@@ -43,6 +43,9 @@ from trm.model import build_model
 from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step, apply_grads
 
+# bf16 mu passes when its back-half loss stays within 2% of the f32 run's.
+MAX_REL_LOSS_GAP = 0.02
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "mean |loss gap|": ("measured", "f32-mu vs bf16-mu loss over the back half of ONE seed's steps; "
@@ -137,7 +140,7 @@ def main():
     print(f"\nbf16 loss finite: {finite}")
     print(f"bf16 run stores mu in bf16: {has_bf16}    f32 run is all-f32: {f32_clean}")
     print(f"mean |loss gap| over back half: {gap:.4f}  ({rel*100:.2f}% of f32 loss)")
-    verdict = finite and has_bf16 and f32_clean and rel < 0.02
+    verdict = finite and has_bf16 and f32_clean and rel < MAX_REL_LOSS_GAP
     print(f"\nVERDICT: {'PASS — bf16-mu tracks f32 and is stored as bf16' if verdict else 'CHECK — see numbers above'}")
 
 

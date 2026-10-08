@@ -115,7 +115,7 @@ class Trajectory:
         angles = self.turning_angles()
         for k in range(1, self.blocks + 1):
             metrics = {"step_size": sizes[k - 1], "distance_to_final": dists[k]}
-            if k >= 2:
+            if k > 1:  # an angle needs the step before this one
                 metrics["turning_angle"] = angles[k - 2]
             result_lines.emit(f"block{k}", **metrics)
 

@@ -71,6 +71,19 @@ from trm import config as this_process
 from trm.settings import CONFIG
 from trm.train.schedules import DEFAULT_DECAY_STEPS
 
+# Smoothing: a centred window one SMOOTHING_POINTS_PER_WINDOW-th of the series long,
+# clamped to [SMALLEST_SMOOTHING_WINDOW, MAX_SMOOTHING_WINDOW]; a series shorter than
+# SMOOTHING_POINTS_PER_WINDOW stays raw, and smooth() leaves a window under
+# MIN_SMOOTHING_WINDOW alone.
+MIN_SMOOTHING_WINDOW = 3
+SMALLEST_SMOOTHING_WINDOW = 5
+MAX_SMOOTHING_WINDOW = 101
+SMOOTHING_POINTS_PER_WINDOW = 20
+# Minor tick labels on a log axis only when it spans at most this ratio; wider, they crowd.
+MINOR_LABELS_MAX_SPAN = 20
+# Heartbeats that witnessed less of the run than this read as stale (#223).
+STALE_HEARTBEAT_COVERAGE = 0.98
+
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
     "training curves": ("measured", "metrics.csv as recorded, rows failing an invariant dropped"),
@@ -187,7 +200,7 @@ def series(runlog, name, cfg=None, suspect=None):
 
 def smooth(y, window):
     """Centred moving average, edge-padded so it spans the same x as the raw."""
-    if window < 3 or len(y) < window:
+    if window < MIN_SMOOTHING_WINDOW or len(y) < window:
         return np.asarray(y)
     kernel = np.ones(window) / window
     core = np.convolve(y, kernel, mode="valid")
@@ -196,7 +209,8 @@ def smooth(y, window):
 
 
 def smoothing_window(n):
-    return 0 if n < 20 else int(min(101, max(5, n // 20)))
+    return (0 if n < SMOOTHING_POINTS_PER_WINDOW
+            else int(min(MAX_SMOOTHING_WINDOW, max(SMALLEST_SMOOTHING_WINDOW, n // SMOOTHING_POINTS_PER_WINDOW))))
 
 
 def fmt_tokens(n):
@@ -226,7 +240,7 @@ def _log_y(ax):
 
     def minor(value, _):
         low, high = ax.get_ylim()
-        return f"{value:g}" if low > 0 and high / low <= 20 else ""
+        return f"{value:g}" if low > 0 and high / low <= MINOR_LABELS_MAX_SPAN else ""
 
     ax.yaxis.set_minor_formatter(matplotlib.ticker.FuncFormatter(minor))
     ax.tick_params(axis="y", which="minor", labelsize=8)
@@ -398,7 +412,7 @@ def val_cadence(runlog, cfg):
     if cfg.recorded("VAL_EVERY_OPT_STEPS"):
         return cfg.value("VAL_EVERY_OPT_STEPS", None, int), "recorded"
     steps, _ = runlog.val_readings()
-    if len(steps) < 2:
+    if len(steps) <= 1:
         return None, None
     return int(round((steps[-1] - steps[0]) / (len(steps) - 1))), "observed"
 
@@ -612,14 +626,14 @@ def clock_samples(runlog, min_spacing_s=THROUGHPUT_SPACING_S):
     older than the column fall back to supervisor heartbeats, which are sampled.
     """
     stamped = [(row["wall_clock"], row["step"]) for row in runlog.metrics if row.get("wall_clock")]
-    if len(stamped) >= 2:
+    if len(stamped) > 1:
         thinned = [stamped[0]]
         for stamp, step in stamped[1:]:
             if (stamp - thinned[-1][0]).total_seconds() >= min_spacing_s:
                 thinned.append((stamp, step))
         if thinned[-1] != stamped[-1]:
             thinned.append(stamped[-1])
-        if len(thinned) >= 2:
+        if len(thinned) > 1:
             return thinned, "metrics"
     return read_heartbeats(runlog), "heartbeats"
 
@@ -630,7 +644,7 @@ def throughput(runlog, outdir):
     measured = source == "metrics"
     tokens_per_step = cfg.tokens_per_opt_step
 
-    if len(beats) < 2:
+    if len(beats) <= 1:
         print("throughput: no wall_clock in metrics.csv and fewer than two supervisor "
               "heartbeats — skipped (throughput needs a clock).")
         return None
@@ -645,7 +659,7 @@ def throughput(runlog, outdir):
     # authority on how far the run got. The incident: tests/apparatus/test_plots_throughput.py (#223).
     last_beat_step = int(steps[-1])
     coverage = last_beat_step / runlog.last_step if runlog.last_step else 0.0
-    stale = coverage < 0.98
+    stale = coverage < STALE_HEARTBEAT_COVERAGE
 
     rate, rate_hours, dropped, cadence = usable_intervals(hours, tokens)
     if rate.size == 0:
