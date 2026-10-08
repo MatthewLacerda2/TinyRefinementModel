@@ -13,7 +13,18 @@ import numpy as np
 import optax
 from flax import nnx
 
-from trm.train.grad_step import applied_gradient, dense_zero_frac_max, grad_zero_fractions
+from trm.train.grad_step import dense_zero_frac_max, grad_zero_fractions
+
+
+def applied_gradient(opt, grads):
+    """The reference: the gradient the optimizer applies at this micro-step, built
+    whole. optax.MultiSteps with use_grad_mean keeps a running mean of the window's
+    first k-1 micro-steps in `acc_grads`; the apply folds this micro-step's grads into
+    it. trm's `applied_gradient_stats` computes its two numbers without building this."""
+    state = opt.opt_state
+    seen = jax.tree_util.tree_leaves(state.mini_step)[0]
+    return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
+                                  nnx.to_pure_dict(state.acc_grads), nnx.to_pure_dict(grads))
 
 
 class Toy(nnx.Module):

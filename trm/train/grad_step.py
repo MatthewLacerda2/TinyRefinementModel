@@ -144,25 +144,6 @@ def grad_zero_fractions(grads):
     return {g: zeros[g] / sizes[g] for g in zeros}
 
 
-def applied_gradient(opt, grads):
-    """The gradient the optimizer applies at this micro-step, when it is the last of
-    its accumulation window (#191).
-
-    optax.MultiSteps with use_grad_mean keeps a running mean of the window's first
-    k-1 micro-steps in `acc_grads`; the apply uses that mean folded with this
-    micro-step's grads. Read it BEFORE apply_grads, which donates both. Only
-    meaningful at an apply boundary — mid-window it is a partial mean.
-
-    Why it matters: the underflow instrument read one micro-step's grads, and
-    reported 0.500 on 13% of steps — a per-micro-step artifact, not underflow in
-    anything that updates the weights, yet indistinguishable from it in the column.
-    """
-    state = opt.opt_state
-    seen = jax.tree_util.tree_leaves(state.mini_step)[0]
-    return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
-                                  nnx.to_pure_dict(state.acc_grads), nnx.to_pure_dict(grads))
-
-
 @jax.jit
 def _applied_stats(acc, seen, grads):
     applied = jax.tree_util.tree_map(lambda a, g: a + (g - a) / (seen + 1), acc, grads)
@@ -173,7 +154,7 @@ def applied_gradient_stats(opt, grads):
     """(zero fraction per group, global norm) of the gradient the optimizer applies —
     the two numbers the telemetry logs (#191, #180) — WITHOUT materializing it.
 
-    applied_gradient() builds the full tree; read eagerly at every logging step it
+    Building the applied gradient whole would cost a full tree; read eagerly at every logging step it
     is a 564 MiB f32 temporary at dim 960 that neither the fit gate nor the
     headroom smoke ever sees (they never reach a logging step). It put the 9-layer
     AdamW run 565 MiB above the smoke's peak and OOM'd every Muon arm (#26).

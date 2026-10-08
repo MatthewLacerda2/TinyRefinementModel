@@ -39,6 +39,7 @@ from trm.runtime.restore import restore_model
 from instruments.yardstick.yardstick import (
     GPT2_SMALL_REFERENCE,
     LAMBADA_SHA256,
+    SMOLLM2_135M_REFERENCE,
     encode_example,
     fetch_lambada,
     load_examples,
@@ -160,11 +161,12 @@ def main(argv=None):
             fineweb = {"error": repr(err)}
 
     ref_acc, ref_ppl = GPT2_SMALL_REFERENCE["lambada_acc"], GPT2_SMALL_REFERENCE["lambada_ppl"]
+    nb_acc, nb_ppl = SMOLLM2_135M_REFERENCE["lambada_acc"], SMOLLM2_135M_REFERENCE["lambada_ppl"]
     print()
-    print(f"{'metric':<28} {'ours':>10} {'GPT-2-small':>12}   verdict")
-    print(f"{'LAMBADA last-word acc':<28} {result['lambada_acc']:>10.4f} {ref_acc:>12.4f}   "
+    print(f"{'metric':<28} {'ours':>10} {'GPT-2 (gate)':>13} {'SmolLM2 (nbr)':>14}   verdict")
+    print(f"{'LAMBADA last-word acc':<28} {result['lambada_acc']:>10.4f} {ref_acc:>13.4f} {nb_acc:>14.4f}   "
           f"{'meets the bar ✅' if result['lambada_acc'] >= ref_acc else 'below the bar'}")
-    print(f"{'LAMBADA ppl':<28} {result['lambada_ppl']:>10.2f} {ref_ppl:>12.2f}   "
+    print(f"{'LAMBADA ppl':<28} {result['lambada_ppl']:>10.2f} {ref_ppl:>13.2f} {nb_ppl:>14.2f}   "
           f"{'meets the bar ✅' if result['lambada_ppl'] <= ref_ppl else 'below the bar'}")
     if heldout:
         print(f"{'held-out ppl (our corpus)':<28} {heldout['ppl']:>10.2f} {'—':>12}   "
@@ -185,6 +187,7 @@ def main(argv=None):
         "heldout": heldout,
         "fineweb_val": fineweb and {**fineweb, "reference": fineweb_val.REFERENCE},
         "gpt2_small_reference": GPT2_SMALL_REFERENCE,
+        "smollm2_135m_reference": SMOLLM2_135M_REFERENCE,
     }
     out = args.json_out or f"runs/yardstick/step{step}.json"
     os.makedirs(os.path.dirname(out), exist_ok=True)
