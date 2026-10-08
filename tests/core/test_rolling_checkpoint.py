@@ -20,7 +20,7 @@ from trm.runtime.checkpoints import _monitor_state, save_checkpoint, discover_la
 from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
 from trm.settings import CONFIG
-from trm.runtime.resume_state import _READ_ONLY, ResumeState
+from trm.runtime.resume_state import ResumeState
 
 
 def _make_manager(path):
@@ -138,7 +138,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
 def test_a_save_records_every_field_of_the_resume_state():
     """A field declared with a default but not set by ResumeState.of would save
     its default on every checkpoint, the silent default #477 removed from load."""
-    assert ResumeState.of(LossMonitor.of(CONFIG), "run_x").model_fields_set == set(ResumeState.model_fields) - _READ_ONLY
+    assert ResumeState.of(LossMonitor.of(CONFIG), "run_x").model_fields_set == set(ResumeState.model_fields)
 
 
 def _with_saved_state_edited(tmp_path, tiny_model, edit):
@@ -161,15 +161,6 @@ def _with_saved_state_edited(tmp_path, tiny_model, edit):
     return str(chk)
 
 
-def _with_legacy_phase_fields(tmp_path, tiny_model, sft_active, sft_start_step):
-    """A checkpoint as written before #323, which recorded the SFT phase in its
-    monitor state: save one today, then add the two fields back on disk."""
-    def add_phase(state):
-        assert "sft_active" not in state and "sft_start_step" not in state, "new checkpoints stopped writing them"
-        return {**state, "sft_active": sft_active, "sft_start_step": sft_start_step}
-    return _with_saved_state_edited(tmp_path, tiny_model, add_phase)
-
-
 def test_a_misspelled_resume_key_is_refused_by_name_not_resumed_with_a_default(
         tmp_path, tiny_model, make_tiny_model):
     """#477: read with .get(), a renamed best_val_ce resumed as inf, and the first
@@ -183,34 +174,6 @@ def test_a_misspelled_resume_key_is_refused_by_name_not_resumed_with_a_default(
         lambda state: {("best_val_cee" if k == "best_val_ce" else k): v for k, v in state.items()})
     fresh = make_tiny_model(seed=99)
     with pytest.raises(SystemExit, match="best_val_cee"):
-        load_or_create_checkpoint(CONFIG, fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
-
-
-def test_a_pretraining_checkpoint_from_before_the_flip_was_removed_still_resumes(
-        tmp_path, tiny_model, make_tiny_model):
-    import optax
-    from flax import nnx
-    from trm.runtime.checkpoints import load_or_create_checkpoint
-
-    chk = _with_legacy_phase_fields(tmp_path, tiny_model, sft_active=False, sft_start_step=None)
-    fresh = make_tiny_model(seed=99)
-    _, _, _, start_step = load_or_create_checkpoint(
-        CONFIG,
-        fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
-    assert start_step == 256
-
-
-def test_a_checkpoint_from_inside_the_sft_phase_is_refused_not_resumed_as_pretraining(
-        tmp_path, tiny_model, make_tiny_model):
-    """The flip is gone (#323), so resuming such a checkpoint would silently change
-    its mixture and LR. The loader refuses and names the way back."""
-    import optax
-    from flax import nnx
-    from trm.runtime.checkpoints import load_or_create_checkpoint
-
-    chk = _with_legacy_phase_fields(tmp_path, tiny_model, sft_active=True, sft_start_step=127)
-    fresh = make_tiny_model(seed=99)
-    with pytest.raises(SystemExit, match="trm.runtime.rewind"):
         load_or_create_checkpoint(CONFIG, fresh, nnx.Optimizer(fresh, optax.sgd(0.0), wrt=nnx.Param), chk)
 
 

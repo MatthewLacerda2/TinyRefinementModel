@@ -9,7 +9,6 @@ from trm.runtime.layout import (BEST_SUBDIR, CHECKPOINT_ITEMS, MILESTONE_ITEMS, 
                                 ROLLING_KEEP)
 from trm.runtime.monitor import LossMonitor
 from trm.runtime.resume_state import ResumeState
-from trm.runtime.rewind import refuse_sft_phase_resume
 
 def discover_latest_run(runs_root="runs"):
     if not os.path.exists(runs_root):
@@ -239,9 +238,6 @@ def load_or_create_checkpoint(config, model, optimizer, checkpoint_path, force_n
 
         start_step = restored["step"] + 1
         m_state = restored["monitor_state"]
-        # Checkpoints written before #323 carry sft_active/sft_start_step; new ones
-        # don't. Absent reads as pretraining, and an SFT-phase one is refused.
-        refuse_sft_phase_resume(m_state, latest_step, checkpoint_path, config.ACCUMULATION_STEPS)
         ResumeState.load(m_state, f"checkpoint step {latest_step} in {checkpoint_path}").restore(
             monitor, micro_step=restored["step"])
 
