@@ -28,9 +28,12 @@ def flagged(q):
 
 
 def test_types_lead_in_claude_md_order():
+    """The owner's phases (#562): the codebase, the tools that measure it, cheaper code,
+    what the literature settled, then our own hypotheses; documentation any time."""
     q = build_queue([issue(1, "documentation", "cpu"), issue(3, "optimization", "cpu"),
-                     issue(4, "tools", "cpu"), issue(5, "architecture", "cpu")], [], FREE)
-    assert list(ranked(q)) == ["tools", "architecture", "optimization", "documentation"]
+                     issue(4, "tools", "cpu"), issue(5, "architecture", "cpu"),
+                     issue(6, "adopt", "cpu"), issue(7, "codebase", "cpu")], [], FREE)
+    assert list(ranked(q)) == ["codebase", "tools", "optimization", "adopt", "architecture", "documentation"]
 
 
 def test_ideas_is_no_longer_a_tier():
@@ -177,24 +180,13 @@ def test_unblockers_still_outrank_the_idle_card_rule():
     assert ranked(build_queue(issues, [], FREE))["tools"][0] == 1
 
 
-# --- the repo before the model: codebase leads its tier ----------------------------
+# --- a settled adoption outranks a hypothesis; a codebase issue outranks both (#562) ---
 
-def test_a_codebase_issue_leads_its_tier_after_unblockers_and_the_idle_card():
-    issues = [issue(1, "architecture", "gpu", "cpu"), issue(2, "architecture", "cpu", "codebase"),
-              issue(3, "architecture", "cpu")]
-    busy = build_queue(issues, [], BUSY)
-    assert ranked(busy) == {"architecture": [2, 1, 3]}
-    assert busy.next_step().startswith("#2") and "repo before the model" in busy.next_step()
-    assert ranked(build_queue(issues, [], FREE))["architecture"][0] == 1, "an idle card still leads"
-    blocker = issues + [issue(4, "architecture", "cpu"),
-                        issue(5, "architecture", "cpu", "blocked", body="Blocked by #4")]
-    assert ranked(build_queue(blocker, [], BUSY))["architecture"][0] == 4, "unblockers still lead"
-
-
-def test_two_codebase_issues_are_a_judgment_call_between_them():
-    q = build_queue([issue(1, "architecture", "cpu", "codebase"),
-                     issue(2, "architecture", "cpu", "codebase"), issue(3, "architecture", "cpu")], [], BUSY)
-    assert "codebase" in q.next_step() and "judgment" in q.next_step() and "#" not in q.next_step()
+def test_a_settled_adoption_and_a_codebase_issue_each_have_their_own_tier():
+    q = build_queue([issue(1, "architecture", "gpu", "cpu"), issue(2, "adopt", "cpu"),
+                     issue(3, "codebase", "architecture", "cpu")], [], FREE)
+    assert ranked(q) == {"codebase": [3], "adopt": [2], "architecture": [1]}
+    assert q.next_step().startswith("#3")
 
 
 def test_a_browsers_gpu_process_does_not_hold_the_card():

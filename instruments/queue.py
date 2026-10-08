@@ -4,18 +4,17 @@
 
 CLAUDE.md states the ready-queue as prose precise enough to execute — an issue
 is ready when it is open, not blocked, unclaimed, and its lane is free; types
-lead in the order tools > architecture > optimization > documentation;
+lead in the order codebase > tools > optimization > adopt > architecture >
+documentation;
 anything that affects another item leads. Run in a session's head, that
 algorithm runs differently depending on what the session happened to read, and
 not at all in a fresh one. Here it runs the same every time.
 
 It ranks only what the rules decide, then stops. Within a tier the rules set only
-three orders, applied in this sequence:
+two orders, applied in this sequence:
 - dependency: an issue that other open issues are blocked by affects another item, so
   it leads its tier;
-- an idle card: gpu-lane items come next;
-- the repo before the model: a `codebase` issue comes next, because the code every
-  later change lands in leads a pair nothing depends on.
+- an idle card: gpu-lane items come next.
 Past those, the order is judgment ("any order, your judgment"), and the output says
 so instead of sorting by something that only looks like authority.
 
@@ -47,8 +46,10 @@ from trm.runtime.gpu_lock import GpuLock
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # ranks issues and says why; prints no quantities
 
-TYPE_ORDER = ("tools", "architecture", "optimization", "documentation")
-UNORDERED = {"architecture": "codebase first, then any order, your judgment, per CLAUDE.md"}
+# The owner's phases (#562): the codebase in order, the tools that measure it, cheaper
+# code, what the literature settled, and only then our own hypotheses.
+TYPE_ORDER = ("codebase", "tools", "optimization", "adopt", "architecture", "documentation")
+UNORDERED = {"architecture": "any order, your judgment, per CLAUDE.md"}
 
 # "Blocked by" alone marks a block. When the first thing after it is an issue number,
 # every number in the rest of that sentence names a blocker — bodies annotate each
@@ -91,7 +92,6 @@ class Entry:
     def reason(self) -> str:
         lane = self.labels & {"cpu", "gpu"}
         parts = ["bug" if "bug" in self.labels else None,
-                 "codebase" if "codebase" in self.labels else None,
                  "cpu half (partial-cpu)" if lane == {"cpu", "gpu"}
                  else "/".join(sorted(lane)) if lane else "no lane label"]
         if self.unblocks:
@@ -116,11 +116,6 @@ class Queue:
                 return f"#{lead.number} — first ready {tier} issue ({lead.reason()})"
             if self.card.free and "gpu" in lead.labels:
                 return f"#{lead.number} — card idle → gpu items first; first ready {tier} issue ({lead.reason()})"
-            if "codebase" in lead.labels:
-                if "codebase" not in entries[1].labels:
-                    return f"#{lead.number} — the repo before the model; first ready {tier} issue ({lead.reason()})"
-                return (f"a codebase {tier} issue — {sum('codebase' in e.labels for e in entries)} are "
-                        f"ready and the rules do not order them; that pick is a judgment call")
             return (f"a {tier} issue — {len(entries)} are ready and the rules do not "
                     f"order them; that pick is a judgment call")
         return "nothing is ready"
@@ -228,9 +223,7 @@ def build_queue(issues: list[dict], prs: list[dict], card: Card, cloud: bool = F
     for entries in tiers.values():
         # Unblockers lead. On an idle card, gpu-lane items lead too (#295): the
         # card is the scarce resource, and an idle one is the waste to end first.
-        # Then the repo before the model (`codebase`, CLAUDE.md "The ready-queue").
-        entries.sort(key=lambda e: (-len(e.unblocks), not (card.free and "gpu" in e.labels),
-                                    "codebase" not in e.labels, e.number))
+        entries.sort(key=lambda e: (-len(e.unblocks), not (card.free and "gpu" in e.labels), e.number))
     return Queue(card, tiers, not_ready, needs_human)
 
 
