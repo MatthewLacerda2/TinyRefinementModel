@@ -4,6 +4,7 @@
 # Keep (most) values powers of 2 if you know what's good for you.
 
 import os
+
 import jax.numpy as jnp
 
 from trm.settings import CONFIG

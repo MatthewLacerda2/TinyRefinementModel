@@ -25,21 +25,23 @@ should sit at ~0 — elevated means f16 underflow, and loss scaling is the named
 """
 
 import os
+
 # Match the real run's allocator arena (trm.train.start) — the smoke must see the
 # same VRAM budget training does, not JAX's smaller 0.75 default.
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.85")
 
 import math
-import numpy as np
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 from instruments._common import F16_MAX, param_count
 from trm.config import VOCAB_SIZE
 from trm.model import build_model
-from trm.train.grad_step import compute_grad_step, apply_grads, grad_zero_fractions, dense_zero_frac_max
 from trm.settings import CONFIG
+from trm.train.grad_step import apply_grads, compute_grad_step, dense_zero_frac_max, grad_zero_fractions
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules
 

@@ -10,16 +10,17 @@ import pytest
 
 
 def test_trainer_imports():
-    from trm.train import loop  # noqa: F401
-    from trm.train import trainer  # noqa: F401
-    from trm.train import optimizers  # noqa: F401
-    from trm.train import validation  # noqa: F401
+    from trm.train import (
+        loop,  # noqa: F401
+        optimizers,  # noqa: F401
+        trainer,  # noqa: F401
+        validation,  # noqa: F401
+    )
 
 
 def test_validation_probe_scores_held_out_rows(tiny_model):
     from trm.settings import CONFIG
-    from trm.train import trainer
-    from trm.train import validation
+    from trm.train import trainer, validation
 
     if not trainer.DATA_ROOT:
         pytest.skip("DATA_ROOT not set")
@@ -71,6 +72,7 @@ def test_chunked_probe_matches_full_logit_scoring(make_tiny_model):
 
 def test_the_probe_never_asks_for_full_logits():
     import inspect
+
     from trm.train import validation
     source = inspect.getsource(validation._val_ce_sums)
     assert "training=False" not in source and ".logits" not in source

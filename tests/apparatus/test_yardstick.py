@@ -12,8 +12,6 @@ import hashlib
 import numpy as np
 import pytest
 
-from trm.settings import CONFIG
-
 from instruments.yardstick.yardstick import (
     encode_example,
     score_examples,
@@ -21,6 +19,7 @@ from instruments.yardstick.yardstick import (
     summarize,
     verify_sha256,
 )
+from trm.settings import CONFIG
 
 VOCAB = 11
 PAD = 0
@@ -128,8 +127,8 @@ def test_tiny_model_through_the_runner_adapter():
     Finite, in-range, and deterministic across calls."""
     from flax import nnx
 
-    from trm.model import build_model
     from instruments.yardstick.eval_yardstick import make_logits_fn
+    from trm.model import build_model
 
     pad = 63
     model = build_model(CONFIG, nnx.Rngs(0), dim=32, vocab_size=64, num_heads=2, num_layers=1,

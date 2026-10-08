@@ -16,9 +16,9 @@ import pytest
 from flax import nnx
 
 from trm.config import COMPUTE_DTYPE
+from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
-from trm.settings import CONFIG
 
 
 def _tiny_model_and_batch():

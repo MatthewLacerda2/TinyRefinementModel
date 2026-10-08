@@ -1,14 +1,16 @@
+import glob
+import json
 import os
+import queue
+import sys
+import threading
+import time
+from multiprocessing import Pool, cpu_count
+
 import numpy as np
 import tiktoken
-import sys
 from datasets import load_dataset
-from multiprocessing import Pool, cpu_count
-import json
-import glob
-import time
-import threading
-import queue
+
 from trm.config import TOKENIZER_NAME, resolve_root
 from trm.settings import CONFIG, load_env, location
 

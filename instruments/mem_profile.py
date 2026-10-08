@@ -29,6 +29,7 @@ NUM_HEADS, PLAIN_LAYERS):
 """
 
 import os
+
 # Measure the real f16 GPU footprint, on demand (no 75% land-grab that hides the peak).
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 

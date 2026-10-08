@@ -30,7 +30,7 @@ from flax import nnx
 from instruments._common import load_env
 from trm.model import build_model
 from trm.settings import CONFIG
-from trm.train.grad_step import compute_grad_step, apply_grads
+from trm.train.grad_step import apply_grads, compute_grad_step
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

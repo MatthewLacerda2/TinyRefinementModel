@@ -23,7 +23,6 @@ from trm.runtime.supervisor import (
 )
 from trm.settings import Config
 
-
 # --- preflight ----------------------------------------------------------------
 
 def test_disk_headroom_refuses_a_nearly_full_disk(tmp_path):

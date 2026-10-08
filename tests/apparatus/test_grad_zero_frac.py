@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.train.grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
 from trm.settings import CONFIG
+from trm.train.grad_step import compute_grad_step, dense_zero_frac_max, grad_zero_fractions
 
 
 def _fracs(tree):
@@ -74,8 +74,9 @@ def test_real_model_groups_and_interpretation_caveats():
         attribute to structure, not underflow.
     f32 CPU lane throughout: underflow itself cannot occur here."""
     import optax
-    from trm.train.grad_step import apply_grads
+
     from trm.model.plain import PlainTransformer
+    from trm.train.grad_step import apply_grads
 
     vocab = 5000  # far more tokens than the ~60 the batch uses
     m = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=vocab, num_heads=4,

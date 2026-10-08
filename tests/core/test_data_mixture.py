@@ -20,8 +20,7 @@ import json
 import numpy as np
 import pytest
 
-from trm.settings import CONFIG
-from trm.settings import Config
+from trm.settings import CONFIG, Config
 from trm.train import schedules
 from trm.train.schedules import Schedules
 

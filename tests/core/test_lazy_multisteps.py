@@ -13,8 +13,8 @@ import optax
 from flax import nnx
 
 from trm.model import build_model
-from trm.train.accumulate import LazyMultiSteps
 from trm.settings import CONFIG
+from trm.train.accumulate import LazyMultiSteps
 from trm.train.optimizers import _adamw, _muon
 
 
@@ -68,6 +68,7 @@ def test_the_inner_optimizer_runs_once_per_window_and_never_inside_a_branch():
             state = tx.accumulate(grads, state)
     assert len(calls) == 2, "two windows of four: the inner optimizer ran exactly twice"
     import inspect
+
     from trm.train import accumulate
     assert "lax.cond" not in inspect.getsource(accumulate).split('"""', 2)[2], "no traced branch: it copied the whole state"
 

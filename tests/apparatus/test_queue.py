@@ -150,6 +150,7 @@ def test_a_pr_claims_the_issue_it_closes():
 
 def test_a_branch_with_old_commits_and_no_pr_is_stray_and_a_fresh_or_pr_backed_one_is_not():
     import datetime
+
     from instruments.queue import stray_branches
     now = datetime.datetime(2026, 9, 14, tzinfo=datetime.timezone.utc)
     branches = [
@@ -223,6 +224,7 @@ def test_local_means_nothing_to_a_session_on_this_machine():
 
 def test_an_untouched_issue_is_surfaced_unless_it_is_legitimately_waiting():
     import datetime
+
     from instruments.queue import STALE_DAYS
     now = datetime.datetime(2026, 9, 28, tzinfo=datetime.timezone.utc)
     old, fresh = "2026-08-01T00:00:00Z", "2026-09-20T00:00:00Z"   # 58 and 8 days

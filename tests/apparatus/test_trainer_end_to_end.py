@@ -36,6 +36,7 @@ FIRST_LEG, SECOND_LEG = 10, 15
 # checkpoint by the micro-step, and the pair moved to 64 x 2 when batch 2 landed
 # (#385). Their product is fixed at 128 rows, so the token budget below does not move.
 from trm.settings import CONFIG  # noqa: E402
+
 ENV = {
     "JAX_PLATFORMS": "cpu", "FORCE_F32_COMPUTE": "1",
     "LATENT_DIM": "32", "NUM_HEADS": "4", "MAX_SEQ_LEN": str(SEQ), "PLAIN_LAYERS": "2",

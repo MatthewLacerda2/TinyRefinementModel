@@ -75,6 +75,7 @@ def test_a_refusal_is_raised_with_its_guidance_not_exited(tmp_path, monkeypatch)
     """#324: a library method raises; the message names the mismatch and the ways out,
     and a string SystemExit left uncaught still exits the trainer with code 1."""
     import pytest
+
     from trm.runtime import run_tracker
     PLAIN_LAYERS = CONFIG.PLAIN_LAYERS
     monkeypatch.setattr(run_tracker.sys, "exit", lambda *a: pytest.fail("sys.exit called"))

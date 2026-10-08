@@ -238,6 +238,7 @@ def main(argv=None):
     select_device(args.device, args.force)
 
     import tiktoken
+
     from trm.config import TOKENIZER_NAME
     from trm.infer import DEFAULT_TEMPERATURE, generate_text
     from trm.runtime.checkpoints import discover_latest_checkpoint_run

@@ -4,11 +4,9 @@ Split out of test_supervisor.py (#325)."""
 import sys
 import textwrap
 
-
 from trm.runtime.supervisor import (
     GpuLock,
 )
-
 
 # --- the fit gate: the real trainer, briefly, before committing the card (#168) ---
 

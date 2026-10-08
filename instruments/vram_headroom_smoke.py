@@ -55,8 +55,8 @@ from instruments import results
 from instruments._common import gpu_memory_used_mib, param_count
 from trm.config import VOCAB_SIZE
 from trm.model import build_model
-from trm.train.grad_step import apply_grads, compute_grad_step
 from trm.settings import CONFIG
+from trm.train.grad_step import apply_grads, compute_grad_step
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules
 from trm.train.validation import _val_ce_sums

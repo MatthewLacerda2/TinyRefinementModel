@@ -32,16 +32,16 @@ os.environ["FORCE_F32_COMPUTE"] = "1"
 import argparse
 import glob
 
-import numpy as np
 import jax
 import jax.numpy as jnp
-from flax import nnx
+import numpy as np
 import optax
+from flax import nnx
 
 from trm.config import resolve_root
 from trm.model import build_model
 from trm.settings import CONFIG
-from trm.train.grad_step import compute_grad_step, apply_grads
+from trm.train.grad_step import apply_grads, compute_grad_step
 
 # bf16 mu passes when its back-half loss stays within 2% of the f32 run's.
 MAX_REL_LOSS_GAP = 0.02

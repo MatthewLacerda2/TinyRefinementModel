@@ -15,8 +15,14 @@ from dataclasses import dataclass
 import jax
 import numpy as np
 
-from trm.runtime.checkpoints import (make_milestone_manager, milestone_due, milestone_thresholds,
-                                     save_checkpoint, save_milestone, wait_for_pending_saves)
+from trm.runtime.checkpoints import (
+    make_milestone_manager,
+    milestone_due,
+    milestone_thresholds,
+    save_checkpoint,
+    save_milestone,
+    wait_for_pending_saves,
+)
 from trm.runtime.layout import LOG_REAL_STEPS
 from trm.runtime.metrics import MetricsLogger
 from trm.train.grad_guard import GradientNormGuard

@@ -69,6 +69,7 @@ def test_a_micro_step_artifact_does_not_reach_the_applied_reading():
 
 def test_the_trainer_logs_both_and_names_them_apart():
     import inspect
+
     from trm.runtime.metrics import MetricsLogger
     from trm.train import loop
 
@@ -87,6 +88,7 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
     """grad_norm_avg (~11 on the 4B run, per micro-step) was never comparable to the
     1.0 clip, which acts on the 128-step mean. The trainer now logs that mean's norm."""
     import inspect
+
     from trm.train import optimizers
 
     # The logged column is observed in a real run (tests/apparatus/test_trainer_end_to_end.py);
@@ -121,5 +123,6 @@ def test_the_jitted_stats_equal_the_materialized_tree():
     assert {k: float(v) for k, v in fracs.items()} == {k: float(v) for k, v in grad_zero_fractions(applied).items()}
     assert float(norm) == float(optax.global_norm(applied))
     import inspect
+
     from trm.train import grad_step
     assert "@jax.jit" in inspect.getsource(grad_step).split("def _applied_stats")[0][-40:]

@@ -27,10 +27,9 @@ import dataclasses
 import jax.numpy as jnp
 import numpy as np
 
-from trm.settings import CONFIG
-
 from instruments import results as result_lines
 from instruments._common import add_checkpoint_argument, load_env
+from trm.settings import CONFIG
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {

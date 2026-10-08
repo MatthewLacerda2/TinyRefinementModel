@@ -40,6 +40,7 @@ def test_push_val_without_a_step_only_tracks_the_best():
 
 def test_the_trainer_reads_the_plateau_from_the_probe():
     import inspect
+
     from trm.train import loop
     src = inspect.getsource(loop.TrainLoop)
     assert "monitor.push_val(val_ce, at.opt_step)" in src and "monitor.plateaued" in src
@@ -54,6 +55,7 @@ def test_the_plateau_notice_is_rate_limited():
     last_plateau_notice, and that branch records when it fired."""
     import ast
     import inspect
+
     from trm.train import loop
 
     assert loop.PLATEAU_NOTICE_EVERY >= 50, "the notice should be occasional, not per-step"

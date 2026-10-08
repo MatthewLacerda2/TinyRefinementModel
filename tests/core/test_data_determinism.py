@@ -32,7 +32,6 @@ def _source_dir():
 @pytest.mark.skipif(_source_dir() is None, reason="local pretrain data not available")
 def test_same_seed_yields_identical_batch_stream():
     from trm.data.loaders import TextDataGenerator
-
     from trm.settings import CONFIG
 
     # Two readers the way the trainer builds one: the same seed, each its own stream.

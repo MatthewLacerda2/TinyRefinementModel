@@ -4,10 +4,11 @@ Before set_weights existed, the external assignment clobbered the renormalized
 weights and zip() silently truncated — draws could come back undersized."""
 
 import os
+
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from trm.data.loaders import DataMixer
 

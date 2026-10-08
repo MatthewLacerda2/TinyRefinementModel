@@ -6,19 +6,19 @@ in schedules.py.
 Every knob read here comes from the Config it is handed (#475):
 trm.train.start builds it, with a resumed run's own budget, and passes it down."""
 
-import threading
 import queue
+import threading
 
 import jax
 import numpy as np
 from flax import nnx
 
 from trm.config import resolve_root
+from trm.data.loaders import DataMixer, TextDataGenerator
 from trm.model import build_model
 from trm.settings import DEFAULT_DATA_MIXTURE, load_env, location
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules, mixture_label, parse_mixture
-from trm.data.loaders import TextDataGenerator, DataMixer
 
 load_env()
 

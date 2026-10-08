@@ -44,6 +44,7 @@ def test_set_passes_a_config_knob_and_refuses_an_unknown_one():
     """--set reaches the trainer's env only for a knob, a trm.settings.Config field (#359):
     a typo would otherwise train an arm identical to its control."""
     import pytest
+
     from experiments.recipe.tokens_to_ce import parse_knobs
 
     assert parse_knobs(["ADAM_B2=0.95", "WEIGHT_DECAY=0.1"]) == {"ADAM_B2": "0.95", "WEIGHT_DECAY": "0.1"}

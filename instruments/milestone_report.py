@@ -121,8 +121,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     # Heavy imports after arg parsing so --help stays instant.
-    from trm.runtime.checkpoints import discover_latest_checkpoint_run
     import orbax.checkpoint as ocp
+
+    from trm.runtime.checkpoints import discover_latest_checkpoint_run
 
     if args.checkpoint_path:
         checkpoint_path = os.path.abspath(args.checkpoint_path)

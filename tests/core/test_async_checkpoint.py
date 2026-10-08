@@ -82,6 +82,7 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
 def test_the_trainer_saves_asynchronously_and_waits_on_the_way_out():
     import ast
     import inspect
+
     from trm.train import loop
 
     tree = ast.parse(inspect.getsource(loop.TrainLoop))

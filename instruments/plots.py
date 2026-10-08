@@ -64,8 +64,9 @@ import matplotlib.ticker
 import numpy as np
 
 from instruments._common import F16_MAX, REPO_ROOT
-from instruments.runlog import NOT_LOGGED, load, recorded_tokens_per_opt_step
 from instruments.invariants import clean_column, suspect_rows
+from instruments.runlog import NOT_LOGGED, load, recorded_tokens_per_opt_step
+
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process

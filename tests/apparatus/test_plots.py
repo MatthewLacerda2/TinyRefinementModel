@@ -424,6 +424,7 @@ def test_the_other_corpora_are_drawn_on_the_ce_chart(tmp_path, monkeypatch):
     """#363: the per-corpus held-out CE joins the CE chart as its own lines, and a
     run that logged none draws none."""
     import matplotlib.axes
+
     from instruments import plots
     from instruments.runlog import load
 

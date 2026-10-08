@@ -37,8 +37,16 @@ from instruments._common import REPO_ROOT
 from instruments.changed import changed_paths
 from instruments.spec_file import SpecFile
 from instruments.verdict import (
-    KEEP, KILL, Spec, Summary, Verdict, evaluate, load_recorded_results, load_spec,
-    mean_sigma, pooled_sigma,
+    KEEP,
+    KILL,
+    Spec,
+    Summary,
+    Verdict,
+    evaluate,
+    load_recorded_results,
+    load_spec,
+    mean_sigma,
+    pooled_sigma,
 )
 from trm.runtime.supervisor import BUDGET_COMPLETE, KILLED_DIVERGENCE, WALLCLOCK_COMPLETE
 

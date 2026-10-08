@@ -16,11 +16,11 @@ import numpy as np
 import orbax.checkpoint as ocp
 import pytest
 
-from trm.runtime.checkpoints import _monitor_state, save_checkpoint, discover_latest_checkpoint_run
+from trm.runtime.checkpoints import _monitor_state, discover_latest_checkpoint_run, save_checkpoint
 from trm.runtime.layout import BEST_SUBDIR, CHECKPOINT_ITEMS, ROLLING_KEEP
 from trm.runtime.monitor import LossMonitor
-from trm.settings import CONFIG
 from trm.runtime.resume_state import ResumeState
+from trm.settings import CONFIG
 
 
 def _make_manager(path):
@@ -100,6 +100,7 @@ def test_save_checkpoint_schema_matches_loader(tmp_path, tiny_model, make_tiny_m
     fresh model with identical forward output."""
     import optax
     from flax import nnx
+
     from trm.runtime.checkpoints import load_or_create_checkpoint
 
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
@@ -145,6 +146,7 @@ def _with_saved_state_edited(tmp_path, tiny_model, edit):
     """A checkpoint saved today, whose monitor state is then rewritten on disk by
     `edit(state) -> state`: how an older (or broken) save reaches the loader."""
     import json
+
     import optax
     from flax import nnx
 
@@ -167,6 +169,7 @@ def test_a_misspelled_resume_key_is_refused_by_name_not_resumed_with_a_default(
     probe then overwrote the real best checkpoint. The loader now names the key."""
     import optax
     from flax import nnx
+
     from trm.runtime.checkpoints import load_or_create_checkpoint
 
     chk = _with_saved_state_edited(
@@ -200,6 +203,7 @@ def test_the_trainer_saves_best_only_on_a_val_improvement(monkeypatch):
     only, and the hook runs on the probe's cadence, so best writes are bounded to one
     per probe (#174), not one per improving log step."""
     from types import SimpleNamespace
+
     from trm.train import loop
 
     saves = []

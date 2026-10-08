@@ -200,7 +200,8 @@ def test_unknown_rule_is_refused_at_construction():
 def test_min_delta_stops_a_significant_but_small_win_from_counting(tmp_path):
     """#26: with tight seeds a 3% gain clears 2 sigma; the pre-registered bar is 15%."""
     import textwrap
-    from instruments.verdict import evaluate, load_spec, KEEP, INCONCLUSIVE
+
+    from instruments.verdict import INCONCLUSIVE, KEEP, evaluate, load_spec
     spec_text = textwrap.dedent("""
         [experiment]
         id = "t"

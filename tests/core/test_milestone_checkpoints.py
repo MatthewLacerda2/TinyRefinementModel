@@ -5,8 +5,8 @@ every one of them costs gigabytes, not tens of them (#394)."""
 import ast
 import inspect
 
-import orbax.checkpoint as ocp
 import jax.numpy as jnp
+import orbax.checkpoint as ocp
 
 from trm.runtime.checkpoints import make_milestone_manager, milestone_due, milestone_thresholds
 from trm.runtime.layout import MILESTONE_SUBDIR

@@ -1,12 +1,13 @@
 import argparse
 import os
-import jax
-import jax.numpy as jnp
-from flax import nnx
-import tiktoken
-import orbax.checkpoint as ocp
 import time
 from functools import partial
+
+import jax
+import jax.numpy as jnp
+import orbax.checkpoint as ocp
+import tiktoken
+from flax import nnx
 
 from trm.config import EOT_TOKEN_ID, TOKENIZER_NAME, resolve_root
 from trm.model import build_model

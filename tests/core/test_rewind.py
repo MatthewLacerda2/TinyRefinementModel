@@ -127,6 +127,7 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     import optax
     import orbax.checkpoint as ocp
     from flax import nnx
+
     from trm.runtime.checkpoints import save_checkpoint
     from trm.runtime.layout import CHECKPOINT_ITEMS, ROLLING_KEEP
     from trm.runtime.monitor import LossMonitor

@@ -17,8 +17,8 @@ class there (`-k "not TestARealRunOfMain"`). CI's pytest job runs all of it.
 import pytest
 
 from instruments.dump_transcripts import (
-    PROMPTS,
     PROMPT_SET_VERSION,
+    PROMPTS,
     nearest_metric,
     opt_step_from_checkpoint,
     render_frontmatter,
@@ -180,6 +180,7 @@ class TestARealRunOfMain:
         """Run main(). With `run_dir`, the checkpoint is discovered as that run's (so main
         reads its metrics.csv and run_metadata.json); otherwise --checkpoint-path is passed."""
         import tiktoken
+
         import trm.infer
         import trm.runtime.checkpoints
         import trm.runtime.restore

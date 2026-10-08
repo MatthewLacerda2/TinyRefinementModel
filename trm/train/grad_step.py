@@ -1,11 +1,12 @@
 import functools
 
 import jax
-from flax import nnx
 import jax.numpy as jnp
 import optax
+from flax import nnx
 
 from trm.train.losses import chunked_cross_entropy_rows
+
 
 @nnx.jit(static_argnames=['z_loss_weight'])
 def compute_grad_step(model, batch_tokens, loss_scale=1.0, clip_norm=jnp.inf, z_loss_weight=0.0):

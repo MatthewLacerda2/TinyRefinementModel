@@ -71,11 +71,10 @@ import sys
 from dataclasses import dataclass
 
 from trm.runtime.cold import ColdTier, cold_root_problem, stall_window_hours
-from trm.runtime.run_budget import BUDGET_ENV
 from trm.runtime.gpu_lock import GpuLock
 from trm.runtime.oom import banner, detach
-from trm.runtime.supervisor import (DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location,
-                                    read_progress)
+from trm.runtime.run_budget import BUDGET_ENV
+from trm.runtime.supervisor import DELIBERATE, GAVE_UP, RUNS_DIR, describe_cold, local_location, read_progress
 
 # The base run a launch started and has not seen end, for --resume after a reboot.
 ACTIVE_RUN = RUNS_DIR / ".active_base_run.json"

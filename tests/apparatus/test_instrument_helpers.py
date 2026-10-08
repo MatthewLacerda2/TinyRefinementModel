@@ -14,7 +14,6 @@ import pytest
 
 from instruments import _common, runlog
 
-
 # ── _common ──────────────────────────────────────────────────────────────────
 
 def test_git_head_is_none_outside_a_repository(tmp_path):

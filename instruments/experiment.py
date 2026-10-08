@@ -47,10 +47,14 @@ from dataclasses import dataclass
 
 from instruments import pair_report
 from instruments import results as result_lines
-from instruments.spec_file import LegTable, SpecFile
 from instruments._common import REPO_ROOT, module_env
+from instruments.spec_file import LegTable, SpecFile
 from instruments.verdict import (
-    Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
+    Spec,
+    evaluate,
+    load_recorded_results,
+    load_spec,
+    mean_sigma,
 )
 from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
 from trm.runtime.oom import rerun_protected
