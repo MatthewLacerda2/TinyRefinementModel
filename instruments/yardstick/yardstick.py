@@ -46,7 +46,7 @@ LAMBADA_CACHE = "runs/data/eval/lambada_test.jsonl"
 # (instruments.yardstick.calibrate_gpt2, full 5153-example set, 2026-07-04,
 # commit fec1567): acc 0.3256 / ppl 40.06 — matching lm-eval-harness's gpt2
 # lambada_openai reading to every published digit (delta 0.0000 / -0.00).
-# Sanity floor: a random-init model (the refiner of the day) reads acc 0.0000 / ppl ~4.1e5 through
+# Sanity floor: a random-init model reads acc 0.0000 / ppl ~4.1e5 through
 # the same pipeline. Full calibration report lives in the PR that landed it.
 GPT2_SMALL_REFERENCE = {
     "lambada_acc": 0.3256,
@@ -54,12 +54,12 @@ GPT2_SMALL_REFERENCE = {
     "source": "calibrated in-repo on HF gpt2 (124M), 2026-07-04; exact match to lm-eval-harness lambada_openai",
 }
 
-# The bar a base run is measured against since 2026-09-19 (#387): a modern model our
-# size. SmolLM2-135M (HuggingFaceTB, ~2T tokens, WSD) scored by THIS instrument through
+# The neighbour (CLAUDE.md, "The base-model bar"): what our size reaches with ~200x our
+# data. SmolLM2-135M (HuggingFaceTB, ~2T tokens, WSD) scored by THIS instrument through
 # instruments.yardstick.score_hf with its own tokenizer, full 5,153-example set, f32 on
 # the RTX 2060. The same run of score_hf reproduces GPT2_SMALL_REFERENCE exactly (acc
 # 0.3256 / ppl 40.06), which is what licenses the cross-tokenizer reading. GPT-2-small
-# stays only as that calibration.
+# is the gate; the distance to this one is the token axis, not a defect (#387).
 SMOLLM2_135M_REFERENCE = {
     "lambada_acc": 0.4289,
     "lambada_ppl": 19.26,
