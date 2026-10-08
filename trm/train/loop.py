@@ -9,6 +9,7 @@ Every knob the loop reads comes from the Config it is handed (#475)."""
 
 import math
 import os
+import signal
 import time
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ import jax
 import numpy as np
 
 from trm.runtime.checkpoints import (
+    StopRequest,
     make_milestone_manager,
     milestone_due,
     milestone_thresholds,
@@ -183,6 +185,7 @@ class TrainLoop:
         step = self.start_step
         accumulation_steps = self.config.ACCUMULATION_STEPS
         hooks = self.cadence()
+        stop = StopRequest().install()
         try:
             while True:
                 with span("data_get"):
@@ -212,8 +215,12 @@ class TrainLoop:
                     for every, hook in hooks:
                         if opt_step % every == 0:
                             hook(at)
+                    if stop.requested:
+                        self.save_on_stop(at)
+                        raise SystemExit(128 + signal.SIGTERM)
                 step += 1
         finally:
+            stop.uninstall()
             # The module objects get the loop's last state, for whoever reads them after
             # this returns (#474: the live state is the hot path's while the loop runs).
             self.hot.sync()
@@ -222,6 +229,14 @@ class TrainLoop:
             wait_for_pending_saves()
             # Guarantee run metadata is finalized on exit
             self.run_tracker.update_session_duration()
+
+    def save_on_stop(self, at):
+        """The rolling checkpoint at the window a stop finished, unless the cadence just
+        wrote it (orbax refuses a second save at one step)."""
+        if at.opt_step % self.config.CHECKPOINT_EVERY_OPT_STEPS != 0:
+            self.save_rolling(at)
+        print(f"💾 stopped at opt step {at.opt_step}: the rolling checkpoint is there, a resume "
+              f"replays nothing (#566)", flush=True)
 
     # ── the micro-step ───────────────────────────────────────────────────────
 

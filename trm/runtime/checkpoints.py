@@ -212,6 +212,38 @@ def exit_cleanly_on_sigterm():
     signal.signal(signal.SIGTERM, _raise)
 
 
+class StopRequest:
+    """While the training loop runs, a SIGTERM asks it to stop rather than stopping it (#566).
+
+    Under `exit_cleanly_on_sigterm` alone, a TERM unwinds at once, and the run loses
+    everything since its last rolling checkpoint: up to 256 opt steps, about an hour
+    of a pair arm, at every pause. With this installed, the TERM only sets
+    `requested`. The loop finishes the optimizer window it is in, saves the rolling
+    checkpoint there, and exits with the code the TERM would have given. A window
+    plus the save fits inside the supervisor's 60 s grace and the pair harness's 120 s.
+    """
+
+    def __init__(self):
+        self.requested = False
+        self._previous = None
+
+    def install(self) -> "StopRequest":
+        def _request(_signum, _frame):
+            print(f"🛑 received SIGTERM (pid {os.getpid()}) — finishing this optimizer window, saving it, "
+                  f"then exiting (#566)", flush=True)
+            # Once, as exit_cleanly_on_sigterm does: a second TERM must not cut the save short.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            self.requested = True
+
+        self._previous = signal.signal(signal.SIGTERM, _request)
+        return self
+
+    def uninstall(self) -> None:
+        """Hand SIGTERM back to whoever had it, unless a stop already set it to ignore."""
+        if not self.requested and self._previous is not None:
+            signal.signal(signal.SIGTERM, self._previous)
+
+
 def load_or_create_checkpoint(config, model, optimizer, checkpoint_path, force_new_run=False):
     monitor = LossMonitor.of(config)
     mngr = ocp.CheckpointManager(

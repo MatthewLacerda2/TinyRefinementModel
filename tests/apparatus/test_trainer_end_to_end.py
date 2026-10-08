@@ -93,7 +93,11 @@ def run(tmp_path_factory):
     run_dir = tmp_path / "runs" / "run_e2e"
     run_dir.mkdir(parents=True)
     first = _train_until(tmp_path, run_dir, FIRST_LEG)
-    checkpoint = run_dir / "checkpoints" / str(FIRST_LEG * CONFIG.ACCUMULATION_STEPS - 1)
+    # The TERM lands somewhere in the window after FIRST_LEG; the loop finishes that
+    # window and checkpoints it (#566), so the newest checkpoint is where it stopped.
+    rolling = sorted(int(p.name) for p in (run_dir / "checkpoints").iterdir() if p.name.isdigit())
+    stopped = (rolling[-1] + 1) // CONFIG.ACCUMULATION_STEPS
+    checkpoint = run_dir / "checkpoints" / str(rolling[-1])
     # The cold tier's copy of the run's last full state (the tick's device check aside:
     # tmp_path is one disk), then the SSD's checkpoints gone and the copy branched back
     # in, as experiments/mix/branch_decay.py branches a decay.
@@ -104,7 +108,7 @@ def run(tmp_path_factory):
     shutil.rmtree(run_dir / "checkpoints")
     shutil.copytree(copy, checkpoint)
     second = _train_until(tmp_path, run_dir, SECOND_LEG)
-    return {"dir": run_dir, "first": first, "second": second, "checkpoint": checkpoint}
+    return {"dir": run_dir, "first": first, "second": second, "checkpoint": checkpoint, "stopped": stopped}
 
 
 def test_a_logged_row_carries_every_measurement_the_loop_is_wired_to_make(run):
@@ -123,7 +127,7 @@ def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run)
     state = json.loads((run["checkpoint"] / "monitor_state" / "metadata").read_text())
     # One row per micro-step at BATCH_SIZE 1, counted as served (#24): a full window
     # per opt step, so the checkpoint sits on the optimizer's boundary (#355).
-    assert state["samples_seen"] == FIRST_LEG * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE
+    assert state["samples_seen"] == run["stopped"] * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE
     assert state["data_state"]["sources"], "the exact data position (#424)"
 
 
@@ -144,7 +148,7 @@ def test_the_checkpoint_is_taken_between_optimizer_windows(run):
                                 is_leaf=lambda leaf: hasattr(leaf, "shape"))
     leaves = dict(_leaves(ocp.PyTreeCheckpointer().restore(path, restore_args=restore_args)))
     assert int(leaves["/opt_state/mini_step/value"]) == 0
-    assert int(leaves["/opt_state/gradient_step/value"]) == FIRST_LEG
+    assert int(leaves["/opt_state/gradient_step/value"]) == run["stopped"]
 
 
 def _leaves(tree, prefix=""):
@@ -158,8 +162,15 @@ def _leaves(tree, prefix=""):
         yield prefix, tree
 
 
+def test_a_term_checkpoints_the_window_it_lands_in(run):
+    """#566: a stop used to cost everything since the last rolling checkpoint (up to
+    256 opt steps of a pair arm). Now the loop finishes its window and saves it there."""
+    assert run["stopped"] >= FIRST_LEG
+    assert f"stopped at opt step {run['stopped']}" in run["first"]
+
+
 def test_the_resume_continues_from_the_checkpoint_and_restores_the_data_exactly(run):
-    assert f"Resuming from step {FIRST_LEG * CONFIG.ACCUMULATION_STEPS}" in run["second"]
+    assert f"Resuming from step {run['stopped'] * CONFIG.ACCUMULATION_STEPS}" in run["second"]
     assert "Data stream restored exactly" in run["second"]
     steps = [r["step"] for r in load(str(run["dir"])).metrics]
     assert steps == sorted(set(steps)) and SECOND_LEG in steps
