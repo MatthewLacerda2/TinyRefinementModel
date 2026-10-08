@@ -265,8 +265,8 @@ def main(argv=None):
             log = load(run_dir)
             train_ce = nearest_metric(*log.column("ce"), opt_step)
             val_ce = nearest_metric(*log.column("val_ce"), opt_step)
-            model_commit = log.metadata.get("git_commit")
-            model_dirty = log.metadata.get("git_dirty")
+            model_commit = log.metadata.git_commit if log.metadata else None
+            model_dirty = log.metadata.git_dirty if log.metadata else None
         except (FileNotFoundError, ImportError, KeyError):
             pass
     if model_commit:

@@ -65,7 +65,7 @@ import numpy as np
 
 from instruments._common import F16_MAX, REPO_ROOT
 from instruments.invariants import clean_column, suspect_rows
-from instruments.runlog import NOT_LOGGED, load, recorded_tokens_per_opt_step
+from instruments.runlog import NOT_LOGGED, load, recorded_params, recorded_tokens_per_opt_step
 
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
@@ -276,13 +276,12 @@ class RunConfig:
     """
 
     def __init__(self, metadata):
-        params = (metadata or {}).get("parameters")
-        self.params = params if isinstance(params, dict) else {}
+        self.params = recorded_params(metadata)
         self.suspect = None  # rows failing an invariant; set by `of`, which has the rows
 
     @classmethod
     def of(cls, runlog):
-        cfg = cls(getattr(runlog, "metadata", {}))
+        cfg = cls(getattr(runlog, "metadata", None))
         cfg.suspect = suspect_rows(runlog)
         return cfg
 

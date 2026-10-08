@@ -63,6 +63,8 @@ ignore_names = [
     # Prose a spec may carry (instruments/spec_file.py): declared so a misspelled key
     # fails, read by people and never by code.
     "readouts_note", "recorded_note", "config_delta",
+    # A session's end, recorded in run_metadata.json for people (trm/runtime/run_metadata.py).
+    "end_time",
 ]
 # Pydantic calls a validator through its decorator; nothing references it by name.
 ignore_decorators = ["@field_validator"]

@@ -58,7 +58,7 @@ def run_dir(run_id):
 def load_meta(run_id):
     """The run's metadata; a revival cannot proceed without it, so none is a SystemExit."""
     meta = runlog.read_metadata(run_dir(run_id))
-    if not meta:
+    if meta is None:
         path = os.path.join(run_dir(run_id), runlog.METADATA_FILENAME)
         raise SystemExit(f"No readable run_metadata.json for {run_id} (looked in {path}).")
     return meta
@@ -73,7 +73,7 @@ def resolve_arch(run_id, meta):
     and the restore corrupts silently. Prefer the machine-readable record
     (run_metadata parameters, or the system_snapshot line), fall back to the older
     free-text 'arm=<x>'. A run from #292 on records none: its world has one model."""
-    arch = meta.get("parameters", {}).get("MODEL_ARCH")
+    arch = meta.parameters.get("MODEL_ARCH")
     if arch:
         return arch
     snap = os.path.join(run_dir(run_id), "system_snapshot.txt")
@@ -180,7 +180,7 @@ def ensure_venv(run_id, build=True):
 
 def reconstruct(run_id, for_mode="infer", build_venv=True, arch_override=None):
     meta = load_meta(run_id)
-    commit = meta.get("git_commit", "unknown")
+    commit = meta.git_commit or "unknown"
     arch = arch_override or resolve_arch(run_id, meta)
     if commit in (None, "unknown"):
         raise SystemExit(f"{run_id} has no recorded commit — cannot reconstruct.")
@@ -447,7 +447,7 @@ def list_runs():
             continue
         rows.append((
             name,
-            (meta.get("git_commit") or "unknown")[:10],
+            (meta.git_commit or "unknown")[:10],
             resolve_arch(name, meta) or "-",
             "patch" if has_file(name, "worktree.patch") else "commit-only",
             "freeze" if has_file(name, "env_freeze.txt") else "NO-freeze",

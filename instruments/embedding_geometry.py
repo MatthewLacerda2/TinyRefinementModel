@@ -52,6 +52,7 @@ from instruments._common import add_checkpoint_argument, git_head, load_env
 from instruments.plots import AQUA, BLUE, GRID, INK, INK_DIM, ORANGE, STYLE, _note
 from instruments.results import emit
 from instruments.runlog import checkpoint_steps, recorded_tokens_per_opt_step
+from trm.runtime.run_metadata import RunMetadata
 from trm.settings import CONFIG
 
 REPORTS = {
@@ -263,10 +264,10 @@ def tokens_per_micro_step(run_dir):
     """Tokens in one checkpointed step, from the run's OWN recipe (#305). A checkpoint
     step is a micro-step, so the accumulation factor comes back out of the opt-step
     figure. None when the run did not record the three knobs, and the caller says so."""
-    path = pathlib.Path(run_dir) / "run_metadata.json"
-    if not path.exists():
+    metadata = RunMetadata.read(run_dir)
+    if metadata is None:
         return None
-    params = json.loads(path.read_text()).get("parameters", {})
+    params = metadata.parameters
     per_opt = recorded_tokens_per_opt_step(params)
     try:
         return per_opt and per_opt // int(params["ACCUMULATION_STEPS"])

@@ -168,12 +168,10 @@ def card_fields(run_dir, spec_path=None) -> dict:
     """Everything the template asks for that the run recorded. Pure over files."""
     run_dir = pathlib.Path(run_dir)
     meta = runlog.read_metadata(run_dir)
-    if not meta:
+    if meta is None:
         raise FileNotFoundError(f"{run_dir}: no readable {runlog.METADATA_FILENAME}; a card is written "
                                 f"from what the run recorded, and this run recorded nothing readable")
-    params = runlog.recorded_params(meta)
-    sections = meta.get("sections", [])
-    hours = sum((s.get("duration_seconds") or 0) for s in sections) / 3600.0
+    params = meta.parameters
     last_step, last_val, peak = _metrics_summary(run_dir)
     tokens_per_opt = runlog.recorded_tokens_per_opt_step(params)  # None: the recipe was not recorded
     ref = None
@@ -185,14 +183,14 @@ def card_fields(run_dir, spec_path=None) -> dict:
     yard = completion_entry(run_dir)
     step_name, sha = _weights_sha(run_dir / "checkpoints")
     return {
-        "run_id": meta.get("run_id", run_dir.name),
-        "commit": meta.get("git_commit", "?"), "branch": meta.get("git_branch", "?"),
-        "dirty": bool(meta.get("git_dirty", False)),
+        "run_id": meta.run_id or run_dir.name,
+        "commit": meta.git_commit or "?", "branch": meta.git_branch or "?",
+        "dirty": meta.git_dirty,
         "config": ", ".join(f"{k}={params[k]}" for k in CARD_CONFIG_KEYS if k in params),
         "tokenizer_vocab": params.get("VOCAB_SIZE", "?"),
         "seeds": f"DATA_SEED={params.get('DATA_SEED', '?')}, MODEL_SEED={params.get('MODEL_SEED', '?')}",
         "budget": params.get("TRAIN_TOKEN_BUDGET"),
-        "sections": len(sections), "hours": hours,
+        "sections": len(meta.sections), "hours": meta.hours,
         "last_step": last_step, "tokens_seen": None if tokens_per_opt is None else last_step * tokens_per_opt,
         "val_ce": last_val, "peak_vram_mib": peak,
         "lambada_acc": yard["lambada_acc"] if yard else None,

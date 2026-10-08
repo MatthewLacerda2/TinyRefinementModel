@@ -40,7 +40,7 @@ def test_a_blank_cell_is_absent_not_zero():
     """The bug this module was written to end. `avg_forget_cost` is empty on
     every row; reading it as 0.0 manufactures a measurement, and a
     plotter then draws a flat line through a quantity nobody measured."""
-    log = runlog.RunLog("r", [{"step": 5, "avg_forget_cost": None, "ce": 11.081}], {})
+    log = runlog.RunLog("r", [{"step": 5, "avg_forget_cost": None, "ce": 11.081}], None)
     assert log.metrics[0]["avg_forget_cost"] is None
     assert log.metrics[0]["avg_forget_cost"] != 0.0
     assert not log.has("avg_forget_cost")
@@ -101,14 +101,15 @@ def test_load_accepts_a_run_dir_or_a_csv_path(tmp_path):
 
 def test_metadata_is_read_when_present_and_empty_when_not(tmp_path):
     plain = runlog.load(str(write_run(tmp_path, name="run_a")))
-    assert plain.metadata == {}
+    assert plain.metadata is None
     assert plain.wall_seconds is None
 
     meta = {"run_id": "run_b", "parameters": {"LATENT_DIM": 960},
-            "sections": [{"duration_seconds": 100.0}, {"duration_seconds": 50.5},
-                         {"duration_seconds": None}]}
+            "sections": [{"start_time": "t0", "duration_seconds": 100.0},
+                         {"start_time": "t1", "duration_seconds": 50.5},
+                         {"start_time": "t2", "duration_seconds": None}]}
     described = runlog.load(str(write_run(tmp_path, name="run_b", metadata=meta)))
-    assert described.metadata["parameters"]["LATENT_DIM"] == 960
+    assert described.metadata.parameters["LATENT_DIM"] == 960
     # The in-flight session has no duration yet; it is skipped, not counted as 0.
     assert described.wall_seconds == 150.5
 
@@ -117,7 +118,7 @@ def test_unreadable_metadata_does_not_take_the_metrics_down(tmp_path):
     run_dir = write_run(tmp_path)
     (run_dir / "run_metadata.json").write_text("{ this is not json")
     log = runlog.load(str(run_dir))
-    assert log.metadata == {}
+    assert log.metadata is None
     assert log.last_step == 15
 
 

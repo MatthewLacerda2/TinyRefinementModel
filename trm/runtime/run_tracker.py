@@ -6,6 +6,7 @@ import sys
 import time
 
 from trm.config import VOCAB_SIZE
+from trm.runtime.run_metadata import METADATA_FILENAME, RunMetadata, Section
 from trm.train.schedules import Schedules
 
 # What the model's param tree is built from (#317). A resume that changes one of these
@@ -147,73 +148,55 @@ class RunTracker:
             "CURRICULUM_STEPS": schedules.curriculum_steps,
         }
 
-    def _check_compatibility(self, metadata_path):
-        if not os.path.exists(metadata_path):
+    def _check_compatibility(self, old):
+        """Refuse a resume whose recorded parameters the current code would change
+        silently. `old` is the run's RunMetadata; None (no readable file) checks nothing."""
+        if old is None:
             return
+        old_params = old.parameters
+        current_params = self.get_hyperparameters(self.config)
 
-        try:
-            with open(metadata_path, "r") as f:
-                old_meta = json.load(f)
+        # Compared as recorded: through JSON, so a tuple and its list are equal.
+        current_params = json.loads(json.dumps(current_params))
+        # A key the run's metadata predates (or that no longer exists) is skipped.
+        changed = [k for k in old_params.keys() & current_params.keys() if old_params[k] != current_params[k]]
+        # The param tree can never change. A recipe knob may, but only on purpose:
+        # set for this launch (Config.model_fields_set: the knobs the environment
+        # gave). A default that moved in the checked-out code since the run started
+        # would otherwise change the run silently (#535).
+        set_now = self.config.model_fields_set
+        asked = {k for k in changed if k in set_now or set_now.intersection(DERIVED_FROM.get(k, ()))}
+        mismatches = [
+            f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
+            + ("" if k in TREE_KEYS else " (a recipe default moved; set it in the environment to keep or change it on purpose)")
+            for k in sorted(changed) if k in TREE_KEYS or k not in asked
+        ]
+        if asked and not mismatches:
+            print("⚠️ Resuming with knobs changed on purpose (set in the environment): "
+                  + ", ".join(f"{k} {old_params[k]} -> {current_params[k]}" for k in sorted(asked)))
 
-            old_params = old_meta.get("parameters", {})
-            current_params = self.get_hyperparameters(self.config)
-
-            # Compared as recorded: through JSON, so a tuple and its list are equal.
-            current_params = json.loads(json.dumps(current_params))
-            # A key the run's metadata predates (or that no longer exists) is skipped.
-            changed = [k for k in old_params.keys() & current_params.keys() if old_params[k] != current_params[k]]
-            # The param tree can never change. A recipe knob may, but only on purpose:
-            # set for this launch (Config.model_fields_set: the knobs the environment
-            # gave). A default that moved in the checked-out code since the run started
-            # would otherwise change the run silently (#535).
-            set_now = self.config.model_fields_set
-            asked = {k for k in changed if k in set_now or set_now.intersection(DERIVED_FROM.get(k, ()))}
-            mismatches = [
-                f"  - {k}: run used {old_params[k]}, current code uses {current_params[k]}"
-                + ("" if k in TREE_KEYS else " (a recipe default moved; set it in the environment to keep or change it on purpose)")
-                for k in sorted(changed) if k in TREE_KEYS or k not in asked
-            ]
-            if asked and not mismatches:
-                print("⚠️ Resuming with knobs changed on purpose (set in the environment): "
-                      + ", ".join(f"{k} {old_params[k]} -> {current_params[k]}" for k in sorted(asked)))
-
-            if mismatches:
-                # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
-                # uncaught one still ends the process with exit code 1 and this text.
-                raise SystemExit("\n".join([
-                    "\n" + "🛑" * 20,
-                    "🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:",
-                    *mismatches,
-                    "\n💡 Options:",
-                    "  1. Revert your code parameters back to match the run's parameters.",
-                    "  2. Start a brand new training run with: python -m trm.train.start --new-run",
-                    "  3. Point to a different checkpoint folder with: "
-                    "python -m trm.train.start --checkpoint-path <path>",
-                    "🛑" * 20 + "\n",
-                ]))
-        except SystemExit:
-            raise
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            # A malformed metadata file must not kill training, but the disabled
-            # compatibility check must be visible.
-            print(f"⚠️ Could not verify run compatibility from {metadata_path}: {e}")
+        if mismatches:
+            # Raised, not sys.exit'd: a caller (or a test) can catch it, and an
+            # uncaught one still ends the process with exit code 1 and this text.
+            raise SystemExit("\n".join([
+                "\n" + "🛑" * 20,
+                "🛑 ERROR: Parameter Mismatch Detected! Cannot resume this training run:",
+                *mismatches,
+                "\n💡 Options:",
+                "  1. Revert your code parameters back to match the run's parameters.",
+                "  2. Start a brand new training run with: python -m trm.train.start --new-run",
+                "  3. Point to a different checkpoint folder with: "
+                "python -m trm.train.start --checkpoint-path <path>",
+                "🛑" * 20 + "\n",
+            ]))
 
     def _fresh_metadata(self):
         """run_metadata.json for a run that has none yet: its code, its parameters,
         and no sessions."""
         git_meta = self.get_git_metadata()
-        return {
-            "run_id": self.run_id,
-            "git_commit": git_meta["commit"],
-            "git_branch": git_meta["branch"],
-            "git_dirty": git_meta["dirty"],
-            "parameters": self.get_hyperparameters(self.config),
-            "sections": [],
-        }
-
-    @staticmethod
-    def _new_section(start_timestamp):
-        return {"start_time": start_timestamp, "end_time": None, "duration_seconds": None}
+        return RunMetadata(run_id=self.run_id, git_commit=git_meta["commit"], git_branch=git_meta["branch"],
+                           git_dirty=git_meta["dirty"],
+                           parameters=json.loads(json.dumps(self.get_hyperparameters(self.config))))
 
     def start_session(self, run_id=None):
         os.makedirs(self.runs_root, exist_ok=True)
@@ -228,9 +211,9 @@ class RunTracker:
             os.makedirs(self.run_dir, exist_ok=True)
 
             metadata = self._fresh_metadata()
-            metadata["sections"].append(self._new_section(start_timestamp))
+            metadata.sections.append(Section(start_time=start_timestamp))
             self.session_index = 0
-            self.save_metadata(metadata)
+            metadata.write(self.run_dir)
             self.capture_environment_snapshot(self.run_dir)
             print(f"📁 Created new training run folder: {self.run_dir}")
         else:
@@ -239,25 +222,16 @@ class RunTracker:
             self.run_dir = os.path.join(self.runs_root, self.run_id)
             os.makedirs(self.run_dir, exist_ok=True)
 
-            metadata_path = os.path.join(self.run_dir, "run_metadata.json")
-            self._check_compatibility(metadata_path)
-
-            if os.path.exists(metadata_path):
-                try:
-                    with open(metadata_path, "r") as f:
-                        metadata = json.load(f)
-                except (OSError, json.JSONDecodeError) as e:
-                    print(f"⚠️ Could not read {metadata_path} ({e}); regenerating run metadata.")
-                    metadata = None
-            else:
-                metadata = None
-
+            metadata = RunMetadata.read(self.run_dir)
+            self._check_compatibility(metadata)
             if metadata is None:
+                if os.path.exists(os.path.join(self.run_dir, METADATA_FILENAME)):
+                    print(f"⚠️ Could not read {self.run_dir}/{METADATA_FILENAME}; regenerating run metadata.")
                 metadata = self._fresh_metadata()
 
-            metadata["sections"].append(self._new_section(start_timestamp))
-            self.session_index = len(metadata["sections"]) - 1
-            self.save_metadata(metadata)
+            metadata.sections.append(Section(start_time=start_timestamp))
+            self.session_index = len(metadata.sections) - 1
+            metadata.write(self.run_dir)
             # Snapshot on resume too (#173): each session describes its own commit
             # and edits. Why, and the guard: tests/core/test_run_tracker_snapshot.py.
             self.capture_environment_snapshot(self.run_dir)
@@ -268,27 +242,14 @@ class RunTracker:
     def update_session_duration(self):
         if self.run_dir is None or self.session_index is None or self.start_time is None:
             return
-        metadata_path = os.path.join(self.run_dir, "run_metadata.json")
-        if not os.path.exists(metadata_path):
-            return
-
         try:
-            with open(metadata_path, "r") as f:
-                metadata = json.load(f)
-
-            end_timestamp = datetime.datetime.now().astimezone().isoformat()
-            duration = time.time() - self.start_time
-
-            metadata["sections"][self.session_index]["end_time"] = end_timestamp
-            metadata["sections"][self.session_index]["duration_seconds"] = round(duration, 2)
-
-            self.save_metadata(metadata)
-        except (OSError, json.JSONDecodeError, KeyError, IndexError) as e:
+            metadata = RunMetadata.read(self.run_dir)
+            if metadata is None:
+                return
+            section = metadata.sections[self.session_index]
+            section.end_time = datetime.datetime.now().astimezone().isoformat()
+            section.duration_seconds = round(time.time() - self.start_time, 2)
+            metadata.write(self.run_dir)
+        except (OSError, ValueError, IndexError) as e:
             # Metadata bookkeeping must never kill training, but failures stay visible.
-            print(f"⚠️ Could not update session duration in {metadata_path}: {e}")
-
-    def save_metadata(self, metadata):
-        assert self.run_dir is not None, "save_metadata before start_session"
-        metadata_path = os.path.join(self.run_dir, "run_metadata.json")
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+            print(f"⚠️ Could not update session duration in {self.run_dir}/{METADATA_FILENAME}: {e}")
