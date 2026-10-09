@@ -98,6 +98,20 @@ tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
 
+- **Moving the micro-step's decisions onto the device (#411, stage 2)** — not built
+  2026-10-09, closed at stage 1 (PR #418, ~1%, merged as a cleanup). The idea: run the
+  finiteness check, the loss-scale update, the grad-guard ceiling and the non-finite
+  skip on the GPU, so the host reads one small state per opt step instead of loss and
+  grad norm every micro-step. Its ceiling, measured before building by replacing every
+  per-micro-step readback with a constant (`profile_step --pace`, 8 × 960, batch 2):
+  13.91/14.08 → 12.83/12.81 s per opt step, **8.4%**, against a pre-registered 8% bar.
+  A real version adds device work back and would land at ~7%; it would also move the
+  guard EMA from f64 on the host to f32 on the device (a rare clip can flip) and put
+  the scaler and the skip inside the jitted hot path, where #533 already cost us once.
+  **Worth reopening if** the readback's share grows: a smaller model, a faster card, or
+  more host work per micro-step. Re-measure the ceiling first, the same way (#411's
+  last comment has the two-line probe).
+
 - **SFT-on-plateau flip** — removed 2026-09-16 (#323), non-novel. The one time it
   fired, at opt step 5,055 of #157's 30,518, it killed that launch (CE 3.31 → 8.57,
   then the optimizer rebuild OOM'd); #157 was rewound past it and continued. The product is a base model; a fine-tune warm-starts
