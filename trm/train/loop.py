@@ -255,7 +255,9 @@ class TrainLoop:
         with span("grad_step"):
             loss, out, grads, grad_norm = self.hot.grad_step(batch, loss_scale=loss_scale, clip_norm=clip_norm)
 
-        with span("loss_readback"):  # one blocking read for both scalars, not two (#411)
+        # One blocking read for both scalars, not two. Removing it altogether (decisions on
+        # the device) was measured at an 8.4% ceiling and not built: ROADMAP graveyard, #411.
+        with span("loss_readback"):
             current_loss, current_grad_norm = map(float, jax.device_get((loss, grad_norm)))
         with span("guard"):
             self.grad_guard.observe(current_grad_norm)
