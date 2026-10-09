@@ -98,6 +98,16 @@ tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
 
+- **A deep-narrow shape for the next base run (#433)** — not adopted 2026-10-09 by the
+  owner; the base run stays 8 × 960. MobileLLM and SmolLM2 favour depth at equal
+  *tokens*; on the 2060 we pay in *wall-clock*. Real loop, batch 2, `profile_step --pace`:
+  8 × 960 13.08 s per opt step (arena peak 3757 MiB), 10 × 960 15.82 (4402),
+  21 × 640 17.17 (4515), 27 × 576 19.88 (4821, ~60 MiB from the limit), 30 × 576 does
+  not fit. 27 × 576 has 8 × 960's parameters at 1.52× the time per token, so a
+  fixed-length run reads about a third fewer tokens and has no room left for telemetry.
+  **Not killed:** whether depth beats those tokens on our card is an `architecture`
+  pair, never measured.
+
 - **Moving the micro-step's decisions onto the device (#411, stage 2)** — not built
   2026-10-09, closed at stage 1 (PR #418, ~1%, merged as a cleanup). The idea: run the
   finiteness check, the loss-scale update, the grad-guard ceiling and the non-finite
