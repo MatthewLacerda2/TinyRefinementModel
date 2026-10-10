@@ -12,6 +12,7 @@ from multiprocessing import Pool, cpu_count
 import numpy as np
 import tiktoken
 from datasets import load_dataset
+from huggingface_hub import HfApi
 
 from trm.config import TOKENIZER_NAME, resolve_root
 from trm.data.dedup import DedupParams, NearDedup
@@ -28,6 +29,9 @@ from trm.settings import CONFIG, load_env, location
 # streamed with load_dataset(..., streaming=True) and never shuffled, so the chunk
 # files hold documents in the Hugging Face stream order, and the loader reads them
 # sequentially. Consecutive micro-steps from one source are neighbours in that order.
+# A source with a `shard_seed` reads its parquet files in that seed's permutation
+# instead: FineWeb-Edu-Dedup's files run roughly in CommonCrawl dump order, and a
+# prefix of them would be a few years of the web (#591).
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
 load_env()
@@ -38,21 +42,20 @@ OUTPUT_DIR = resolve_root(location("DATA_ROOT", "runs/data"))
 TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
-FINEWEB_MIN_SCORE = 4.0        # educational-score floor. Raised 3.0→4.0: the model is
-                               # small (~139M), so we trade volume for per-token quality
-                               # density (the phi / TinyStories regime). FineWeb-Edu's
-                               # released set is already ≥3; ≥4 is far denser yet still
-                               # leaves 100B+ tokens — ample for our 4.0B fineweb target.
 
 # Targets: ~10.85B total (10.5B pretrain + 0.35B chat). Doubled from ~5.5B so the
 # 138.7M model (dim960, r50k) trains at ~76 tokens/param — small models reward
 # over-training well past Chinchilla, so we feed it generously rather than starve it.
 MIXTURE = [
     {
-        "path": "HuggingFaceFW/fineweb-edu",
-        # The ≥4 score floor keeps only ~7% of docs (~95k tok/s), so this is the slow
-        # pole — ~12h to stream 4.0B. Worth it: highest-quality general text and the
-        # largest single share of the pretrain mix.
+        # FineWeb-Edu deduplicated across CommonCrawl dumps (SmolLM-Corpus, ~190B tokens,
+        # educational score ≥ 3), the release SmolLM2 trained on. FineWeb-Edu itself
+        # dedups only within a dump, so its stream order repeats recrawled pages: the
+        # bucket built from it was 12.4% unique (#591). Taken whole, no score floor of
+        # ours: ≥ 4.0 keeps ~1.5% of its tokens, under this target (owner, 2026-10-10).
+        "path": "HuggingFaceTB/smollm-corpus",
+        "config": "fineweb-edu-dedup",
+        "shard_seed": 0,
         "target_tokens": 4_000_000_000,
         "folder": "pretrain",
         "alias": "fineweb-edu"
@@ -100,11 +103,6 @@ def tokenize_batch_parallel(text):
 
 def extract_text(item, alias):
     """Per-dataset text extraction. Returns None for filtered or empty items."""
-    if alias == "fineweb-edu":
-        score = item.get("score", item.get("educational_score", 0.0))
-        if score < FINEWEB_MIN_SCORE:
-            return None
-
     if alias == "ultrachat" and "messages" in item:
         msg_list = item["messages"]
         if isinstance(msg_list, list):
@@ -222,15 +220,33 @@ def open_dedup(save_path, name, params):
     return NearDedup.load(index, params)
 
 
+def shard_order(files, seed):
+    """`files` in the permutation `seed` picks, the same whatever order they arrive in, so
+    a resume's offset lands on the same record."""
+    files = sorted(files)
+    return [files[i] for i in np.random.default_rng(seed).permutation(len(files))]
+
+
+def open_source(ds_cfg):
+    """A source's stream from its first record: the repo's own order, or with `shard_seed`
+    its config's parquet files in that seed's permutation."""
+    if "shard_seed" not in ds_cfg:
+        return load_dataset(ds_cfg['path'], name=ds_cfg.get('config'),
+                            split=ds_cfg.get('split', 'train'), streaming=True)
+    folder = ds_cfg['config'] + "/"
+    files = [f for f in HfApi().list_repo_files(ds_cfg['path'], repo_type="dataset")
+             if f.startswith(folder) and f.endswith(".parquet")]
+    urls = [f"hf://datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
+    return load_dataset("parquet", data_files={"train": urls}, split="train", streaming=True)
+
+
 def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
     """Producer: streams (stream offset, raw text) into out_queue, reconnecting on
     network failures and resuming from the last consumed record. The offset counts every
     raw record read, the ones extract_text filters out included, so it is where a resume
     must skip to. Ends with a None sentinel."""
-    split_name = ds_cfg.get('split', 'train')
-
     def open_stream(offset):
-        ds = load_dataset(ds_cfg['path'], name=ds_cfg.get('config'), split=split_name, streaming=True)
+        ds = open_source(ds_cfg)
         return ds.skip(offset) if offset > 0 else ds
 
     current_offset = start_offset

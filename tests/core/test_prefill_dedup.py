@@ -127,3 +127,15 @@ def test_a_legacy_status_is_a_corpus_written_without_dedup(prefill_into, tmp_pat
     with pytest.raises(SystemExit, match="dedup=None"):
         prefill_into([])
     assert prefill.load_progress(str(folder), "code") == (32, 4_000_000_000, 1_234_567, 1_234_567)
+
+
+def test_shard_order_is_a_seeded_permutation_whatever_the_listing_order():
+    """A `shard_seed` source reads its files in one fixed permutation (#591): the same for
+    the same seed whatever order the hub lists them in, so a resume's offset lands on the
+    same record, and not the repo's own order, which runs by dump."""
+    files = [f"fineweb-edu-dedup/train-{i:05d}-of-00234.parquet" for i in range(234)]
+    order = prefill.shard_order(files, seed=0)
+    assert sorted(order) == files
+    assert order == prefill.shard_order(list(reversed(files)), seed=0)
+    assert order != files
+    assert order != prefill.shard_order(files, seed=1)
