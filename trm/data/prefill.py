@@ -56,7 +56,9 @@ MIXTURE = [
         "path": "HuggingFaceTB/smollm-corpus",
         "config": "fineweb-edu-dedup",
         "shard_seed": 0,
-        "target_tokens": 4_000_000_000,
+        # A 10-day base run at 8 × 960 reads ≤ 8.7B tokens (13.08 s per opt step), 10B
+        # with margin; fineweb-edu averages 43% of DATA_MIXTURE over a run, so ~4.3B.
+        "target_tokens": 4_500_000_000,
         "folder": "pretrain",
         "alias": "fineweb-edu"
     },
