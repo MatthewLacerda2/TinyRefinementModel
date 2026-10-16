@@ -75,7 +75,10 @@ def test_copies_never_reach_a_chunk_and_the_manifest_says_so(prefill_into):
     items = [{"content": t} for t in originals] + [{"content": ""}] * 5 + [{"content": t} for t in copies]
     folder, status = prefill_into(items)
 
-    written = np.concatenate([np.load(f) for f in sorted(glob.glob(str(folder / "chunk_*.npy")))])
+    chunks = [np.load(f) for f in sorted(glob.glob(str(folder / "chunk_*.npy")))]
+    assert {c.dtype for c in chunks} == {np.dtype(np.uint16)}, "r50k ids fit in half of int32's disk"
+    written = np.concatenate(chunks)
+    assert written.max() == EOT, "the cast kept the largest id intact"
     kept_tokens = sum(len(fake_tokens(t)) for t in originals)
     assert kept_tokens - STRIDE < written.size <= kept_tokens, "only the originals were tokenized"
     assert status["items_processed"] == 80 and status["stream_offset"] == len(items)

@@ -40,7 +40,8 @@ load_env()
 # Config
 ENC_NAME = TOKENIZER_NAME
 OUTPUT_DIR = resolve_root(location("DATA_ROOT", "runs/data"))
-TOKENS_PER_FILE = 125_000_000  # ~500MB per chunk
+TOKENS_PER_FILE = 125_000_000  # ~250MB per chunk
+TOKEN_DTYPE = np.uint16        # r50k's ids are < 65,536: half of int32's disk. Readers cast on load
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
 
@@ -57,9 +58,10 @@ MIXTURE = [
         "path": "HuggingFaceTB/smollm-corpus",
         "config": "fineweb-edu-dedup",
         "shard_seed": 0,
-        # A 10-day base run at 8 × 960 reads ≤ 8.7B tokens (13.08 s per opt step), 10B
-        # with margin; fineweb-edu averages 43% of DATA_MIXTURE over a run, so ~4.3B.
-        "target_tokens": 4_500_000_000,
+        # A base run is at most 10 days (owner): at 8 × 960 that reads ≤ 8.7B tokens
+        # (13.08 s per opt step), 10B with margin. fineweb-edu is 70% of #597's mix: 7B,
+        # plus its validation tail.
+        "target_tokens": 7_200_000_000,
         "folder": "pretrain",
         "alias": "fineweb-edu"
     },
@@ -311,9 +313,12 @@ def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
 
 
 def tokenize_buffer(pool, buffer):
-    """Tokenizes a list of raw texts in parallel into one flat int32 array."""
+    """Tokenizes a list of raw texts in parallel into one flat TOKEN_DTYPE array."""
     token_lists = pool.map(tokenize_batch_parallel, buffer)
-    return np.array([t for sub in token_lists for t in sub], dtype=np.int32)
+    tokens = np.array([t for sub in token_lists for t in sub], dtype=np.int64)
+    if tokens.size and tokens.max() > np.iinfo(TOKEN_DTYPE).max:
+        raise ValueError(f"token id {tokens.max()} does not fit {np.dtype(TOKEN_DTYPE).name}")
+    return tokens.astype(TOKEN_DTYPE)
 
 
 def write_chunk(save_path, file_idx, token_acc, stride):
