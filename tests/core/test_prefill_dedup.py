@@ -139,3 +139,21 @@ def test_shard_order_is_a_seeded_permutation_whatever_the_listing_order():
     assert order == prefill.shard_order(list(reversed(files)), seed=0)
     assert order != files
     assert order != prefill.shard_order(files, seed=1)
+
+
+def test_parquet_shards_skip_lands_where_reading_through_would(tmp_path, monkeypatch):
+    """ParquetShards (#591) skips by the footers' row counts, across files and row
+    groups, and must land on the record a plain read-through reaches."""
+    pa, pq = pytest.importorskip("pyarrow"), pytest.importorskip("pyarrow.parquet")
+    from fsspec.implementations.local import LocalFileSystem
+    monkeypatch.setattr(prefill, "HfFileSystem", LocalFileSystem)
+    texts = [f"doc{i}" for i in range(23)]
+    paths = []
+    for k, part in enumerate((texts[:10], texts[10:11], texts[11:])):
+        paths.append(str(tmp_path / f"shard{k}.parquet"))
+        pq.write_table(pa.table({"text": part, "id": list(range(len(part)))}), paths[-1], row_group_size=3)
+    shards = prefill.ParquetShards(paths)
+    assert [r["text"] for r in shards] == texts
+    for offset in (0, 2, 3, 9, 10, 11, 12, 22, 23):
+        assert [r["text"] for r in shards.skip(offset)] == texts[offset:]
+    assert [r["text"] for r in shards.skip(4).skip(5)] == texts[9:]

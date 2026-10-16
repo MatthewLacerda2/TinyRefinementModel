@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
+import pyarrow.parquet as pq
 import tiktoken
 from datasets import load_dataset
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, HfFileSystem
 
 from trm.config import TOKENIZER_NAME, resolve_root
 from trm.data.dedup import DedupParams, NearDedup
@@ -229,6 +230,36 @@ def shard_order(files, seed):
     return [files[i] for i in np.random.default_rng(seed).permutation(len(files))]
 
 
+class ParquetShards:
+    """A source's parquet files read in the given order, one row group in memory at a
+    time: datasets' own stream of the same files held ~3 GB per process (#591). `skip`
+    jumps whole files and row groups by the counts in their footers, so a resume does
+    not download what it skips."""
+
+    def __init__(self, paths, offset=0):
+        self.paths, self.offset = paths, offset
+
+    def skip(self, n):
+        return ParquetShards(self.paths, self.offset + n)
+
+    def __iter__(self):
+        fs, skip = HfFileSystem(), self.offset
+        for path in self.paths:
+            with fs.open(path) as f:
+                shard = pq.ParquetFile(f)
+                if skip >= shard.metadata.num_rows:
+                    skip -= shard.metadata.num_rows
+                    continue
+                for group in range(shard.num_row_groups):
+                    rows = shard.metadata.row_group(group).num_rows
+                    if skip >= rows:
+                        skip -= rows
+                        continue
+                    texts = shard.read_row_group(group, columns=["text"]).column("text").to_pylist()
+                    yield from ({"text": text} for text in texts[skip:])
+                    skip = 0
+
+
 def open_source(ds_cfg):
     """A source's stream from its first record: the repo's own order, or with `shard_seed`
     its config's parquet files in that seed's permutation."""
@@ -238,8 +269,7 @@ def open_source(ds_cfg):
     folder = ds_cfg['config'] + "/"
     files = [f for f in HfApi().list_repo_files(ds_cfg['path'], repo_type="dataset")
              if f.startswith(folder) and f.endswith(".parquet")]
-    urls = [f"hf://datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
-    return load_dataset("parquet", data_files={"train": urls}, split="train", streaming=True)
+    return ParquetShards([f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])])
 
 
 def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
