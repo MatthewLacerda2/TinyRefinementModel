@@ -99,7 +99,7 @@ def load_batch(rng):
     if root:
         from trm.config import resolve_root
         from trm.train.validation import read_heldout_rows
-        for source in ("codeparrot", "fineweb-edu"):
+        for source in ("stack-edu", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue

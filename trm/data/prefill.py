@@ -1,16 +1,20 @@
 import argparse
 import glob
+import gzip
+import itertools
 import json
 import os
 import queue
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pyarrow.parquet as pq
+import requests
 import tiktoken
 from datasets import load_dataset
 from huggingface_hub import HfApi, HfFileSystem
@@ -66,15 +70,24 @@ MIXTURE = [
         "alias": "fineweb-edu"
     },
     {
-        "path": "codeparrot/codeparrot-clean",
-        "target_tokens": 4_000_000_000,
+        # Stack-Edu's Python (25.3M files, ~22B tokens): The Stack v2 filtered by an
+        # educational classifier, the code SmolLM2 trained on (#597). Its rows hold a
+        # Software Heritage blob id, not the file, so each file is fetched (`swh_blobs`).
+        # 20% of #597's mix: 2B of 10B, plus its validation tail.
+        "path": "HuggingFaceTB/stack-edu",
+        "config": "Python",
+        "shard_seed": 0,
+        "swh_blobs": True,
+        "target_tokens": 2_200_000_000,
         "folder": "pretrain",
-        "alias": "codeparrot"
+        "alias": "stack-edu"
     },
     {
+        # FineMath 3+, as the Smol Playbook's baseline mix has it (#597): 10% of 10B.
         "path": "HuggingFaceTB/finemath",
-        "config": "finemath-4plus",
-        "target_tokens": 2_500_000_000,
+        "config": "finemath-3plus",
+        "shard_seed": 0,
+        "target_tokens": 1_100_000_000,
         "folder": "pretrain",
         "alias": "finemath"
     },
@@ -238,11 +251,11 @@ class ParquetShards:
     jumps whole files and row groups by the counts in their footers, so a resume does
     not download what it skips."""
 
-    def __init__(self, paths, offset=0):
-        self.paths, self.offset = paths, offset
+    def __init__(self, paths, offset=0, columns=("text",)):
+        self.paths, self.offset, self.columns = paths, offset, columns
 
     def skip(self, n):
-        return ParquetShards(self.paths, self.offset + n)
+        return ParquetShards(self.paths, self.offset + n, self.columns)
 
     def __iter__(self):
         fs, skip = HfFileSystem(), self.offset
@@ -257,9 +270,45 @@ class ParquetShards:
                     if skip >= rows:
                         skip -= rows
                         continue
-                    texts = shard.read_row_group(group, columns=["text"]).column("text").to_pylist()
-                    yield from ({"text": text} for text in texts[skip:])
+                    yield from shard.read_row_group(group, columns=list(self.columns)).to_pylist()[skip:]
                     skip = 0
+
+
+SWH_CONTENT = "https://softwareheritage.s3.amazonaws.com/content/"  # public, no credentials
+# Files in flight. Measured here: one GET takes ~170 ms, and 64 threads, each keeping its
+# connection alive, fetch ~100 files/s; 256 overran DNS resolution.
+SWH_FETCHES = 64
+_swh = threading.local()
+
+
+def fetch_blob(row):
+    """One file's text from Software Heritage: gzipped bytes under its blob id, in the
+    encoding the dataset recorded for it. A blob SWH no longer serves (404) reads as an
+    empty document, which the stream counts and skips; any other failure raises, and the
+    stream reconnects from the last file it handed on."""
+    if not hasattr(_swh, "session"):
+        _swh.session = requests.Session()
+    response = _swh.session.get(SWH_CONTENT + row["blob_id"], timeout=60)
+    if response.status_code == requests.codes.not_found:
+        return ""
+    response.raise_for_status()
+    return gzip.decompress(response.content).decode(row["src_encoding"], errors="replace")
+
+
+class SwhBlobs:
+    """Rows that name a Software Heritage blob, as {"text": file}: fetched SWH_FETCHES at
+    a time and yielded in row order, so a resume's offset still names the same file."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def skip(self, n):
+        return SwhBlobs(self.rows.skip(n))
+
+    def __iter__(self):
+        with ThreadPoolExecutor(SWH_FETCHES) as pool:
+            for batch in itertools.batched(self.rows, 4 * SWH_FETCHES):
+                yield from ({"text": text} for text in pool.map(fetch_blob, batch))
 
 
 def open_source(ds_cfg):
@@ -271,7 +320,10 @@ def open_source(ds_cfg):
     folder = ds_cfg['config'] + "/"
     files = [f for f in HfApi().list_repo_files(ds_cfg['path'], repo_type="dataset")
              if f.startswith(folder) and f.endswith(".parquet")]
-    return ParquetShards([f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])])
+    paths = [f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
+    if ds_cfg.get("swh_blobs"):
+        return SwhBlobs(ParquetShards(paths, columns=("blob_id", "src_encoding")))
+    return ParquetShards(paths)
 
 
 def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
@@ -547,7 +599,7 @@ def run_prefill(only=(), dedup=False, measure=None):
 def parse_args():
     parser = argparse.ArgumentParser(description="Tokenize the MIXTURE's sources into DATA_ROOT.")
     parser.add_argument("--only", nargs="+", default=(), metavar="SOURCE",
-                        help="just these sources (their aliases), e.g. --only codeparrot")
+                        help="just these sources (their aliases), e.g. --only stack-edu")
     parser.add_argument("--dedup", action="store_true",
                         help="drop near-duplicate documents before tokenizing (#486); needs a "
                              "DATA_ROOT whose folders were not written without it")

@@ -20,12 +20,12 @@ import json
 import numpy as np
 import pytest
 
-from trm.settings import CONFIG, Config
+from trm.settings import CONFIG, LEGACY_DATA_MIXTURE, Config
 from trm.train import schedules
 from trm.train.schedules import Schedules
 
-# An unset environment: the defaults every run so far trained with.
-TODAY = Schedules.of(Config.from_env({}))
+# The ramp every run before #597 trained with, which the knob must still reproduce exactly.
+TODAY = Schedules.of(Config.from_env({"DATA_MIXTURE": LEGACY_DATA_MIXTURE}))
 
 STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
@@ -41,7 +41,14 @@ def _todays_curriculum(step, ramp_steps):
     return [s + (e - s) * fraction for s, e in zip(start, end, strict=True)]
 
 
-def test_the_default_mixture_is_the_one_every_run_trained_with():
+def test_the_default_mixture_is_the_smol_playbook_mix_held_constant():
+    default = Schedules.of(Config.from_env({}))
+    assert default.sources == ("pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath")
+    assert default.start_weights == default.end_weights == [0.70, 0.20, 0.10]
+    assert all(default.curriculum_weights(s) == [0.70, 0.20, 0.10] for s in (0, 1, 10**6))
+
+
+def test_the_legacy_mixture_is_the_one_every_run_before_597_trained_with():
     assert TODAY.sources == (
         "pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
     assert TODAY.start_weights == [0.85, 0.10, 0.05]
