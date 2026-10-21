@@ -69,7 +69,7 @@ seeds, activation margins, pace). To re-read later:
 whether the verdict can be trusted (CI runs it too).
 
 Read the σ with its seed count in mind: `verdict.py` compares raw multiples of σ_pooled,
-and with 3 seeds a 2σ gap is weaker evidence than the number suggests.
+and with 3 seeds a 2σ gap is weaker evidence than the number suggests (#599).
 
 ## 4. Record (rule 5)
 
