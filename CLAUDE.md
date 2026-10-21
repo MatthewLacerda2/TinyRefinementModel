@@ -62,12 +62,8 @@ suppressed on language. When the card is free, measure there —
 **Run-length tiers for real-model pairs** (the LR schedule completes in-run, ≥3 seeds,
 the readout is tokens-to-target, never CE at a fixed step): recipe knobs (LR, optimizer,
 weight decay, mix) ~512 opt steps ≈ 67M tokens ≈ 4h per arm-seed; architecture changes
-~2,000 opt steps ≈ 260M tokens ≈ 15h per arm-seed (both well under the 48-hour line, so
-Claude's to run — see "What Claude may do without asking"); anything a plain champion
-can warm-start, a few hundred steps. Revisable defaults, not laws. **The `cpu` label
-means buildable without the card, not preferably measured without it**: the lane stays
-because cloud sessions build tooling while the card trains, but the measurement of an
-idea goes to the card.
+~2,000 opt steps ≈ 260M tokens ≈ 15h per arm-seed; anything a plain champion can
+warm-start, a few hundred steps. Revisable defaults, not laws.
 
 ## How we know something worked
 
@@ -200,43 +196,24 @@ pipeline. Read a miss below the gate as a bug, never a miss below the neighbour.
 
 ## The model registry & reproducibility
 
-The weights are the *product*; the apparatus that makes and judges them is the *code*,
-and that's where the rigor lives. With determinism, the relationship flips in our favor:
-
 **Weights are a cache, not a treasure.** If a run is reproducible — same commit, config,
-seed, tokenizer, data manifest — then losing the weights costs *compute to regenerate*,
-not *knowledge*. So the irreplaceable artifact is the **recipe**, and the recipe is tiny
-and lives in git. Two tiers:
-
-- **Master copy (in git, tiny):** the model card — commit SHA, full config snapshot,
-  tokenizer name, dataset manifest (prefill version + token count + filter settings),
-  seed, final metrics (val ppl, the GPT-2-small yardstick), VRAM + wall-clock, and one
-  line on why it's notable. Template: `docs/registry/MODEL_CARD_TEMPLATE.md`.
-- **Cache (gitignored, regenerable):** the weights themselves, with a `sha256` to catch
-  silent corruption.
-
-Curate. Only a **champion + a couple of notable challengers** get a stored card —
-"every run that finished" fills the disk and the registry with noise.
-
-A stored, GPT-2-small-grade base model is also the thing that makes the "experiment a
-lot" style *affordable*: future ideas **fine-tune or branch from it** instead of
-pretraining from scratch — a 30-minute run instead of a 10-hour one. The registry pays
-for itself in compute the first time you warm-start.
+seed, tokenizer, data manifest — losing the weights costs compute, not knowledge. So
+the master copy is the **model card** in git (`docs/registry/`), the weights are a
+gitignored cache with a `sha256`, and only a champion and a couple of notable
+challengers get a card. A stored base is also what makes experimenting affordable:
+ideas warm-start from it instead of pretraining from scratch. The why and the rules
+are in `docs/registry/README.md`.
 
 **Cross-model comparisons are observational, not causal.** Comparing two differently-built
-models (more params, different data) is a sanity/regression check — "are we even in the
-ballpark" — never proof that an idea works. Only the matched one-variable pair (rule 2)
-can claim a cause. Keep the two straight.
+models is a sanity check — "are we even in the ballpark" — never proof that an idea
+works. Only the matched one-variable pair (rule 2) can claim a cause.
 
-**Storage convention.** The SSD (root fs, `runs/`) is the *live* tier — current training
-runs, ablations, smoke tests. The 1TB HDD (`/mnt/d_drive`, under `TRM_cold/`) is the
-*cold* tier — mirror artifacts there once they're old or done (champion weights, and the
-tokenized corpus, which is regenerable but cost ~a day to build). Treat the HDD as dumb
-blob storage (copy files); don't train off it or rely on its symlinks/permissions. This
-also keeps the near-full SSD from filling. A run launched with `COLD_ROOT` set does its
-own share (`trm/runtime/cold.py`): milestones mirrored, a full-state copy per stall
-window, mirrored milestones pruned from the SSD to a margin. The tokenized corpus in
-`runs/data/` is sacred — never delete it to free space; archive or surface it instead.
+**Storage convention.** The SSD (`runs/`) is the *live* tier: current runs, ablations,
+smokes. The 1TB HDD (`/mnt/d_drive`, under `TRM_cold/`) is the *cold* tier: dumb blob
+storage for what is old or done — copy files, don't train off it or rely on its
+symlinks or permissions. A run launched with `COLD_ROOT` set does its own share
+(`trm/runtime/cold.py`). **The tokenized corpus is sacred** — never delete it to free
+space; archive or surface it instead.
 
 ## How work is tracked — issues, labels, priority
 
@@ -245,10 +222,8 @@ graveyard of killed ideas. **GitHub issues own per-item state** — one closeabl
 When you spot a hypothesis worth testing — a smoke test, an ablation, a small or full
 run — file an issue so the queue reflects what we actually intend to do. Progress and
 live state live in issues, *not* in the codebase. Knowledge that is coupled to the code
-(a finding about what an architecture did, tied to a commit) belongs in the repo —
-`docs/findings/` when it's novel, a ROADMAP-graveyard tombstone plus its PR otherwise
-(rule 5 above); forward-looking state (what's running, what's next) belongs outside,
-in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
+belongs in the repo (rule 5); forward-looking state (what's running, what's next)
+belongs in issues. Working plans stay local and gitignored (`docs/plans/`, `aux*`).
 
 **Type labels (what kind of work it is) — in priority order.** The order is the
 owner's phases: first a codebase that reads clearly and stays lean, with the tools that
@@ -275,11 +250,9 @@ literature has settled; then our own hypotheses.
    model can be — freed memory decides whether a layer, a batch or a longer window
    fits, and speed decides how many tokens a base run buys in its days.
 4. **`adopt`** — what the literature has **settled** and we do not have yet: title it
-   "Adopt X", with the source and the expected effect in the body. Nobody is wondering
-   whether it works, so a smoke check that it breaks nothing gates it, never a matched
-   pair; where our setting differs (f16, a 6GB card, batch 2), measure *only that part*
-   (see "How we work"). **Before filing a model change, ask whether the literature
-   settled it** — if so it is `adopt`, not a hypothesis.
+   "Adopt X", with the source and the expected effect in the body; a smoke check gates
+   it, never a matched pair (see "How we work"). **Before filing a model change, ask
+   whether the literature settled it** — if so it is `adopt`, not a hypothesis.
 5. **`architecture`** — the model's **uncertain** changes: its shape, its recipe (LR,
    mix, weight decay) and its hypotheses, where the outcome is genuinely open — "maybe
    this works, I don't know" — judged by a pre-registered matched pair. Within the
@@ -300,7 +273,7 @@ literature has settled; then our own hypotheses.
   **resume protocol a context-free session can execute**: exact commands (including
   the env/config knobs that make them hit the changed code), what counts as pass
   against what baseline, and the pre-named fallback if it fails — finishing must need
-  only the card, never this conversation's memory. (Template case: PR #98 / #84.)
+  only the card, never this conversation's memory.
   Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
   skips drafts and re-runs on undraft, so the checks you see right after are the
   draft's skipped set — never push an empty commit to "retrigger" (#539).
@@ -310,60 +283,36 @@ literature has settled; then our own hypotheses.
 - **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
   session without them (a cloud session) cannot finish it. Orthogonal to lane: a
   `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
-- **`base-gate`** — must land before the next base run (the test under "Before a base run
-  launches", below). Orthogonal to type: an optimization, a telemetry tool and a model
-  bug can all carry it.
+- **`base-gate`** — passes the test under "Before a base run launches", below.
 - **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
   active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
   in the way first. A bug on a path nobody is running waits its turn.
-
 - **`agent`** — Claude filed the issue on its own initiative, or opened the PR
-  without an issue. Claude may file issues without asking, and applies the label by
-  its own judgment. The label only tells the owner where the item came from. It
-  ranks and is handled exactly like an issue the owner filed.
+  without an issue. It only tells the owner where the item came from; it ranks
+  exactly like an issue the owner filed.
 
 **Spotting a bug mid-task.** Claude decides what to do with it — fix it in the current
 task, record it on a related issue, open its own issue, or surface it for the owner to
 call. **If there is nothing to decide, don't ask:** fix it in the next related PR, or
 file the issue and work it. Bring it to the owner only when there is a real choice to
 make — a fix that changes what the model *is*, one that would swell the PR past what a
-reviewer can hold, or a defect whose right answer is genuinely unclear.
-
-The failure mode this exists to prevent is a bug going *unrecorded* because it was
-inconvenient to the task in hand. A bug found and left unwritten is worse than one never
-found, because now nobody will look again. Two habits follow:
-
-- **A bug found while building something else still gets written down**, even if it is
-  not fixed. If it is not in this PR, it is an issue, and the PR says so.
-- **Say plainly what a fix does NOT cover.** "Guarded the symptom, root cause on #N" is a
-  complete answer; "fixed" when only the symptom was addressed is not.
+reviewer can hold, or a defect whose right answer is genuinely unclear. Never leave one
+unrecorded: a bug found and left unwritten is worse than one never found, because now
+nobody will look again. If it is not in this PR, it is an issue, and the PR says so —
+and say plainly what a fix does NOT cover ("guarded the symptom, root cause on #N").
 
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
-and its lane is free. The principle behind the priority order: anything that *affects
-another item* leads — whether it changes the implementation or changes how we *think*
-(a result that reframes the question). Tools ripple downstream into every measurement,
-so they lead; within `architecture`, a result that reframes the model's question leads a
-pair or sweep nothing depends on, a judgment call nobody can label in advance. A base run is the opposite: ablations cannot be read without it and warm-starts
-need it, so the `base-gate` list is a launch checklist to close or waive, not a queue to
-drain.
-
-**`python -m instruments.queue` computes it.** It ranks only what these rules decide —
-tier order, then issues other open issues are blocked by, and **when the card is idle,
-`gpu`-lane items first within their tier** (an idle card is the scarce resource going
-to waste; see "measure there" above) — and says so where they stop deciding (within a
-tier is judgment). It also surfaces labels it can check and that fail:
-a `blocked` whose blockers are all closed (an open PR named as a blocker counts as
-open), an issue with no type label. And it surfaces every issue untouched for more
-than `STALE_DAYS` (21) — neither it nor a PR claiming it — unless it waits on an open
-blocker or on the card as a parked draft: each is kept with a comment saying why,
-which resets the clock, or closed with the closing vocabulary below. When the rules
-here change, the tool changes in the same PR; prose and command must not drift.
-
-**Cloud sessions are the exception.** The project is built for this machine: its
-card, its corpus, its weights. A session without them (no `runs/data/`) takes work
-from `python -m instruments.queue --cloud`, which drops the `gpu`-only lane and
-everything `local`. It builds and tests; it does not measure. A GPU tail becomes a
-draft PR with its resume protocol, and the measurement runs here.
+and its lane is free. Anything that *affects another item* leads — whether it changes
+the implementation or changes how we *think* (a result that reframes the question).
+**`python -m instruments.queue` computes it**: tier order, then issues other open
+issues are blocked by, then — when the card is idle — `gpu`-lane items first within
+their tier; past that it says where the rules stop deciding. It also surfaces labels
+that fail a check (a `blocked` whose blockers are all closed, an issue with no type
+label) and every issue untouched for more than `STALE_DAYS` (21) that isn't waiting on
+an open blocker or parked on the card: each is kept with a comment saying why, or
+closed. A session without this machine's card, corpus and weights (no `runs/data/`)
+takes work from `python -m instruments.queue --cloud`: it builds and tests, it does not
+measure. When the rules here change, the tool changes in the same PR.
 
 **What Claude may do without asking (the owner's standing permission).**
 - **Start any job that takes under 48 hours to compute**, and as many of them as a
@@ -381,19 +330,15 @@ asking, never the discipline: every experiment is still pre-registered through t
 referee, claimed on its issue, and recorded per rule 5.
 
 **Before a base run launches: whatever only pays if the run has it.** The test is two
-questions, not a label. *Can it be judged before the run* (does it work, is it worth
-it)? And *does its benefit need the run to have been trained or logged with it*? Both
-yes → it lands before the run starts, because afterwards is too late for these weights.
-That covers anything that makes the run lighter or faster (its days buy more tokens),
-anything that changes what the weights learn (recipe, shape, a model bug),
-and every piece of telemetry (a metrics column, a per-block reading, a margin the
-supervisor watches): a log the run did not write cannot be recovered from its
-checkpoints. What the finished weights can use at any time does not gate the run: a KV
-cache for generation, an eval, a plot of logs that already exist. An issue that
-passes the test but cannot land in time is waived by the owner by name, not skipped
-silently. **The `base-gate` label marks the issues that pass the test**, applied when
-an issue is filed or when the test is re-asked of it; the base run's launch checklist is
-the open `base-gate` list, empty or waived.
+questions. *Can it be judged before the run* (does it work, is it worth it)? And *does
+its benefit need the run to have been trained or logged with it*? Both yes → it lands
+before the run starts, because afterwards is too late for these weights. That covers
+anything that makes the run lighter or faster, anything that changes what the weights
+learn, and every piece of telemetry: a log the run did not write cannot be recovered
+from its checkpoints. What the finished weights can use at any time (a KV cache, an
+eval, a plot of existing logs) does not gate the run. The open `base-gate` list is the
+launch checklist — empty, or its leftovers waived by the owner by name, never skipped
+silently.
 
 **Claiming work.** An issue with an assignee is being worked on — never start it.
 Starting any issue means: check its linked PRs for prior work, then assign it. The
