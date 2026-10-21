@@ -59,11 +59,7 @@ establishes that a mechanism works at all; a verdict about the language model co
 from the real model on the real data — a mechanism can pass its toy gate and still be
 suppressed on language. When the card is free, measure there —
 `experiments/recipe/tokens_to_ce.py` is the real trainer for a few hours per arm-seed.
-**Run-length tiers for real-model pairs** (the LR schedule completes in-run, ≥3 seeds,
-the readout is tokens-to-target, never CE at a fixed step): recipe knobs (LR, optimizer,
-weight decay, mix) ~512 opt steps ≈ 67M tokens ≈ 4h per arm-seed; architecture changes
-~2,000 opt steps ≈ 260M tokens ≈ 15h per arm-seed; anything a plain champion can
-warm-start, a few hundred steps. Revisable defaults, not laws.
+How long a real-model pair runs, and how it is read, is in the `experiment` skill.
 
 ## How we know something worked
 
@@ -124,18 +120,11 @@ is how the apparatus that produced it gets cleaned up afterwards:
    - The novelty test is operational: Claude doesn't know it and can't find it online.
      State the verdict in the PR ("novel because…" / "settled by…"). **Uncertain →
      treat as novel** — deleting a finding later is cheap, re-discovering one isn't.
-   - **A findings entry names where it came from.** Either `Spec: <path>` (the
-     pre-registered spec that judged it, and it must resolve) or
-     `Evidence: observational — <why no control applies>`. Observational is a real
-     category — an anomaly found by accident while running something else — not a
-     loophole. Enforced by the `finding-cites-spec` rule of
-     `python -m instruments.audit`, which CI runs over whatever a change
-     can reach; entries before 2026-09-12 are grandfathered, since rewriting their
-     provenance now would be inventing it. The same audit asks of every spec
-     whether its verdict can be *trusted* — floor, seeds, sigma, criteria committed
-     before results, verdict reproducible — and never what the verdict is (that
-     stays with `instruments/verdict.py`). **Exploration needs no ceremony;
-     publication does.** Start a spec with `python -m instruments.experiment <path> --new`.
+   - **A findings entry names where it came from**: `Spec: <path>` (the spec that
+     judged it), or `Evidence: observational — <why no control applies>` for an anomaly
+     found by accident. `python -m instruments.audit` enforces it in CI, and asks of
+     every spec whether its verdict can be *trusted*, never what it is. **Exploration
+     needs no ceremony; publication does** — the procedure is the `experiment` skill.
 
 6. **A tombstone takes its apparatus with it.** The knowledge is what we keep; the
    scaffolding that produced it is not. So the PR that writes a graveyard entry also
@@ -261,35 +250,9 @@ literature has settled; then our own hypotheses.
    mid training-run. Doc-only commits (markdown and/or comments) need no issue. Fold a
    small one into a PR already in flight; open its own small PR only when none is.
 
-**Orthogonal labels (combine with a type):**
-- **Lane** — `cpu` runs alongside a GPU job; `gpu` is the single RTX 2060, a serial
-  queue, one run at a time; `blocked` has an unmet dependency, stated as "Blocked by #N".
-  **Both `cpu` and `gpu` = partial-cpu**: the wiring, tests, and smoke logic are
-  buildable on CPU now, but the confirming measurement needs the card. Do the CPU half
-  whenever (cloud sessions parallelize freely, the card doesn't), park it as a **draft
-  PR** stating exactly what waits on the GPU, and the GPU tail takes its turn in the
-  serial queue when the card is back. The claim (assignee + draft PR) keeps the parked
-  issue out of the ready-queue meanwhile. The draft's "what waits" section is a
-  **resume protocol a context-free session can execute**: exact commands (including
-  the env/config knobs that make them hit the changed code), what counts as pass
-  against what baseline, and the pre-named fallback if it fails — finishing must need
-  only the card, never this conversation's memory.
-  Undraft with `make ready PR=N`, and wait on a push with `make ci-wait PR=N`: CI
-  skips drafts and re-runs on undraft, so the checks you see right after are the
-  draft's skipped set — never push an empty commit to "retrigger" (#539).
-  A draft that touches the hot path (`trm/train/grad_step.py`) lists
-  `RUN_TESTS_ON_GPU=1 pytest tests/expensive/test_gpu_identity.py` in its resume
-  protocol: the CPU ignores buffer donation, so only the card shows that class (#540).
-- **`local`** — needs this machine's trained weights, tokenized corpus or HDD. A
-  session without them (a cloud session) cannot finish it. Orthogonal to lane: a
-  `cpu` item can be `local` (a scan of the corpus), and a `gpu` item need not be.
-- **`base-gate`** — passes the test under "Before a base run launches", below.
-- **`bug`** — a defect; attaches to whichever type it lives in. A bug that **blocks the
-  active lane** (e.g. a crash stopping the running GPU job) jumps the queue — fix what's
-  in the way first. A bug on a path nobody is running waits its turn.
-- **`agent`** — Claude filed the issue on its own initiative, or opened the PR
-  without an issue. It only tells the owner where the item came from; it ranks
-  exactly like an issue the owner filed.
+**Orthogonal labels** — lane (`cpu`, `gpu`, both = partial-cpu, `blocked`), `local`,
+`base-gate`, `bug`, `plan`, `agent` — and how a partial-cpu draft is parked, claimed,
+undrafted and closed are in the `work-tracking` skill.
 
 **Spotting a bug mid-task.** Claude decides what to do with it — fix it in the current
 task, record it on a related issue, open its own issue, or surface it for the owner to
@@ -304,15 +267,10 @@ and say plainly what a fix does NOT cover ("guarded the symptom, root cause on #
 **The ready-queue.** An issue is ready when it's open, not `blocked`, has no assignee,
 and its lane is free. Anything that *affects another item* leads — whether it changes
 the implementation or changes how we *think* (a result that reframes the question).
-**`python -m instruments.queue` computes it**: tier order, then issues other open
-issues are blocked by, then — when the card is idle — `gpu`-lane items first within
-their tier; past that it says where the rules stop deciding. It also surfaces labels
-that fail a check (a `blocked` whose blockers are all closed, an issue with no type
-label) and every issue untouched for more than `STALE_DAYS` (21) that isn't waiting on
-an open blocker or parked on the card: each is kept with a comment saying why, or
-closed. A session without this machine's card, corpus and weights (no `runs/data/`)
-takes work from `python -m instruments.queue --cloud`: it builds and tests, it does not
-measure. When the rules here change, the tool changes in the same PR.
+Within a tier: issues others are blocked by first, then — when the card is idle —
+`gpu`-lane items; past that it's judgment. `python -m instruments.queue` computes it
+(`--cloud` for a session without this machine's card, corpus and weights). When the
+rules here change, the tool changes in the same PR.
 
 **What Claude may do without asking (the owner's standing permission).**
 - **Start any job that takes under 48 hours to compute**, and as many of them as a
@@ -329,31 +287,10 @@ The one thing that waits for the owner: **starting any single job of 48 hours or
 asking, never the discipline: every experiment is still pre-registered through the
 referee, claimed on its issue, and recorded per rule 5.
 
-**Before a base run launches: whatever only pays if the run has it.** The test is two
-questions. *Can it be judged before the run* (does it work, is it worth it)? And *does
-its benefit need the run to have been trained or logged with it*? Both yes → it lands
-before the run starts, because afterwards is too late for these weights. That covers
-anything that makes the run lighter or faster, anything that changes what the weights
-learn, and every piece of telemetry: a log the run did not write cannot be recovered
-from its checkpoints. What the finished weights can use at any time (a KV cache, an
-eval, a plot of existing logs) does not gate the run. The open `base-gate` list is the
-launch checklist — empty, or its leftovers waived by the owner by name, never skipped
-silently.
-
-**Claiming work.** An issue with an assignee is being worked on — never start it.
-Starting any issue means: check its linked PRs for prior work, then assign it. The
-claim releases when the PR merges; a PR closed unmerged still owes its record first
-(rule 5 above, plus the closing vocabulary), then unassign so the issue re-enters the
-ready-queue. GPU runs additionally drop a "▶ started" comment — the card is a serial
-queue, and it must be visible what's holding it.
-
-**Closing the loop.** Every PR that addresses an issue links it with "Closes #N" so the
-merge closes it. Closing *without* a PR uses a controlled vocabulary in the closing
-comment so history stays greppable: "superseded-by #N", "negative-result", or
-"wont-fix: <reason>".
-
-**Merge, never squash.** PRs land with a merge commit (`gh pr merge <N> --merge`), not
-squash or rebase, so every commit on the branch stays in main's history.
+**Before a base run launches**, whatever only pays if the run has it lands first — the
+test and the `base-gate` checklist are in the `training-runs` skill. **Claim before you start**
+(an assignee means hands off), **"Closes #N"** in the PR, and **merge, never squash**
+(`gh pr merge <N> --merge`) — the mechanics are in `work-tracking`.
 
 ## Repo map — what's where
 
@@ -373,10 +310,8 @@ Nothing goes in the repo root — there are no `.py` files there, and
 the checkout (`git worktree add ../trm-<name>`), never inside it: a checkout reads only
 its own `.env` (#541), so a sibling gets an absolute `DATA_ROOT` from the shell. Entry points are run
 as modules: `python -m trm.train.start`, `python -m trm.data.prefill`, `python -m trm.infer`.
-The front door is the `Makefile` (`make test`, `make test-affected`, `make gate`,
-`make launch BUDGET=…`, `make report RUN=…`, `make pair SPEC=…` with `pair-pause`, `pair-resume`
-and `pair-status`): launch a base run or a sweep through it, never by assembling
-supervisor flags or a `systemd-run` line by hand.
+The front door is the `Makefile` (its header lists every target): launch a base run
+or a sweep through it, never by assembling supervisor flags or a `systemd-run` line by hand.
 
 **The direction is enforced, not just intended:** `trm/` never imports from
 `experiments/` or `instruments/`, and one research line never imports another — so
@@ -398,13 +333,22 @@ code (#292); a checkpoint of either loads from its card's SHA-pinned commit.
 | **Verifiable worlds** | `trm/rl/` — `tasks.py` (procedural Python problems with their own tests, split train/held-out by a hash of the instance), `sandbox.py` + `_sandbox_child.py` (run a candidate under kernel limits and say what happened). The world the model is meant to learn in by trying; it trains nothing on its own |
 | **Experiment specs** | `experiments/<line>/specs/*.toml` — the pre-registration as a file a machine can apply (hypothesis, arms, criteria, kill/keep bars), refereed by `instruments/verdict.py` and run by `python -m instruments.experiment <spec>`. Format: `docs/design/experiment-spec.md` |
 | **Research lines** | `experiments/recipe/` (`tokens_to_ce.py`, the real trainer for recipe pairs), `experiments/mix/`, `experiments/base/`; a tombstoned line keeps only its `specs/` — `experiments/depth/`, `experiments/scratchpad/` — as the record its findings cite |
-| **Instruments** | `instruments/` — `verdict.py` (the referee: pre-registered spec + recorded numbers → KEEP/KILL/INCONCLUSIVE; pins σ_pooled so findings stop recomputing it by hand), `experiment.py` (the runner: gate → sweep → record → judge → findings draft) and `results.py` (the `RESULT {...}` line harnesses print for it), `pair_report.py` (what a pair did beside its verdict: the CE curve against the control, the seeds, the activation margins, the pace; the runner prints it after the verdict), `queue.py` (the ready-queue: what to work on next, and why), `yardstick/` (LAMBADA: GPT-2-small is the gate and the calibration, SmolLM2-135M the neighbour), the smokes (`smoke_gpu`, `overfit_smoke`, `vram_headroom_smoke`, …), `profile_step` (the real loop, traced or `--pace`: the throughput instrument), `mem_profile`, `timemachine`, `milestone_report`, `dump_transcripts`, `plots`, `python_world` (pass@k on `trm/rl`'s tasks, per difficulty level — the "can it do something" readout beside LAMBADA's "can it talk") |
-| **Tests** | `tests/` — three tier folders, `core/` · `apparatus/` · `expensive/`, and the folder is the declaration (`tests/README.md`; a test file dropped straight into `tests/` fails collection). CPU by default (`FORCE_F32_COMPUTE`) so they run while the GPU trains; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus on every push/PR to `main`, plus a lint status: `ruff check .` (errors and bugs; no function over 50 statements or complexity 10, no unnamed number in a comparison, import order and simplifications — the families and their reasons are in `pyproject.toml`) and `vulture` (dead code — functions, classes, constants nothing references), both configured in `pyproject.toml`; and `pyright`, basic mode over `trm/`, run in the pytest job because it resolves jax. `make lint` runs all three; run it before pushing, and delete what it finds. |
+| **Instruments** | `instruments/` — the referee (`verdict.py`), the runner (`experiment.py`), the queue, the yardstick, the smokes and profilers. Which one answers which question: the `instruments` skill |
+| **Tests** | `tests/{core,apparatus,expensive}/` — the folder is the tier (`tests/README.md`, including this machine's traps). CPU f32 by default so they run beside a trainer; `RUN_TESTS_ON_GPU=1` for the real f16 path. CI runs core + apparatus, the audit, and `make lint` (ruff, vulture, pyright — rules and reasons in `pyproject.toml`): run it before pushing and delete what it finds |
 
 Hardware reality: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so **f16
 compute is the permanent policy** (`trm/config.py`); the GPU lane is serial. Tokenizer is
 **`r50k_base`** (50257 vocab, `VOCAB_SIZE=50304` padded); the embedding + tied LM head is
 the single biggest VRAM line.
+
+## Skills — the how-to, loaded when the task needs it
+
+| skill | for |
+|---|---|
+| `experiment` | pre-register → `make pair` → verdict → finding or tombstone |
+| `instruments` | which instrument answers which question; the contract for a new one |
+| `training-runs` | launching, watching, resuming and storing a GPU run; the base-gate checklist; OOMs |
+| `work-tracking` | labels, the queue, claiming, parked drafts, CI, closing, merging |
 
 ## How to dig into our past
 
