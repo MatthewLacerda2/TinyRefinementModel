@@ -234,7 +234,8 @@ def test_noise_ten_times_the_gap_on_a_carrying_criterion_is_noted_not_red(repo):
     assert a.verdict.outcome == "KEEP"
     s = audit.sigma_plausible(a)
     assert s.state == GREEN and "no difference the measurement could see" in s.reason
-    assert audit.sigma_plausible(load(repo, spec_text())).reason == ""  # a resolved gap gets no note
+    resolved = spec_text(treated=(0.92, 0.93, 0.91))  # a 1σ gap
+    assert audit.sigma_plausible(load(repo, resolved)).reason == ""
 
 
 MARGIN_SPEC = """\
@@ -388,6 +389,49 @@ def test_a_two_seed_kill_at_two_sigma_is_short_of_the_bar(repo):
     assert a.verdict.outcome == "KILL"
     s = audit.holds_at_seed_count(a)
     assert s.state == RED and "short of the bar" in s.reason and "2+2 seeds" in s.reason
+
+
+ANY_SPEC = """\
+[experiment]
+id = "002-any"
+title = "two points, either will do"
+hypothesis = "Prediction registered: a win at one point."
+
+[arms.control]
+role = "control"
+[arms.treated]
+role = "treatment"
+
+[criteria.wins]
+rule = "beats"
+treatment = "treated"
+control = "control"
+sigmas = 2.0
+min_delta = 1.0
+points = ["quantized", "noisy"]
+require = "any"
+
+[verdict]
+keep_if = ["wins"]
+
+[results.quantized]
+control = [10.0, 10.0, 10.0]
+treated = [12.0, 12.0, 12.0]
+
+[results.noisy]
+control = [0.0, 1.4142]
+treated = [2.2, 3.6142]
+"""
+
+
+def test_a_sigma_zero_point_that_carried_a_require_any_is_not_overruled(repo):
+    """The quantized point holds on its registered margin and has no p; the noisy
+    one holds weakly. Either was enough, so the weak one is not the verdict's basis."""
+    a = load(repo, ANY_SPEC, name="002-any.toml")
+    assert a.verdict.outcome == "KEEP"
+    noisy = next(p for p in a.verdict.criteria[0].points if p.point == "noisy")
+    assert noisy.holds and noisy.p > 0.05  # 2.2σ on two seeds a side
+    assert audit.holds_at_seed_count(a).state == GREEN
 
 
 def test_a_spec_registered_before_the_t_test_rule_is_grandfathered(git_repo):

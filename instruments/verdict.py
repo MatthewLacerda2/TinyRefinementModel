@@ -141,13 +141,18 @@ def _nonzero(x: float) -> float:
 
 def _betainc(a: float, b: float, x: float) -> float:
     """The regularized incomplete beta I_x(a, b), by Lentz's continued fraction
-    (Numerical Recipes, section 6.4)."""
+    (Numerical Recipes, section 6.4). The fraction converges below x = (a+1)/(a+b+2);
+    above it, one reflection, never a second (rounding at the threshold would bounce)."""
     if x <= 0.0:
         return 0.0
     if x >= 1.0:
         return 1.0
     if x > (a + 1) / (a + b + 2):
-        return 1.0 - _betainc(b, a, 1.0 - x)
+        return 1.0 - _beta_fraction(b, a, 1.0 - x)
+    return _beta_fraction(a, b, x)
+
+
+def _beta_fraction(a: float, b: float, x: float) -> float:
     front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
                      + a * math.log(x) + b * math.log1p(-x)) / a
     c, d = 1.0, 1.0 / _nonzero(1.0 - (a + b) * x / (a + 1))
@@ -171,22 +176,30 @@ def t_sf(t: float, df: float) -> float:
     return tail if t >= 0 else 1.0 - tail
 
 
-def p_value(rule: str, sigmas: float, bar: float, n_treatment: int, n_control: int) -> float | None:
-    """One-sided p of the claim a rule makes, from a two-sample t on the separation:
-    t = sigmas / sqrt(1/n_t + 1/n_c) with n_t + n_c - 2 degrees of freedom (Student's
-    pooled t when the arms have equal seeds, since sigma_pooled is their RMS).
-    `beats` claims the treatment ahead, `loses` behind, and a parity rule claims the
-    gap inside +/- bar: the larger p of the TOST's two one-sided tests.
+def p_value(rule: str, treatment: Arm, control: Arm, bar: float) -> float | None:
+    """One-sided p of the claim a rule makes, by Student's two-sample t: the arms'
+    variances pooled by degrees of freedom, n_t + n_c - 2 of them. With equal seeds
+    that pooled sigma is sigma_pooled; with unequal ones it weights the larger arm,
+    as the RMS does not. `beats` claims the treatment ahead, `loses` behind, and a
+    parity rule the gap inside +/- bar * sigma_pooled (the margin is in the referee's
+    convention): the larger p of the TOST's two one-sided tests.
     None when there is no spread to test against (sigma 0, or too few seeds)."""
-    df = n_treatment + n_control - 2
-    if df < 1 or not math.isfinite(sigmas):
+    (mt, st), (mc, sc) = mean_sigma(treatment), mean_sigma(control)
+    nt, nc = seeds(treatment), seeds(control)
+    df = nt + nc - 2
+    if df < 1:
         return None
-    scale = math.sqrt(1 / n_treatment + 1 / n_control)
+    spread = math.sqrt(((nt - 1) * st**2 + (nc - 1) * sc**2) / df)
+    if spread == 0.0:
+        return None
+    se = spread * math.sqrt(1 / nt + 1 / nc)
+    delta = mt - mc
     if rule == "beats":
-        return t_sf(sigmas / scale, df)
+        return t_sf(delta / se, df)
     if rule == "loses":
-        return t_sf(-sigmas / scale, df)
-    return max(t_sf((sigmas + bar) / scale, df), t_sf((bar - sigmas) / scale, df))
+        return t_sf(-delta / se, df)
+    margin = bar * pooled_sigma(treatment, control)
+    return max(t_sf((delta + margin) / se, df), t_sf((margin - delta) / se, df))
 
 
 @dataclass(frozen=True)
@@ -295,7 +308,7 @@ def _criterion_result(criterion: Criterion, results: dict[str, dict[str, Arm]]) 
         sig = separation(treatment, control)
         delta = mean_sigma(treatment)[0] - mean_sigma(control)[0]
         n = (seeds(treatment), seeds(control))
-        p = p_value(criterion.rule, sig, criterion.sigmas, *n) if pooled_sigma(treatment, control) > 0 else None
+        p = p_value(criterion.rule, treatment, control, criterion.sigmas)
         holds = RULES[criterion.rule](sig, criterion.sigmas, p)
         if criterion.min_delta is not None:
             holds = holds and {"beats": delta >= criterion.min_delta,

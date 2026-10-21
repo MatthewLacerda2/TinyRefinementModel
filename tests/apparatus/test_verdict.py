@@ -244,11 +244,34 @@ def test_two_sigma_reads_as_its_seed_count():
     """sigma_pooled is the seeds' spread, so the same 2σ is weak at two seeds a side
     and strong at eight."""
     from instruments.verdict import p_value
-    assert p_value("beats", 2.0, 2.0, 2, 2) == pytest.approx(0.0918, abs=1e-4)
-    assert p_value("beats", 2.0, 2.0, 3, 3) == pytest.approx(0.0352, abs=1e-4)
-    assert p_value("beats", 2.0, 2.0, 8, 8) == pytest.approx(0.00066, abs=1e-5)
-    assert p_value("beats", math.inf, 2.0, 3, 3) is None
-    assert p_value("beats", 2.0, 2.0, 1, 1) is None
+
+    def two_sigma(n, sigma=1.0):
+        return Summary(mean=2.0, sigma=sigma, n=n), Summary(mean=0.0, sigma=sigma, n=n)
+
+    assert p_value("beats", *two_sigma(2), 2.0) == pytest.approx(0.0918, abs=1e-4)
+    assert p_value("beats", *two_sigma(3), 2.0) == pytest.approx(0.0352, abs=1e-4)
+    assert p_value("beats", *two_sigma(8), 2.0) == pytest.approx(0.00066, abs=1e-5)
+    assert p_value("beats", *two_sigma(3, sigma=0.0), 2.0) is None
+    assert p_value("beats", *two_sigma(1), 2.0) is None
+
+
+def test_unequal_seeds_pool_by_degrees_of_freedom():
+    """Two quiet seeds against eight noisy ones: the RMS of the sigmas (0.707) would
+    overstate t; Student's pooling weights the larger arm (sigma 0.935)."""
+    from instruments.verdict import p_value, t_sf
+    treatment, control = Summary(mean=2.0, sigma=0.0, n=2), Summary(mean=0.0, sigma=1.0, n=8)
+    expected = t_sf(2.0 / (math.sqrt(7 / 8) * math.sqrt(1 / 2 + 1 / 8)), 8)
+    assert p_value("beats", treatment, control, 2.0) == pytest.approx(expected)
+
+
+def test_the_incomplete_beta_reflects_once_at_its_threshold():
+    """Rounding can put x on both sides of (a+1)/(a+b+2); a second reflection would
+    recurse until the stack ran out."""
+    from instruments.verdict import _betainc
+    for a, b in ((0.5, 3.7), (2.3, 11.0), (7.0, 0.5)):
+        x = (a + 1) / (a + b + 2)
+        for probe in (math.nextafter(x, 0.0), x, math.nextafter(x, 1.0)):
+            assert 0.0 <= _betainc(a, b, probe) <= 1.0
 
 
 def test_equivalent_needs_the_gap_shown_inside_the_margin():

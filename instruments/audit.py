@@ -449,8 +449,8 @@ def holds_at_seed_count(a: Audited) -> Status:
     weak = []
     for result in a.verdict.criteria if a.verdict else ():
         c = result.criterion
-        held = [p for p in result.points if p.holds and p.p is not None]
-        short = [p for p in held if p.p > ALPHA]
+        held = [p for p in result.points if p.holds]
+        short = [p for p in held if p.p is not None and p.p > ALPHA]
         if c.name not in carrying or not short or (c.require == "any" and len(short) < len(held)):
             continue
         shown = "parity not shown, only no difference seen" if c.rule in PARITY_RULES else "short of the bar"

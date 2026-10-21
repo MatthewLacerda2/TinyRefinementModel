@@ -43,13 +43,15 @@ Four comparison rules:
 - `beats` — `Δ ≥ n·σ_pooled`, a win
 - `loses` — `Δ ≤ −n·σ_pooled`, a kill trigger
 - `equivalent` — parity / no harm *shown*: the gap's 90% confidence interval lies
-  inside `±n·σ_pooled` (a TOST at one-sided p ≤ 0.05)
+  inside `±n·σ_pooled` (a TOST at one-sided p ≤ 0.05). It never holds at σ_pooled 0:
+  identical seeds (a quantized tokens-to-target reading) show nothing, so state a
+  parity claim on such a metric with the interpolated crossing (#547)
 - `within` — `|Δ| ≤ n·σ_pooled`: no difference *seen*. How the recorded parity
   claims were registered, kept so they read as registered; a new parity claim uses
   `equivalent`
 
-Every point also reports the one-sided p of its rule's claim, from a two-sample t on
-the separation with each arm's seed count (#599). σ_pooled is the seeds' spread, not
+Every point also reports the one-sided p of its rule's claim, from Student's two-sample t
+with each arm's seed count (#599). σ_pooled is the seeds' spread, not
 the error of the means, so the same 2σ is p 0.09 at two seeds a side, 0.035 at three,
 0.0007 at eight. The rule decides; `python -m instruments.audit` flags a carrying
 criterion whose p is above 0.05 (`holds-at-seed-count`). Parity is what costs seeds:
