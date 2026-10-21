@@ -1,8 +1,8 @@
 # Model registry
 
 A curated record of models worth keeping, so we can compare, fine-tune from, or
-regenerate them later. The guiding idea (see `CLAUDE.md` → "The model registry &
-reproducibility"):
+regenerate them later. The guiding idea (see `CLAUDE.md` → "Weights, cards and
+storage"):
 
 **Weights are a cache; the recipe is the master copy.** If a run is deterministic —
 same commit, config, seed, tokenizer, data manifest — then losing the weights costs
