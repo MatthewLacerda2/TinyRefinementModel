@@ -27,6 +27,10 @@ import tomllib
 
 import pytest
 
+# verdict.PARITY_RULES, spelled out: this lint runs in CI's lint job, which has no
+# pydantic for verdict.py to import. test_verdict.py holds the two equal.
+PARITY_RULES = ("within", "equivalent")
+
 # Needs neither jax, numpy nor tests/conftest.py: CI runs it in the seconds-long
 # lint job instead of the jax-heavy pytest job (#325).
 pytestmark = pytest.mark.jaxfree
@@ -58,7 +62,7 @@ def test_a_parity_keep_declares_a_floor_or_says_why_not(path):
     constants = {name for name, body in spec.get("arms", {}).items()
                  if body.get("constant")}
 
-    parity = [k for k in keep_if if criteria.get(k, {}).get("rule") == "within"]
+    parity = [k for k in keep_if if criteria.get(k, {}).get("rule") in PARITY_RULES]
     if not parity:
         return
 
@@ -110,3 +114,13 @@ def test_no_spec_still_carries_a_scaffold_placeholder(path):
         f"{path.name} still carries a scaffold placeholder. Fill every TODO before "
         f"committing — the criteria are only criteria because git records that they "
         f"preceded the numbers, and a placeholder preceded nothing.")
+
+
+def test_an_equivalent_parity_keep_needs_a_floor_too(tmp_path):
+    """`equivalent` shows parity more strictly than `within`, but two arms that both
+    guess the mode are equivalent all the same (#246)."""
+    path = tmp_path / "x.toml"
+    path.write_text('[criteria.same]\nrule = "equivalent"\ntreatment = "t"\ncontrol = "c"\nsigmas = 2.0\n'
+                    '[verdict]\nkeep_if = ["same"]\n')
+    with pytest.raises(AssertionError, match="declares no floor"):
+        test_a_parity_keep_declares_a_floor_or_says_why_not(path)

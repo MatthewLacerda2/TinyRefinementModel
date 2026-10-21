@@ -466,7 +466,7 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
     lines += ["## Criteria", "", "| criterion | rule | comparison | separation | met |", "|---|---|---|---|---|"]
     for c in verdict.criteria:
         crit = c.criterion
-        detail = ", ".join(f"{p.point} {p.sigmas:+.2f}σ" for p in c.points)
+        detail = ", ".join(p.describe() for p in c.points)
         lines.append(f"| {crit.name} | {crit.rule} {crit.sigmas}σ ({crit.require}) | "
                      f"{crit.treatment} vs {crit.control} | {detail} | {'yes' if c.holds else 'NO'} |")
 
@@ -543,6 +543,11 @@ rule = "loses"
 treatment = "treatment"
 control = "control"
 sigmas = 2.0
+
+# A parity / no-harm claim is rule = "equivalent": the gap's 90% interval inside
+# +/- sigmas * sigma_pooled (a TOST). It costs seeds: at a 2-sigma margin, three
+# a side show parity only for a gap under ~0.26 sigma, eight for one under ~1.1.
+# "within" passes whenever no difference was seen, which three seeds rarely can (#599).
 
 [verdict]
 keep_if = ["treatment_wins"]

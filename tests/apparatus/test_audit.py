@@ -71,7 +71,7 @@ treated = {treated}
 """
 
 
-def spec_text(*, control=(0.90, 0.91, 0.92), treated=(0.92, 0.93, 0.91), recorded=None,
+def spec_text(*, control=(0.90, 0.91, 0.92), treated=(0.906, 0.916, 0.911), recorded=None,
               hypothesis="Prediction registered: parity.", status="open", metric_key="acc",
               protocol_extra="", arms_extra="", results_extra="", extra="", results=True, id="001-toy"):
     text = SPEC.format(id=id, status=status, hypothesis=hypothesis, metric_key=metric_key,
@@ -234,7 +234,8 @@ def test_noise_ten_times_the_gap_on_a_carrying_criterion_is_noted_not_red(repo):
     assert a.verdict.outcome == "KEEP"
     s = audit.sigma_plausible(a)
     assert s.state == GREEN and "no difference the measurement could see" in s.reason
-    assert audit.sigma_plausible(load(repo, spec_text())).reason == ""  # a resolved gap gets no note
+    resolved = spec_text(treated=(0.92, 0.93, 0.91))  # a 1σ gap
+    assert audit.sigma_plausible(load(repo, resolved)).reason == ""
 
 
 MARGIN_SPEC = """\
@@ -365,6 +366,79 @@ def test_a_spec_registered_before_the_rule_is_grandfathered(git_repo):
 
 def test_a_metric_with_no_cap_has_no_target_to_place(repo):
     assert audit.target_reached_late(load(repo, spec_text())).state == NA
+
+
+# --- holds-at-seed-count ------------------------------------------------------------------
+
+def test_a_parity_keep_on_a_gap_three_seeds_cannot_resolve_is_red(repo):
+    """One sigma apart with three seeds a side: `within 2σ` holds, but the gap's 90%
+    interval reaches past the margin, so parity was never shown (#599)."""
+    a = load(repo, spec_text(treated=(0.92, 0.93, 0.91)))
+    assert a.verdict.outcome == "KEEP"
+    s = audit.holds_at_seed_count(a)
+    assert s.state == RED and "parity not shown" in s.reason and "3+3 seeds" in s.reason
+
+
+def test_a_parity_keep_inside_the_margin_at_its_seed_count_is_green(repo):
+    assert audit.holds_at_seed_count(load(repo, spec_text())).state == GREEN
+
+
+def test_a_two_seed_kill_at_two_sigma_is_short_of_the_bar(repo):
+    """2σ is p 0.09 with two seeds a side: the sigma bar holds, the t-test does not."""
+    a = load(repo, spec_text(control=(0.90, 0.92), treated=(0.871, 0.891)))
+    assert a.verdict.outcome == "KILL"
+    s = audit.holds_at_seed_count(a)
+    assert s.state == RED and "short of the bar" in s.reason and "2+2 seeds" in s.reason
+
+
+ANY_SPEC = """\
+[experiment]
+id = "002-any"
+title = "two points, either will do"
+hypothesis = "Prediction registered: a win at one point."
+
+[arms.control]
+role = "control"
+[arms.treated]
+role = "treatment"
+
+[criteria.wins]
+rule = "beats"
+treatment = "treated"
+control = "control"
+sigmas = 2.0
+min_delta = 1.0
+points = ["quantized", "noisy"]
+require = "any"
+
+[verdict]
+keep_if = ["wins"]
+
+[results.quantized]
+control = [10.0, 10.0, 10.0]
+treated = [12.0, 12.0, 12.0]
+
+[results.noisy]
+control = [0.0, 1.4142]
+treated = [2.2, 3.6142]
+"""
+
+
+def test_a_sigma_zero_point_that_carried_a_require_any_is_not_overruled(repo):
+    """The quantized point holds on its registered margin and has no p; the noisy
+    one holds weakly. Either was enough, so the weak one is not the verdict's basis."""
+    a = load(repo, ANY_SPEC, name="002-any.toml")
+    assert a.verdict.outcome == "KEEP"
+    noisy = next(p for p in a.verdict.criteria[0].points if p.point == "noisy")
+    assert noisy.holds and noisy.p > 0.05  # 2.2σ on two seeds a side
+    assert audit.holds_at_seed_count(a).state == GREEN
+
+
+def test_a_spec_registered_before_the_t_test_rule_is_grandfathered(git_repo):
+    path = write_spec(git_repo, spec_text(treated=(0.92, 0.93, 0.91)))
+    git(git_repo, "add", "."), git(git_repo, "commit", "-qm", "a parity pair", date="2026-10-03T12:00:00")
+    s = audit.holds_at_seed_count(audit.load(path, git_repo))
+    assert s.state == GRANDFATHERED and "2026-10-03" in s.reason and "p " in s.reason
 
 
 # --- prediction-registered / verdict-current ---------------------------------------------
@@ -558,7 +632,7 @@ def test_the_scope_map(repo):
 def test_the_rule_names_are_the_ones_the_issue_registers(repo):
     result = states(repo, load(repo, spec_text()))
     assert list(result) == ["floor-both-arms", "control-reached-target", "target-reached-late", "seeds-complete", "sigma-plausible",
-                            "prediction-registered", "criteria-predate-results", "verdict-current",
+                            "holds-at-seed-count", "prediction-registered", "criteria-predate-results", "verdict-current",
                             "finding-cites-spec", "run-ended-by-budget"]
 
 
