@@ -38,11 +38,23 @@ A key the machine acts on is strict: an unknown key in `[experiment]`, `[arms.*]
 the table and the key. `[protocol]` types the keys tools read and keeps the rest
 as written, since retrofits record their own setup there.
 
-Three comparison rules, which is all the recorded experiments have ever needed:
+Four comparison rules:
 
-- `within` — `|Δ| ≤ n·σ_pooled`, i.e. parity / no harm
 - `beats` — `Δ ≥ n·σ_pooled`, a win
 - `loses` — `Δ ≤ −n·σ_pooled`, a kill trigger
+- `equivalent` — parity / no harm *shown*: the gap's 90% confidence interval lies
+  inside `±n·σ_pooled` (a TOST at one-sided p ≤ 0.05)
+- `within` — `|Δ| ≤ n·σ_pooled`: no difference *seen*. How the recorded parity
+  claims were registered, kept so they read as registered; a new parity claim uses
+  `equivalent`
+
+Every point also reports the one-sided p of its rule's claim, from a two-sample t on
+the separation with each arm's seed count (#599). σ_pooled is the seeds' spread, not
+the error of the means, so the same 2σ is p 0.09 at two seeds a side, 0.035 at three,
+0.0007 at eight. The rule decides; `python -m instruments.audit` flags a carrying
+criterion whose p is above 0.05 (`holds-at-seed-count`). Parity is what costs seeds:
+at a 2σ margin, three a side show it only for a gap under ~0.26σ, eight for one
+under ~1.1σ.
 
 `points` names which sweep points a criterion covers; `require = "all" | "any"`
 says whether every point must satisfy it or merely one.

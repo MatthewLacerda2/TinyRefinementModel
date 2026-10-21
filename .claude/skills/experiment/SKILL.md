@@ -24,6 +24,9 @@ writes a skeleton with the runner's two traps already avoided. Fill in:
 - **arms**: the control is identical but for one knob — same seeds, same data order,
   same backend (never resume a half-CPU sweep on the GPU).
 - **a floor arm** whenever a criterion is parity: two failing arms are "within 2σ" too (rule 1).
+- **parity is `equivalent`, and it costs seeds**: shown only when the gap's 90% interval
+  sits inside the margin, so at 2σ three seeds a side pass only a gap under ~0.26σ, and
+  ~8 are needed for a gap near 1σ. `beats` at 2σ is fine from 3 seeds a side.
 - **criteria** against the noise floor, plus the kill/keep bars.
 - **the prediction**, and the direction you were wrong last time (rule 3).
 - **length**, from these defaults for real-model pairs: the LR schedule completes
@@ -68,8 +71,8 @@ seeds, activation margins, pace). To re-read later:
 `python -m instruments.pair_report <spec> --runs <dir>`. Then `make audit` checks
 whether the verdict can be trusted (CI runs it too).
 
-Read the σ with its seed count in mind: `verdict.py` compares raw multiples of σ_pooled,
-and with 3 seeds a 2σ gap is weaker evidence than the number suggests (#599).
+Each point prints its p beside the σ, with its seed count. The audit's
+`holds-at-seed-count` flags a carrying criterion above p 0.05 (#599).
 
 ## 4. Record (rule 5)
 

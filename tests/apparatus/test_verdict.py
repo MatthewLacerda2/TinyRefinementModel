@@ -224,3 +224,47 @@ def test_min_delta_stops_a_significant_but_small_win_from_counting(tmp_path):
     assert evaluate(spec, small).outcome == INCONCLUSIVE
     assert evaluate(spec, big).outcome == KEEP
     assert "Δ +18" in evaluate(spec, big).describe()
+
+
+# --- the t-test beside sigma (#599) -------------------------------------------------
+
+@pytest.mark.parametrize("t, df, expected", [
+    (0.0, 4, 0.5),
+    (1.0, 1, 0.25),          # Cauchy: arctan(1)/pi from the top
+    (2.776445, 4, 0.025),    # the textbook two-sided 95% critical value
+    (1.812461, 10, 0.05),
+    (-2.776445, 4, 0.975),
+])
+def test_t_tail_reproduces_the_tables(t, df, expected):
+    from instruments.verdict import t_sf
+    assert t_sf(t, df) == pytest.approx(expected, abs=1e-6)
+
+
+def test_two_sigma_reads_as_its_seed_count():
+    """sigma_pooled is the seeds' spread, so the same 2σ is weak at two seeds a side
+    and strong at eight."""
+    from instruments.verdict import p_value
+    assert p_value("beats", 2.0, 2.0, 2, 2) == pytest.approx(0.0918, abs=1e-4)
+    assert p_value("beats", 2.0, 2.0, 3, 3) == pytest.approx(0.0352, abs=1e-4)
+    assert p_value("beats", 2.0, 2.0, 8, 8) == pytest.approx(0.00066, abs=1e-5)
+    assert p_value("beats", math.inf, 2.0, 3, 3) is None
+    assert p_value("beats", 2.0, 2.0, 1, 1) is None
+
+
+def test_equivalent_needs_the_gap_shown_inside_the_margin():
+    """`within` passes a 1σ gap at three seeds; `equivalent` (a TOST) does not until
+    the seeds pin the means down."""
+    from instruments.verdict import Criterion, Spec
+
+    def outcome(rule, control, treated):
+        spec = Spec(id="x", title="t", hypothesis="h",
+                    criteria={"c": Criterion("c", rule, "t", "c", 2.0)}, keep_if=("c",), kill_if=())
+        return evaluate(spec, {"p": {"t": treated, "c": control}}).outcome
+
+    control = [0.0, 1.0, 2.0]
+    one_sigma = [1.0, 2.0, 3.0]
+    assert outcome("within", control, one_sigma) == KEEP
+    assert outcome("equivalent", control, one_sigma) == INCONCLUSIVE
+    eight = [float(i % 2) * 2 for i in range(8)]                 # mean 1, σ ≈ 1.07
+    assert outcome("equivalent", eight, [v + 0.1 for v in eight]) == KEEP
+    assert outcome("equivalent", [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]) == INCONCLUSIVE  # σ 0 shows nothing

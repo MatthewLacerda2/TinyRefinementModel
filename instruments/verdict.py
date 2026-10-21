@@ -17,6 +17,13 @@ used, and `test_verdict.py` proves it by reproducing their published sigma
 figures from their published per-seed numbers. If this module ever disagrees
 with a finding, one of the two is wrong and that is worth knowing.
 
+**Beside sigma, a t-test.** sigma_pooled is the seeds' spread, not the error of
+the means, so a gap of k sigmas with n seeds a side is a t of k*sqrt(n/2): the 2-sigma
+bar is one-sided p 0.035 at three seeds and 0.09 at two (#599). Each point reports
+the one-sided p of the claim its rule makes, so that is visible. `within` reads
+parity off a gap that was merely not shown; `equivalent` asks the gap to be shown
+inside the margin (a TOST), which is what a parity claim means.
+
 A verdict is deliberately three-valued. KEEP and KILL are the pre-registered
 branches; INCONCLUSIVE is what you get when neither fired, and it is a real
 answer — #77 landed there twice and the honest record says so.
@@ -31,16 +38,31 @@ from typing import Sequence
 
 from instruments.spec_file import SpecFile, SummaryTable
 
+# One-sided significance for the t-test each point reports (#599). For `equivalent`
+# it is a TOST: the gap's 90% confidence interval lies inside +/- the margin.
+ALPHA = 0.05
+
 # Comparison rules a criterion may use. Each takes the signed separation in
-# sigmas (treatment minus control) and the bar, and says whether it holds.
+# sigmas (treatment minus control), the bar, and the point's p (None when sigma is
+# 0 or an arm has one seed), and says whether it holds.
 RULES = {
-    # Parity / no-harm: the arms are indistinguishable at this resolution.
-    "within": lambda sigmas, bar: abs(sigmas) <= bar,
+    # No difference seen: the gap is inside the bar, whether or not the seeds could
+    # have shown one. Kept as registered; a new parity claim uses `equivalent`.
+    "within": lambda sigmas, bar, p: abs(sigmas) <= bar,
+    # Parity shown: the gap is inside +/- bar sigmas at confidence 1 - ALPHA.
+    "equivalent": lambda sigmas, bar, p: p is not None and p <= ALPHA,
     # A win: treatment is ahead by at least the bar.
-    "beats": lambda sigmas, bar: sigmas >= bar,
+    "beats": lambda sigmas, bar, p: sigmas >= bar,
     # A loss big enough to trigger a kill branch.
-    "loses": lambda sigmas, bar: sigmas <= -bar,
+    "loses": lambda sigmas, bar, p: sigmas <= -bar,
 }
+PARITY_RULES = ("within", "equivalent")
+
+# The continued fraction behind the t distribution's tail; the audit's CI job has
+# no scipy, so the referee carries its own.
+_BETA_TERMS = 200
+_BETA_EPS = 1e-12
+_BETA_TINY = 1e-300
 
 KEEP, KILL, INCONCLUSIVE = "KEEP", "KILL", "INCONCLUSIVE"
 
@@ -85,6 +107,10 @@ def mean_sigma(arm: Arm) -> tuple[float, float]:
     return statistics.fmean(values), statistics.stdev(values)
 
 
+def seeds(arm: Arm) -> int:
+    return arm.n if isinstance(arm, Summary) else len(arm)
+
+
 def pooled_sigma(treatment: Arm, control: Arm) -> float:
     """RMS of the two arms' sample sigmas — the repo's noise-floor convention."""
     _, st = mean_sigma(treatment)
@@ -109,6 +135,60 @@ def separation(treatment: Arm, control: Arm) -> float:
     return delta / sigma
 
 
+def _nonzero(x: float) -> float:
+    return x if abs(x) > _BETA_TINY else _BETA_TINY
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """The regularized incomplete beta I_x(a, b), by Lentz's continued fraction
+    (Numerical Recipes, section 6.4)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    if x > (a + 1) / (a + b + 2):
+        return 1.0 - _betainc(b, a, 1.0 - x)
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                     + a * math.log(x) + b * math.log1p(-x)) / a
+    c, d = 1.0, 1.0 / _nonzero(1.0 - (a + b) * x / (a + 1))
+    f = d
+    for m in range(1, _BETA_TERMS):
+        step = 1.0
+        for num in (m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+                    -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))):
+            d = 1.0 / _nonzero(1.0 + num * d)
+            c = _nonzero(1.0 + num / c)
+            step = c * d
+            f *= step
+        if abs(step - 1.0) < _BETA_EPS:
+            break
+    return front * f
+
+
+def t_sf(t: float, df: float) -> float:
+    """P(T > t) for Student's t with df degrees of freedom."""
+    tail = 0.5 * _betainc(df / 2, 0.5, df / (df + t * t))
+    return tail if t >= 0 else 1.0 - tail
+
+
+def p_value(rule: str, sigmas: float, bar: float, n_treatment: int, n_control: int) -> float | None:
+    """One-sided p of the claim a rule makes, from a two-sample t on the separation:
+    t = sigmas / sqrt(1/n_t + 1/n_c) with n_t + n_c - 2 degrees of freedom (Student's
+    pooled t when the arms have equal seeds, since sigma_pooled is their RMS).
+    `beats` claims the treatment ahead, `loses` behind, and a parity rule claims the
+    gap inside +/- bar: the larger p of the TOST's two one-sided tests.
+    None when there is no spread to test against (sigma 0, or too few seeds)."""
+    df = n_treatment + n_control - 2
+    if df < 1 or not math.isfinite(sigmas):
+        return None
+    scale = math.sqrt(1 / n_treatment + 1 / n_control)
+    if rule == "beats":
+        return t_sf(sigmas / scale, df)
+    if rule == "loses":
+        return t_sf(-sigmas / scale, df)
+    return max(t_sf((sigmas + bar) / scale, df), t_sf((bar - sigmas) / scale, df))
+
+
 @dataclass(frozen=True)
 class Criterion:
     """One pre-registered comparison. `points` names the sweep points it covers;
@@ -130,7 +210,7 @@ class Criterion:
     def __post_init__(self):
         if self.rule not in RULES:
             raise ValueError(f"{self.name}: unknown rule {self.rule!r}; expected one of {sorted(RULES)}")
-        if self.min_delta is not None and self.rule == "within":
+        if self.min_delta is not None and self.rule in PARITY_RULES:
             raise ValueError(f"{self.name}: min_delta makes no sense for a parity rule")
         if self.require not in ("all", "any"):
             raise ValueError(f"{self.name}: require must be 'all' or 'any', got {self.require!r}")
@@ -167,6 +247,12 @@ class PointResult:
     sigmas: float
     holds: bool
     delta: float = 0.0  # treatment mean minus control mean, in the metric's units
+    p: float | None = None  # one-sided p of the rule's claim (p_value); None at sigma 0
+    seeds: tuple[int, int] = (0, 0)  # (treatment, control)
+
+    def describe(self) -> str:
+        p = f", p {self.p:.3f}" if self.p is not None else ""
+        return f"{self.point}: {self.sigmas:+.2f}σ (Δ {self.delta:+.4g}{p})"
 
 
 @dataclass(frozen=True)
@@ -179,7 +265,7 @@ class CriterionResult:
         bar = f"{self.criterion.rule} {self.criterion.sigmas}σ"
         if self.criterion.min_delta is not None:
             bar += f" and |Δ| ≥ {self.criterion.min_delta:g}"
-        detail = ", ".join(f"{p.point}: {p.sigmas:+.2f}σ (Δ {p.delta:+.4g})" for p in self.points)
+        detail = ", ".join(p.describe() for p in self.points)
         return f"{self.criterion.name} [{bar}, {self.criterion.require}] → {'met' if self.holds else 'NOT met'} ({detail})"
 
 
@@ -205,13 +291,16 @@ def _criterion_result(criterion: Criterion, results: dict[str, dict[str, Arm]]) 
         for arm in (criterion.treatment, criterion.control):
             if arm not in arms:
                 raise KeyError(f"{criterion.name}: point {point!r} has no arm {arm!r}")
-        sig = separation(arms[criterion.treatment], arms[criterion.control])
-        delta = mean_sigma(arms[criterion.treatment])[0] - mean_sigma(arms[criterion.control])[0]
-        holds = RULES[criterion.rule](sig, criterion.sigmas)
+        treatment, control = arms[criterion.treatment], arms[criterion.control]
+        sig = separation(treatment, control)
+        delta = mean_sigma(treatment)[0] - mean_sigma(control)[0]
+        n = (seeds(treatment), seeds(control))
+        p = p_value(criterion.rule, sig, criterion.sigmas, *n) if pooled_sigma(treatment, control) > 0 else None
+        holds = RULES[criterion.rule](sig, criterion.sigmas, p)
         if criterion.min_delta is not None:
             holds = holds and {"beats": delta >= criterion.min_delta,
                                "loses": delta <= -criterion.min_delta}[criterion.rule]
-        evaluated.append(PointResult(point, sig, holds, delta))
+        evaluated.append(PointResult(point, sig, holds, delta, p, n))
     holds = (all if criterion.require == "all" else any)(p.holds for p in evaluated)
     return CriterionResult(criterion, tuple(evaluated), holds)
 
