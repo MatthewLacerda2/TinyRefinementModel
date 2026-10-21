@@ -27,7 +27,9 @@ import tomllib
 
 import pytest
 
-from instruments.verdict import PARITY_RULES
+# verdict.PARITY_RULES, spelled out: this lint runs in CI's lint job, which has no
+# pydantic for verdict.py to import. test_verdict.py holds the two equal.
+PARITY_RULES = ("within", "equivalent")
 
 # Needs neither jax, numpy nor tests/conftest.py: CI runs it in the seconds-long
 # lint job instead of the jax-heavy pytest job (#325).

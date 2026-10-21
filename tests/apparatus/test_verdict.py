@@ -291,3 +291,9 @@ def test_equivalent_needs_the_gap_shown_inside_the_margin():
     eight = [float(i % 2) * 2 for i in range(8)]                 # mean 1, σ ≈ 1.07
     assert outcome("equivalent", eight, [v + 0.1 for v in eight]) == KEEP
     assert outcome("equivalent", [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]) == INCONCLUSIVE  # σ 0 shows nothing
+
+
+def test_the_floor_lint_knows_every_parity_rule():
+    from instruments.verdict import PARITY_RULES
+    from tests.apparatus.test_spec_floor_lint import PARITY_RULES as LINTED
+    assert LINTED == PARITY_RULES
