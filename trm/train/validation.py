@@ -18,13 +18,17 @@ from trm.train.losses import chunked_cross_entropy_rows
 
 # The fineweb slice starts at VAL_SKIP_SAMPLES, past any plausible training
 # consumption, and reads EVAL_ROWS rows (both trm/settings.py).
-# The other corpora the trainer probes (#363), each read from its own tail: the last
-# VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus. The
-# shipped end-mix is 40% code and 25% math, and a probe that reads prose alone cannot
-# see what a mixture change costs them. fineweb keeps its fixed skip above, so every
-# val_ce on record stays comparable.
-VAL_BY_SOURCE = ("codeparrot", "finemath")
+# Every other bucket of the run's mixture is probed too (#363), each from its own tail:
+# the last VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus.
+# A probe that reads prose alone cannot see what a mixture change costs the code and
+# math. fineweb keeps its fixed skip above, so every val_ce on record stays comparable.
 VAL_TAIL_ROWS = 20_000
+
+
+def by_source_buckets(sources):
+    """The buckets probed beside fineweb-edu: the rest of the mixture, by bucket name
+    (`pretrain/stack-edu` -> `stack-edu`)."""
+    return [name for name in (s.removeprefix("pretrain/") for s in sources) if name != "fineweb-edu"]
 
 
 def heldout_targets(targets, pad_token_id):

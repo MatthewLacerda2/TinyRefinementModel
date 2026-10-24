@@ -75,7 +75,10 @@ def test_copies_never_reach_a_chunk_and_the_manifest_says_so(prefill_into):
     items = [{"content": t} for t in originals] + [{"content": ""}] * 5 + [{"content": t} for t in copies]
     folder, status = prefill_into(items)
 
-    written = np.concatenate([np.load(f) for f in sorted(glob.glob(str(folder / "chunk_*.npy")))])
+    chunks = [np.load(f) for f in sorted(glob.glob(str(folder / "chunk_*.npy")))]
+    assert {c.dtype for c in chunks} == {np.dtype(np.uint16)}, "r50k ids fit in half of int32's disk"
+    written = np.concatenate(chunks)
+    assert written.max() == EOT, "the cast kept the largest id intact"
     kept_tokens = sum(len(fake_tokens(t)) for t in originals)
     assert kept_tokens - STRIDE < written.size <= kept_tokens, "only the originals were tokenized"
     assert status["items_processed"] == 80 and status["stream_offset"] == len(items)
@@ -127,3 +130,33 @@ def test_a_legacy_status_is_a_corpus_written_without_dedup(prefill_into, tmp_pat
     with pytest.raises(SystemExit, match="dedup=None"):
         prefill_into([])
     assert prefill.load_progress(str(folder), "code") == (32, 4_000_000_000, 1_234_567, 1_234_567)
+
+
+def test_shard_order_is_a_seeded_permutation_whatever_the_listing_order():
+    """A `shard_seed` source reads its files in one fixed permutation (#591): the same for
+    the same seed whatever order the hub lists them in, so a resume's offset lands on the
+    same record, and not the repo's own order, which runs by dump."""
+    files = [f"fineweb-edu-dedup/train-{i:05d}-of-00234.parquet" for i in range(234)]
+    order = prefill.shard_order(files, seed=0)
+    assert sorted(order) == files
+    assert order == prefill.shard_order(list(reversed(files)), seed=0)
+    assert order != files
+    assert order != prefill.shard_order(files, seed=1)
+
+
+def test_parquet_shards_skip_lands_where_reading_through_would(tmp_path, monkeypatch):
+    """ParquetShards (#591) skips by the footers' row counts, across files and row
+    groups, and must land on the record a plain read-through reaches."""
+    pa, pq = pytest.importorskip("pyarrow"), pytest.importorskip("pyarrow.parquet")
+    from fsspec.implementations.local import LocalFileSystem
+    monkeypatch.setattr(prefill, "HfFileSystem", LocalFileSystem)
+    texts = [f"doc{i}" for i in range(23)]
+    paths = []
+    for k, part in enumerate((texts[:10], texts[10:11], texts[11:])):
+        paths.append(str(tmp_path / f"shard{k}.parquet"))
+        pq.write_table(pa.table({"text": part, "id": list(range(len(part)))}), paths[-1], row_group_size=3)
+    shards = prefill.ParquetShards(paths)
+    assert [r["text"] for r in shards] == texts
+    for offset in (0, 2, 3, 9, 10, 11, 12, 22, 23):
+        assert [r["text"] for r in shards.skip(offset)] == texts[offset:]
+    assert [r["text"] for r in shards.skip(4).skip(5)] == texts[9:]

@@ -32,10 +32,15 @@ _OptSteps = Annotated[int | None, _optional(int)]
 # Set to any non-empty value means on, as it always has (see FORCE_F32_COMPUTE).
 _SetMeansOn = Annotated[bool, BeforeValidator(lambda v: bool(v))]
 
-# The default mixture: the ramp every run so far trained with (see DATA_MIXTURE).
-DEFAULT_DATA_MIXTURE = ("pretrain/fineweb-edu=0.85:0.35,"
-                        "pretrain/codeparrot=0.10:0.40,"
-                        "pretrain/finemath=0.05:0.25")
+# The default mixture (#597): the Smol Training Playbook's baseline, held the whole run.
+DEFAULT_DATA_MIXTURE = ("pretrain/fineweb-edu=0.70,"
+                        "pretrain/stack-edu=0.20,"
+                        "pretrain/finemath=0.10")
+# The ramp every run before #597 trained with. A checkpoint saved before #439 recorded no
+# bucket names, and these are its buckets, in order (see DataMixer.branch_state).
+LEGACY_DATA_MIXTURE = ("pretrain/fineweb-edu=0.85:0.35,"
+                       "pretrain/codeparrot=0.10:0.40,"
+                       "pretrain/finemath=0.05:0.25")
 
 # How far the LSH S-curve's knee, (1/bands)^(1/rows), may sit from DEDUP_THRESHOLD before
 # the validator says the bands and rows were not moved with it (see DEDUP_ROWS): 25 x 10
@@ -326,8 +331,9 @@ class Config(BaseSettings):
     # 3), so two arms that differ only here are a matched pair on the mixture. A pair
     # that informs a base run inherits that run's mixture.
     #
-    # The default is the ramp every run so far trained with, web-heavy to a code/math
-    # blend (#362), so an unset environment resolves bit-for-bit to what it always did.
+    # The default is the SmolLM team's published small-model mix (#597), constant: FineWeb-
+    # Edu 70, Stack-Edu Python 20, FineMath 10. Every run before it read LEGACY_DATA_MIXTURE,
+    # web-heavy ramping to a code/math blend (#362); set it to reproduce one of them.
     DATA_MIXTURE: str = DEFAULT_DATA_MIXTURE
     # Where the ramp ends, as a fraction of the LR schedule's decay horizon (#362): a
     # third of the way in, the shape the 4B champion trained with (10,000 of 30,518

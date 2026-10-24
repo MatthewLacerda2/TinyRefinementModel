@@ -16,7 +16,7 @@ from flax import nnx
 from trm.config import resolve_root
 from trm.data.loaders import DataMixer, TextDataGenerator
 from trm.model import build_model
-from trm.settings import DEFAULT_DATA_MIXTURE, load_env, location
+from trm.settings import LEGACY_DATA_MIXTURE, load_env, location
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules, mixture_label, parse_mixture
 
@@ -103,7 +103,7 @@ def resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_ste
         # is rebuilt, and each seed reads its own rows.
         if data_state is None:
             raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
-        pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
+        pretrain_mixer.branch_state(data_state, parse_mixture(LEGACY_DATA_MIXTURE)[0],
                                     skip=config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE)
         print(f"🌿 Data stream branched onto {', '.join(schedules.sources)}: seed {config.DATA_SEED} "
               f"skips {config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
