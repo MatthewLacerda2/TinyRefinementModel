@@ -27,21 +27,19 @@ empty, or the leftovers waived by the owner by name.
 make launch SPEC=experiments/base/specs/<id>.toml BUDGET=4e9 [ISSUE=N]
 ```
 
-It refuses without a committed spec or a budget, runs `make test-gpu`, and then the
-supervisor runs the real trainer for ~5 minutes and refuses a config that doesn't
-survive an apply, a probe and a checkpoint (#168). It derives the stop step, the
-checkpoint path and the run directory itself (`trm/runtime/launch.py`). Never assemble
-supervisor flags or a `systemd-run` line by hand.
+It derives the stop step, the checkpoint path and the run directory, and refuses what
+it can't run, saying why (`trm/runtime/launch.py`): no committed spec or budget, a
+failing `make test-gpu`, a config that doesn't survive ~5 minutes of the real trainer
+(#168), less than 12 GB of free disk (the supervisor's preflight).
 
-- `make launch` and `make pair` detach at `oom_score_adj` 100. Anything started by
-  hand from a Claude shell inherits Claude Code's 200 and becomes the kernel's first
-  OOM victim.
+- `make launch`, `make pair` and `instruments.experiment` detach at `oom_score_adj`
+  100. A trainer started by hand (`python -m trm.train.start`) from a Claude shell
+  inherits Claude Code's 200 and becomes the kernel's first OOM victim.
 - **Never as a Claude background task**: Claude Code kills its background tasks under
   low RAM, and the trainer dies with them.
 - While a run lives: **don't pull the root checkout** (the supervisor relaunches a
   crash from root), and no session runs anything that builds or compiles a JAX model
   locally. Lint and pure-Python tests only; the rest goes to CI.
-- Before launching: `df -h .`. A checkpoint write is what fails on a full disk.
 
 ## While it runs
 
@@ -57,8 +55,8 @@ noise; only a fired rule is news.
 not just finite loss.
 
 **After a power cut or reboot:** `make resume` (`trm-base-run-resume.service` does it
-at boot, #384). The resumed trainer continues from its newest checkpoint with an
-*estimated* data position: fine for a base run, never for a pair arm.
+at boot, #384). The resumed trainer continues from its newest checkpoint, its data
+position restored exactly (#424).
 
 ## When it OOMs
 
@@ -69,8 +67,8 @@ at boot, #384). The resumed trainer continues from its newest checkpoint with an
   reserved pool (~5003 MiB) whatever the model.
 - A BFC free-memory map like `***___*___` is fragmentation (enough free, nothing
   contiguous). `XLA_PYTHON_CLIENT_ALLOCATOR=cuda_async` is the default
-  (`trm/train/start.py`); `TF_GPU_ALLOCATOR` is silently ignored by JAX. Raising
-  `MEM_FRACTION` only moves the OOM.
+  (`trm/train/start.py`); `TF_GPU_ALLOCATOR` is silently ignored by JAX, and
+  `XLA_PYTHON_CLIENT_MEM_FRACTION` sizes only BFC's arena: inert under `cuda_async`.
 - A CUDA-graph instantiation OOM lives in driver memory outside the arena:
   `XLA_FLAGS=--xla_gpu_enable_command_buffer=` turns graphs off.
 

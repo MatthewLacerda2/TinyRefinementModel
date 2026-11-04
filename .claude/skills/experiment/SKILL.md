@@ -24,13 +24,10 @@ writes a skeleton with the runner's two traps already avoided. Fill in:
 - **arms**: the control is identical but for one knob — same seeds, same data order,
   same backend (never resume a half-CPU sweep on the GPU).
 - **a floor arm** whenever a criterion is parity: two failing arms are "within 2σ" too (rule 1).
-- **parity is `equivalent`, and it costs seeds**: shown only when the gap's 90% interval
-  sits inside the margin, so at 2σ three seeds a side pass only a gap under ~0.26σ, and
-  ~8 are needed for a gap near 1σ. `beats` at 2σ is fine from 3 seeds a side.
 - **criteria** against the noise floor, plus the kill/keep bars.
 - **the prediction**, and the direction you were wrong last time (rule 3).
 - **length**, from these defaults for real-model pairs: the LR schedule completes
-  in-run, ≥3 seeds, and the readout is tokens-to-target (`instruments/curves.py`),
+  in-run and the readout is tokens-to-target (`instruments/curves.py`),
   never CE at a fixed step.
 
   | change | opt steps | tokens | per arm-seed |
@@ -41,12 +38,12 @@ writes a skeleton with the runner's two traps already avoided. Fill in:
 
   A short pair inherits the schedule *shape* of the run it informs; warmup is the exception.
 
-**Commit the spec before any result exists.** The audit checks that the criteria commit
-came first.
+**Commit the spec before any result exists.**
 
 ## 2. Run
 
-Claim the issue and drop a "▶ started" comment (the card is a serial queue). Then:
+Claim the issue and name it in the spec's `issue`, so `make pair` posts the "▶ started"
+comment (the card is a serial queue). Then:
 
 ```
 make pair SPEC=experiments/<line>/specs/<id>.toml   # detached unit trm-pair, log runs/<id>.log
@@ -58,8 +55,6 @@ The gate runs `tests/core` first; `python -m instruments.pair start <spec> --no-
 skips it when it already passed on this exact code.
 - **Don't pull the root checkout while a pair runs.** Every arm imports `trm/` from root;
   work in a sibling worktree.
-- A partial arm that died restarts from zero: resume only *estimates* the data position,
-  which breaks same-data-order matching.
 - **Never start a GPU job as a Claude background task.** Claude Code kills those under low
   RAM, and the trainer dies with them. `make pair` detaches properly.
 
@@ -68,21 +63,16 @@ skips it when it already passed on this exact code.
 The runner appends `[results.*]` to the spec and prints the referee's verdict
 (KEEP / KILL / INCONCLUSIVE), then `pair_report` (the CE curve against the control, the
 seeds, activation margins, pace). To re-read later:
-`python -m instruments.pair_report <spec> --runs <dir>`. Then `make audit` checks
-whether the verdict can be trusted (CI runs it too).
-
-Each point prints its p beside the σ, with its seed count. The audit's
-`holds-at-seed-count` flags a carrying criterion above p 0.05 (#599).
+`python -m instruments.pair_report <spec> --runs <dir>`. `make audit` checks whether
+the verdict can be trusted before CI does.
 
 ## 4. Record (rule 5)
 
 - **Not novel** → the PR is the record (what ran, numbers, verdict). If it kills or gates
   something, add one tombstone line to the `docs/ROADMAP.md` graveyard linking the PR.
 - **Novel, or unsure** → `docs/findings/<date>-<claim>.md`, starting from the draft the
-  runner wrote into the run folder. It must cite `Spec: <path>` or
-  `Evidence: observational — <why no control applies>`, and gets one line in
-  `docs/findings/README.md`.
-- **A kill takes its apparatus with it (rule 6):** the same PR deletes the line's harness
-  and its `tests/apparatus/` guards. Grep `tests/apparatus/` first. The `specs/` stay.
+  runner wrote into the run folder.
+- **A kill takes its apparatus with it (rule 6):** grep `tests/apparatus/` before opening
+  the tombstone PR.
 
 The PR says "novel because…" or "settled by…".

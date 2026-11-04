@@ -52,9 +52,8 @@ under `systemd-run --user -p OOMScoreAdjust=100` where a user manager runs, so a
 started from a Claude shell is not the kernel's first OOM victim (#524), and the
 banner prints the supervisor's `oom_score_adj`.
 
-The data position after a resume is an estimate (fine for a base run, not for a
-matched pair), and what a cut costs is the steps since the last checkpoint,
-CHECKPOINT_EVERY_OPT_STEPS at most.
+A resume restores the data position exactly (#424); what a cut costs is the steps
+since the last checkpoint, CHECKPOINT_EVERY_OPT_STEPS at most.
 """
 
 from __future__ import annotations

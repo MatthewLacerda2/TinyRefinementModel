@@ -1,9 +1,7 @@
 # Working agreement & research doctrine
 
 How we work together, how we know a result is real, how the repo is laid out, and
-where to dig into what we already learned. It should fit in your head in one sitting;
-when it stops fitting, split a piece into a skill (below) instead of letting it sprawl.
-It holds what is specific to this project. What the literature settles, Claude already
+where to dig into what we already learned. It holds what is specific to this project. What the literature settles, Claude already
 knows; this file doesn't restate it.
 
 ## How we work
@@ -69,32 +67,22 @@ how its apparatus gets cleaned up. The procedure is the `experiment` skill.
    - **Not novel** (we confirmed what the literature settles): the PR is the record. If
      it kills or gates something, one tombstone line in the ROADMAP graveyard links it.
    - **Novel** (Claude doesn't know it and can't find it online — negatives included,
-     they're the moat): a dated `docs/findings/` entry citing `Spec: <path>` or
-     `Evidence: observational — <why>`. **Unsure → novel**: deleting a finding is cheap,
-     rediscovering one isn't.
-   - The PR says "novel because…" or "settled by…". `python -m instruments.audit`
-     checks in CI whether a verdict can be trusted, never what it is. Exploration needs
-     no ceremony; publication does.
+     they're the moat): a dated `docs/findings/` entry. **Unsure → novel**: deleting a
+     finding is cheap, rediscovering one isn't.
+   - The PR says "novel because…" or "settled by…". Exploration needs no ceremony;
+     publication does.
 6. **A tombstone takes its apparatus with it.** The PR that writes a graveyard entry
    deletes that line's harness and its `tests/apparatus/` guards in the same diff; its
    `specs/` stay, because findings cite them. This is the one rule that stops the suite
    from growing forever.
 
-**Rules the build enforces** (each guarded by a test; this keeps only the why):
-- **No hidden defaults on the hot path.** Every knob is a `Config` field in
-  `trm/settings.py`, recorded in the run's metadata — an unnamed default is a recipe
-  nobody chose.
-- **Config is read once, by `Config.from_env`, and passed down.** No other environment
-  read in `trm/` (paths go through `settings.location`), no knob as a module constant;
-  only entry points read `CONFIG` (#475).
-- **Outside data is parsed into a typed object at the boundary** — `Config`,
-  `spec_file`, `ResumeState`, `RunMetadata` — so a misspelled key fails where it's read,
-  never mid-run (#475, #477, #478, #578).
+**Code rules the tests can't fully see** (where a test does, it fails with the reason):
+- **No hidden defaults on the hot path.** Every knob the model or optimizer reads is a
+  `Config` field in `trm/settings.py`: an unnamed default is a recipe nobody chose (#475).
+- **Outside data is parsed into a typed object at the boundary**, so a misspelled key
+  fails where it's read, never mid-run — a new file format gets its model too (#578).
 - **Dtype policy: matmuls in f16, accumulators in f32.** An accumulator that isn't f32
-  has a line in `trm/config.py` saying why; that file, not this one, says which.
-- **Every schedule declares its horizon** (steps or a fraction of the budget) and the
-  launch banner prints both. A short pair inherits the shape of the run it informs;
-  warmup is the exception.
+  has a line in `trm/config.py` saying why.
 
 **The base-model bar.** At ~138M params "useful" is unreachable; a base that is locally
 fluent and globally lost is undertrained until proven otherwise, and a run that died
@@ -185,12 +173,9 @@ whatever only pays if the run has it lands first — the `base-gate` checklist i
 | guards a property | `tests/{core,apparatus,expensive}/` | with what it guards |
 | is per-issue scratch | `aux*`, `docs/plans/` | until you're done (gitignored) |
 
-Nothing goes in the repo root (a test fails on a root `.py`). `trm/` never imports
-`experiments/` or `instruments/`, and no research line imports another, so a tombstone
-stays one folder's deletion. Worktrees go beside the checkout (`git worktree add
-../trm-<name>`), never inside: a checkout reads only its own `.env`, so a sibling takes an absolute
-`DATA_ROOT` from the shell (#541). Entry points
-run as modules (`python -m trm.train.start`); the `Makefile` is the front door, and its
+Worktrees go beside the checkout (`git worktree add ../trm-<name>`), never inside: a
+checkout reads only its own `.env`, so a sibling takes an absolute `DATA_ROOT` from the
+shell (#541). Entry points run as modules (`python -m trm.train.start`); the `Makefile` is the front door, and its
 header lists every target — launch through it, never by hand-assembling supervisor flags.
 
 There is one model: `PlainTransformer` in `trm/model/plain.py`. The refiner and the
@@ -208,7 +193,7 @@ cross-window reasoner before it live in `docs/findings/` and the graveyard (#292
 | Specs | `experiments/<line>/specs/*.toml`, format in `docs/design/experiment-spec.md` |
 | Research lines | `experiments/recipe/` (`tokens_to_ce.py`, the real pair trainer), `mix/`, `base/`; tombstoned lines keep only `specs/` |
 | Instruments | `instruments/` — the `instruments` skill is the index |
-| Tests | `tests/README.md` (tiers, and this machine's traps). CI runs core + apparatus, the audit, and `make lint` — run it before pushing and delete what it finds |
+| Tests | `tests/README.md` (tiers, and this machine's traps). `make lint` before pushing; a finding means fix or delete the code, never silence the check |
 
 Hardware: one **RTX 2060 (6GB, Turing)** — no bf16 tensor cores, so f16 compute is
 permanent; the GPU lane is serial. Tokenizer `r50k_base` (`VOCAB_SIZE=50304` padded);
