@@ -156,8 +156,8 @@ green, verdict recorded, what it doesn't cover said plainly. **A single job of 4
 or more — in practice a base run — waits for the owner**: surface it with its budget.
 The permission waives asking, never the discipline: pre-registered, claimed, recorded.
 
-Claim an issue before starting it (an assignee means hands off), close with
-"Closes #N", **merge, never squash** (`gh pr merge <N> --merge`). Before a base run,
+Claim an issue before starting it (an assignee means hands off), and close with
+"Closes #N". Before a base run,
 whatever only pays if the run has it lands first — the `base-gate` checklist is in the
 `training-runs` skill.
 
