@@ -371,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                          "issue stays (#492)")
     ap.add_argument("--strays", action="store_true",
                     help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
-                         "exit 1 if any (CI runs this on every push)")
+                         "exit 1 if any (the weekly strays.yml runs this)")
     args = ap.parse_args(argv)
     prs = gh_json("pr", "list", "--state", "open", "--limit", "200",
                   "--json", "number,title,body,headRefName,isDraft,updatedAt")
