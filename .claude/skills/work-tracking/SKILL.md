@@ -56,7 +56,6 @@ waiting on the GPU, not stale.
 
 ## PRs and CI
 
-- Run `make lint` before pushing.
 - A doc-only change (markdown and/or comments) needs no issue. Fold a small one into a
   PR already in flight.
 - Undraft with `make ready PR=N`; wait on a push with `make ci-wait PR=N`. CI skips

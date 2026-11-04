@@ -15,6 +15,7 @@ modules from the repo root with `venv/bin/python -m instruments.<name>`.
 | question | instrument |
 |---|---|
 | verdict of a pre-registered spec | `verdict` (library, called by `experiment`), see the `experiment` skill |
+| run a spec's sweep on the card, detached | `make pair SPEC=…` (`pair start / pause / resume / status`) |
 | can that verdict be trusted (floor, seeds, σ, commit order) | `audit` — `make audit`, `make audit ALL=1` |
 | what a pair did beside its verdict | `pair_report <spec> [--runs DIR]` |
 | how noisy the validation probe itself is | `probe_sigma --checkpoint-path …` |
@@ -35,7 +36,7 @@ modules from the repo root with `venv/bin/python -m instruments.<name>`.
 | question | instrument |
 |---|---|
 | weight, cost and health in the terminal, plus figures | `make report RUN=run_…` (`report` + `plots`) |
-| the CE curve and where it crosses a target | `curves` (library); metrics.csv is read through `runlog` |
+| the CE curve and where it crosses a target | `curves` (library) |
 | values with a fixed correct range (integrity checks) | `invariants` (library) |
 
 **Speed and memory** (VRAM comes from the allocator's `memory_stats()`, never nvidia-smi)
@@ -45,6 +46,7 @@ modules from the repo root with `venv/bin/python -m instruments.<name>`.
 | where a grad step's VRAM goes | `mem_profile [--top 15]` |
 | does a config fit the card, with what headroom | `make gate` (`vram_headroom_smoke [--layers N]`) |
 | does the real f16 path train / overfit one batch | `smoke_gpu`, `overfit_smoke` |
+| is Adam's first moment really bf16, and still sound | `bf16_mu_smoke` |
 | parameter count without building the model | `model_stats` (library; `report --model-only`) |
 
 **Inside the model**: `latents` (the residual-stream trajectory, block by block),
@@ -61,12 +63,10 @@ revives a stored weight in the exact commit and environment that trained it.
 
 ## Writing a new one
 
-- It lives in `instruments/` for good and never imports `experiments/` (a test enforces this).
 - It prints a **plain, reproducible report**: what it measured, the result, how fast,
   and what it cost in CPU, GPU, RAM and VRAM. Numbers someone can compare across runs,
   never prose about them.
 - A harness the runner reads prints `RESULT {...}` lines (`results.py`). Read metrics
   through `runlog`, shared helpers come from `_common.py`, and specs are parsed with `spec_file`.
-- The docstring opens with the question it answers and a usage line.
 - Its wiring tests go in `tests/apparatus/` if it serves one research line, in
   `tests/core/` if it is permanent (`tests/README.md`).

@@ -83,8 +83,6 @@ how its apparatus gets cleaned up. The procedure is the `experiment` skill.
   fails where it's read, never mid-run — a new file format gets its model too (#578).
 - **Dtype policy: matmuls in f16, accumulators in f32.** An accumulator that isn't f32
   has a line in `trm/config.py` saying why.
-- **A short pair inherits the schedule shape of the run it informs**; warmup is the
-  exception.
 
 **The base-model bar.** At ~138M params "useful" is unreachable; a base that is locally
 fluent and globally lost is undertrained until proven otherwise, and a run that died
