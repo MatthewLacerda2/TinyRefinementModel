@@ -3,7 +3,7 @@ name: CI
 # Trigger policy (#110): skip draft PRs (parked partial-cpu work re-triggers via
 # ready_for_review the moment it's undrafted, so nothing merges unchecked) and
 # markdown-only changes (paths-ignore skips only when EVERY changed file is .md —
-# a mixed .md+code diff still runs everything).
+# a mixed .md+code diff still runs everything; docs.yml sizes the .md-only ones).
 on:
   push:
     branches: [main]

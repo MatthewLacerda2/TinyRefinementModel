@@ -3,6 +3,8 @@
 How we work together, how we know a result is real, how the repo is laid out, and
 where to dig into what we already learned. It should fit in your head in one sitting;
 when it stops fitting, split a piece into a skill (below) instead of letting it sprawl.
+CI holds the line: 400 lines for a CLAUDE.md, 500 for a skill's `.md`
+(`tests/core/test_doc_sizes.py`).
 It holds what is specific to this project. What the literature settles, Claude already
 knows; this file doesn't restate it.
 

@@ -1,0 +1,32 @@
+name: Docs
+
+# ci.yml skips markdown-only changes (#110), so a PR that only grows CLAUDE.md or a
+# skill would never meet the size check in its lint job. This runs that one check on
+# any change that touches a .md file; it needs nothing but pytest and takes seconds.
+on:
+  push:
+    branches: [main]
+    paths: ["**.md"]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ["**.md"]
+
+jobs:
+  doc-sizes:
+    name: doc sizes (CLAUDE.md, skills)
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install pytest
+        run: pip install "$(grep '^pytest==' requirements.txt)"
+
+      - name: Line limits
+        run: pytest --noconftest -p no:cacheprovider tests/core/test_doc_sizes.py
