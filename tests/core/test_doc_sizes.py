@@ -6,7 +6,7 @@ followed. CLAUDE.md's own remedy is to split a piece into a skill, not to grow t
 file; this makes "too big" a red build instead of a judgment call nobody makes.
 
 The limits are the owner's, carried over from other projects where they held.
-Markdown-only changes skip ci.yml, so .github/workflows/docs.yml runs this file on them.
+It runs in CI's lint job, which runs on markdown-only changes too.
 """
 
 import pathlib
