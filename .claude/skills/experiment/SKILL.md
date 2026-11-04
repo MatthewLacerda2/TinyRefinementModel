@@ -27,7 +27,7 @@ writes a skeleton with the runner's two traps already avoided. Fill in:
 - **criteria** against the noise floor, plus the kill/keep bars.
 - **the prediction**, and the direction you were wrong last time (rule 3).
 - **length**, from these defaults for real-model pairs: the LR schedule completes
-  in-run, ≥3 seeds, and the readout is tokens-to-target (`instruments/curves.py`),
+  in-run and the readout is tokens-to-target (`instruments/curves.py`),
   never CE at a fixed step.
 
   | change | opt steps | tokens | per arm-seed |
