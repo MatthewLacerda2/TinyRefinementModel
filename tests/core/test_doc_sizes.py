@@ -20,7 +20,7 @@ pytestmark = pytest.mark.jaxfree
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SKILLS = pathlib.Path(".claude/skills")
 
-CLAUDE_MD_MAX_LINES = 400  # every CLAUDE.md, at any depth
+CLAUDE_MD_MAX_LINES = 300  # every CLAUDE.md, at any depth
 SKILL_MD_MAX_LINES = 500  # every .md under .claude/skills/
 
 
