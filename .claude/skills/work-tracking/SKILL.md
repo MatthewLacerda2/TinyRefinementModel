@@ -69,7 +69,6 @@ waiting on the GPU, not stale.
 ## Closing
 
 - A PR that addresses an issue says "Closes #N".
-- Merge with a merge commit, never squash or rebase: `gh pr merge <N> --merge`.
 - Closing without a PR uses one of: `superseded-by #N`, `negative-result`,
   `wont-fix: <reason>`.
 - A PR closed unmerged still owes its record (rule 5) first; then unassign the issue so
