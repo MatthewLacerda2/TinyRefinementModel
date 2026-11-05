@@ -97,3 +97,13 @@ def test_a_tail_probe_reads_the_last_rows_of_its_own_corpus(tmp_path, monkeypatc
                                        data_seed=0, source="finemath")
     rows = probe.load_rows()
     assert [int(r[0, 0]) for r in rows] == [4, 5]
+
+
+@pytest.mark.parametrize("source", ["fineweb-edu", "stack-edu", "finemath"])
+def test_the_trainers_probe_reads_every_bucket_from_its_tail(source):
+    """A fixed offset sat inside what a 10-day run reads at 70% (#596): it would have
+    trained on the rows its val CE is measured on, and read memorising as progress."""
+    from trm.settings import CONFIG
+    from trm.train import validation
+    assert validation.ValidationProbe.of(CONFIG, "root", source=source).skip is None
+

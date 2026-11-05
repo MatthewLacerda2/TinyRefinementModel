@@ -24,9 +24,9 @@ cell never changes again. A window is the drop in CE from the last reading at or
 before its start to the last reading at or before its end, in wall-clock hours; a
 window that reaches back before the ramp's end is not read.
 
-Probes differ in footing: fineweb-edu reads a fixed skip, the others their corpus's
-tail (#363). A gain is a difference, so a level offset cancels; the noise does not,
-which is why every bar is measured per quantity.
+Each probe reads its own corpus's tail (#363, #596), so their levels differ. A gain is
+a difference, so a level offset cancels; the noise does not, which is why every bar is
+measured per quantity.
 """
 
 from __future__ import annotations

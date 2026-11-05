@@ -242,10 +242,6 @@ class Config(BaseSettings):
     # Val CE recorded before that change is NOT comparable to val CE after it. The
     # probe's own sigma is measured by instruments/probe_sigma.py.
     EVAL_ROWS: int = 64
-    # Where the fineweb validation slice starts: far past any plausible training
-    # consumption (an 8k-opt-step run consumes under 1M fineweb samples; fineweb holds
-    # 4.3M) so the slice stays held out.
-    VAL_SKIP_SAMPLES: int = 3_000_000
 
     # The plateau detector reads HELD-OUT CE (#184): train CE is moved by the
     # curriculum underneath it (the #157 run's train CE rose 3.20 -> 3.36 while the

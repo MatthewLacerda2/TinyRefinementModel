@@ -163,7 +163,7 @@ def main(argv=None):
     ap.add_argument("--step", type=int, default=None, help="step to score (default: the dir's newest)")
     ap.add_argument("--rows", type=int, default=None, help="held-out rows per source (default: the trainer's)")
     ap.add_argument("--sources", default="fineweb-edu,stack-edu,finemath",
-                    help="fineweb-edu reads the trainer's fixed skip; the others their tails (#363)")
+                    help="each read from its own tail, as the trainer reads them (#363, #596)")
     ap.add_argument("--jsonl", type=pathlib.Path, default=None,
                     help="where to append the row (default: <run>/heldout_profile.jsonl)")
     args = ap.parse_args(argv)

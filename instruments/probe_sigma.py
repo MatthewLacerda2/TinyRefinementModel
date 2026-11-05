@@ -9,7 +9,7 @@ plateau detector's PLATEAU_MIN_DELTA must sit above. Measured, not assumed:
 #17's 0.03 was seed-to-seed training noise on a 4-row probe, a different
 quantity.
 
-Slices are taken past VAL_SKIP_SAMPLES, each `rows` further on, so the trainer's
+Slices start at the corpus's held-out tail, each `rows` further on, so the trainer's
 own slice (the first one) is included and the others never overlap it.
 """
 
@@ -24,7 +24,7 @@ from instruments._common import add_checkpoint_argument, load_env
 from trm.config import resolve_root
 from trm.runtime.restore import restore_model
 from trm.settings import CONFIG
-from trm.train.validation import ValidationProbe
+from trm.train.validation import ValidationProbe, tail_skip
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -56,7 +56,7 @@ def main(argv=None):
     print(f"checkpoint step {step}; {args.slices} disjoint slices per width")
     for rows in args.rows:
         readings = []
-        for skip in slice_offsets(rows, args.slices, CONFIG.VAL_SKIP_SAMPLES):
+        for skip in slice_offsets(rows, args.slices, tail_skip(f"{data_root}/pretrain/fineweb-edu", CONFIG.MAX_SEQ_LEN)):
             ce = ValidationProbe.of(CONFIG, data_root, rows=rows, skip=skip).run(model)
             if ce is None:
                 break

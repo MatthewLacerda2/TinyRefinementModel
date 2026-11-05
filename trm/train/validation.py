@@ -1,8 +1,8 @@
 """Held-out validation: the same fixed batches, scored the same deterministic
 way, on demand. Train CE cannot see overfitting or data drift; this curve is
 the one decisions should read. The trainer drives it on its own cadence
-(VAL_EVERY_OPT_STEPS); everything about *what* a probe measures lives here. What it
-reads — how many rows, from where — is the run's Config (`ValidationProbe.of`, #475).
+(VAL_EVERY_OPT_STEPS); everything about *what* a probe measures lives here. How many
+rows is the run's Config (EVAL_ROWS); where is each corpus's tail (`tail_skip`, #596).
 """
 
 import glob
@@ -16,12 +16,11 @@ from trm.config import EOT_TOKEN_ID
 from trm.data.loaders import TextDataGenerator
 from trm.train.losses import chunked_cross_entropy_rows
 
-# The fineweb slice starts at VAL_SKIP_SAMPLES, past any plausible training
-# consumption, and reads EVAL_ROWS rows (both trm/settings.py).
-# Every other bucket of the run's mixture is probed too (#363), each from its own tail:
-# the last VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus.
-# A probe that reads prose alone cannot see what a mixture change costs the code and
-# math. fineweb keeps its fixed skip above, so every val_ce on record stays comparable.
+# Every bucket of the run's mixture is probed (#363), each from its own tail: the last
+# VAL_TAIL_ROWS samples, which a run reaches only if it exhausts that corpus. A probe that
+# reads prose alone cannot see what a mixture change costs the code and math.
+# fineweb-edu read a fixed offset until #596: a 10-day run at 70% trained through it. So
+# no val_ce before that is comparable with one after it, nor is the corpus they read (#597).
 VAL_TAIL_ROWS = 20_000
 
 
@@ -120,10 +119,9 @@ class ValidationProbe:
 
     @classmethod
     def of(cls, config, data_root, source="fineweb-edu", **overrides):
-        """The probe the trainer runs for `source`: EVAL_ROWS rows, fineweb from its
-        fixed VAL_SKIP_SAMPLES, every other corpus from its tail (#363)."""
+        """The probe the trainer runs for `source`: EVAL_ROWS rows from its tail (#363, #596)."""
         return cls(data_root, **{"rows": config.EVAL_ROWS,
-                                 "skip": config.VAL_SKIP_SAMPLES if source == "fineweb-edu" else None,
+                                 "skip": None,
                                  "max_seq_len": config.MAX_SEQ_LEN, "data_seed": config.DATA_SEED,
                                  "source": source, **overrides})
 

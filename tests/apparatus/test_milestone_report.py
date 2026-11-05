@@ -101,7 +101,7 @@ def test_the_val_ce_section_drives_the_real_probe(monkeypatch, tmp_path):
         def of(cls, config, data_root):
             built["data_root"] = data_root
             probe = cls()
-            probe.rows, probe.skip = config.EVAL_ROWS, config.VAL_SKIP_SAMPLES
+            probe.rows, probe.skip = config.EVAL_ROWS, None
             return probe
 
         def run(self, model):

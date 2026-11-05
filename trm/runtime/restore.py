@@ -14,7 +14,7 @@ from trm.model import build_model
 from trm.runtime.checkpoints import discover_latest_checkpoint_run
 from trm.runtime.layout import CHECKPOINT_ITEMS
 from trm.settings import location
-from trm.train.validation import read_heldout_rows
+from trm.train.validation import read_heldout_rows, tail_skip
 
 
 def restore_model(config, checkpoint_path=None, *, step=None, dim=None, **overrides):
@@ -46,12 +46,8 @@ def restore_model(config, checkpoint_path=None, *, step=None, dim=None, **overri
 
 
 def load_eval_batches(config, source="pretrain/fineweb-edu", num_rows=16, skip=None):
-    """Held-out rows: skip past the data the training run has consumed. Rows are
-    `config`'s shape, read the way its trainer reads them.
-
-    The default skip, config.VAL_SKIP_SAMPLES, sits far beyond plausible consumption (an 8k-opt-step run
-    reads under 1M fineweb samples of its 4.3M) — the old 200k default was
-    inside the range long runs train through, contaminating the eval slice.
+    """Held-out rows, by default from the corpus's tail (#596), which a run reaches only
+    if it exhausts the corpus. Rows are `config`'s shape, read the way its trainer reads them.
 
     Counted in ROWS and scored one row at a time, independent of BATCH_SIZE
     (#24): the eval slice must not move when a training throughput knob does, or
@@ -60,23 +56,14 @@ def load_eval_batches(config, source="pretrain/fineweb-edu", num_rows=16, skip=N
     if not data_root:
         raise SystemExit("DATA_ROOT is not set.")
     source_dir = f"{resolve_root(data_root)}/{source}"
-    skip = config.VAL_SKIP_SAMPLES if skip is None else skip
+    skip = tail_skip(source_dir, config.MAX_SEQ_LEN) if skip is None else skip
 
     batches = read_heldout_rows(source_dir, num_rows, skip,
                                 max_seq_len=config.MAX_SEQ_LEN, data_seed=config.DATA_SEED)
     if not batches:
-        # "No eval data available" alone sends you looking for a missing corpus.
-        # The actual cause is almost always that the default skip -- sized for the
-        # 30-chunk corpora -- overruns a smaller one: finemath has 19 chunks and
-        # runs out well before 3,000,000 samples. Say which, and say the number
-        # that would work, because the alternative (silently clamping the skip)
-        # would quietly evaluate on tokens the run trained through.
         import glob
         chunks = sorted(glob.glob(f"{source_dir}/*.npy"))
         detail = (f" It holds {len(chunks)} chunk(s)." if chunks
                   else " No .npy chunks found there at all — check the path.")
-        raise SystemExit(
-            f"No eval data in {source_dir} after skipping {skip:,} samples.{detail} "
-            f"A smaller corpus needs a smaller --skip; the skip exists to stay clear "
-            f"of trained-through data, so reduce it deliberately rather than to zero.")
+        raise SystemExit(f"No eval data in {source_dir} after skipping {skip:,} samples.{detail}")
     return batches
