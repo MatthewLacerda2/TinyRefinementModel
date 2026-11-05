@@ -267,3 +267,15 @@ def test_a_data_position_is_only_read_on_the_corpus_it_came_from(state, root, re
             require_same_corpus(state, root)
     else:
         require_same_corpus(state, root)
+
+
+def test_a_resume_on_another_corpus_stops_before_it_touches_a_reader(monkeypatch):
+    """Through resume_stream itself: this guard is what keeps an old checkpoint off the
+    rebuilt corpus, whose fineweb-edu and finemath keep their names (#597)."""
+    from trm.train import trainer
+    monkeypatch.setattr(trainer, "DATA_ROOT", "runs/data-dedup")
+    for branch in (0, 1):
+        config = Config.from_env({"DATA_BRANCH": str(branch)})
+        with pytest.raises(SystemExit, match="corpus"):
+            trainer.resume_stream(config, None, None, None, 1, 0, {"sources": []})
+

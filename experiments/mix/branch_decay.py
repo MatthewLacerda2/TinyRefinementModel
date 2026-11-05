@@ -3,6 +3,9 @@
     python -m experiments.mix.branch_decay --arm general_web --seed 1 \\
         --mixture pretrain/fineweb-edu=0.35,pretrain/fineweb=0.25,pretrain/codeparrot=0.25,pretrain/finemath=0.15
 
+Needs the old corpus: DATA_ROOT named `data`, with these buckets present. The checkpoint's
+data position belongs to it, and the trainer refuses any other (#597).
+
 Copies the branch checkpoint (a full-state step dir: weights, optimizer, data state)
 into a fresh run dir. It resumes the real trainer there with DATA_BRANCH=1 on the arm's
 mixture (only from that copy: a relaunch resumes the arm's own stream), and re-runs a WSD decay from --decay-start to --stop-step. Then it scores the
