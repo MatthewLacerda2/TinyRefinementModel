@@ -189,10 +189,11 @@ def load_progress(save_path, name):
 
 
 def save_progress(save_path, tally):
-    """status.json: where a resume continues, and the source's manifest. With a dedup,
-    its index is written first, so a status never points past the index it resumes with."""
-    if tally.dedup is not None:
-        tally.dedup.save(os.path.join(save_path, DEDUP_INDEX))
+    """status.json: where a resume continues, the source that wrote the folder, and its
+    manifest. With a dedup, the status is written before the index: a crash between the
+    two leaves the index a chunk behind, so a few near-copies of that chunk get kept. The
+    other order would leave it a chunk ahead, and the resume would drop that chunk's
+    documents as copies of themselves while overwriting the chunk that held them (#606)."""
     tmp = os.path.join(save_path, "status.json.tmp")
     with open(tmp, 'w') as f:
         json.dump({
@@ -200,9 +201,37 @@ def save_progress(save_path, tally):
             "total_tokens": tally.total_tokens,
             "items_processed": tally.items_processed,
             "stream_offset": tally.stream_offset,
+            "source": tally.source,
             "dedup": None if tally.dedup is None else tally.dedup.record(),
         }, f, indent=1)
     os.replace(tmp, os.path.join(save_path, "status.json"))
+    if tally.dedup is not None:
+        tally.dedup.save(os.path.join(save_path, DEDUP_INDEX))
+
+
+# What a folder records about the source that wrote it (#606). Every key a MIXTURE entry
+# can change the stream with: another dataset, another config, another file order.
+SOURCE_KEYS = ("path", "config", "split", "shard_seed", "swh_blobs")
+
+
+def source_identity(ds_cfg):
+    """The keys as the stream reads them: a split left out is the one `open_source` opens."""
+    return {k: ds_cfg.get(k, "train" if k == "split" else None) for k in SOURCE_KEYS}
+
+
+def require_same_source(save_path, ds_cfg):
+    """A folder is only continued from the source that started it: its offset counts
+    another stream's records, and a target it already met would skip it as completed."""
+    status = load_status(save_path)
+    if status is None:
+        return
+    written, wanted = status.get("source"), source_identity(ds_cfg)
+    if written is None:
+        print(f"⚠️ {save_path}'s status.json predates the source record (#606): "
+              f"nothing says it was written from {wanted}")
+    elif written != wanted:
+        raise SystemExit(f"{save_path} was written from {written}, and this prefill reads "
+                         f"{wanted}: a folder is only continued from the source that started it")
 
 
 # The dedup index beside a source's chunks, for a resume. Not `.npy`: the loaders read
@@ -234,7 +263,14 @@ def open_dedup(save_path, name, params):
         raise SystemExit(f"{save_path} is a deduplicated corpus without its {DEDUP_INDEX}: "
                          f"it cannot be continued without re-admitting what it dropped.")
     print(f"🔄 Resuming {name}'s dedup index ({os.path.getsize(index)/1e6:.0f} MB)")
-    return NearDedup.load(index, params)
+    dedup = NearDedup.load(index, params)
+    behind = (saved or {}).get("docs_seen", 0) - dedup.counts["docs_seen"]
+    if behind > 0:
+        # The status is written first (save_progress): a crash before the index followed.
+        print(f"⚠️ {name}'s dedup index is {behind:,} documents behind its status.json: a stop "
+              f"between the two writes. Near-copies of those documents may be kept, and the "
+              f"manifest's counters will undercount them.")
+    return dedup
 
 
 def shard_order(files, seed):
@@ -273,6 +309,10 @@ class ParquetShards:
                     skip = 0
 
 
+# A source's listing, retried in the main thread (`list_with_retries`): ~10 minutes.
+LIST_ATTEMPTS = 20
+LIST_RETRY_S = 30
+
 SWH_CONTENT = "https://softwareheritage.s3.amazonaws.com/content/"  # public, no credentials
 # Files in flight. Measured here: one GET takes ~170 ms, and 64 threads, each keeping its
 # connection alive, fetch ~100 files/s; 256 overran DNS resolution.
@@ -310,28 +350,49 @@ class SwhBlobs:
                 yield from ({"text": text} for text in pool.map(fetch_blob, batch))
 
 
-def open_source(ds_cfg):
-    """A source's stream from its first record: the repo's own order, or with `shard_seed`
-    its config's parquet files in that seed's permutation."""
-    if "shard_seed" not in ds_cfg:
-        return load_dataset(ds_cfg['path'], name=ds_cfg.get('config'),
-                            split=ds_cfg.get('split', 'train'), streaming=True)
+def source_files(ds_cfg):
+    """A `shard_seed` source's parquet files, in that seed's permutation. None listed is
+    refused: a mistyped config would otherwise stream nothing and finish at 0 tokens."""
     folder = ds_cfg['config'] + "/"
     files = [f for f in HfApi().list_repo_files(ds_cfg['path'], repo_type="dataset")
              if f.startswith(folder) and f.endswith(".parquet")]
-    paths = [f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
+    if not files:
+        raise SystemExit(f"{ds_cfg['path']} lists no parquet files under {folder}: check its config")
+    return [f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
+
+
+def list_with_retries(ds_cfg):
+    """`source_files`, retried through the network drops the producer retries through: a
+    full-MIXTURE prefill lists each source hours after the first, and one dropped request
+    there would end the whole run. A refusal (SystemExit) is not a drop, and is not retried."""
+    for attempt in range(LIST_ATTEMPTS):
+        try:
+            return source_files(ds_cfg)
+        except Exception as e:
+            if attempt == LIST_ATTEMPTS - 1:
+                raise
+            print(f"\n🔌 Listing {ds_cfg['path']} failed ({e}); retrying in {LIST_RETRY_S}s")
+            time.sleep(LIST_RETRY_S)
+
+
+def open_source(ds_cfg, paths):
+    """A source's stream from its first record: the repo's own order, or with `shard_seed`
+    its parquet `paths`, listed once by the caller (`source_files`)."""
+    if "shard_seed" not in ds_cfg:
+        return load_dataset(ds_cfg['path'], name=ds_cfg.get('config'),
+                            split=ds_cfg.get('split', 'train'), streaming=True)
     if ds_cfg.get("swh_blobs"):
         return SwhBlobs(ParquetShards(paths, columns=("blob_id", "src_encoding")))
     return ParquetShards(paths)
 
 
-def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
+def stream_with_retries(ds_cfg, paths, name, start_offset, out_queue, stop_event):
     """Producer: streams (stream offset, raw text) into out_queue, reconnecting on
     network failures and resuming from the last consumed record. The offset counts every
     raw record read, the ones extract_text filters out included, so it is where a resume
     must skip to. Ends with a None sentinel."""
     def open_stream(offset):
-        ds = open_source(ds_cfg)
+        ds = open_source(ds_cfg, paths)
         return ds.skip(offset) if offset > 0 else ds
 
     current_offset = start_offset
@@ -399,18 +460,23 @@ class Tally:
     total_tokens: int
     items_processed: int
     stream_offset: int
+    source: dict
     dedup: NearDedup | None = None
+    resumed_at: tuple = (0, 0)  # the dedup's (docs_seen, docs_dropped) when this session began
     token_acc: list = field(default_factory=list)
     buffer: list = field(default_factory=list)
 
 
 def start_prefetcher(ds_cfg, name, start_offset):
-    """Starts the streaming producer thread; returns its queue and stop event."""
+    """Starts the streaming producer thread; returns its queue and stop event. A
+    `shard_seed` source is listed here, before the thread: a refusal raised in the thread
+    would end it with no sentinel, and the consumer would wait forever."""
+    paths = list_with_retries(ds_cfg) if "shard_seed" in ds_cfg else None
     prefetch_queue = queue.Queue(maxsize=PREFETCH_BUFFER)
     stop_event = threading.Event()
     threading.Thread(
         target=stream_with_retries,
-        args=(ds_cfg, name, start_offset, prefetch_queue, stop_event),
+        args=(ds_cfg, paths, name, start_offset, prefetch_queue, stop_event),
         daemon=True,
     ).start()
     return prefetch_queue, stop_event
@@ -437,6 +503,28 @@ def tokenize_pending(pool, tally):
     tally.token_acc.append(flat_batch)
     tally.total_tokens += len(flat_batch)
     tally.items_processed += len(texts)
+
+
+# A session whose documents are mostly near-copies of what the folder holds is reading
+# its stream again (#521: a resume that landed short), not a source. The most any source
+# dropped is codeparrot's 19.7% (#522); a re-read drops ~100%. Judged once a session has
+# seen REREAD_MIN_DOCS, so a cluster of forks can't trip it alone.
+REREAD_DROP_RATE = 0.5
+REREAD_MIN_DOCS = 20_000
+
+
+def refuse_a_reread(tally):
+    """Stops a deduped prefill that is re-reading what it already wrote. Nothing re-read
+    reaches a chunk (the index drops it), so the cost is time; this says why. A prefill
+    without --dedup has no index to notice with."""
+    if tally.dedup is None:
+        return
+    seen = tally.dedup.counts["docs_seen"] - tally.resumed_at[0]
+    dropped = tally.dedup.counts["docs_dropped"] - tally.resumed_at[1]
+    if seen >= REREAD_MIN_DOCS and dropped / seen > REREAD_DROP_RATE:
+        raise SystemExit(f"{dropped:,} of the {seen:,} documents read since this session began are "
+                         f"near-copies of what the folder holds: the stream is being read again, "
+                         f"most likely from a wrong resume offset (#521). Nothing re-read was written.")
 
 
 def print_progress(tally, initial_tokens, target, t_start):
@@ -468,6 +556,7 @@ def fill_chunks(pool, prefetch_queue, tally, save_path, stride, target, name):
             continue
 
         tokenize_pending(pool, tally)
+        refuse_a_reread(tally)
         print_progress(tally, initial_tokens, target, t_start)
 
         if sum(len(x) for x in tally.token_acc) >= TOKENS_PER_FILE:
@@ -508,8 +597,11 @@ def process_dataset(pool, ds_cfg, stride, dedup_params=None):
     print(f"\n🚀 Processing {name} | Target: {target/1e9:.2f}B tokens"
           + (f" | near-dedup {dedup_params.record()}" if dedup_params else ""))
 
+    require_same_source(save_path, ds_cfg)
     dedup = open_dedup(save_path, name, dedup_params)
-    tally = Tally(*load_progress(save_path, name), dedup=dedup)
+    tally = Tally(*load_progress(save_path, name), source=source_identity(ds_cfg), dedup=dedup)
+    if dedup is not None:
+        tally.resumed_at = (dedup.counts["docs_seen"], dedup.counts["docs_dropped"])
     if tally.total_tokens >= target:
         print(f"⏩ {name} already completed. Skipping.")
         return

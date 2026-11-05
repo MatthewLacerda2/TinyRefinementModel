@@ -6,6 +6,7 @@ No network and no tokenizer download: the stream, the tokenizer and the pool are
 import glob
 import json
 import os
+import pathlib
 import queue
 import threading
 
@@ -48,9 +49,9 @@ def prefill_into(tmp_path, monkeypatch):
     monkeypatch.setattr(prefill, "TOKENS_PER_FILE", 3000)
     monkeypatch.setattr(prefill, "tokenize_batch_parallel", fake_tokens)
 
-    def run(items, params=PARAMS, target=10**9):
+    def run(items, params=PARAMS, target=10**9, path="fake/code"):
         monkeypatch.setattr(prefill, "load_dataset", lambda *a, **k: FakeStream(items))
-        cfg = {"path": "fake/code", "target_tokens": target, "folder": "pretrain", "alias": "code"}
+        cfg = {"path": path, "target_tokens": target, "folder": "pretrain", "alias": "code"}
         prefill.process_dataset(InlinePool(), cfg, STRIDE, params)
         folder = tmp_path / "pretrain" / "code"
         with open(folder / "status.json") as f:
@@ -184,7 +185,7 @@ def test_a_failed_reconnect_retries_from_the_offset_and_rereads_nothing(monkeypa
 
     opens = iter([Stream(drop_after=2), ConnectionError("no route"), Stream()])
 
-    def open_source(_cfg):
+    def open_source(_cfg, _paths):
         opened = next(opens)
         if isinstance(opened, Exception):
             raise opened
@@ -193,6 +194,96 @@ def test_a_failed_reconnect_retries_from_the_offset_and_rereads_nothing(monkeypa
     monkeypatch.setattr(prefill, "open_source", open_source)
     monkeypatch.setattr(prefill.time, "sleep", lambda _s: None)
     out = queue.Queue()
-    prefill.stream_with_retries({}, "web", 0, out, threading.Event())
+    prefill.stream_with_retries({}, None, "web", 0, out, threading.Event())
     received = list(iter(out.get, None))
     assert received == [(i + 1, f"record {i}") for i in range(4)]
+
+
+def test_a_folder_is_only_continued_from_the_source_that_started_it(prefill_into):
+    """#606: an old finemath-4plus folder met a 3plus target and was skipped as completed."""
+    items = [{"content": t} for t in documents(5, 40)]
+    _, status = prefill_into(items, target=1000)
+    assert status["source"] == {"path": "fake/code", "config": None, "split": "train", "shard_seed": None,
+                                "swh_blobs": None}
+    with pytest.raises(SystemExit, match="only continued from the source that started it"):
+        prefill_into(items, path="fake/other-code")
+
+
+def test_a_status_without_a_source_record_still_resumes(prefill_into, capsys):
+    items = [{"content": t} for t in documents(6, 60)]
+    folder, _ = prefill_into(items, target=1000)
+    status = json.loads((folder / "status.json").read_text())
+    del status["source"]
+    (folder / "status.json").write_text(json.dumps(status))
+    _, resumed = prefill_into(items)
+    assert "predates the source record" in capsys.readouterr().out
+    assert resumed["source"]["path"] == "fake/code", "and records it from then on"
+
+
+def test_a_resume_that_reads_its_stream_again_is_stopped(prefill_into, monkeypatch):
+    """#521's failure, under dedup: a resume offset that lands short re-reads what the
+    folder holds. Nothing re-read is written; the prefill stops and says why."""
+    monkeypatch.setattr(prefill, "REREAD_MIN_DOCS", 20)
+    items = [{"content": t} for t in documents(7, 90)]
+    folder, stopped = prefill_into(items, target=3000)
+    assert stopped["stream_offset"] >= 32
+    status = json.loads((folder / "status.json").read_text())
+    status["stream_offset"] = 0
+    (folder / "status.json").write_text(json.dumps(status))
+    with pytest.raises(SystemExit, match="being read again"):
+        prefill_into(items)
+
+
+def test_the_status_is_written_before_the_index(prefill_into, monkeypatch):
+    """A crash between the two then leaves the index behind the status, never ahead."""
+    from trm.data.dedup import NearDedup
+    save = NearDedup.save
+    seen = []
+
+    def checked_save(self, path):
+        status = json.loads((pathlib.Path(path).parent / "status.json").read_text())
+        seen.append(status["dedup"]["docs_seen"] == self.counts["docs_seen"])
+        save(self, path)
+
+    monkeypatch.setattr(NearDedup, "save", checked_save)
+    prefill_into([{"content": t} for t in documents(8, 40)])
+    assert seen and all(seen)
+
+
+def test_a_listing_with_no_parquet_files_is_refused(monkeypatch):
+    class Api:
+        def list_repo_files(self, path, **_):
+            return ["README.md", "other-config/train-0.parquet"]
+
+    monkeypatch.setattr(prefill, "HfApi", Api)
+    with pytest.raises(SystemExit, match="no parquet files"):
+        prefill.source_files({"path": "org/set", "config": "mistyped", "shard_seed": 0})
+
+
+def test_a_listing_is_retried_through_a_dropped_request(monkeypatch):
+    calls = []
+
+    class Api:
+        def list_repo_files(self, path, **_):
+            calls.append(path)
+            if len(calls) < 3:
+                raise ConnectionError("dropped")
+            return ["cfg/train-1.parquet", "cfg/train-0.parquet"]
+
+    monkeypatch.setattr(prefill, "HfApi", Api)
+    monkeypatch.setattr(prefill, "LIST_RETRY_S", 0)
+    paths = prefill.list_with_retries({"path": "org/set", "config": "cfg", "shard_seed": 0})
+    assert len(calls) == 3 and sorted(paths) == ["datasets/org/set/cfg/train-0.parquet",
+                                                 "datasets/org/set/cfg/train-1.parquet"]
+
+
+def test_an_index_behind_its_status_is_reported(prefill_into, capsys):
+    """The state a stop between the status and the index leaves (save_progress)."""
+    items = [{"content": t} for t in documents(9, 60)]
+    folder, _ = prefill_into(items, target=1000)
+    status = json.loads((folder / "status.json").read_text())
+    status["dedup"]["docs_seen"] += 500
+    (folder / "status.json").write_text(json.dumps(status))
+    prefill_into(items)
+    assert "500 documents behind its status.json" in capsys.readouterr().out
+
