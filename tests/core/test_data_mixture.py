@@ -274,7 +274,8 @@ def test_an_exact_resume_is_refused_on_a_mixture_it_was_not_written_for():
     assert "DATA_MIXTURE" in data_refusal(nameless, "runs/data", CONFIG.DATA_MIXTURE, branch=False)
     named = {"corpus": "data-dedup", "names": ["pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath"]}
     assert data_refusal(named, "runs/data-dedup", CONFIG.DATA_MIXTURE, branch=False) is None
-    assert data_refusal(named, "", LEGACY_DATA_MIXTURE, branch=True) is None, "no DATA_ROOT: left to the trainer"
+    assert data_refusal(named, "", LEGACY_DATA_MIXTURE, branch=True) is None, \
+        "no DATA_ROOT: no corpus to judge, and the readers fail on the missing path first"
 
 
 @pytest.mark.parametrize("mixture", [CONFIG.DATA_MIXTURE, LEGACY_DATA_MIXTURE, "pretrain/a = 0.5, pretrain/b=0.5:0.5"])
