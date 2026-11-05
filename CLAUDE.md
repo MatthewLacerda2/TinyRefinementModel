@@ -186,7 +186,7 @@ cross-window reasoner before it live in `docs/findings/` and the graveyard (#292
 | Config | `trm/settings.py` (`Config`, every knob); `trm/config.py` (dtype policy, non-knob constants) |
 | Model | `trm/model/` — `plain.py`, `rope.py`; `build_model(config, rngs)` is the one factory |
 | Training | `trm/train/` — `loop.py`, `trainer.py`, `start.py`; one concern per file |
-| Data | `trm/data/` — `prefill.py` (corpus → tokens), `loaders.py` |
+| Data | `trm/data/` — `prefill.py` (corpus → tokens), `loaders.py`, `stream_state.py` (when a checkpoint's data position may be resumed) |
 | Run state | `trm/runtime/` — `supervisor.py`, `launch.py`, `rewind.py`, `cold.py` |
 | Inference | `trm/infer.py` |
 | Verifiable worlds | `trm/rl/` — procedural Python tasks with tests, and the sandbox that runs a candidate |

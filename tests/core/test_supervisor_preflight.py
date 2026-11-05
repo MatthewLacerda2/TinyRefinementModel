@@ -162,6 +162,31 @@ def test_a_relaunch_onto_an_unresumable_checkpoint_stops_instead_of_retrying(tmp
     assert not any("relaunched" in line for line in reported)
 
 
+def test_a_relaunch_onto_another_corpus_stops_instead_of_retrying(tmp_path, monkeypatch):
+    """#607: the trainer refused the checkpoint's data position, so the supervisor reads
+    it as a refusal, not as a crash to relaunch twice and then GAVE_UP."""
+    monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data-dedup"))
+    checkpoints = tmp_path / "checkpoints"
+    state = {**{k: v for k, v in MISSPELLED.items() if k != "sampels_seen"}, "data_state": {"sources": []}}
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent(f"""
+        import json, pathlib, sys
+        path = pathlib.Path({str(checkpoints)!r}) / "1279"
+        (path / "monitor_state").mkdir(parents=True)
+        (path / "_CHECKPOINT_METADATA").write_text("{{}}")
+        (path / "monitor_state" / "metadata").write_text(json.dumps({state!r}))
+        sys.exit(1)
+    """))
+    reported = []
+    sup = Supervisor(command=(sys.executable, str(child)), limits=Limits(stop_step=10_000, max_retries=2),
+                     log_path=tmp_path / "t.log", metrics_csv=tmp_path / "metrics.csv",
+                     config=Config.from_env({}), poll_seconds=0.2, report=reported.append,
+                     checkpoint_dir=checkpoints)
+
+    assert sup.run() == REFUSED_RESUME
+    assert any("corpus" in line for line in reported)
+
+
 def test_the_checkpoint_dir_a_relaunch_resumes_is_read_from_the_trainer_args(tmp_path):
     run = tmp_path / "run_X"
     absolute = tmp_path / "ck"

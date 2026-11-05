@@ -339,7 +339,7 @@ class Config(BaseSettings):
     # Branching a checkpoint onto another mixture (#489). An exact resume refuses a data
     # state written for a different DATA_MIXTURE (#439); a branch keeps the weights, the
     # optimizer and the step, and rebuilds the stream instead, on the corpus the checkpoint
-    # read (`require_same_corpus` refuses another): every bucket the checkpoint read
+    # read (`trm/data/stream_state.py` refuses another): every bucket the checkpoint read
     # continues where it stopped (nothing repeats), a bucket it never read starts at
     # its beginning, the mixer's draws restart from DATA_SEED, and every reader then skips
     # DATA_SEED x DATA_BRANCH_SEED_STRIDE rows. A branch starts every seed from the same

@@ -99,7 +99,7 @@ if __name__ == "__main__":
     # appends to run_metadata.json (#505). load_or_create_checkpoint repeats the
     # checks as a backstop.
     if active_checkpoint_path is not None and not args.new_run:
-        why = unresumable(active_checkpoint_path, config.ACCUMULATION_STEPS)
+        why = unresumable(active_checkpoint_path, config, DATA_ROOT)
         if why:
             raise SystemExit(why)
 

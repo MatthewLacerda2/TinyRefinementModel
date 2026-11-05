@@ -261,12 +261,27 @@ def test_a_nameless_state_is_refused_on_a_mixture_it_never_read(tmp_path):
     ({"corpus": "data-dedup"}, "runs/data", True),
 ])
 def test_a_data_position_is_only_read_on_the_corpus_it_came_from(state, root, refused):
-    from trm.data.loaders import require_same_corpus
-    if refused:
-        with pytest.raises(SystemExit, match="corpus"):
-            require_same_corpus(state, root)
-    else:
-        require_same_corpus(state, root)
+    from trm.data.stream_state import data_refusal
+    why = data_refusal(state, root, LEGACY_DATA_MIXTURE, branch=True)
+    assert ("corpus" in why) if refused else why is None
+
+
+def test_an_exact_resume_is_refused_on_a_mixture_it_was_not_written_for():
+    """Asked from disk (rewind.unresumable, #607) the same way DataMixer.load_state asks."""
+    from trm.data.stream_state import data_refusal
+    nameless = {"sources": []}
+    assert data_refusal(nameless, "runs/data", LEGACY_DATA_MIXTURE, branch=False) is None
+    assert "DATA_MIXTURE" in data_refusal(nameless, "runs/data", CONFIG.DATA_MIXTURE, branch=False)
+    named = {"corpus": "data-dedup", "names": ["pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath"]}
+    assert data_refusal(named, "runs/data-dedup", CONFIG.DATA_MIXTURE, branch=False) is None
+    assert data_refusal(named, "", LEGACY_DATA_MIXTURE, branch=True) is None, \
+        "no DATA_ROOT: no corpus to judge, and the readers fail on the missing path first"
+
+
+@pytest.mark.parametrize("mixture", [CONFIG.DATA_MIXTURE, LEGACY_DATA_MIXTURE, "pretrain/a = 0.5, pretrain/b=0.5:0.5"])
+def test_the_jax_free_bucket_list_is_the_parsers(mixture):
+    from trm.data.stream_state import mixture_buckets
+    assert mixture_buckets(mixture) == list(schedules.parse_mixture(mixture)[0])
 
 
 def test_a_resume_on_another_corpus_stops_before_it_touches_a_reader(monkeypatch):
