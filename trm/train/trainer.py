@@ -14,7 +14,8 @@ import numpy as np
 from flax import nnx
 
 from trm.config import resolve_root
-from trm.data.loaders import DataMixer, TextDataGenerator, corpus_name, require_same_corpus
+from trm.data.loaders import DataMixer, TextDataGenerator
+from trm.data.stream_state import corpus_name, data_refusal
 from trm.model import build_model
 from trm.settings import LEGACY_DATA_MIXTURE, load_env, location
 from trm.train.optimizers import optimizer_chain
@@ -99,8 +100,11 @@ def init_model_and_optimizer(config):
 def resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_step, samples_seen, data_state):
     """Puts a resumed run's readers and mixer where its checkpoint left them."""
     legacy_names = parse_mixture(LEGACY_DATA_MIXTURE)[0]
-    if data_state is not None:
-        require_same_corpus(data_state, DATA_ROOT)
+    # The supervisor and start.py asked this from disk before the launch (#607); asked
+    # again here, where the run's own DATA_ROOT and mixture are in hand.
+    why = data_refusal(data_state, DATA_ROOT, config.DATA_MIXTURE, config.DATA_BRANCH)
+    if why:
+        raise SystemExit(why)
     if config.DATA_BRANCH:
         # A branch onto this run's mixture (#489): the weights continue, the stream
         # is rebuilt, and each seed reads its own rows.

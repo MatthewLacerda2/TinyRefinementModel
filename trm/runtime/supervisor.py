@@ -769,7 +769,7 @@ class Supervisor:
             elapsed_hours=(time.time() - started) / 3600.0,
             oom_detected=oom_in(text),
             margins=margin_alarms(self.config, read_last_row(self.metrics_csv)),
-            resume_refusal=(unresumable(self.checkpoint_dir, self.config.ACCUMULATION_STEPS)
+            resume_refusal=(unresumable(self.checkpoint_dir, self.config, local_location("DATA_ROOT"))
                             if not alive and self.checkpoint_dir is not None else None),
         )
 
@@ -1157,7 +1157,7 @@ def main(argv=None) -> int:
 
     # Refused before the lock, the fit gate and the first launch: a trainer launched
     # onto this checkpoint would only be refused the same way (#505).
-    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG.ACCUMULATION_STEPS)
+    why = checkpoint_dir and unresumable(checkpoint_dir, CONFIG, local_location("DATA_ROOT"))
     if why:
         supervisor.announce(f"{_stamp()} {REFUSED_RESUME}: {why}")
         return 1

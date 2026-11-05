@@ -1,4 +1,3 @@
-import os
 
 import fsspec
 import numpy as np
@@ -136,25 +135,6 @@ class TextDataGenerator:
         # GIL every micro-step. np.array, not astype: it copies out of the memmap here,
         # so the shard's page faults are paid on this thread, not the training one.
         return np.array(batch.reshape(batch_size, stride), dtype=np.int32)
-
-# A rebuilt corpus goes in a new folder (trm/data/prefill.py), so the folder's name says
-# which corpus a run read. Every state saved before the name was recorded read this one.
-LEGACY_CORPUS = "data"
-
-
-def corpus_name(data_root):
-    return os.path.basename(os.path.normpath(data_root))
-
-
-def require_same_corpus(state, data_root):
-    """Refuses a checkpoint's reader positions on a corpus they were not read from. The
-    bucket names can match while the data differs (fineweb-edu, finemath, #597), and a
-    position there lands on rows nobody chose, or past the end of a smaller bucket."""
-    written_on = state.get("corpus", LEGACY_CORPUS)
-    if written_on != corpus_name(data_root):
-        raise SystemExit(f"this checkpoint read the corpus '{written_on}', and DATA_ROOT is "
-                         f"'{corpus_name(data_root)}': its data position means nothing there")
-
 
 class DataMixer:
     """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the

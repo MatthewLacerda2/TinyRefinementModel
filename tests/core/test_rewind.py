@@ -9,9 +9,12 @@ import pytest
 
 from trm.runtime import rewind as rw
 from trm.runtime.layout import BEST_SUBDIR
-from trm.settings import CONFIG
+from trm.settings import CONFIG, Config
 
 ACCUM = 128
+# A config whose opt step is ACCUM micro-steps, as the step numbers below assume.
+CFG = Config.from_env({"BATCH_SIZE": "1"})
+assert CFG.ACCUMULATION_STEPS == ACCUM
 
 
 def _ckpt(directory, opt_step, finalized=True):
@@ -47,7 +50,7 @@ def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     (newest / "monitor_state" / "metadata").write_text(json.dumps({**PRETRAINING, "sampels_seen": 5}))
     _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
 
-    assert "sampels_seen" in rw.unresumable(checkpoints, ACCUM)
+    assert "sampels_seen" in rw.unresumable(checkpoints, CFG, "runs/data")
     assert metadata.read_bytes() == before
 
 
@@ -67,16 +70,16 @@ def test_a_resume_state_resumestate_refuses_is_refused_from_disk_naming_the_fiel
     """#505: the misspelled key is named before a launch, not after a session."""
     _with_state(tmp_path, 4992, PRETRAINING)
     _with_state(tmp_path, 5056, {**PRETRAINING, "sampels_seen": 5})
-    why = rw.unresumable(tmp_path, ACCUM)
+    why = rw.unresumable(tmp_path, CFG, "runs/data")
     assert "sampels_seen" in why and f"checkpoint step {5056 * ACCUM - 1}" in why
 
 
 def test_a_pretraining_checkpoint_dir_passes_the_launch_check(tmp_path):
     _ckpt(tmp_path, 4992)
-    assert rw.unresumable(tmp_path, ACCUM) is None             # no monitor state: left to restore
-    assert rw.unresumable(tmp_path / "absent", ACCUM) is None  # a fresh run
+    assert rw.unresumable(tmp_path, CFG, "runs/data") is None             # no monitor state: left to restore
+    assert rw.unresumable(tmp_path / "absent", CFG, "runs/data") is None  # a fresh run
     _with_state(tmp_path, 5056, PRETRAINING)
-    assert rw.unresumable(tmp_path, ACCUM) is None
+    assert rw.unresumable(tmp_path, CFG, "runs/data") is None
 
 
 def test_the_trainer_refuses_before_it_starts_a_session():
@@ -138,3 +141,13 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
         save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
+
+
+def test_a_data_position_from_another_corpus_is_refused_from_disk(tmp_path):
+    """#607: refused before a launch, so the supervisor stops instead of relaunching
+    into the trainer's same refusal twice, then GAVE_UP."""
+    _with_state(tmp_path, 5056, {**PRETRAINING, "data_state": {"sources": []}})
+    assert "DATA_MIXTURE" in rw.unresumable(tmp_path, CFG, "runs/data"), "a nameless state is the legacy mix's"
+    why = rw.unresumable(tmp_path, CFG, "runs/data-dedup")
+    assert "corpus 'data'" in why and "'data-dedup'" in why
+
