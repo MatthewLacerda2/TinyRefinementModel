@@ -203,7 +203,8 @@ def test_a_folder_is_only_continued_from_the_source_that_started_it(prefill_into
     """#606: an old finemath-4plus folder met a 3plus target and was skipped as completed."""
     items = [{"content": t} for t in documents(5, 40)]
     _, status = prefill_into(items, target=1000)
-    assert status["source"] == {"path": "fake/code", "config": None, "shard_seed": None, "swh_blobs": None}
+    assert status["source"] == {"path": "fake/code", "config": None, "split": "train", "shard_seed": None,
+                                "swh_blobs": None}
     with pytest.raises(SystemExit, match="only continued from the source that started it"):
         prefill_into(items, path="fake/other-code")
 
@@ -257,4 +258,32 @@ def test_a_listing_with_no_parquet_files_is_refused(monkeypatch):
     monkeypatch.setattr(prefill, "HfApi", Api)
     with pytest.raises(SystemExit, match="no parquet files"):
         prefill.source_files({"path": "org/set", "config": "mistyped", "shard_seed": 0})
+
+
+def test_a_listing_is_retried_through_a_dropped_request(monkeypatch):
+    calls = []
+
+    class Api:
+        def list_repo_files(self, path, **_):
+            calls.append(path)
+            if len(calls) < 3:
+                raise ConnectionError("dropped")
+            return ["cfg/train-1.parquet", "cfg/train-0.parquet"]
+
+    monkeypatch.setattr(prefill, "HfApi", Api)
+    monkeypatch.setattr(prefill, "LIST_RETRY_S", 0)
+    paths = prefill.list_with_retries({"path": "org/set", "config": "cfg", "shard_seed": 0})
+    assert len(calls) == 3 and sorted(paths) == ["datasets/org/set/cfg/train-0.parquet",
+                                                 "datasets/org/set/cfg/train-1.parquet"]
+
+
+def test_an_index_behind_its_status_is_reported(prefill_into, capsys):
+    """The state a stop between the status and the index leaves (save_progress)."""
+    items = [{"content": t} for t in documents(9, 60)]
+    folder, _ = prefill_into(items, target=1000)
+    status = json.loads((folder / "status.json").read_text())
+    status["dedup"]["docs_seen"] += 500
+    (folder / "status.json").write_text(json.dumps(status))
+    prefill_into(items)
+    assert "500 documents behind its status.json" in capsys.readouterr().out
 

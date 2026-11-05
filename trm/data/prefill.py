@@ -211,11 +211,12 @@ def save_progress(save_path, tally):
 
 # What a folder records about the source that wrote it (#606). Every key a MIXTURE entry
 # can change the stream with: another dataset, another config, another file order.
-SOURCE_KEYS = ("path", "config", "shard_seed", "swh_blobs")
+SOURCE_KEYS = ("path", "config", "split", "shard_seed", "swh_blobs")
 
 
 def source_identity(ds_cfg):
-    return {k: ds_cfg.get(k) for k in SOURCE_KEYS}
+    """The keys as the stream reads them: a split left out is the one `open_source` opens."""
+    return {k: ds_cfg.get(k, "train" if k == "split" else None) for k in SOURCE_KEYS}
 
 
 def require_same_source(save_path, ds_cfg):
@@ -262,7 +263,14 @@ def open_dedup(save_path, name, params):
         raise SystemExit(f"{save_path} is a deduplicated corpus without its {DEDUP_INDEX}: "
                          f"it cannot be continued without re-admitting what it dropped.")
     print(f"🔄 Resuming {name}'s dedup index ({os.path.getsize(index)/1e6:.0f} MB)")
-    return NearDedup.load(index, params)
+    dedup = NearDedup.load(index, params)
+    behind = (saved or {}).get("docs_seen", 0) - dedup.counts["docs_seen"]
+    if behind > 0:
+        # The status is written first (save_progress): a crash before the index followed.
+        print(f"⚠️ {name}'s dedup index is {behind:,} documents behind its status.json: a stop "
+              f"between the two writes. Near-copies of those documents may be kept, and the "
+              f"manifest's counters will undercount them.")
+    return dedup
 
 
 def shard_order(files, seed):
@@ -300,6 +308,10 @@ class ParquetShards:
                     yield from shard.read_row_group(group, columns=list(self.columns)).to_pylist()[skip:]
                     skip = 0
 
+
+# A source's listing, retried in the main thread (`list_with_retries`): ~10 minutes.
+LIST_ATTEMPTS = 20
+LIST_RETRY_S = 30
 
 SWH_CONTENT = "https://softwareheritage.s3.amazonaws.com/content/"  # public, no credentials
 # Files in flight. Measured here: one GET takes ~170 ms, and 64 threads, each keeping its
@@ -347,6 +359,20 @@ def source_files(ds_cfg):
     if not files:
         raise SystemExit(f"{ds_cfg['path']} lists no parquet files under {folder}: check its config")
     return [f"datasets/{ds_cfg['path']}/{f}" for f in shard_order(files, ds_cfg['shard_seed'])]
+
+
+def list_with_retries(ds_cfg):
+    """`source_files`, retried through the network drops the producer retries through: a
+    full-MIXTURE prefill lists each source hours after the first, and one dropped request
+    there would end the whole run. A refusal (SystemExit) is not a drop, and is not retried."""
+    for attempt in range(LIST_ATTEMPTS):
+        try:
+            return source_files(ds_cfg)
+        except Exception as e:
+            if attempt == LIST_ATTEMPTS - 1:
+                raise
+            print(f"\n🔌 Listing {ds_cfg['path']} failed ({e}); retrying in {LIST_RETRY_S}s")
+            time.sleep(LIST_RETRY_S)
 
 
 def open_source(ds_cfg, paths):
@@ -445,7 +471,7 @@ def start_prefetcher(ds_cfg, name, start_offset):
     """Starts the streaming producer thread; returns its queue and stop event. A
     `shard_seed` source is listed here, before the thread: a refusal raised in the thread
     would end it with no sentinel, and the consumer would wait forever."""
-    paths = source_files(ds_cfg) if "shard_seed" in ds_cfg else None
+    paths = list_with_retries(ds_cfg) if "shard_seed" in ds_cfg else None
     prefetch_queue = queue.Queue(maxsize=PREFETCH_BUFFER)
     stop_event = threading.Event()
     threading.Thread(
