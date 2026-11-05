@@ -49,9 +49,8 @@ TOKEN_DTYPE = np.uint16        # r50k's ids are < 65,536: half of int32's disk. 
 PREFETCH_BUFFER = 15000        # raw text records buffered ahead of tokenization
 TOKENIZE_BATCH_ITEMS = 4000    # records per parallel tokenization round
 
-# Targets: ~10.85B total (10.5B pretrain + 0.35B chat). Doubled from ~5.5B so the
-# 138.7M model (dim960, r50k) trains at ~76 tokens/param — small models reward
-# over-training well past Chinchilla, so we feed it generously rather than starve it.
+# Targets: 10.5B for #597's mix, what a 10-day base run reads with margin (the fineweb-edu
+# entry has the arithmetic). The entries after it are not in the mix.
 MIXTURE = [
     {
         # FineWeb-Edu deduplicated across CommonCrawl dumps (SmolLM-Corpus, ~190B tokens,

@@ -129,6 +129,7 @@ def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run)
     # per opt step, so the checkpoint sits on the optimizer's boundary (#355).
     assert state["samples_seen"] == run["stopped"] * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE
     assert state["data_state"]["sources"], "the exact data position (#424)"
+    assert state["data_state"]["corpus"] == "data", "the corpus that position belongs to (#597)"
 
 
 def test_the_checkpoint_is_taken_between_optimizer_windows(run):

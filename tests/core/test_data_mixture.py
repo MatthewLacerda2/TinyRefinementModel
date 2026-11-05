@@ -134,7 +134,7 @@ def test_a_state_carries_the_names_of_its_buckets(tmp_path):
     mixer.get_batch(1)
     state = json.loads(json.dumps(mixer.state()))
     assert state["names"] == ["web", "code"]
-    _mixer(tmp_path).load_state(state)  # and the same mixture takes it back
+    _mixer(tmp_path).load_state(state, legacy_names=())  # and the same mixture takes it back
 
 
 def test_a_state_written_for_another_mixture_is_refused(tmp_path):
@@ -142,18 +142,18 @@ def test_a_state_written_for_another_mixture_is_refused(tmp_path):
     reader's position onto a web shard and train on a stream nobody chose."""
     state = _mixer(tmp_path, names=("web", "code")).state()
     with pytest.raises(ValueError, match="DATA_MIXTURE"):
-        _mixer(tmp_path, names=("web", "math")).load_state(state)
+        _mixer(tmp_path, names=("web", "math")).load_state(state, legacy_names=())
 
 
 def test_the_same_buckets_in_another_order_are_another_mixture(tmp_path):
     state = _mixer(tmp_path, names=("web", "code")).state()
     with pytest.raises(ValueError, match="DATA_MIXTURE"):
-        _mixer(tmp_path, names=("code", "web")).load_state(state)
+        _mixer(tmp_path, names=("code", "web")).load_state(state, legacy_names=())
 
 
 def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
-    """The live base run's checkpoints carry no names. A relaunch after this lands
-    must still pick up exactly where it stopped."""
+    """Checkpoints from before #439 carry no names. A run that kept their mixture still
+    picks up exactly where it stopped."""
     reference = _mixer(tmp_path)
     expected = [reference.get_batch(1) for _ in range(6)]
 
@@ -164,7 +164,7 @@ def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
     del legacy["names"]
 
     resumed = _mixer(tmp_path)
-    resumed.load_state(legacy)
+    resumed.load_state(legacy, legacy_names=("web", "code"))
     for want in expected[3:]:
         np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)), np.asarray(want))
 
@@ -242,3 +242,28 @@ def test_the_run_records_whether_it_branched():
     recorded = RunTracker.get_hyperparameters(Config.from_env({"DATA_BRANCH": "1"}))
     assert recorded["DATA_BRANCH"] is True
     assert recorded["DATA_BRANCH_SEED_STRIDE"] == 80_000
+
+
+def test_a_nameless_state_is_refused_on_a_mixture_it_never_read(tmp_path):
+    """The default mixture moved (#597), so a state with no names is no longer the
+    default's: stack-edu's reader must not take codeparrot's position."""
+    legacy = json.loads(json.dumps(_mixer(tmp_path, names=("web", "code")).state()))
+    del legacy["names"]
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
+        _mixer(tmp_path, names=("web", "math")).load_state(legacy, legacy_names=("web", "code"))
+
+
+@pytest.mark.parametrize("state, root, refused", [
+    ({}, "runs/data", False),  # before the name was recorded: the old corpus
+    ({}, "/mnt/cold/data/", False),
+    ({}, "runs/data-dedup", True),  # a checkpoint of the old corpus on the rebuilt one
+    ({"corpus": "data-dedup"}, "runs/data-dedup", False),
+    ({"corpus": "data-dedup"}, "runs/data", True),
+])
+def test_a_data_position_is_only_read_on_the_corpus_it_came_from(state, root, refused):
+    from trm.data.loaders import require_same_corpus
+    if refused:
+        with pytest.raises(SystemExit, match="corpus"):
+            require_same_corpus(state, root)
+    else:
+        require_same_corpus(state, root)

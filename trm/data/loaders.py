@@ -1,3 +1,5 @@
+import os
+
 import fsspec
 import numpy as np
 
@@ -135,6 +137,25 @@ class TextDataGenerator:
         # so the shard's page faults are paid on this thread, not the training one.
         return np.array(batch.reshape(batch_size, stride), dtype=np.int32)
 
+# A rebuilt corpus goes in a new folder (trm/data/prefill.py), so the folder's name says
+# which corpus a run read. Every state saved before the name was recorded read this one.
+LEGACY_CORPUS = "data"
+
+
+def corpus_name(data_root):
+    return os.path.basename(os.path.normpath(data_root))
+
+
+def require_same_corpus(state, data_root):
+    """Refuses a checkpoint's reader positions on a corpus they were not read from. The
+    bucket names can match while the data differs (fineweb-edu, finemath, #597), and a
+    position there lands on rows nobody chose, or past the end of a smaller bucket."""
+    written_on = state.get("corpus", LEGACY_CORPUS)
+    if written_on != corpus_name(data_root):
+        raise SystemExit(f"this checkpoint read the corpus '{written_on}', and DATA_ROOT is "
+                         f"'{corpus_name(data_root)}': its data position means nothing there")
+
+
 class DataMixer:
     """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the
     run's is seeded with DATA_SEED (trm/settings.py)."""
@@ -167,17 +188,17 @@ class DataMixer:
             state["names"] = list(self.names)
         return state
 
-    def load_state(self, state):
+    def load_state(self, state, legacy_names):
         """Restore a snapshot, refusing one written for a different mixture.
 
         The state is positional — source i's reader, source i's weight — so the
         buckets have to be the same ones *in the same order*. A resume that silently
         mapped a code reader's position onto a web shard would not crash; it would
-        train on a stream nobody chose. A state saved before #439 carries no names
-        and is matched by count alone, as it always was.
+        train on a stream nobody chose. A state saved before #439 carries no names;
+        every run then read the default mixture of the day, so `legacy_names` names them.
         """
-        saved = state.get("names")
-        if saved is not None and self.names is not None and list(saved) != self.names:
+        saved = state.get("names") or list(legacy_names)
+        if self.names is not None and list(saved) != self.names:
             raise ValueError(f"data state was written for the mixture {list(saved)}, and this "
                              f"run reads {self.names}: a different DATA_MIXTURE cannot resume "
                              f"a run's exact data stream")

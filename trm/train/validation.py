@@ -101,6 +101,11 @@ def corpus_samples(source_dir, max_seq_len):
                for f in sorted(glob.glob(os.path.join(source_dir, "*.npy"))))
 
 
+def tail_skip(source_dir, max_seq_len):
+    """Where a corpus's held-out tail starts: its last VAL_TAIL_ROWS samples."""
+    return max(corpus_samples(source_dir, max_seq_len) - VAL_TAIL_ROWS, 0)
+
+
 class ValidationProbe:
     """Loads `rows` fixed held-out rows once, then scores them on demand.
 
@@ -125,7 +130,7 @@ class ValidationProbe:
     def load_rows(self):
         skip = self.skip
         if skip is None:
-            skip = max(corpus_samples(self.source_dir, self.max_seq_len) - VAL_TAIL_ROWS, 0)
+            skip = tail_skip(self.source_dir, self.max_seq_len)
         batches = read_heldout_rows(self.source_dir, self.rows, skip,
                                     max_seq_len=self.max_seq_len, data_seed=self.data_seed)
         if not batches:

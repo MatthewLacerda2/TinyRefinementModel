@@ -39,7 +39,7 @@ REPORTS = {
     "lambada_acc": ("measured", "LAMBADA last-word accuracy, the full 5,153 examples, on the endpoint weights"),
     "fineweb_ce": ("sampled", "open-web FineWeb val CE, the speedrun shard's first --fineweb-tokens targets"),
     "heldout_ce": ("sampled", "our FineWeb-Edu held-out CE (EVAL_ROWS rows), the run's own val probe"),
-    "code_ce": ("sampled", "codeparrot held-out CE from the run's last per-source probe (contaminated, #485)"),
+    "code_ce": ("sampled", "code held-out CE (stack-edu, or codeparrot on the old corpus) from the run's last per-source probe (contaminated, #485)"),
     "math_ce": ("sampled", "finemath held-out CE from the run's last per-source probe"),
 }
 
@@ -151,7 +151,7 @@ def main(argv=None) -> int:
     results.emit("run", lambada_acc=row["lambada"]["lambada_acc"], lambada_ppl=row["lambada"]["lambada_ppl"],
                  fineweb_ce=(row.get("fineweb_val") or {}).get("val_ce", nan),
                  heldout_ce=(row.get("heldout") or {}).get("val_ce", nan),
-                 code_ce=by_source.get("codeparrot", nan), math_ce=by_source.get("finemath", nan))
+                 code_ce=by_source.get("stack-edu", by_source.get("codeparrot", nan)), math_ce=by_source.get("finemath", nan))
     return 0
 
 

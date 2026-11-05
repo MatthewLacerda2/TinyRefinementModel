@@ -307,7 +307,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_checkpoint_argument(ap, required=True, aliases=("--ckpt",))
     ap.add_argument("--tokens", type=int, default=3000, help="how many of the most frequent ids to draw")
-    ap.add_argument("--sources", default="fineweb-edu,codeparrot,finemath")
+    ap.add_argument("--sources", default="fineweb-edu,stack-edu,finemath")
     ap.add_argument("--count-budget", type=int, default=2_000_000,
                     help="tokens read per source when counting frequency")
     ap.add_argument("--out", type=pathlib.Path, default=None, help="where the figure goes")
