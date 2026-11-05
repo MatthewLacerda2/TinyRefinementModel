@@ -70,6 +70,5 @@ def test_the_plateau_notice_is_rate_limited():
 
 def test_probe_slices_are_disjoint_and_start_at_the_trainers_own():
     from instruments.probe_sigma import slice_offsets
-    from trm.settings import CONFIG
-    offs = slice_offsets(64, 3, CONFIG.VAL_SKIP_SAMPLES)
-    assert offs[0] == CONFIG.VAL_SKIP_SAMPLES and offs[1] - offs[0] == 64 and offs[2] - offs[1] == 64
+    offs = slice_offsets(64, 3, 1000)
+    assert offs[0] == 1000 and offs[1] - offs[0] == 64 and offs[2] - offs[1] == 64

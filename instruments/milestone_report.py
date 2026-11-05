@@ -104,8 +104,7 @@ def section_val_ce(checkpoint_path):
     if val_ce is None:
         return f"no held-out validation data under {data_root}"
     return (f"validation CE: {val_ce:.4f} nats "
-            f"({probe.rows} rows, "
-            f"skip {probe.skip:,} — same probe the training loop logs)")
+            f"({probe.rows} rows from the corpus's tail — same probe the training loop logs)")
 
 
 def main(argv=None):
