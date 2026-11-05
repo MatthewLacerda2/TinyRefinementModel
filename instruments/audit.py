@@ -37,8 +37,10 @@ from instruments._common import REPO_ROOT
 from instruments.changed import changed_paths
 from instruments.spec_file import SpecFile
 from instruments.verdict import (
+    ALPHA,
     KEEP,
     KILL,
+    PARITY_RULES,
     Spec,
     Summary,
     Verdict,
@@ -81,6 +83,10 @@ TARGET_RULE_CUTOFF = datetime.date(2026, 10, 8)
 # A tokens-to-target bar judges the run only when the control needs at least this
 # fraction of the cap to reach the target; earlier, it judges the start (#361).
 TARGET_EARLIEST_FRACTION = 0.5
+
+# The holds-at-seed-count rule (#599): specs whose criteria were committed before it
+# are grandfathered, with the p each carrying point reaches printed beside the date.
+T_TEST_RULE_CUTOFF = datetime.date(2026, 10, 21)
 
 GREEN, RED, NA, GRANDFATHERED = "green", "red", "n/a", "grandfathered"
 
@@ -429,6 +435,37 @@ def sigma_plausible(a: Audited) -> Status:
     return Status(rule, GREEN, "; ".join(notes))
 
 
+def holds_at_seed_count(a: Audited) -> Status:
+    """The criteria that carried the verdict hold as a one-sided t-test at ALPHA, given
+    each arm's seeds (#599). The sigma bar does not see the seed count: 2 sigma is
+    p 0.035 with three seeds a side, 0.09 with two. And a `within` that held says only
+    that no difference was seen; with three seeds and a 2-sigma margin, parity is
+    shown only for a gap under ~0.26 sigma (`equivalent`, a TOST). A point at
+    sigma 0 has no p and is sigma-plausible's to report."""
+    rule = "holds-at-seed-count"
+    if blocked := _unjudgeable(a, rule):
+        return blocked
+    carrying = {c.name for c in a.carrying_criteria()}
+    weak = []
+    for result in a.verdict.criteria if a.verdict else ():
+        c = result.criterion
+        held = [p for p in result.points if p.holds]
+        short = [p for p in held if p.p is not None and p.p > ALPHA]
+        if c.name not in carrying or not short or (c.require == "any" and len(short) < len(held)):
+            continue
+        shown = "parity not shown, only no difference seen" if c.rule in PARITY_RULES else "short of the bar"
+        weak += [f"{c.name} at {p.point}: {c.rule} {c.sigmas:g}σ holds at {p.sigmas:+.2f}σ, but with "
+                 f"{p.seeds[0]}+{p.seeds[1]} seeds that is p {p.p:.3f} > {ALPHA:g} ({shown})" for p in short]
+    if not weak:
+        return Status(rule, GREEN)
+    history = a.history()
+    criteria = next((c for c in history or () if _has_criteria(c.text)), None)
+    if criteria is not None and criteria.date < T_TEST_RULE_CUTOFF:
+        return Status(rule, GRANDFATHERED, f"criteria committed {criteria.date}, before this rule "
+                                           f"({T_TEST_RULE_CUTOFF}): {'; '.join(weak)}")
+    return Status(rule, RED, f"{'; '.join(weak)} — add seeds, or register parity as `equivalent`")
+
+
 def prediction_registered(a: Audited) -> Status:
     """The hypothesis carries a registered prediction (rule 3): the criterion tests
     the idea, the prediction tests the person holding it."""
@@ -548,6 +585,7 @@ def audit_spec(a: Audited, citations: dict[str, list[str]], graveyard: str) -> l
         target_reached_late(a),
         seeds_complete(a),
         sigma_plausible(a),
+        holds_at_seed_count(a),
         prediction_registered(a),
         criteria_predate_results(a),
         verdict_current(a),

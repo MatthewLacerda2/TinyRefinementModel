@@ -17,7 +17,8 @@ When the PR's branch is checked out, the head waited on is the local commit, not
 whatever GitHub reports in the seconds after a push (it can still be the previous one).
 
 Exit status: 0 when every selected run's jobs ended success/skipped/neutral, 1 when any
-failed, 2 when no run appeared (a markdown-only diff skips CI by `paths-ignore`).
+failed, 2 when no run appeared (CI itself runs on every change; only the Review Gate
+skips a markdown-only diff, so no run at all points at the workflow, not the diff).
 """
 
 from __future__ import annotations
@@ -123,7 +124,7 @@ def wait(sha: str, exclude: frozenset[int]) -> int:
         if runs and first_seen is None:
             first_seen = now
         if not runs and now - start > APPEAR_S:
-            print(f"no CI run for {sha[:10]} after {APPEAR_S}s (a markdown-only diff skips CI)")
+            print(f"no CI run for {sha[:10]} after {APPEAR_S}s (CI runs on every change: check the workflow)")
             return 2
         settled = first_seen is not None and now - first_seen >= SETTLE_S
         if settled and all(r["status"] == "completed" for r in runs):

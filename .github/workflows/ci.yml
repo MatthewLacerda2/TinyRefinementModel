@@ -1,17 +1,17 @@
 name: CI
 
 # Trigger policy (#110): skip draft PRs (parked partial-cpu work re-triggers via
-# ready_for_review the moment it's undrafted, so nothing merges unchecked) and
-# markdown-only changes (paths-ignore skips only when EVERY changed file is .md —
-# a mixed .md+code diff still runs everything).
+# ready_for_review the moment it's undrafted, so nothing merges unchecked). A
+# markdown-only change runs lint and the audit (the doc-size and index checks, the
+# findings' provenance) and skips the slow jobs, by the `changes` job below rather than
+# by paths-ignore: main requires these checks, and a required check whose workflow
+# never ran leaves the PR waiting forever, while a job skipped by its `if` passes.
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md"]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore: ["**.md"]
 
 # Named jobs so each load-bearing check is a separately visible (and
 # separately requireable) status (#45):
@@ -49,6 +49,38 @@ on:
 # Each job carries the draft guard (an `if` on the job, since a workflow can't
 # be conditioned as a whole); push events have no PR payload, so they pass.
 jobs:
+  changes:
+    # Does the change touch anything but markdown? Fails open: no base to diff
+    # against (a new branch, a force push) or an error answers yes, and everything runs.
+    name: changes
+    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Anything but markdown?
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        # The diff is read into a variable first, so a git error fails this step (and
+        # everything runs) instead of reading as an empty, markdown-only diff.
+        # --no-renames: a module moved to a .md path still counts as code removed.
+        run: |
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only --no-renames "$BASE" HEAD)
+          if grep -qv '\.md$' <<< "$changed"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
     name: lint (ruff + vulture)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
@@ -94,15 +126,6 @@ jobs:
           test -n "$files"
           pytest --noconftest -p no:cacheprovider -m jaxfree $files
 
-      - name: No stray branches
-        # A pushed branch with no PR and no commit in a week is work nobody can
-        # find: #74 sat finished on one for ten weeks. Fails the build on main so
-        # it surfaces within days. Needs only the token the runner already has.
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python -m instruments.queue --strays
-
   audit:
     name: audit (specs)
     if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
@@ -139,7 +162,9 @@ jobs:
 
   test:
     name: pytest (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    needs: changes
+    # !cancelled(): a failed `changes` leaves its output empty, and the job runs.
+    if: ${{ !cancelled() && (github.event_name == 'push' || !github.event.pull_request.draft) && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     env:
       # CPU-only CI for the unit tests; no GPU/CUDA, no training runs.
@@ -190,7 +215,9 @@ jobs:
 
   golden:
     name: golden-run (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    needs: changes
+    # !cancelled(): a failed `changes` leaves its output empty, and the job runs.
+    if: ${{ !cancelled() && (github.event_name == 'push' || !github.event.pull_request.draft) && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     env:
       JAX_PLATFORMS: cpu
@@ -223,7 +250,9 @@ jobs:
 
   smoke:
     name: overfit smoke (CPU)
-    if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
+    needs: changes
+    # !cancelled(): a failed `changes` leaves its output empty, and the job runs.
+    if: ${{ !cancelled() && (github.event_name == 'push' || !github.event.pull_request.draft) && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     env:
       JAX_PLATFORMS: cpu

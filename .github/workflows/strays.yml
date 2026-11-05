@@ -1,0 +1,27 @@
+name: Stray branches
+
+# A pushed branch with no PR and no commit in a week is work nobody can find: #74 sat
+# finished on one for ten weeks. Weekly, as its own status rather than a step of main's
+# CI, so a red main means main's code is broken and nothing else. Needs only the
+# token the runner already has.
+on:
+  schedule:
+    - cron: "17 9 * * 1"  # Mondays 09:17 UTC
+  workflow_dispatch:
+
+jobs:
+  strays:
+    name: no stray branches
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Branches with no PR and no commit in a week
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m instruments.queue --strays

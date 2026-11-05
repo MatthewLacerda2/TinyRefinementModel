@@ -52,3 +52,28 @@ training process owns the card.
 ## Running less than everything
 
 `make test-affected` (`tests/affected.py`) selects the tests a change can reach through imports, or that name its tree by path. It fails open: anything it cannot reason about runs `make test`. It is for the local loop; CI always runs both tiers.
+
+## Traps on this machine
+
+- **`/tmp` is a RAM-backed tmpfs (7.8G).** Checkpoint tests leave run dirs in
+  `/tmp/pytest-of-<user>/`. Once they pile up, the same cause shows up as two
+  symptoms that look like code bugs: `EDQUOT` / `RESOURCE_EXHAUSTED` from orbax, and
+  the pytest process OOM-killed mid-run. Check `df -h /tmp` before a suite run, and
+  delete `pytest-of-*` when no python is running. Run `core/` and `apparatus/` as
+  separate processes (`make test` does), since one process for both has been
+  OOM-killed.
+- **The suite runs on the CPU and your hand-checks run on the GPU.** `conftest.py`
+  sets `JAX_PLATFORMS=cpu` and `FORCE_F32_COMPUTE=1`. XLA picks kernels by shape, so
+  two paths that are bit-identical on CUDA can differ on the CPU (norming a stacked
+  `[depth, b, s, dim]` tensor vs each `[b, s, dim]` state, #225). Check an identity
+  claim on both backends. Prefer making the shapes match over loosening an exact
+  assertion to a tolerance.
+- **The stored golden (`expensive/golden/`) is ~1e-7 off on this box**, inside its
+  `rtol`, and the same on unmodified `main`. To tell whether your change moved it,
+  diff your trajectory against `main`'s on the same machine, not against the file.
+  A stored file compared across machines cannot be one-ULP sensitive: set its
+  tolerance from measured CI-vs-box noise, and leave bit-exactness to the
+  same-process `test_step_determinism` (#322).
+- **No local JAX test while a trainer runs.** Claude Code's low-memory guard and the
+  kernel both pick the wrong victim on this box. Lint and pure-Python tests only;
+  the rest goes to CI.
