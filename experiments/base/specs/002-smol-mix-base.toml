@@ -1,0 +1,143 @@
+# PRE-REGISTERED, NOT YET APPROVED. The next base run (owner's call: ≥ 48 h of card).
+# One arm judged against the constant GPT-2-small yardstick, like 001. What changed
+# since 001 is the data, and only the data: the recipe fields below are 001's.
+#
+# `make launch SPEC=experiments/base/specs/002-smol-mix-base.toml BUDGET=7.5e9`
+
+[experiment]
+id = "002-smol-mix-base"
+status = "open"
+title = "Does the plain recipe on the SmolLM mix, trained for 10 days, reach GPT-2-small on LAMBADA?"
+hypothesis = """
+001's recipe — PlainTransformer at dim 960, 8 layers at batch 2, f16 compute, tied
+embeddings, r50k with EOT a trained token, Muon x16.667 on a 6e-4 WSD schedule —
+trained on the SmolLM team's constant mix (#597: FineWeb-Edu-Dedup 70 / Stack-Edu
+Python 20 / FineMath 3+ 10, deduplicated, `runs/data-dedup`) to `budget_tokens`
+reaches GPT-2-small's LAMBADA last-word accuracy (0.3256).
+
+001 scored 0.2036 at 5.0B tokens on a mix that ended at 35% prose, KILL by its own
+margin. Three things move this run's number, all settled outside this repo or by
+001's own readings:
+- prose share 35% -> 70% for the whole run (#363's three readings: the web probe sat
+  flat while code and math took 65% of the tokens);
+- a deduplicated web bucket, 96.6% unique against 12.4% (#591);
+- 1.5x the tokens, 7.5B against 5.0B (the code got faster: 13.9 s per opt step on the
+  real trainer, #433, against 001's 17.4 s steady pace).
+
+Prediction, registered before launch: **0.26** (honest range 0.22–0.31), so a
+KILL-band reading again, short of the gate. Reasoning: LAMBADA is narrative prose,
+and FineWeb-Edu is educational prose, not fiction; SmolLM2-135M reaches 0.4289 on
+this mix only at ~2T tokens, 270x this budget. Prediction record on this line: 001's
+two predictions were 0.29 and 0.33 and it scored 0.2036, so this line has been too
+optimistic, and 0.26 is written knowing that.
+"""
+issue = 597
+
+[protocol]
+floor_note = """
+As in 001: the reference arm is a constant, calibrated GPT-2-small (124M) measured by
+this repo's yardstick (calibrate_gpt2, exact match to lm-eval-harness lambada_openai).
+Chance on LAMBADA last-word is ~0, so a run at chance reads as a KILL, never parity.
+The reference has sigma 0 and the run is one seed: the criteria are absolute margins,
+not sigma bars.
+"""
+metric_key = "lambada_acc"
+metric = "LAMBADA last-word accuracy on the full 5,153-example set (instruments.yardstick.eval_yardstick), at completion"
+matched = "n/a — a single arm against a published reference; observational, not causal"
+notes = """
+THE BUDGET is a time budget in disguise: the owner's ceiling is 10 days of
+uninterrupted training (2026-10-16). 7.5B tokens is 57,221 opt steps of 131,072
+tokens. At the real trainer's 13.9 s per opt step (#433, 24 steps, no probes) that is
+9.2 days; the rest is margin for what a 24-step reading leaves out: the val probes,
+checkpoints and milestones a long run adds. 001 measured 17.4 s steady on older code
+(before #474), so its pace does not transfer. If the first day reads slower than
+14.8 s per opt step, 7.5B does not fit in 10 days, and the run is stopped early by
+the owner's ceiling, not by this spec.
+
+The corpus holds 10.5B tokens (fineweb-edu 7.2B, stack-edu 2.2B, finemath 1.1B), so
+at 70/20/10 a 7.5B run reads 5.25B / 1.5B / 0.75B, clear of every validation tail
+(#596).
+
+HOW IT STOPS: at the budget, or earlier under the stall rule. 001's "or earlier if
+held-out CE passes 3.6" is dropped: it was measured on the old fineweb slice and
+corpus (#596, #597), and there is no reading of this probe yet to set a new one.
+
+THE STALL RULE is 001's, unchanged: read the fineweb-edu probe every 12 hours; two
+consecutive windows that each gain less than 0.01 start a 1,000-opt-step decay. Its
+bar was set from the 4B refiner champion's curve (001's notes). Measured on 001's own
+curve before its decay (`instruments.stall --floor --until-step 30528`): reading
+noise 0.009, 12-hour gain median 0.0275 in the first third and 0.0124 in the last, so
+001 never stalled by it and ran to its budget. This run's probe reads a new corpus's
+tail, so the bar cannot be re-measured until this run has a curve; 0.01 is kept, not
+re-derived. The mix is constant, so the rule reads from the first row.
+
+Not gated on (owner decision pending on each, `gh issue list --label base-gate`):
+#363, #366, #434, #494.
+"""
+budget_tokens = 7500000000
+arch = "plain"
+layers = 8
+batch_size = 2
+accumulation_steps = 64
+optimizer = "muon"
+muon_lr_mult = 16.666667
+peak_lr = 6e-4
+lr_schedule = "wsd"
+wsd_decay_fraction = 0.2
+warmup_steps = 1000
+pad_token_id = 50257
+data_mixture = "pretrain/fineweb-edu=0.70,pretrain/stack-edu=0.20,pretrain/finemath=0.10"
+data_root = "runs/data-dedup"
+seeds = "MODEL_SEED=42, DATA_SEED=42"
+milestone_yardstick_limit = 1000
+
+[stall]
+reads = "web"
+window_hours = 12
+windows = 2
+min_gain = 0.01
+decay_opt_steps = 1000
+
+[arms.plain]
+role = "treatment"
+flags = []
+
+[arms.gpt2_small]
+role = "floor"
+constant = true
+
+# The reference: acc 0.3256 / ppl 40.06. Declared as a summary with sigma 0, n 1.
+[results.run]
+gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }
+
+# KEEP: at or above the reference.
+[criteria.meets_the_bar]
+rule = "beats"
+treatment = "plain"
+control = "gpt2_small"
+sigmas = 0.0
+points = ["run"]
+require = "all"
+
+# KILL: more than 0.05 accuracy below it — the "fix the pipeline first" branch.
+[criteria.misses_by_a_margin]
+rule = "loses"
+treatment = "plain"
+control = "gpt2_small"
+sigmas = 0.0
+min_delta = 0.05
+points = ["run"]
+require = "all"
+
+[verdict]
+keep_if = ["meets_the_bar"]
+kill_if = ["misses_by_a_margin"]
+
+[readouts]
+notes = """
+LAMBADA ppl beside the reference's 40.06; held-out CE per source (fineweb-edu,
+stack-edu, finemath tails); the milestone subsample trajectory in
+runs/<run>/yardstick.jsonl; peak VRAM and wall-clock s/opt step for the card; and
+001's 0.2036 at 5.0B beside this run's milestone at the same token count, a ballpark
+(two differently-built runs, CLAUDE.md), never a cause. No weight.
+"""
