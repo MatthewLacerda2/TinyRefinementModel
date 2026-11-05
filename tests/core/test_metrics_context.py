@@ -67,7 +67,7 @@ def test_a_row_says_when_it_was_written(tmp_path):
 
 def test_a_row_names_the_mixture_its_ce_was_measured_on(tmp_path):
     label = mixture_label(PRETRAIN_SOURCES, [0.6, 0.25, 0.15])
-    assert label == "fineweb-edu=0.600 codeparrot=0.250 finemath=0.150"
+    assert label == "fineweb-edu=0.600 stack-edu=0.250 finemath=0.150"
     _, rows = _log_one(tmp_path, mix=label)
     assert rows[0]["mix"] == label
 
