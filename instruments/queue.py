@@ -65,12 +65,13 @@ CLOSES = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.I)
 TITLE_REF = re.compile(r"\(#(\d+)\)")
 
 # An open issue untouched this long (#482) is either still wanted, and a comment says
-# why (which resets the clock), or dead, and closes with CLAUDE.md's vocabulary. Three
-# weeks, the issue's proposal: longer than any job Claude starts unasked (<48h) or a
-# base run (days), so what the clock measures is an issue nobody is holding.
+# why (which resets the clock), or dead, and closes with the closing vocabulary
+# (`.claude/skills/work-tracking`). Three weeks, the issue's proposal: longer than any
+# job Claude starts unasked (<48h) or a base run (days), so what the clock measures is
+# an issue nobody is holding.
 STALE_DAYS = 21
-# A parked partial-cpu draft (CLAUDE.md "Lane") waits on the card, not on anybody:
-# its "What waits" section, up to the next heading, names the card or the GPU.
+# A parked partial-cpu draft (`.claude/skills/work-tracking`) waits on the card, not
+# on anybody: its "What waits" section, up to the next heading, names the card or the GPU.
 WHAT_WAITS = re.compile(r"what waits.*?(?=\n#|\Z)", re.I | re.S)
 ON_THE_CARD = re.compile(r"\b(?:card|gpu)\b", re.I)
 
@@ -132,7 +133,7 @@ def issues_claimed(pr: dict) -> set[int]:
 
 
 def claimed_by_pr(prs: list[dict]) -> dict[int, int]:
-    """Issue number → the open PR that addresses it. A draft counts: CLAUDE.md
+    """Issue number → the open PR that addresses it. A draft counts: work-tracking
     parks partial-cpu work as a draft precisely to keep it out of the queue."""
     claims = {}
     for pr in prs:
@@ -370,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                          "issue stays (#492)")
     ap.add_argument("--strays", action="store_true",
                     help=f"only list branches with no open PR and no commit in {STRAY_AFTER_DAYS} days; "
-                         "exit 1 if any (CI runs this on every push)")
+                         "exit 1 if any (the weekly strays.yml runs this)")
     args = ap.parse_args(argv)
     prs = gh_json("pr", "list", "--state", "open", "--limit", "200",
                   "--json", "number,title,body,headRefName,isDraft,updatedAt")

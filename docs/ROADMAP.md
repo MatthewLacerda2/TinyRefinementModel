@@ -22,7 +22,7 @@ ambiguity), then the tools (to code, research, investigate, and log), then the m
 ## Stage 1 — before the base run (the `base-gate` label)
 
 Everything that can be judged now **and only pays if the run has it** lands first
-(`CLAUDE.md`, "Before a base run launches"). `gh issue list --label base-gate` is the
+(`.claude/skills/training-runs`, "Before a base run"). `gh issue list --label base-gate` is the
 checklist; it has to be empty, or its leftovers waived by the owner by name. Grouped:
 
 - **Correctness of what the model learns.** Model and trainer bugs whose fix changes the

@@ -12,9 +12,10 @@ name: Review Gate
 # When neither secret is set (forks, or not yet configured) the job skips
 # gracefully — the pytest CI job remains the hard gate either way.
 
-# Trigger policy (#110), same as ci.yml — doubly worth it here since every run
-# spends Claude tokens: skip drafts (ready_for_review re-triggers on undraft)
-# and markdown-only diffs.
+# Trigger policy (#110): skip drafts (ready_for_review re-triggers on undraft) and,
+# unlike ci.yml, markdown-only diffs, since every run spends Claude tokens. A skip by
+# paths-ignore never reports, so this check must not be made required on main: a
+# markdown-only PR would wait on it forever (ci.yml skips by job `if` for that reason).
 on:
   pull_request:
     branches: [main]
