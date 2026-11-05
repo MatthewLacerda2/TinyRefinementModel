@@ -29,7 +29,10 @@ against the rows a run trains on, within LSH's recall.
 
 Memory: the index is `bands` 64-bit keys per KEPT document, in one open-addressing table
 kept between a quarter and half full: at most 32 x bands bytes per kept document (800 B
-at 25 bands), and half as much again for the moment the table doubles. Nothing else
+at 25 bands), and half as much again for the moment the table doubles: the old keys move
+into the new table `REHASH_BATCH` slots at a time, so the move's own temporaries stay near
+~0.3 GB instead of several copies of the whole table (the 2.7M-document doubling of a
+FineWeb-Edu-Dedup prefill peaked at 10.5 GB and was OOM-killed, #591). Nothing else
 grows with the stream. A signature costs `num_perm` x 4 bytes, computed in blocks of
 `_SHINGLE_BLOCK` shingles, so one huge document cannot allocate more than ~8 MB.
 """
@@ -117,6 +120,9 @@ def band_keys(signature, bands, rows):
     return keys
 
 
+REHASH_BATCH = 1 << 22  # slots re-placed per round when the table doubles (see Memory above)
+
+
 class KeySet:
     """A set of nonzero 64-bit keys in one numpy array: open addressing, linear probing,
     doubled when more than half full (the memory bound in the module docstring)."""
@@ -144,7 +150,9 @@ class KeySet:
             size *= 2
         if size != self.slots.size:
             grown = np.zeros(size, dtype=np.uint64)
-            _place(grown, self.slots[self.slots != 0])
+            for start in range(0, self.slots.size, REHASH_BATCH):
+                block = self.slots[start:start + REHASH_BATCH]
+                _place(grown, block[block != 0])
             self.slots = grown
         _place(self.slots, keys)
         self.count += keys.size

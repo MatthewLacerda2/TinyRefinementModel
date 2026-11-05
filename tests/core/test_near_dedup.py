@@ -5,6 +5,7 @@ its memory bound. tests/core/test_prefill_dedup.py holds the prefill's use of it
 import numpy as np
 import pytest
 
+from trm.data import dedup
 from trm.data.dedup import DedupParams, KeySet, MinHasher, NearDedup, shingles
 from trm.settings import Config
 
@@ -101,6 +102,22 @@ def test_a_saved_index_resumes_where_it_stopped(tmp_path):
     assert resumed.keep([before[3], edited(rng, before[7], 2), fresh]) == [fresh]
     with pytest.raises(ValueError, match="built with"):
         NearDedup.load(path, DedupParams.of(Config(DEDUP_SEED=7)))
+
+
+def test_a_doubling_moved_in_blocks_keeps_every_key(monkeypatch):
+    """The doubling re-places the old keys REHASH_BATCH slots at a time (#591's OOM):
+    blocks smaller than the table lose no key and admit no stranger."""
+    monkeypatch.setattr(dedup, "REHASH_BATCH", 64)
+    rng = np.random.default_rng(6)
+    index = KeySet(capacity=1 << 8)
+    added = rng.integers(1, 1 << 63, size=(300, PARAMS.bands), dtype=np.uint64)
+    for keys in added:
+        index.add(keys)
+    assert index.slots.size > 1 << 8
+    assert index.count == added.size == np.count_nonzero(index.slots)
+    assert all(index.contains_any(keys) for keys in added)
+    absent = rng.integers(1, 1 << 63, size=(200, PARAMS.bands), dtype=np.uint64)
+    assert not any(index.contains_any(keys) for keys in absent)
 
 
 def test_the_index_keeps_its_memory_bound():
