@@ -6,6 +6,8 @@ No network and no tokenizer download: the stream, the tokenizer and the pool are
 import glob
 import json
 import os
+import queue
+import threading
 
 import numpy as np
 import pytest
@@ -160,3 +162,37 @@ def test_parquet_shards_skip_lands_where_reading_through_would(tmp_path, monkeyp
     for offset in (0, 2, 3, 9, 10, 11, 12, 22, 23):
         assert [r["text"] for r in shards.skip(offset)] == texts[offset:]
     assert [r["text"] for r in shards.skip(4).skip(5)] == texts[9:]
+
+
+def test_a_failed_reconnect_retries_from_the_offset_and_rereads_nothing(monkeypatch):
+    """The stream drops after two records, the next open fails, the one after works:
+    every record arrives once, under its own offset."""
+    records = [{"text": f"record {i}"} for i in range(4)]
+
+    class Stream:
+        def __init__(self, offset=0, drop_after=None):
+            self.offset, self.drop_after = offset, drop_after
+
+        def skip(self, n):
+            return Stream(self.offset + n, self.drop_after)
+
+        def __iter__(self):
+            for i, record in enumerate(records[self.offset:]):
+                if i == self.drop_after:
+                    raise ConnectionError("dropped")
+                yield record
+
+    opens = iter([Stream(drop_after=2), ConnectionError("no route"), Stream()])
+
+    def open_source(_cfg):
+        opened = next(opens)
+        if isinstance(opened, Exception):
+            raise opened
+        return opened
+
+    monkeypatch.setattr(prefill, "open_source", open_source)
+    monkeypatch.setattr(prefill.time, "sleep", lambda _s: None)
+    out = queue.Queue()
+    prefill.stream_with_retries({}, "web", 0, out, threading.Event())
+    received = list(iter(out.get, None))
+    assert received == [(i + 1, f"record {i}") for i in range(4)]

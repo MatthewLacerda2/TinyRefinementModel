@@ -284,10 +284,14 @@ def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
         return ds.skip(offset) if offset > 0 else ds
 
     current_offset = start_offset
-    active_ds = open_stream(current_offset)
+    # Opened inside the try: a failed open retries from the offset, and never re-reads
+    # the stream it replaces under later offsets.
+    active_ds = None
 
     while not stop_event.is_set():
         try:
+            if active_ds is None:
+                active_ds = open_stream(current_offset)
             for item in active_ds:
                 if stop_event.is_set():
                     break
@@ -303,11 +307,7 @@ def stream_with_retries(ds_cfg, name, start_offset, out_queue, stop_event):
             print(f"\n[{t_now}] 🔌 Prefetcher connection dropped: {e}")
             print(f"[{t_now}] 🔄 Re-connecting and resuming dataset from item {current_offset:,} in 5 seconds...")
             time.sleep(5)
-
-            try:
-                active_ds = open_stream(current_offset)
-            except Exception as conn_err:
-                print(f"\n⚠️ Re-connection failed: {conn_err}. Will retry shortly...")
+            active_ds = None
 
     out_queue.put(None)
 
