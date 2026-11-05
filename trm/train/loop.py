@@ -31,7 +31,7 @@ from trm.train.grad_guard import GradientNormGuard
 from trm.train.grad_step import HotPath, applied_gradient_stats, dense_zero_frac_max, grad_zero_fractions
 from trm.train.loss_scale import DynamicLossScale
 from trm.train.schedules import Schedules, mixture_label
-from trm.train.validation import VAL_BY_SOURCE, ValidationProbe
+from trm.train.validation import ValidationProbe, by_source_buckets
 
 # Abort training after this many consecutive non-finite micro-steps.
 MAX_NONFINITE_STREAK = 50
@@ -141,7 +141,8 @@ class TrainLoop:
         start_opt_step = start_step // config.ACCUMULATION_STEPS + 1 if start_step > 0 else None
         self.logger = MetricsLogger(os.path.join(run_tracker.run_dir, "metrics.csv"), start_opt_step=start_opt_step)
         self.val_probe = ValidationProbe.of(config, data_root)
-        self.source_probes = [ValidationProbe.of(config, data_root, source=s) for s in VAL_BY_SOURCE]
+        self.source_probes = [ValidationProbe.of(config, data_root, source=s)
+                              for s in by_source_buckets(self.schedules.sources)]
 
         # Not restored from the checkpoint: S re-finds its ceiling within a few hundred
         # micro-steps, and a stale value would be a worse starting guess (#199).

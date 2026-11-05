@@ -6,6 +6,8 @@ optax==0.2.6
 orbax-checkpoint==0.11.32
 tiktoken==0.12.0
 datasets==4.5.0
+# Stack-Edu's files come from Software Heritage, one GET each (trm/data/prefill.py).
+requests==2.32.5
 python-dotenv==1.2.2
 # The run's knobs: trm.settings.Config (#475).
 pydantic==2.13.5

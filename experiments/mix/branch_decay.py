@@ -3,6 +3,9 @@
     python -m experiments.mix.branch_decay --arm general_web --seed 1 \\
         --mixture pretrain/fineweb-edu=0.35,pretrain/fineweb=0.25,pretrain/codeparrot=0.25,pretrain/finemath=0.15
 
+Needs the old corpus: DATA_ROOT named `data`, with these buckets present. The checkpoint's
+data position belongs to it, and the trainer refuses any other (#597).
+
 Copies the branch checkpoint (a full-state step dir: weights, optimizer, data state)
 into a fresh run dir. It resumes the real trainer there with DATA_BRANCH=1 on the arm's
 mixture (only from that copy: a relaunch resumes the arm's own stream), and re-runs a WSD decay from --decay-start to --stop-step. Then it scores the
@@ -39,7 +42,7 @@ REPORTS = {
     "lambada_acc": ("measured", "LAMBADA last-word accuracy, the full 5,153 examples, on the endpoint weights"),
     "fineweb_ce": ("sampled", "open-web FineWeb val CE, the speedrun shard's first --fineweb-tokens targets"),
     "heldout_ce": ("sampled", "our FineWeb-Edu held-out CE (EVAL_ROWS rows), the run's own val probe"),
-    "code_ce": ("sampled", "codeparrot held-out CE from the run's last per-source probe (contaminated, #485)"),
+    "code_ce": ("sampled", "code held-out CE (stack-edu, or codeparrot on the old corpus) from the run's last per-source probe (contaminated, #485)"),
     "math_ce": ("sampled", "finemath held-out CE from the run's last per-source probe"),
 }
 
@@ -151,7 +154,7 @@ def main(argv=None) -> int:
     results.emit("run", lambada_acc=row["lambada"]["lambada_acc"], lambada_ppl=row["lambada"]["lambada_ppl"],
                  fineweb_ce=(row.get("fineweb_val") or {}).get("val_ce", nan),
                  heldout_ce=(row.get("heldout") or {}).get("val_ce", nan),
-                 code_ce=by_source.get("codeparrot", nan), math_ce=by_source.get("finemath", nan))
+                 code_ce=by_source.get("stack-edu", by_source.get("codeparrot", nan)), math_ce=by_source.get("finemath", nan))
     return 0
 
 

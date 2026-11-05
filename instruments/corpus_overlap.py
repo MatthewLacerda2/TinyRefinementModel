@@ -124,8 +124,8 @@ def unique(bucket: pathlib.Path, keep_one_in: int) -> list[tuple[str, int, int]]
 def heldout_tokens(bucket: pathlib.Path, max_seq_len: int, data_seed: int) -> np.ndarray:
     """The by-source probe's own rows, as the trainer reads them (trm/train/validation.py)."""
     from trm.settings import CONFIG
-    from trm.train.validation import VAL_TAIL_ROWS, corpus_samples, read_heldout_rows
-    skip = max(corpus_samples(str(bucket), max_seq_len) - VAL_TAIL_ROWS, 0)
+    from trm.train.validation import read_heldout_rows, tail_skip
+    skip = tail_skip(str(bucket), max_seq_len)
     rows = read_heldout_rows(str(bucket), CONFIG.EVAL_ROWS, skip, max_seq_len=max_seq_len, data_seed=data_seed)
     return np.concatenate([np.asarray(r).reshape(-1) for r in rows])
 

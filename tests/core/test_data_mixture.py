@@ -20,12 +20,12 @@ import json
 import numpy as np
 import pytest
 
-from trm.settings import CONFIG, Config
+from trm.settings import CONFIG, LEGACY_DATA_MIXTURE, Config
 from trm.train import schedules
 from trm.train.schedules import Schedules
 
-# An unset environment: the defaults every run so far trained with.
-TODAY = Schedules.of(Config.from_env({}))
+# The ramp every run before #597 trained with, which the knob must still reproduce exactly.
+TODAY = Schedules.of(Config.from_env({"DATA_MIXTURE": LEGACY_DATA_MIXTURE}))
 
 STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
 
@@ -41,7 +41,14 @@ def _todays_curriculum(step, ramp_steps):
     return [s + (e - s) * fraction for s, e in zip(start, end, strict=True)]
 
 
-def test_the_default_mixture_is_the_one_every_run_trained_with():
+def test_the_default_mixture_is_the_smol_playbook_mix_held_constant():
+    default = Schedules.of(Config.from_env({}))
+    assert default.sources == ("pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath")
+    assert default.start_weights == default.end_weights == [0.70, 0.20, 0.10]
+    assert all(default.curriculum_weights(s) == [0.70, 0.20, 0.10] for s in (0, 1, 10**6))
+
+
+def test_the_legacy_mixture_is_the_one_every_run_before_597_trained_with():
     assert TODAY.sources == (
         "pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
     assert TODAY.start_weights == [0.85, 0.10, 0.05]
@@ -127,7 +134,7 @@ def test_a_state_carries_the_names_of_its_buckets(tmp_path):
     mixer.get_batch(1)
     state = json.loads(json.dumps(mixer.state()))
     assert state["names"] == ["web", "code"]
-    _mixer(tmp_path).load_state(state)  # and the same mixture takes it back
+    _mixer(tmp_path).load_state(state, legacy_names=())  # and the same mixture takes it back
 
 
 def test_a_state_written_for_another_mixture_is_refused(tmp_path):
@@ -135,18 +142,18 @@ def test_a_state_written_for_another_mixture_is_refused(tmp_path):
     reader's position onto a web shard and train on a stream nobody chose."""
     state = _mixer(tmp_path, names=("web", "code")).state()
     with pytest.raises(ValueError, match="DATA_MIXTURE"):
-        _mixer(tmp_path, names=("web", "math")).load_state(state)
+        _mixer(tmp_path, names=("web", "math")).load_state(state, legacy_names=())
 
 
 def test_the_same_buckets_in_another_order_are_another_mixture(tmp_path):
     state = _mixer(tmp_path, names=("web", "code")).state()
     with pytest.raises(ValueError, match="DATA_MIXTURE"):
-        _mixer(tmp_path, names=("code", "web")).load_state(state)
+        _mixer(tmp_path, names=("code", "web")).load_state(state, legacy_names=())
 
 
 def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
-    """The live base run's checkpoints carry no names. A relaunch after this lands
-    must still pick up exactly where it stopped."""
+    """Checkpoints from before #439 carry no names. A run that kept their mixture still
+    picks up exactly where it stopped."""
     reference = _mixer(tmp_path)
     expected = [reference.get_batch(1) for _ in range(6)]
 
@@ -157,7 +164,7 @@ def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
     del legacy["names"]
 
     resumed = _mixer(tmp_path)
-    resumed.load_state(legacy)
+    resumed.load_state(legacy, legacy_names=("web", "code"))
     for want in expected[3:]:
         np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)), np.asarray(want))
 
@@ -235,3 +242,40 @@ def test_the_run_records_whether_it_branched():
     recorded = RunTracker.get_hyperparameters(Config.from_env({"DATA_BRANCH": "1"}))
     assert recorded["DATA_BRANCH"] is True
     assert recorded["DATA_BRANCH_SEED_STRIDE"] == 80_000
+
+
+def test_a_nameless_state_is_refused_on_a_mixture_it_never_read(tmp_path):
+    """The default mixture moved (#597), so a state with no names is no longer the
+    default's: stack-edu's reader must not take codeparrot's position."""
+    legacy = json.loads(json.dumps(_mixer(tmp_path, names=("web", "code")).state()))
+    del legacy["names"]
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
+        _mixer(tmp_path, names=("web", "math")).load_state(legacy, legacy_names=("web", "code"))
+
+
+@pytest.mark.parametrize("state, root, refused", [
+    ({}, "runs/data", False),  # before the name was recorded: the old corpus
+    ({}, "/mnt/cold/data/", False),
+    ({}, "runs/data-dedup", True),  # a checkpoint of the old corpus on the rebuilt one
+    ({"corpus": "data-dedup"}, "runs/data-dedup", False),
+    ({"corpus": "data-dedup"}, "runs/data", True),
+])
+def test_a_data_position_is_only_read_on_the_corpus_it_came_from(state, root, refused):
+    from trm.data.loaders import require_same_corpus
+    if refused:
+        with pytest.raises(SystemExit, match="corpus"):
+            require_same_corpus(state, root)
+    else:
+        require_same_corpus(state, root)
+
+
+def test_a_resume_on_another_corpus_stops_before_it_touches_a_reader(monkeypatch):
+    """Through resume_stream itself: this guard is what keeps an old checkpoint off the
+    rebuilt corpus, whose fineweb-edu and finemath keep their names (#597)."""
+    from trm.train import trainer
+    monkeypatch.setattr(trainer, "DATA_ROOT", "runs/data-dedup")
+    for branch in (0, 1):
+        config = Config.from_env({"DATA_BRANCH": str(branch)})
+        with pytest.raises(SystemExit, match="corpus"):
+            trainer.resume_stream(config, None, None, None, 1, 0, {"sources": []})
+

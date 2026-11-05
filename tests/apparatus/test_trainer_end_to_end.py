@@ -50,11 +50,11 @@ ENV = {
 
 def _corpus(root):
     rng = np.random.default_rng(0)
-    for source in ("fineweb-edu", "codeparrot", "finemath"):
+    for source in ("fineweb-edu", "stack-edu", "finemath"):
         d = root / "data" / "pretrain" / source
         d.mkdir(parents=True)
-        for i in range(2):
-            np.save(d / f"chunk_{i}.npy", rng.integers(0, 50000, 3000 * STRIDE, dtype=np.int32))
+        for i in range(2):  # uint16, as the prefill writes them (#591)
+            np.save(d / f"chunk_{i}.npy", rng.integers(0, 50000, 3000 * STRIDE, dtype=np.uint16))
     return root / "data"
 
 
@@ -120,7 +120,7 @@ def test_a_logged_row_carries_every_measurement_the_loop_is_wired_to_make(run):
                    "loss_scale", "act_max"):
         assert row.get(column) is not None, f"{column} empty on the row at opt step {FIRST_LEG}"
     assert row["val_step"] == FIRST_LEG
-    assert set(row["val_by_source"]) == {"codeparrot", "finemath"}
+    assert set(row["val_by_source"]) == {"stack-edu", "finemath"}
 
 
 def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run):
@@ -129,6 +129,7 @@ def test_the_checkpoint_records_what_was_consumed_and_where_the_data_stands(run)
     # per opt step, so the checkpoint sits on the optimizer's boundary (#355).
     assert state["samples_seen"] == run["stopped"] * CONFIG.ACCUMULATION_STEPS * CONFIG.BATCH_SIZE
     assert state["data_state"]["sources"], "the exact data position (#424)"
+    assert state["data_state"]["corpus"] == "data", "the corpus that position belongs to (#597)"
 
 
 def test_the_checkpoint_is_taken_between_optimizer_windows(run):

@@ -48,7 +48,7 @@ def test_a_restored_mixer_serves_the_rows_an_uninterrupted_one_would(tmp_path, c
     snapshot = json.loads(json.dumps(first.state()))
 
     resumed = _mixer(tmp_path)
-    resumed.load_state(snapshot)
+    resumed.load_state(snapshot, legacy_names=())
     for want in expected[cut:]:
         got = resumed.get_batch(1)
         if want is None:
@@ -62,4 +62,4 @@ def test_a_state_from_a_different_source_list_is_refused(tmp_path):
     state = mixer.state()
     state["sources"] = state["sources"][:1]
     with pytest.raises(ValueError, match="DATA_MIXTURE"):
-        _mixer(tmp_path).load_state(state)
+        _mixer(tmp_path).load_state(state, legacy_names=())

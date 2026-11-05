@@ -98,12 +98,12 @@ def load_batch(rng):
     root = os.environ.get("DATA_ROOT", "")
     if root:
         from trm.config import resolve_root
-        from trm.train.validation import read_heldout_rows
-        for source in ("codeparrot", "fineweb-edu"):
+        from trm.train.validation import read_heldout_rows, tail_skip
+        for source in ("stack-edu", "fineweb-edu"):
             path = f"{resolve_root(root)}/pretrain/{source}"
             if not os.path.isdir(path):
                 continue
-            rows = read_heldout_rows(path, 1, CONFIG.VAL_SKIP_SAMPLES, max_seq_len=CONFIG.MAX_SEQ_LEN,
+            rows = read_heldout_rows(path, 1, tail_skip(path, CONFIG.MAX_SEQ_LEN), max_seq_len=CONFIG.MAX_SEQ_LEN,
                                      data_seed=CONFIG.DATA_SEED)
             if rows:
                 (row,) = rows

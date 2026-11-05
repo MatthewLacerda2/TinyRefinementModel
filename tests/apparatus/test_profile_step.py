@@ -58,7 +58,7 @@ def test_a_trace_without_two_boundaries_is_refused():
 
 def _corpus(root):
     rng = np.random.default_rng(0)
-    for source in ("fineweb-edu", "codeparrot", "finemath"):
+    for source in ("fineweb-edu", "stack-edu", "finemath"):
         d = root / "data" / "pretrain" / source
         d.mkdir(parents=True)
         np.save(d / "chunk_0.npy", rng.integers(0, 50000, 400 * (2 * SEQ + 1), dtype=np.int32))

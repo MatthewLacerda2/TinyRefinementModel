@@ -14,9 +14,9 @@ import numpy as np
 from flax import nnx
 
 from trm.config import resolve_root
-from trm.data.loaders import DataMixer, TextDataGenerator
+from trm.data.loaders import DataMixer, TextDataGenerator, corpus_name, require_same_corpus
 from trm.model import build_model
-from trm.settings import DEFAULT_DATA_MIXTURE, load_env, location
+from trm.settings import LEGACY_DATA_MIXTURE, load_env, location
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules, mixture_label, parse_mixture
 
@@ -98,19 +98,22 @@ def init_model_and_optimizer(config):
 
 def resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_step, samples_seen, data_state):
     """Puts a resumed run's readers and mixer where its checkpoint left them."""
+    legacy_names = parse_mixture(LEGACY_DATA_MIXTURE)[0]
+    if data_state is not None:
+        require_same_corpus(data_state, DATA_ROOT)
     if config.DATA_BRANCH:
         # A branch onto this run's mixture (#489): the weights continue, the stream
         # is rebuilt, and each seed reads its own rows.
         if data_state is None:
             raise SystemExit("DATA_BRANCH=1 needs a checkpoint that saved its data state (#424)")
-        pretrain_mixer.branch_state(data_state, parse_mixture(DEFAULT_DATA_MIXTURE)[0],
+        pretrain_mixer.branch_state(data_state, legacy_names,
                                     skip=config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE)
         print(f"🌿 Data stream branched onto {', '.join(schedules.sources)}: seed {config.DATA_SEED} "
               f"skips {config.DATA_SEED * config.DATA_BRANCH_SEED_STRIDE:,} rows per bucket (#489)")
     elif data_state is not None:
         # Exact (#424): the reader and mixer state saved with the last batch the
         # checkpointed run consumed, so the next row is the one it would have read.
-        pretrain_mixer.load_state(data_state)
+        pretrain_mixer.load_state(data_state, legacy_names)
         print("📍 Data stream restored exactly from the checkpoint (#424)")
     else:
         # A checkpoint from before #424: the position is estimated, and the stream
@@ -155,6 +158,7 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
     if start_step > 0:
         resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_step, samples_seen, data_state)
 
+    corpus = corpus_name(DATA_ROOT)
     data_queue = queue.Queue(maxsize=PREFETCH_SIZE)
 
     def data_wrapper():
@@ -170,7 +174,7 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
 
             # The state AFTER this batch travels with it, so the trainer can save
             # the one for the last batch it actually consumed, not the prefetched ones.
-            data_queue.put((batch, pretrain_mixer.last_source, pretrain_mixer.state()))
+            data_queue.put((batch, pretrain_mixer.last_source, {**pretrain_mixer.state(), "corpus": corpus}))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()
