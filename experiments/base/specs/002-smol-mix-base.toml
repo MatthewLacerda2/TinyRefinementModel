@@ -47,12 +47,13 @@ matched = "n/a — a single arm against a published reference; observational, no
 notes = """
 THE BUDGET is a time budget in disguise: the owner's ceiling is 10 days of
 uninterrupted training (2026-10-16). 7.5B tokens is 57,221 opt steps of 131,072
-tokens. At the real trainer's 13.9 s per opt step (#433, 24 steps, no probes) that is
-9.2 days; the rest is margin for what a 24-step reading leaves out: the val probes,
-checkpoints and milestones a long run adds. 001 measured 17.4 s steady on older code
-(before #474), so its pace does not transfer. If the first day reads slower than
-14.8 s per opt step, 7.5B does not fit in 10 days, and the run is stopped early by
-the owner's ceiling, not by this spec.
+tokens. Measured in this spec's dress rehearsal (2026-11-06, 645 opt steps on this
+corpus and mix, through the supervisor, with val probes, checkpoints, milestones and
+one crash-resume): 14.7-14.8 s per opt step in steady state (median 14.2), so 9.75-9.8
+days, plus ~30 minutes of launch gates and final scoring. 001 measured 17.4 s on older
+code (before #474), and the real trainer's 24-step reading was 13.9 s with no probes
+(#433). 7.5B fits 10 days below 15.1 s per opt step; slower than that, the run is
+stopped early by the owner's ceiling, not by this spec.
 
 The corpus holds 10.5B tokens (fineweb-edu 7.2B, stack-edu 2.2B, finemath 1.1B), so
 at 70/20/10 a 7.5B run reads 5.25B / 1.5B / 0.75B, clear of every validation tail
