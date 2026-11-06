@@ -39,11 +39,28 @@ def test_one_colour_scale_covers_every_milestone():
     assert (vmin, vmax) == (0.0, 9.0), "the late panel is drawn on the early one's scale"
 
 
-def test_the_passage_is_the_first_document_that_starts_in_the_row():
+def test_the_passage_is_the_first_long_enough_document_and_never_crosses_a_separator():
     row = np.array([5, 6, EOT, 10, 11, 12, EOT, 20, 21])
-    assert st.passage_from_row(row, 10, EOT).tolist() == [10, 11, 12]
-    assert st.passage_from_row(row, 2, EOT).tolist() == [10, 11]
+    assert st.passage_from_row(row, 10, EOT, shortest=3).tolist() == [10, 11, 12]
+    assert st.passage_from_row(row, 2, EOT, shortest=3).tolist() == [10, 11]
     assert st.passage_from_row(np.array([1, 2, 3]), 2, EOT).tolist() == [1, 2], "no document starts: the head"
+    short_first = np.array([1, EOT, 7, EOT, 8, 9, 10, 11])
+    assert st.passage_from_row(short_first, 10, EOT, shortest=3).tolist() == [8, 9, 10, 11], \
+        "a one-token document is skipped, and no passage spans two documents"
+
+
+def test_a_newline_and_indent_token_keeps_the_indentation():
+    cells = st.layout(["if", " x", ":", "\n    ", "return", "\n", "y"], width=40)
+    assert len(cells) == 7
+    assert cells[4] == (1, 4, "return"), "the indent the newline token carried moves the cursor"
+    assert cells[6] == (2, 0, "y")
+
+
+def test_a_cold_run_and_a_live_run_each_get_their_own_folder():
+    from trm.settings import REPO_ROOT
+    assert st.default_out("/mnt/d_drive/TRM_cold/run_A/milestones") == REPO_ROOT / "runs/run_A/surprise_text"
+    assert st.default_out("runs/run_B/checkpoints/milestones") == REPO_ROOT / "runs/run_B/surprise_text"
+    assert st.default_out("/tmp/elsewhere/milestones") is None
 
 
 def test_largest_drops_name_what_was_just_learned():

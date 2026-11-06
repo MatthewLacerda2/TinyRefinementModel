@@ -58,15 +58,23 @@ SCALE_QUANTILE = 0.99
 LINE_CHARS = 96
 
 
-def passage_from_row(row, length, eot):
-    """The first document that starts inside `row` (a held-out row of token ids), up to
-    `length` tokens, or the row's head when no document starts in it."""
+# A passage shorter than this many tokens says too little; the cut looks further on.
+MIN_PASSAGE = 32
+
+
+def passage_from_row(row, length, eot, shortest=MIN_PASSAGE):
+    """The first document that starts inside `row` (a held-out row of token ids) with
+    at least `shortest` tokens before it ends, up to `length` tokens, never crossing a
+    separator; the row's head when no document in it is that long."""
     row = np.asarray(row).reshape(-1)
-    starts = np.flatnonzero(row[:-1] == eot) + 1
-    start = int(starts[0]) if starts.size else 0
-    tokens = row[start:start + length]
-    end = np.flatnonzero(tokens == eot)
-    return tokens[:end[0]] if end.size and end[0] > 1 else tokens
+    want = min(length, shortest)
+    for start in (np.flatnonzero(row[:-1] == eot) + 1).tolist() + [0]:
+        tokens = row[start:start + length]
+        end = np.flatnonzero(tokens == eot)
+        tokens = tokens[:end[0]] if end.size else tokens
+        if len(tokens) >= want or start == 0:
+            return tokens
+    return row[:length]
 
 
 def sha(tokens):
@@ -88,20 +96,23 @@ def layout(texts, width=LINE_CHARS):
     """(line, column, text) for each target's text, in order, on a grid `width`
     characters wide: a newline inside a token ends its line, and a token that would
     run past the edge starts the next one. Every target gets exactly one cell; an
-    empty or whitespace-only token keeps its cell, drawn as a visible marker."""
+    empty or whitespace-only token keeps its cell, drawn as a visible marker. A token
+    that spans lines is drawn where it starts, labelled with its first visible piece
+    (↵ when it starts with the newline); what it puts after its last newline still
+    moves the cursor, so a newline-and-indent token keeps the code's indentation."""
     cells, line, col = [], 0, 0
     for text in texts:
-        shown = text.replace("\t", "    ")
-        pieces = shown.split("\n")
-        head = pieces[0] if pieces[0].strip() or len(pieces) == 1 else "↵"
-        if not head:
-            head = "·"
+        pieces = text.replace("\t", "    ").split("\n")
+        visible = next((piece.strip() for piece in pieces if piece.strip()), "")
+        head = pieces[0] if pieces[0].strip() else ("↵" if len(pieces) > 1 else "·")
+        if len(pieces) > 1 and not pieces[0].strip() and visible:
+            head = "↵" + visible
         if col + len(head) > width and col > 0:
             line, col = line + 1, 0
         cells.append((line, col, head))
         col += len(head)
-        for _ in pieces[1:]:
-            line, col = line + 1, 0
+        if len(pieces) > 1:
+            line, col = line + len(pieces) - 1, len(pieces[-1])
     return cells
 
 
@@ -140,7 +151,8 @@ def milestone_steps(checkpoint_path):
 
 def load_passages(path, data_root, config, length):
     """The pinned passages: read from `path`, or cut from the corpus tails and written
-    there. A passage whose tokens no longer hash to its recorded sha is refused."""
+    there. A passage whose tokens no longer hash to its recorded sha is refused; a
+    pinned one keeps its own length, whatever `length` asks."""
     from trm.config import EOT_TOKEN_ID
     from trm.train.validation import ValidationProbe
 
@@ -149,6 +161,7 @@ def load_passages(path, data_root, config, length):
         for name, entry in saved.items():
             if sha(entry["tokens"]) != entry["sha256"]:
                 raise SystemExit(f"{path}: passage {name!r} no longer matches its sha256")
+        print(f"📌 passages pinned in {path}; --tokens applies only to a new pin")
         return {name: np.asarray(entry["tokens"]) for name, entry in saved.items()}
     passages = {}
     for source in SOURCES:
@@ -186,6 +199,16 @@ def draw(path, step, panels, scale):
     plt.close(fig)
 
 
+def default_out(checkpoint_path):
+    """`runs/<run>/surprise_text` in this checkout, <run> being the checkpoint path's
+    last `run_*` folder: a live run's `runs/<run>/checkpoints/milestones` and a cold
+    run's `<cold>/<run>/milestones` both name their own run, and the figures stay on
+    the SSD. None when the path names no run."""
+    from trm.settings import REPO_ROOT
+    names = [part for part in pathlib.Path(os.path.abspath(checkpoint_path)).parts if part.startswith("run_")]
+    return REPO_ROOT / "runs" / names[-1] / "surprise_text" if names else None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_checkpoint_argument(ap, required=True, aliases=("--ckpt",))
@@ -194,23 +217,32 @@ def main(argv=None):
                     help="where the passages and figures go (default: <run>/surprise_text)")
     args = ap.parse_args(argv)
 
+    from instruments.heldout_profile import MIN_AVAILABLE_GIB, memory_available_gib
+    available = memory_available_gib()
+    if available is not None and available < MIN_AVAILABLE_GIB:
+        raise SystemExit(f"only {available:.1f} GiB available (< {MIN_AVAILABLE_GIB}); not starting beside a trainer")
+
     load_env()
     import tiktoken
 
-    from instruments.heldout_profile import run_dir
     from trm.config import TOKENIZER_NAME, resolve_root
     from trm.runtime.restore import restore_model
     from trm.settings import CONFIG
 
+    if args.tokens > CONFIG.MAX_SEQ_LEN + 1:
+        raise SystemExit(f"--tokens {args.tokens}: one window holds at most {CONFIG.MAX_SEQ_LEN + 1} tokens")
     t0 = time.time()
-    out = args.out or run_dir(args.checkpoint_path) / "surprise_text"
+    out = args.out or default_out(args.checkpoint_path)
+    if out is None:
+        raise SystemExit(f"{args.checkpoint_path} names no run_* folder: say where the figures go with --out")
     passages = load_passages(out / "passages.json", resolve_root(os.environ.get("DATA_ROOT", "runs/data")),
                              CONFIG, args.tokens)
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
     texts = {name: [token_text(enc, t) for t in tokens[1:]] for name, tokens in passages.items()}
     steps = milestone_steps(args.checkpoint_path)
-    print(f"{len(passages)} passages ({', '.join(f'{n} {len(t) - 1} targets' for n, t in passages.items())}) "
-          f"x {len(steps)} milestones; commit {git_head()}")
+    print(f"{len(passages)} passages x {len(steps)} milestones; commit {git_head()}")
+    for name, tokens in passages.items():
+        print(f"  {name}: {len(tokens) - 1} targets, sha256 {sha(tokens)[:16]}")
 
     scored = {}
     for step in steps:
