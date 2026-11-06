@@ -25,6 +25,14 @@ def test_a_lens_that_disagrees_with_the_model_fails_the_gate():
     assert not ll.gate(probs, np.array([0.0, 1.0]))
 
 
+def test_a_head_change_that_keeps_the_argmax_still_fails_the_gate():
+    """A temperature on the model's logits keeps its argmax and moves every probability."""
+    logits = np.array([2.0, 1.0, 0.0])
+    probs = np.exp(logits) / np.exp(logits).sum()
+    assert ll.gate(np.stack([probs, probs]), logits)
+    assert not ll.gate(np.stack([probs, probs]), logits / 2.0)
+
+
 def test_top_k_is_ordered_and_complete():
     rows = ll.top_k(np.array([[0.1, 0.6, 0.3]]), k=2)
     assert rows == [[(1, 0.6), (2, 0.3)]]

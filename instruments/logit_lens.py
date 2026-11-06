@@ -14,15 +14,20 @@ the last token's residual stream after the embedding and after every block, and 
         python -m instruments.logit_lens --checkpoint-path runs/<run>/checkpoints/milestones --step N
 
 **What the path is, and is not.** Each state is drawn post-final-norm, the vector the
-head reads, then rescaled to the cloud's mean radius: the head scores a token by its dot
+head reads, then rescaled to the cloud's mean radius in all 960 dimensions (in the 3-D
+picture the drawn distances are shorter and uneven, since most of the length lies off
+the 3 directions): the head scores a token by its dot
 product with the state, so the direction is what predicts, and the raw scale grows with
 depth while the cloud's does not. It is projected on the cloud's own top-3 principal
 directions (`embedding_geometry.projection`), whose share of the cloud's variance is
 printed with it. Three of 960 dimensions: a path that ends near a token here is a shadow
 of the prediction, and the lens is what says the prediction.
 
+The embedding row always "predicts" its own input token: the head is tied, so the
+input row scores itself highest. It is drawn for the bottom of the column, not read.
+
 **The gate.** The lens at the last block must reproduce the model's own next-token
-argmax exactly; the tool refuses to write anything when it doesn't, since a lens that
+distribution (argmax and log-probabilities); the tool refuses to write anything when it doesn't, since a lens that
 disagrees with the model is miswired. Each prompt is preceded by the document separator,
 as every document in the corpus is.
 """
@@ -85,9 +90,20 @@ def top_k(probs, k=TOP_K):
     return [[(int(t), float(row[t])) for t in ids] for row, ids in zip(probs, order, strict=True)]
 
 
-def gate(probs, own_logits):
-    """The lens's last row must pick the model's own next token."""
-    return int(np.argmax(probs[-1])) == int(np.argmax(own_logits))
+# How far the lens's last-row log-probabilities may sit from the model's own (f32 noise).
+GATE_TOLERANCE = 1e-3
+
+
+def gate(probs, own_logits, tolerance=GATE_TOLERANCE):
+    """The lens's last row must be the model's own next-token distribution: the same
+    argmax, and the same log-probabilities, so a change to the head that keeps the
+    argmax (a softcap, a temperature) still fails it."""
+    own = np.asarray(own_logits, dtype=np.float64)
+    own_logp = own - own.max() - np.log(np.exp(own - own.max()).sum())
+    lens_logp = np.log(np.maximum(np.asarray(probs[-1], dtype=np.float64), 1e-300))
+    top = own_logp > np.log(1e-6)
+    return (int(np.argmax(probs[-1])) == int(np.argmax(own))
+            and bool(np.allclose(lens_logp[top], own_logp[top], atol=tolerance)))
 
 
 def path_points(normed_states, centre, directions, radius):
@@ -191,9 +207,25 @@ def draw(path, prompts, tables, labels):
                       fontsize=7)
         ax.set_xticks([])
         ax.set_title(f"{prompt!r} →", fontsize=8)
-    fig.suptitle("logit lens: the next-token guess after each block (top 5)", fontsize=10)
+    fig.suptitle(f"logit lens: the next-token guess after each block (top {TOP_K}); "
+                 f"the embedding row is the input token, by the tied head", fontsize=10)
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
+
+
+def cloud_frame(embedding, data_root, sources, count, budget):
+    """The cloud and the frame the path is drawn in: the embedding rows of the `count`
+    most frequent tokens in `sources`, their top-3 principal directions and centre, the
+    share of their variance those directions hold, and their mean radius."""
+    from instruments.embedding_geometry import frequent_tokens, projection
+
+    ids = frequent_tokens(data_root, sources, count, budget)
+    if len(ids) == 0:
+        raise SystemExit(f"no tokens counted under {data_root}/pretrain/{{{','.join(sources)}}}: set DATA_ROOT")
+    rows = embedding[ids]
+    centre, directions = projection(rows, components=3)
+    return {"centre": centre, "directions": directions, "share": explained(rows, directions),
+            "radius": float(np.linalg.norm(rows, axis=1).mean()), "cloud": (rows - centre) @ directions.T}
 
 
 def main(argv=None):
@@ -203,13 +235,15 @@ def main(argv=None):
     ap.add_argument("--prompts", nargs="+", default=list(DEFAULT_PROMPTS))
     ap.add_argument("--cloud-tokens", type=int, default=CLOUD_TOKENS,
                     help="how many of the corpus's most frequent tokens make the cloud")
+    ap.add_argument("--sources", default="fineweb-edu,stack-edu,finemath",
+                    help="the buckets the frequent tokens are counted in (the run's own mix)")
+    ap.add_argument("--count-budget", type=int, default=2_000_000, help="tokens read per source when counting")
     ap.add_argument("--out", type=pathlib.Path, required=True, help="where lens.json, lens.png and path.glb go")
     args = ap.parse_args(argv)
 
     load_env()
     import tiktoken
 
-    from instruments.embedding_geometry import frequent_tokens, projection
     from trm.config import EOT_TOKEN_ID, TOKENIZER_NAME, resolve_root
     from trm.runtime.restore import restore_model
     from trm.settings import CONFIG
@@ -218,13 +252,11 @@ def main(argv=None):
     enc = tiktoken.get_encoding(TOKENIZER_NAME)
     model, step = restore_model(CONFIG, args.checkpoint_path, step=args.step)
     embedding = np.asarray(model.embed.embedding[...], dtype=np.float32)
-    ids = frequent_tokens(resolve_root(os.environ.get("DATA_ROOT", "runs/data")),
-                          ["fineweb-edu", "stack-edu", "finemath"], args.cloud_tokens, 2_000_000)
-    cloud_rows = embedding[ids]
-    centre, directions = projection(cloud_rows, components=3)
-    share = explained(cloud_rows, directions)
-    radius = float(np.linalg.norm(cloud_rows, axis=1).mean())
-    cloud = (cloud_rows - centre) @ directions.T
+    if len(set(args.prompts)) != len(args.prompts):
+        raise SystemExit("--prompts repeats a prompt: lens.json is keyed by prompt")
+    frame = cloud_frame(embedding, resolve_root(os.environ.get("DATA_ROOT", "runs/data")),
+                        args.sources.split(","), args.cloud_tokens, args.count_budget)
+    share = frame["share"]
 
     def label(tid):
         return enc.decode_single_token_bytes(tid).decode("utf-8", errors="replace") if tid < enc.n_vocab else "<pad>"
@@ -238,8 +270,8 @@ def main(argv=None):
         tokens = [EOT_TOKEN_ID, *enc.encode(prompt)]
         probs, normed, own = lens(model, tokens)
         if not gate(probs, own):
-            raise SystemExit(f"{prompt!r}: the lens's last row picks {int(np.argmax(probs[-1]))}, the model "
-                             f"{int(np.argmax(own))}: the lens is miswired, nothing written")
+            raise SystemExit(f"{prompt!r}: the lens's last row is not the model's own distribution (argmax "
+                             f"{int(np.argmax(probs[-1]))} vs {int(np.argmax(own))}): the lens is miswired")
         table = top_k(probs)
         tables.append(table)
         record["prompts"][prompt] = [[{"token": label(t), "id": t, "p": p} for t, p in row] for row in table]
@@ -249,15 +281,16 @@ def main(argv=None):
             print(f"  {name:>9}: " + "  ".join(f"{label(t)!r} {p:.2f}" for t, p in row))
         emit(f"prompt{i}@{step}", final_top1=table[-1][0][1])
         if i == 0:
-            (args.out / "path.glb").write_bytes(path_glb(cloud, path_points(normed, centre, directions, radius)))
+            points = path_points(normed, frame["centre"], frame["directions"], frame["radius"])
+            (args.out / "path.glb").write_bytes(path_glb(frame["cloud"], points))
 
     (args.out / "lens.json").write_text(json.dumps(record, indent=1, ensure_ascii=False))
     draw(args.out / "lens.png", args.prompts, tables, label)
     emit(f"projection@{step}", explained_variance=share)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
-    print(f"\nlens gate: the last block reproduces the model's argmax on all {len(args.prompts)} prompts")
+    print(f"\nlens gate: the last block reproduces the model's distribution on all {len(args.prompts)} prompts")
     print(f"path: prompt 1, {len(normed) - 1} segments, drawn post-final-norm at the cloud's radius, on 3 "
-          f"directions holding {share:.1%} of the cloud's variance ({len(ids)} tokens)")
+          f"directions holding {share:.1%} of the cloud's variance ({len(frame['cloud'])} tokens)")
     print(f"🧾 {args.out} | {time.time() - t0:.0f}s on CPU, peak RSS {peak:.1f} GiB, no GPU")
     return 0
 
