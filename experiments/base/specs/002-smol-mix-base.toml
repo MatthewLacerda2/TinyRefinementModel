@@ -1,7 +1,9 @@
-# PRE-REGISTERED, NOT YET APPROVED. The next base run (owner's call: ≥ 48 h of card).
-# One arm judged against the constant GPT-2-small yardstick, like 001. What changed
-# since 001 is the data, and only the data: the recipe fields below are 001's.
+# PRE-REGISTERED, approved by the owner on 2026-11-06; launch planned 2026-11-07.
+# One arm judged against the constant GPT-2-small yardstick, like 001. The recipe is
+# today's Config defaults: 001's shape and optimizer, plus five settled adoptions that
+# landed after 001 launched (listed in the hypothesis), on the new data.
 #
+# From the root checkout (its .env points DATA_ROOT at runs/data-dedup):
 # `make launch SPEC=experiments/base/specs/002-smol-mix-base.toml BUDGET=7.5e9`
 
 [experiment]
@@ -9,20 +11,26 @@ id = "002-smol-mix-base"
 status = "open"
 title = "Does the plain recipe on the SmolLM mix, trained for 10 days, reach GPT-2-small on LAMBADA?"
 hypothesis = """
-001's recipe — PlainTransformer at dim 960, 8 layers at batch 2, f16 compute, tied
-embeddings, r50k with EOT a trained token, Muon x16.667 on a 6e-4 WSD schedule —
-trained on the SmolLM team's constant mix (#597: FineWeb-Edu-Dedup 70 / Stack-Edu
+Today's recipe — 001's PlainTransformer at dim 960, 8 layers at batch 2, f16 compute,
+tied embeddings, r50k with EOT a trained token, Muon x16.667 on a 6e-4 WSD schedule,
+plus the five adoptions below — trained on the SmolLM team's constant mix (#597: FineWeb-Edu-Dedup 70 / Stack-Edu
 Python 20 / FineMath 3+ 10, deduplicated, `runs/data-dedup`) to `budget_tokens`
 reaches GPT-2-small's LAMBADA last-word accuracy (0.3256).
 
 001 scored 0.2036 at 5.0B tokens on a mix that ended at 35% prose, KILL by its own
-margin. Three things move this run's number, all settled outside this repo or by
-001's own readings:
-- prose share 35% -> 70% for the whole run (#363's three readings: the web probe sat
-  flat while code and math took 65% of the tokens);
-- a deduplicated web bucket, 96.6% unique against 12.4% (#591);
-- 1.5x the tokens, 7.5B against 5.0B (the code got faster: 13.9 s per opt step on the
-  real trainer, #433, against 001's 17.4 s steady pace).
+margin. What moves this run's number, all settled outside this repo or by pairs here:
+- the data: prose share 35% -> 70% for the whole run (#363's three readings: the web
+  probe sat flat while code and math took 65% of the tokens); a deduplicated web bucket,
+  96.6% unique against 12.4% (#591); Stack-Edu and FineMath 3+ for codeparrot and
+  FineMath 4+ (#597);
+- 1.5x the tokens, 7.5B against 5.0B (the code got faster, before #474 001 ran 17.4 s
+  per opt step);
+- five recipe adoptions that landed after 001 launched, each a default now: Adam b2
+  0.999 -> 0.95 (#359), z-loss 1e-4 (#369), an f32 residual stream (#357), embedding
+  weight decay at the nanoGPT/GPT-3 rate (#360), and Polar Express coefficients for
+  Muon's Newton-Schulz steps (#375).
+Two differently-built runs: a 001 -> 002 difference is the sum of all of these, and
+names none of them as its cause.
 
 Prediction, registered before launch: **0.26** (honest range 0.22–0.31), so a
 KILL-band reading again, short of the gate. Reasoning: LAMBADA is narrative prose,
@@ -47,12 +55,14 @@ matched = "n/a — a single arm against a published reference; observational, no
 notes = """
 THE BUDGET is a time budget in disguise: the owner's ceiling is 10 days of
 uninterrupted training (2026-10-16). 7.5B tokens is 57,221 opt steps of 131,072
-tokens. Measured in this spec's dress rehearsal (2026-11-06, 645 opt steps on this
-corpus and mix, through the supervisor, with val probes, checkpoints, milestones and
-one crash-resume): 14.7-14.8 s per opt step in steady state (median 14.2), so 9.75-9.8
-days, plus ~30 minutes of launch gates and final scoring. 001 measured 17.4 s on older
-code (before #474), and the real trainer's 24-step reading was 13.9 s with no probes
-(#433). 7.5B fits 10 days below 15.1 s per opt step; slower than that, the run is
+tokens, and the launcher stops at the checkpoint boundary at or past it: opt step
+57,280 (7.508B tokens). Measured in this spec's dress rehearsal (2026-11-06, 645 opt
+steps on this corpus and mix, through the supervisor, with val probes, checkpoints,
+milestones and one crash-resume): a mean of 14.7-14.8 s per opt step over the run
+(probes and checkpoints included; median 14.2), so 9.75-9.81 days, 9.77-9.83 with the
+~30 minutes of launch gates and final scoring. 001 measured 17.4 s on older code
+(before #474), and the real trainer's 24-step reading was 13.9 s with no probes (#433).
+7.5B fits 10 days below a mean of 15.05 s per opt step; slower than that, the run is
 stopped early by the owner's ceiling, not by this spec.
 
 The corpus holds 10.5B tokens (fineweb-edu 7.2B, stack-edu 2.2B, finemath 1.1B), so
@@ -72,8 +82,10 @@ noise 0.009, 12-hour gain median 0.0275 in the first third and 0.0124 in the las
 tail, so the bar cannot be re-measured until this run has a curve; 0.01 is kept, not
 re-derived. The mix is constant, so the rule reads from the first row.
 
-Not gated on (owner decision pending on each, `gh issue list --label base-gate`):
-#363, #366, #434, #494.
+Waived for this run by the owner, by name, on 2026-11-06 (each issue has the reason):
+#363 (the chosen mix is the prose-led treatment it proposed), #366 (the run fits
+without the 185 MiB), #434 (DCLM and Cosmopedia wait until after this run), #494
+(POST_NORM stays off, as in 001).
 """
 budget_tokens = 7500000000
 arch = "plain"
