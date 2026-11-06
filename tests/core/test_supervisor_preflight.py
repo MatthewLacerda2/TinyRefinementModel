@@ -556,10 +556,13 @@ def test_a_supervisor_killed_outright_during_the_score_leaves_the_card_held(tmp_
     ("rehearsal_002", ["--checkpoint-path", "{tmp}/rehearsal_002/checkpoints"], "not named run_"),
     ("run_a", ["--checkpoint-path", "{tmp}/run_b/checkpoints"], "names the run 'run_b'"),
 ])
-def test_a_run_dir_the_trainer_would_not_write_into_is_refused(tmp_path, run_dir, trainer_args, refused, capsys):
+def test_a_run_dir_the_trainer_would_not_write_into_is_refused(tmp_path, monkeypatch, run_dir, trainer_args,
+                                                               refused, capsys):
     """#613: a misnamed run dir read step 0 and relaunched a live trainer as STALLED."""
     def no_launch(*a, **k):
         raise AssertionError("refused before anything runs")
+    monkeypatch.setattr(sup_mod.subprocess, "Popen", no_launch)
+    monkeypatch.setattr(sup_mod, "preflight_fit", no_launch)
     args = [a.format(tmp=tmp_path) for a in trainer_args]
     if refused is None:
         assert sup_mod.run_dir_refusal(tmp_path / run_dir, sup_mod.resumed_checkpoint_dir(args, tmp_path / run_dir)) is None
