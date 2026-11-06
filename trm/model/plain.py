@@ -60,11 +60,12 @@ class CausalAttention(nnx.Module):
         k = apply_rope(k, cos, sin)
 
         # q_norm/k_norm run in f32 for stability, so q/k come out f32 while v is in
-        # the compute dtype. Cast q/k back so all three match (dot_product_attention
-        # requires it) and attention takes the tensor-core path. No-op in f32 (CPU /
-        # toy harness); the real-scale f16 run needs it.
-        q = q.astype(x.dtype)
-        k = k.astype(x.dtype)
+        # the compute dtype. Cast q/k to v's dtype so all three match
+        # (dot_product_attention requires it) and attention takes the tensor-core path.
+        # Not x's dtype: x is the pre-norm's output, at the stream's width. No-op in f32
+        # (CPU / toy harness); the real-scale f16 run needs it.
+        q = q.astype(v.dtype)
+        k = k.astype(v.dtype)
 
         pos = jnp.arange(s)
         causal = pos[:, None] >= pos[None, :]                   # [s, s], True = allowed
@@ -83,10 +84,15 @@ class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
     def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32,
-                 post_norm=False):
+                 post_norm=False, norm_dtype=None):
         self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
-        self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
-        self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+        # The pre-norms read the residual stream at its own width: flax's RMSNorm casts
+        # its input to its `dtype` before normalizing, so an f16 norm turns an f32
+        # stream value above 65504 into inf, and #357's wide stream would not protect
+        # it. The matmuls after a norm cast its output to `dtype`.
+        norm_dtype = dtype if norm_dtype is None else norm_dtype
+        self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=norm_dtype)
+        self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=norm_dtype)
         # Post-norm on each residual branch (#235). norm1/norm2 bound the branch
         # INPUT; these bound its OUTPUT, which is the quantity that overflows —
         # a SwiGLU product multiplies two projections, so an input that merely
@@ -139,17 +145,17 @@ class PlainTransformer(nnx.Module):
         self.latent_dim = latent_dim
         self.dtype = dtype
         # The embedding's output dtype is the residual stream's (#357), never narrower
-        # than compute. Nothing else has to change: a block's `x + branch` promotes to
-        # the wider of the two, and its norms read the stream at that width and hand
-        # the matmuls `dtype`.
-        self.embed = nnx.Embed(vocab_size, latent_dim, rngs=rngs,
-                               dtype=jnp.promote_types(dtype, residual_dtype))
+        # than compute. A block's `x + branch` promotes to the wider of the two, and
+        # every norm that reads the stream is built at its width too (see Block): an
+        # RMSNorm casts its input to its own dtype first.
+        stream_dtype = jnp.promote_types(dtype, residual_dtype)
+        self.embed = nnx.Embed(vocab_size, latent_dim, rngs=rngs, dtype=stream_dtype)
         self.blocks = nnx.List([
             Block(latent_dim, num_heads, max_seq_len, rngs, dtype,
-                  post_norm=post_norm)
+                  post_norm=post_norm, norm_dtype=stream_dtype)
             for _ in range(num_layers)
         ])
-        self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=dtype)
+        self.out_norm = nnx.RMSNorm(latent_dim, epsilon=1e-6, rngs=rngs, dtype=stream_dtype)
 
     def _stream(self, tokens, keep_states=False):
         """The residual stream through the stack: (final z, act_max per state,
