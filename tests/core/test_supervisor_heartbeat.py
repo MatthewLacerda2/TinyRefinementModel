@@ -109,7 +109,7 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     original = sup_mod.Supervisor
     sup_mod.Supervisor = Stub
     try:
-        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
+        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"),
                       "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate", "--min-free-gb", "0",
                       "--heartbeat-hours", "6", "--poll-seconds", "300"])
     finally:

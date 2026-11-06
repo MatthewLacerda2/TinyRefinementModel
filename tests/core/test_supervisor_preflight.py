@@ -548,3 +548,23 @@ def test_a_supervisor_killed_outright_during_the_score_leaves_the_card_held(tmp_
             GpuLock(tmp_path / "gpu.lock", label="run-b").acquire()
     finally:
         _clean_up(supervisor, eval_)
+
+
+@pytest.mark.parametrize("run_dir, trainer_args, refused", [
+    ("run_20990101_000000", [], None),
+    ("run_20990101_000000", ["--checkpoint-path", "{tmp}/run_20990101_000000/checkpoints"], None),
+    ("rehearsal_002", ["--checkpoint-path", "{tmp}/rehearsal_002/checkpoints"], "not named run_"),
+    ("run_a", ["--checkpoint-path", "{tmp}/run_b/checkpoints"], "names the run 'run_b'"),
+])
+def test_a_run_dir_the_trainer_would_not_write_into_is_refused(tmp_path, run_dir, trainer_args, refused, capsys):
+    """#613: a misnamed run dir read step 0 and relaunched a live trainer as STALLED."""
+    def no_launch(*a, **k):
+        raise AssertionError("refused before anything runs")
+    args = [a.format(tmp=tmp_path) for a in trainer_args]
+    if refused is None:
+        assert sup_mod.run_dir_refusal(tmp_path / run_dir, sup_mod.resumed_checkpoint_dir(args, tmp_path / run_dir)) is None
+        return
+    code = sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / run_dir), "--log", str(tmp_path / "t.log"),
+                         "--min-free-gb", "0", "--no-gpu-lock", "--", *args])
+    assert code == 1 and refused in capsys.readouterr().err
+
