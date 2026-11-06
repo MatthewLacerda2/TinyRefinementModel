@@ -12,13 +12,15 @@ measured seconds per opt step, never from an old target.
 
 ## Before a base run: the base-gate checklist
 
-Something lands before the run when both answers are yes: *can it be judged before the
-run?* and *does its benefit need the run to have been trained or logged with it?* That
-covers anything that makes the run lighter or faster, anything that changes what the
-weights learn, and every piece of telemetry, because a log the run didn't write can't
-be recovered from its checkpoints. What the finished weights can use at any time (a KV
-cache, an eval, a plot of existing logs) doesn't gate. Apply the `base-gate` label when
-an issue passes the test. `gh issue list --label base-gate` is the launch checklist:
+What is worth landing before the run (owner, 2026-11-06):
+- **what makes the model better without needing this run to prove it:** settled in the
+  literature, or already shown here by a pair. Telemetry belongs here too, because a log
+  the run didn't write can't be recovered from its checkpoints;
+- **whatever fits in the time before the launch date,** once the launch has one.
+
+Something whose benefit only this run could show is not a reason to hold the launch.
+What the finished weights can use at any time (a KV cache, an eval, a plot of existing
+logs) doesn't gate. Apply the `base-gate` label when an issue passes the test. `gh issue list --label base-gate` is the launch checklist:
 empty, or the leftovers waived by the owner by name.
 
 ## Launch
