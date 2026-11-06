@@ -971,6 +971,24 @@ class Supervisor:
         self.report(message)
 
 
+def run_dir_refusal(run_dir: pathlib.Path, checkpoint_dir: pathlib.Path | None) -> str | None:
+    """Why the trainer would name its run differently from `run_dir`, or None. The trainer
+    names its run after the first `run_*` folder of its checkpoint path (trm/train/start.py),
+    and this supervisor reads progress from `run_dir`: when the two differ it reads step 0
+    and relaunches a live trainer as STALLED (#613). The name only: the trainer writes under
+    the repo's runs/, and a run dir elsewhere with the right name is not caught here."""
+    if not run_dir.name.startswith("run_"):
+        return (f"--run-dir {run_dir} is not named run_*: the trainer would open its own "
+                f"runs/run_<timestamp>/ and this supervisor would never see its progress")
+    if checkpoint_dir is not None:
+        named = next((p for p in pathlib.Path(os.path.abspath(checkpoint_dir)).parts
+                      if p.startswith("run_")), None)
+        if named != run_dir.name:
+            return (f"--checkpoint-path {checkpoint_dir} names the run {named!r} and --run-dir "
+                    f"is {run_dir.name!r}: the trainer would write its metrics into another folder")
+    return None
+
+
 def resumed_checkpoint_dir(trainer_args, run_dir: pathlib.Path) -> pathlib.Path | None:
     """The checkpoint dir the trainer these arguments launch resumes: its
     --checkpoint-path (against the repo root, its cwd), else the run dir's own, where
@@ -1144,6 +1162,11 @@ def _run_on_the_card(args, supervisor: Supervisor, lock: GpuLock) -> int:
 
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
+    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
+    why = run_dir_refusal(args.run_dir, checkpoint_dir)
+    if why:
+        print(f"refusing to supervise: {why}", file=sys.stderr)
+        return 1
 
     limits = Limits(stop_step=args.stop_step, max_ce=args.max_ce,
                     stall_polls=args.stall_polls, max_retries=args.max_retries,
@@ -1158,7 +1181,6 @@ def main(argv=None) -> int:
     cold = _cold_tier(args)
     print(f"cold tier: {describe_cold(cold)}")
 
-    checkpoint_dir = resumed_checkpoint_dir(args.trainer_args, args.run_dir)
     lock = GpuLock(label=f"stop_step={args.stop_step}")
     supervisor = _build_supervisor(args, limits, cold, checkpoint_dir, lock)
 
