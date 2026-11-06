@@ -30,6 +30,7 @@ modules from the repo root with `venv/bin/python -m instruments.<name>`.
 | can it write Python (pass@k per difficulty) | `python_world --checkpoint-path … ` / `--reference` |
 | what it actually says on fixed prompts | `dump_transcripts` (card must be free for `--device gpu`) |
 | what mean held-out CE averages away | `heldout_profile --checkpoint-path … --step N` |
+| the next-token guess after each block, and the path through the token cloud | `logit_lens --checkpoint-path … --out DIR` |
 | every offline diagnostic for one checkpoint | `milestone_report [--ckpt DIR] [--quick]` |
 
 **How is a run doing?**
