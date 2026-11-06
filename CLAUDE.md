@@ -157,9 +157,9 @@ or more — in practice a base run — waits for the owner**: surface it with it
 The permission waives asking, never the discipline: pre-registered, claimed, recorded.
 
 Claim an issue before starting it (an assignee means hands off), and close with
-"Closes #N". Before a base run,
-whatever only pays if the run has it lands first — the `base-gate` checklist is in the
-`training-runs` skill.
+"Closes #N". Before a base run, what makes the model better without needing the run
+to prove it lands first, and whatever fits before its launch date — the `base-gate`
+checklist is in the `training-runs` skill.
 
 ## Repo map
 
