@@ -83,14 +83,13 @@ class CausalAttention(nnx.Module):
 class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
 
-    def __init__(self, dim, num_heads, max_pos, rngs, dtype=jnp.float32,
-                 post_norm=False, norm_dtype=None):
+    def __init__(self, dim, num_heads, max_pos, rngs, dtype, *, norm_dtype,
+                 post_norm=False):
         self.attn = CausalAttention(dim, num_heads, max_pos, rngs, dtype)
         # The pre-norms read the residual stream at its own width: flax's RMSNorm casts
         # its input to its `dtype` before normalizing, so an f16 norm turns an f32
         # stream value above 65504 into inf, and #357's wide stream would not protect
         # it. The matmuls after a norm cast its output to `dtype`.
-        norm_dtype = dtype if norm_dtype is None else norm_dtype
         self.norm1 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=norm_dtype)
         self.norm2 = nnx.RMSNorm(dim, epsilon=1e-6, rngs=rngs, dtype=norm_dtype)
         # Post-norm on each residual branch (#235). norm1/norm2 bound the branch

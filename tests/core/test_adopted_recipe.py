@@ -122,7 +122,10 @@ def test_a_stream_value_past_f16_range_survives_the_norms():
     for norm in (model.blocks[0].norm1, model.blocks[0].norm2, model.out_norm):
         out = norm(hot)
         assert out.dtype == jnp.float32 and bool(jnp.isfinite(out).all())
-    assert bool(jnp.isfinite(model.blocks[0](hot)).all()), "the block's matmuls get finite f16 inputs"
+    block = model.blocks[0]
+    assert block.attn.q(block.norm1(hot)).dtype == jnp.float16, "the matmul after a norm still runs in f16"
+    assert block.gate_proj(block.norm2(hot)).dtype == jnp.float16
+    assert bool(jnp.isfinite(block(hot)).all()), "the block's matmuls get finite f16 inputs"
 
 
 def test_the_stream_is_never_narrower_than_compute():

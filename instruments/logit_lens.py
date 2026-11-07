@@ -76,9 +76,9 @@ def lens(model, tokens):
 
     batch = jnp.asarray(np.asarray(tokens, dtype=np.int32))[None, :]
     states = model.capture_trajectory(batch)[:, 0, -1, :]  # [blocks + 1, dim]
-    normed = model.out_norm(states.astype(model.dtype))
+    normed = model.out_norm(states)  # at the stream's width, as __call__ reads it
     head = model.embed.embedding[...].astype(model.dtype).T
-    logits = jnp.matmul(normed, head, preferred_element_type=jnp.float32)
+    logits = jnp.matmul(normed.astype(model.dtype), head, preferred_element_type=jnp.float32)
     own = model(batch, training=False).logits[0, -1]
     return (np.asarray(jax.nn.softmax(logits, axis=-1)), np.asarray(normed, dtype=np.float32),
             np.asarray(own))

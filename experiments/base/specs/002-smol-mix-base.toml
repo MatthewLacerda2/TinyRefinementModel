@@ -1,7 +1,8 @@
 # PRE-REGISTERED, approved by the owner on 2026-11-06; launch planned 2026-11-07.
 # One arm judged against the constant GPT-2-small yardstick, like 001. The recipe is
-# today's Config defaults: 001's shape and optimizer, plus five settled adoptions that
-# landed after 001 launched (listed in the hypothesis), on the new data.
+# today's Config defaults: 001's shape and optimizer, plus five settled adoptions and
+# one precision fix that landed after 001 launched (listed in the hypothesis), on the
+# new data.
 #
 # From the root checkout (its .env points DATA_ROOT at runs/data-dedup):
 # `make launch SPEC=experiments/base/specs/002-smol-mix-base.toml BUDGET=7.5e9`
