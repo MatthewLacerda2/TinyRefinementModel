@@ -31,6 +31,7 @@ modules from the repo root with `venv/bin/python -m instruments.<name>`.
 | what it actually says on fixed prompts | `dump_transcripts` (card must be free for `--device gpu`) |
 | what mean held-out CE averages away | `heldout_profile --checkpoint-path … --step N` |
 | the next-token guess after each block, and the path through the token cloud | `logit_lens --checkpoint-path … --out DIR` |
+| what it learned between milestones, token by token on a fixed passage | `surprise_text --checkpoint-path runs/<run>/checkpoints/milestones` |
 | every offline diagnostic for one checkpoint | `milestone_report [--ckpt DIR] [--quick]` |
 
 **How is a run doing?**
