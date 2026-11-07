@@ -28,7 +28,9 @@ margin. What moves this run's number, all settled outside this repo or by pairs 
 - five recipe adoptions that landed after 001 launched, each a default now: Adam b2
   0.999 -> 0.95 (#359), z-loss 1e-4 (#369), an f32 residual stream (#357), embedding
   weight decay at the nanoGPT/GPT-3 rate (#360), and Polar Express coefficients for
-  Muon's Newton-Schulz steps (#375).
+  Muon's Newton-Schulz steps (#375). And one precision fix, added 2026-11-06 with the
+  owner's approval: every norm that reads the f32 residual stream reads it in f32
+  (PR #617), so the stream's width now reaches the norms #357 meant it to.
 Two differently-built runs: a 001 -> 002 difference is the sum of all of these, and
 names none of them as its cause.
 
