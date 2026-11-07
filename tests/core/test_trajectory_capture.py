@@ -54,7 +54,6 @@ def test_the_trajectory_ends_where_the_forward_pass_does(toy_plain, tokens):
     # The stream is carried at the residual width (f32 since #357) and the out-norm
     # reads it there before the cast to compute dtype (#617), so the norm comes first.
     last = toy_plain.out_norm(states[-1].astype(toy_plain.embed.dtype)).astype(hidden.dtype)
-    assert last.dtype == hidden.dtype
     assert jnp.array_equal(last, hidden)
 
 
