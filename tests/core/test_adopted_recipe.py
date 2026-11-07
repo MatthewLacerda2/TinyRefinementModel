@@ -111,6 +111,23 @@ def test_the_stream_knob_moves_no_weight():
         assert a.dtype == b.dtype and np.array_equal(a, b)
 
 
+def test_a_stream_value_past_f16_range_survives_the_norms():
+    """The f32 stream (#357) only helps if what reads it reads it at f32: flax's RMSNorm
+    casts its input to its own dtype first, so an f16 norm turned 70000 into inf. With
+    f16 compute and an f32 stream, every pre-norm and the final norm read f32 and hand
+    the matmuls f16."""
+    model = PlainTransformer(32, nnx.Rngs(0), Config(RESIDUAL_DTYPE="float32"), vocab_size=37,
+                             num_heads=4, num_layers=1, max_seq_len=16, dtype=jnp.float16)
+    hot = jnp.full((1, 16, 32), 70_000.0, dtype=jnp.float32)
+    for norm in (model.blocks[0].norm1, model.blocks[0].norm2, model.out_norm):
+        out = norm(hot)
+        assert out.dtype == jnp.float32 and bool(jnp.isfinite(out).all())
+    block = model.blocks[0]
+    assert block.attn.q(block.norm1(hot)).dtype == jnp.float16, "the matmul after a norm still runs in f16"
+    assert block.gate_proj(block.norm2(hot)).dtype == jnp.float16
+    assert bool(jnp.isfinite(block(hot)).all()), "the block's matmuls get finite f16 inputs"
+
+
 def test_the_stream_is_never_narrower_than_compute():
     """Under FORCE_F32_COMPUTE (the suite's) a float16 stream is f32, so the test path
     and the golden run stay all-f32."""
