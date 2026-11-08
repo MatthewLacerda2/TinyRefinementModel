@@ -56,8 +56,10 @@ def test_the_spec_format_offers_exactly_the_spending_functions_the_referee_has()
 
 
 def test_looks_turn_seed_counts_into_nominal_bars():
-    first, final = looks(StagesTable(seeds=(4, 8)))
+    first, final = looks(StagesTable(seeds=(4, 8)))           # the default: Pocock
     assert (first.index, first.seeds, final.index, final.seeds) == (1, 4, 2, 8)
+    assert (first.alpha, final.alpha) == pytest.approx((0.0310, 0.0297), abs=1e-4)
+    first, final = looks(StagesTable(seeds=(4, 8), spending="obrien-fleming"))
     assert first.alpha == pytest.approx(0.00557, abs=1e-5)
     assert first.alpha < final.alpha < ALPHA      # spending keeps the final bar near alpha
 
@@ -159,7 +161,7 @@ def test_look_1_continues_when_parity_misses_its_bar_but_could_still_be_shown():
     """p under ALPHA but over look 1's spent bar: the fixed design would have kept,
     the staged one runs on."""
     control = [0.0, 0.3, -0.3, 0.1, 0.0, 0.3, -0.3, 0.1]
-    treatment = [v + 0.5 for v in control]
+    treatment = [v + 0.62 for v in control]                 # look-1 p ~0.038, bar 0.031
     verdict = evaluate(staged(), arms(treatment, control), look=1)
     point = verdict.criteria[0].points[0]
     assert verdict.look.alpha < point.p <= ALPHA
@@ -191,7 +193,7 @@ def test_the_default_replays_the_design_look_1_first():
     assert evaluate(staged(), arms(TIGHT[:5], TIGHT[:5])).look.index == 1
     assert evaluate(staged(), arms(TIGHT, TIGHT)).look.index == 1          # settled at look 1
     loose = [0.0, 0.3, -0.3, 0.1, 0.0, 0.3, -0.3, 0.1]
-    unsettled = arms([v + 0.5 for v in loose], loose)
+    unsettled = arms([v + 0.62 for v in loose], loose)
     assert evaluate(staged(), {"run": {k: v[:5] if isinstance(v, list) else v
                                        for k, v in unsettled["run"].items()}}).settled is False
     assert evaluate(staged(), unsettled).look.index == 2

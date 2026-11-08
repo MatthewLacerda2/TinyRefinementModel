@@ -111,8 +111,8 @@ class StagesTable(_Table):
     arithmetic; docs/design/experiment-spec.md the format."""
     seeds: tuple[int, int]  # seeds per arm at look 1 and at look 2, cumulative
     # The Lan-DeMets spending function that splits alpha across the two looks. Pocock by
-    # the owner's call (2026-11-08): ~a quarter fewer seeds for 0.945 power vs 0.968, the
-    # table in docs/design/experiment-spec.md.
+    # the owner's call (2026-11-08): 6.2 seeds a side vs O'Brien-Fleming's 7.6, for power
+    # 0.945 vs 0.968; the table is in docs/design/experiment-spec.md.
     spending: Literal["obrien-fleming", "pocock"] = "pocock"
     # Stop at look 1 when the gap is shown beyond the margin (the owner's option (b)).
     futility: bool = True
