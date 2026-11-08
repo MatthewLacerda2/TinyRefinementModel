@@ -27,7 +27,7 @@ import pathlib
 import pytest
 
 from instruments.spec_file import SpecFile
-from instruments.verdict import Summary, evaluate, load_recorded_results, load_spec
+from instruments.verdict import evaluate, load_recorded_results, load_spec
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SPECS = sorted(ROOT.glob("experiments/*/specs/*.toml"))

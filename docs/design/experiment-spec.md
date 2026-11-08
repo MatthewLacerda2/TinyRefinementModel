@@ -29,6 +29,7 @@ its research line like everything else there (#143).
 | `[verdict]` | `keep_if` / `kill_if` (lists of criterion names), and `recorded` once it has run |
 | `[readouts]` | observations that explicitly carry **no** keep/kill weight |
 | `[execution]` | how to actually run it (optional — see below) |
+| `[stages]` | two looks at a parity pair: seeds at each look, the spending function, futility (optional — see "Two looks" below, #604) |
 | `[stall]` | a base run's early-stop rule: which held-out CE it reads, window, bar, decay (read by `python -m instruments.stall`, #468) |
 | `[results.<point>]` | per-arm numbers, written **after** the run |
 
@@ -43,7 +44,9 @@ Four comparison rules:
 - `beats` — `Δ ≥ n·σ_pooled`, a win
 - `loses` — `Δ ≤ −n·σ_pooled`, a kill trigger
 - `equivalent` — parity / no harm *shown*: the gap's 90% confidence interval lies
-  inside `±n·σ_pooled` (a TOST at one-sided p ≤ 0.05). It never holds at σ_pooled 0:
+  inside `±n·σ_pooled` (a TOST at one-sided p ≤ 0.05), or inside `±margin` when the
+  criterion registers an absolute `margin` in the metric's own units (with
+  `sigmas = 0`), as equivalence testing does and as a staged spec must. It never holds at σ_pooled 0:
   identical seeds (a quantized tokens-to-target reading) show nothing, so state a
   parity claim on such a metric with the interpolated crossing (#547)
 - `within` — `|Δ| ≤ n·σ_pooled`: no difference *seen*. How the recorded parity
@@ -133,7 +136,7 @@ rewritten:
 | `floor-both-arms` | a criterion the verdict rests on passed with both arms at a declared floor arm or `[protocol] cap` |
 | `control-reached-target` | a tokens-to-target metric (`metric_key` contains `tokens_to`) has no `[protocol] cap`, or a control seed sits at the cap and is not voided |
 | `target-reached-late` | a tokens-to-target metric's control reaches the target in the first half of the cap: the bar then judges the start of the run, not the run (#361, #547). Specs whose criteria predate 2026-10-08 are grandfathered |
-| `seeds-complete` | an arm a criterion compares has fewer seeds than `[execution]` (or `[protocol] seeds`) registered, and the rest are not voided |
+| `seeds-complete` | an arm a criterion compares has fewer seeds than `[execution]` (or `[protocol] seeds`) registered, and the rest are not voided. A `[stages]` spec that settled at look 1 counts against look 1's seeds |
 | `sigma-plausible` | σ_pooled is 0 at a criterion point (one seed, or identical seeds); a σ over 10× the gap is *noted* on green, since an honest null lands there one time in ten |
 | `prediction-registered` | the hypothesis registers no prediction (rule 3) |
 | `criteria-predate-results` | the commit that introduced `[criteria]` does not precede the one that introduced measured `[results]` |
@@ -237,6 +240,68 @@ point names (`d12`, `statetrack_6seed`) come from the prose of the findings they
 were transcribed from, not from what a harness emits today, and inventing an
 `[execution]` whose rerun would produce differently-named points would be a spec
 that only looks reproducible. They are records; new specs are jobs.
+
+## Two looks — `[stages]` (#604)
+
+A parity pair costs seeds: ~8 a side where a `beats` pair stops at 3. A spec may
+register two looks instead of one fixed count, and stop at the first when it
+settles:
+
+```toml
+[stages]
+seeds = [4, 8]                # seeds per arm at look 1 and look 2, cumulative
+spending = "obrien-fleming"   # or "pocock": the Lan–DeMets spending function
+futility = true               # stop at look 1 when parity is already ruled out
+
+[criteria.no_harm]
+rule = "equivalent"
+treatment = "treatment"
+control = "control"
+sigmas = 0.0
+margin = 0.01                 # absolute, in the metric's units, fixed before the run
+```
+
+**Why each look has its own bar.** Judging at both looks with the fixed bar
+inflates the false-positive rate. Lan & DeMets (1983) spend the overall one-sided
+α (0.05) across the looks as a function of the information fraction, look 1's
+seeds over look 2's. O'Brien–Fleming-type (the default) spends almost nothing
+early, so look 2's bar stays near α: at 4 then 8 seeds, one-sided p ≤ 0.0056 at
+look 1 and ≤ 0.048 at look 2. Pocock-type spends evenly: 0.031 then 0.030. The
+referee turns each look's z bar into the nominal one-sided p the TOST must reach;
+`tests/apparatus/test_group_sequential.py` checks the bars against the published
+two-look tables and that a synthetic null keeps the error at α.
+
+**What a look decides.** The referee judges a look on each arm's first `seeds[k]`
+values (a declared constant arm is used as is), and by default at the last look the
+results reach. At look 1:
+- KEEP or KILL at look 1's bar: settled, stop.
+- futile: an `equivalent` keep criterion shows the gap *beyond* its margin at
+  look 1's bar. Settled as INCONCLUSIVE: parity can no longer be shown, and a kill
+  is the spec's own branch to fire. Futility only makes parity claims rarer, so the
+  error stays at or under α. `futility = false` turns it off.
+- otherwise not settled: run look 2's seeds and judge again at look 2's bar.
+
+The verdict prints the look, its seeds and its bar. Measured on a synthetic null
+(σ 1, margin 2σ, 4 then 8 seeds, 10,000 pairs a row, 2026-11-08):
+
+| spending | P(parity) at gap = margin | power at gap 0 | stopped at look 1, gap 0 | mean seeds a side, gap 0 |
+|---|---|---|---|---|
+| O'Brien–Fleming | 0.050 | 0.968 | 10% | 7.6 |
+| Pocock | 0.049 | 0.945 | 46% | 6.2 |
+
+O'Brien–Fleming keeps the fixed design's power and saves little; Pocock saves
+about a quarter of the seeds for some power. Choose before the run.
+
+**Scope, as the owner decided on #604.** Only `equivalent` spends α: `beats` and
+`loses` are σ bars, not α-calibrated, judged as written at every look, and a
+`beats` pair already stops at 3 seeds. So a staged spec needs an `equivalent` keep
+criterion, every `equivalent` criterion registers an absolute `margin`, and
+`[execution] seeds` holds look 2's count. Exactly two looks. Without `[stages]` a
+spec is judged once, at its full seed count, exactly as before #604
+(`tests/apparatus/test_verdict_pinned.py`).
+
+The runner does not stop at look 1 yet: it runs every registered seed, and the
+referee then judges at look 2, which is correct but saves nothing (#629).
 
 ## Two ways a criterion can be quietly meaningless
 

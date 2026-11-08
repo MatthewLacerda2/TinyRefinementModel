@@ -14,7 +14,8 @@ Strict where the machine acts on a key: [experiment], [arms.*], [criteria.*],
 human record of how the run was set up, and retrofitted specs carry whatever their
 finding recorded (`dim`, `K`, `heldout`, …), so beyond the keys a tool reads it
 keeps the rest as written. [stall] belongs to the base-run line's stall rule
-(instruments/stall.py, trm/runtime/cold.py), which validates it itself.
+(instruments/stall.py, trm/runtime/cold.py), which validates it itself. [stages] is
+optional (#604): without it a spec is judged once, at its full seed count.
 """
 
 from __future__ import annotations
@@ -70,6 +71,9 @@ class CriterionTable(_Table):
     points: tuple[str, ...] = ()
     require: Literal["all", "any"] = "all"
     min_delta: float | None = None
+    # `equivalent` only: the parity margin in the metric's own units, in place of
+    # sigmas * sigma_pooled (#604, the owner's decision of 2026-11-06).
+    margin: float | None = None
 
 
 class LegTable(_Table):
@@ -92,6 +96,32 @@ class ExecutionTable(_Table):
             raise ValueError(
                 'must be a LIST of arguments, not a string. Write ["python", "-m", "pkg.mod", '
                 '"--flag", "value"], because a string here would be iterated character by character')
+        return value
+
+
+# Fewer seeds than this is a noise floor that is itself noise (rule 1); the same
+# floor tests/apparatus/test_spec_seed_lint.py holds a registered seed list to.
+MIN_LOOK_SEEDS = 3
+
+
+class StagesTable(_Table):
+    """Two pre-registered looks at a parity pair (#604): judge at `seeds[0]` seeds a
+    side with that look's alpha-spent bar, stop if it settles, otherwise run on to
+    `seeds[1]` and judge at the final bar. instruments/verdict.py holds the
+    arithmetic; docs/design/experiment-spec.md the format."""
+    seeds: tuple[int, int]  # seeds per arm at look 1 and at look 2, cumulative
+    # The Lan-DeMets spending function that splits alpha across the two looks.
+    spending: Literal["obrien-fleming", "pocock"] = "obrien-fleming"
+    # Stop at look 1 when the gap is shown beyond the margin (the owner's option (b)).
+    futility: bool = True
+
+    @field_validator("seeds")
+    @classmethod
+    def _two_growing_looks(cls, value):
+        first, final = value
+        if first < MIN_LOOK_SEEDS or final <= first:
+            raise ValueError(f"looks must be at least {MIN_LOOK_SEEDS} seeds a side and grow, "
+                             f"got {list(value)}")
         return value
 
 
@@ -141,6 +171,7 @@ class SpecFile(_Table):
     void: dict[str, dict[str, VoidTable]] = {}
     runs: dict[str, RunsTable] = {}
     stall: dict[str, Any] | None = None
+    stages: StagesTable | None = None
 
     @classmethod
     def load(cls, path) -> SpecFile:
