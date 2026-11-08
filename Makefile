@@ -26,8 +26,9 @@
 # refuses a config that does not survive an apply, a probe and a checkpoint (#168).
 
 # This checkout's venv, or, in a worktree beside it (which has none of its own), the main
-# checkout's, found through git's common dir. Before this, `make lint/ready/ci-wait` in a
-# worktree failed unless PY was passed by hand (2026-11-08).
+# checkout's, found through git's common dir. Before this, every target failed in a
+# worktree unless PY was passed by hand (2026-11-08). Launch a base run from the main
+# checkout anyway: the boot-resume unit (trm/runtime/launch.py) only looks there.
 PY ?= $(firstword $(wildcard venv/bin/python) $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$$||')/venv/bin/python)
 
 .PHONY: lint test test-affected test-gpu audit gate launch resume report pair pair-pause pair-resume pair-status ready ci-wait
