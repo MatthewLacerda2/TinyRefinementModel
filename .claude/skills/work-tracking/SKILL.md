@@ -1,6 +1,6 @@
 ---
 name: work-tracking
-description: How work moves on this repo — filing and labelling issues, picking from the ready-queue, claiming, starting a session in the cloud (or knowing it ran locally), parking a partial-cpu draft PR with its resume protocol, CI on undraft, closing, and merging. Use when filing an issue, choosing what to work on, opening, undrafting or merging a PR, or closing an issue without one.
+description: How work moves on this repo — filing and labelling issues, picking from the ready-queue, claiming, starting a session in the cloud (or knowing it ran locally), parking a partial-cpu draft PR with its resume protocol, CI on undraft, closing, and merging. Use when filing an issue, choosing what to work on, starting a cloud session or running one beside a live trainer, opening, undrafting or merging a PR, or closing an issue without one.
 ---
 
 # Tracking work
@@ -54,21 +54,28 @@ close it.
   - `run_once_at` two minutes ahead, as RFC 3339 UTC (a time already past is refused);
   - `session_context`: this repository as the source, the model, and
     `allowed_tools` including `ToolSearch`;
-  - a prompt that points at a `Brief` comment on the issue **by its URL**. The repo
-    is public, so a comment posted before the routine fires must not be able to
-    stand in for the brief.
+  - a prompt that points at the brief **by its URL**. The brief is a comment on the
+    issue whose first line is `Brief`, holding the branch name, what to build on,
+    and the decisions already made. Until #630 ports rusty's standing rules for
+    cloud sessions, the brief also carries them: check `CLAUDE_CODE_REMOTE`,
+    install as below, the PR is the report, no GPU work. The repo is public, so a
+    comment posted before the routine fires must not be able to stand in for it.
 - **A cloud container is bare** until #630's session-start hook exists. The brief
   says to install the way CI does: Python 3.14, `pip install "jax==0.9.1"`, then
   `requirements.txt` without its `jax[cuda12]` line, with `JAX_PLATFORMS=cpu`.
 - **The PR is the report.** A cloud session can't message back. Watch its PR. A
-  routine that fired and left a draft with no reason in it stalled: read it with
-  `RemoteTrigger list_runs`, then `get_run_log`.
+  routine that fired and left a draft with no reason in it stalled: find its run
+  with `RemoteTrigger list_runs`, read `get_run_log`, then brief a fresh routine to
+  finish the pushed branch.
 - **Running here on purpose, beside a live trainer**:
-  - no JAX and no pytest (`tests/README.md`'s trap);
+  - no JAX tests (`tests/README.md`'s trap); `make lint`'s jax-free pytest is fine;
   - a worktree of its own beside the checkout, never the checkout itself;
-  - `make lint` with the root venv's `PY`, one session at a time (`nice -n 19 flock`),
-    and only with ≥3 GB `MemAvailable`;
-  - CI as the test runner (undraft to get it, `gh pr ready N --undo` to park again).
+  - lint one session at a time, only with ≥3 GB `MemAvailable`, every session on the
+    same lock: `nice -n 19 flock /tmp/trm-lint.lock make lint
+    PY=/home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python` (a
+    worktree has no `venv/` of its own);
+  - CI as the test runner: `make ready PR=N` to get it (CI skips drafts), and
+    `gh pr ready N --undo` to park the PR as a draft again once it's green.
 
   Other projects on this machine (rusty) have priority on RAM, CPU and disk.
 
