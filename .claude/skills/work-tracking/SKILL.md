@@ -71,9 +71,8 @@ close it.
   - no JAX tests (`tests/README.md`'s trap); `make lint`'s jax-free pytest is fine;
   - a worktree of its own beside the checkout, never the checkout itself;
   - lint one session at a time, only with ≥3 GB `MemAvailable`, every session on the
-    same lock: `nice -n 19 flock /tmp/trm-lint.lock make lint
-    PY=/home/lendacerda/Desktop/Repos/TinyRefinementModel/venv/bin/python` (a
-    worktree has no `venv/` of its own);
+    same lock: `nice -n 19 flock /tmp/trm-lint.lock make lint` (in a worktree, the
+    Makefile finds the main checkout's venv);
   - CI as the test runner: `make ready PR=N` to get it (CI skips drafts), and
     `gh pr ready N --undo` to park the PR as a draft again once it's green.
 
