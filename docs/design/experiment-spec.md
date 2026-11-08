@@ -67,12 +67,22 @@ seeds would let a 3% difference clear 2σ (#26).
 ## The conventions it pins
 
 **What a seed varies, on the real model.** A seed sets `MODEL_SEED` and `DATA_SEED`
-together. `DATA_SEED` moves each source's start offset by under 1,025 tokens and the
-mixture draws; it does **not** reorder documents, since every source is read front to
-back (#378). So σ on a `tokens_to_ce` pair is **init variance**, not data variance: a
-lower bound on the real noise, and a delta that clears 2σ here is not thereby shown to
-clear it across data orders. A gradient event at the same opt step in every seed of
-every arm (#364) is what shared data looks like.
+together; the field comments in `trm/settings.py` give the detail.
+
+| knob | varies with the seed | does not vary |
+|---|---|---|
+| `MODEL_SEED` | the initial weights | anything on a resume or a branch, where the weights come from the checkpoint |
+| `DATA_SEED` | where each chunk file starts being read (an offset under 1,025 tokens, drawn per file); which bucket each row of a micro-step comes from | the order of documents, since every bucket's files are read in sorted order, front to back; the held-out probe rows |
+
+So two seeds read nearly the same documents in the same order, and σ on a fresh
+`tokens_to_ce` pair is **init variance**, not data variance (#378): a lower bound on
+the real noise. A delta that clears 2σ here is not thereby shown to clear it across
+data orders. A gradient event at the same opt step in every seed of every arm (#364) is
+what shared data looks like. The one exception is a branch (`DATA_BRANCH`, #489,
+`experiments/mix/branch_decay.py`): each seed skips its own
+`DATA_SEED × DATA_BRANCH_SEED_STRIDE` rows, so the seeds read different documents from
+shared weights, and there σ is data variance. A knob that varies data order on a fresh
+run is open on #378.
 
 **σ is the sample sigma** (`statistics.stdev`, ddof=1) and
 **σ_pooled = √((σ_t² + σ_c²) / 2)**. Not a new choice — the one every finding

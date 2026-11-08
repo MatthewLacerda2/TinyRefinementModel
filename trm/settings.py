@@ -306,13 +306,23 @@ class Config(BaseSettings):
 
     # Seeds (#17: the seed-variance noise floor needs same-config runs differing ONLY
     # in seed). Both are recorded in run_metadata.json so every run stays reproducible.
-    #   DATA_SEED  — data-pipeline randomness: the start offset into each source
-    #                (under 1,025 tokens), the mixture draws.
-    #                NOT the document order. Every source is read front to back, so two
-    #                seeds see nearly the same documents in the same order, and a pair's
-    #                seed spread is init variance, not data variance (#378).
-    #   MODEL_SEED — parameter initialization (the nnx.Rngs the trainer builds
-    #                the model with).
+    #   DATA_SEED  — two things in trm/data/loaders.py: where each chunk file starts
+    #                being read (a random offset of 0 to 2*MAX_SEQ_LEN tokens, so under
+    #                1,025, drawn again for every file), and the mixer's draws (which
+    #                bucket each row of a micro-step comes from).
+    #                It does NOT change the document order. Every bucket's files are read
+    #                in sorted order, front to back, so two seeds read nearly the same
+    #                documents in the same order. A pair's seed spread is therefore init
+    #                variance, not data variance (#378). The held-out probe reads the
+    #                corpus tail by a skip, which draws no offset, so every seed scores
+    #                the same rows (while the tail fits in the last chunk file, as it
+    #                does on today's corpus).
+    #                One exception: under DATA_BRANCH each seed skips its own
+    #                DATA_SEED x DATA_BRANCH_SEED_STRIDE rows, and there the seed does
+    #                choose different documents (#489).
+    #   MODEL_SEED — parameter initialization only (the nnx.Rngs the trainer builds the
+    #                model with; the model has no dropout). On a resume or a branch the
+    #                weights come from the checkpoint, so it changes nothing there.
     DATA_SEED: int = 42
     MODEL_SEED: int = 42
 
