@@ -34,8 +34,8 @@ TOY_PAD = TOY_VOCAB - 1
 
 # post_norm -> sha256 of the training forward's jaxpr, read off main at 1ee0232.
 PINNED = {
-    False: "unpinned",
-    True: "unpinned",
+    False: "c513bf95f3db01246ece650c5ef74914ee37440ad70d98645914c1f75e94c9ac",
+    True: "53cd1076928928b3db20aed72a125df96346e302b9291f37631a8823a0feaeb1",
 }
 
 

@@ -112,6 +112,58 @@ def get_logits_for_token(model, padded_tks, token_idx, top_k, top_p, temperature
     logits = model(padded_tks, training=False, logits_at=token_idx).logits[0, 0, :]
     return _temperature_truncate(logits, temperature, top_k, top_p)
 
+
+# The cached path (#153): the same truncation after the same logits, in two programs
+# instead of one. `prefill_for_token` runs once per prompt and returns the cache;
+# `decode_for_token` feeds the newest token and reads the next row. Both compile once:
+# `position` is traced, and the window is fixed. The cache is donated, so each step
+# writes its K/V in place instead of copying ~16 MB of cache per token.
+@partial(nnx.jit, static_argnames=['top_k', 'top_p'])
+def prefill_for_token(model, padded_tks, token_idx, top_k, top_p, temperature):
+    logits, cache = model.prefill(padded_tks, token_idx)
+    return _temperature_truncate(logits[0], temperature, top_k, top_p), cache
+
+
+@partial(nnx.jit, static_argnames=['top_k', 'top_p'], donate_argnames=['cache'])
+def decode_for_token(model, token, cache, position, top_k, top_p, temperature):
+    logits, cache = model.decode_step(token, cache, position)
+    return _temperature_truncate(logits[0], temperature, top_k, top_p), cache
+
+
+class _Rows:
+    """The row generation samples from next (#153). Through the KV cache: the window
+    once, then one token per step against every block's cached K and V, with the
+    uncached path's logits to within kernel noise (tests/core/test_kv_cache.py). A model
+    without a decode path (the guard test's stub) runs the whole window per token."""
+
+    def __init__(self, model, input_ids, *, top_k, top_p, temperature):
+        self.model, self.input_ids = model, input_ids
+        self.top_k, self.top_p, self.temperature = top_k, top_p, temperature
+        self.cached = hasattr(model, "decode_step")
+        self.cache = None
+
+    def next(self, tokens_list, valid_len):
+        """The truncated logits for the token after position valid_len - 1."""
+        position = valid_len - 1
+        top_k, top_p, temperature = self.top_k, self.top_p, self.temperature
+        if not self.cached:
+            return get_logits_for_token(self.model, self.input_ids, position,
+                                        top_k=top_k, top_p=top_p, temperature=temperature)
+        if self.cache is None:
+            logits, self.cache = prefill_for_token(self.model, self.input_ids, position,
+                                                   top_k=top_k, top_p=top_p, temperature=temperature)
+        else:
+            newest = jnp.array([[tokens_list[-1]]], dtype=jnp.int32)
+            logits, self.cache = decode_for_token(self.model, newest, self.cache, position,
+                                                  top_k=top_k, top_p=top_p, temperature=temperature)
+        return logits
+
+    def append(self, token, position):
+        """The window path writes the token into its window; the cache does at the next step."""
+        if not self.cached:
+            self.input_ids = self.input_ids.at[0, position].set(token)
+
+
 def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TEMPERATURE,
                   top_k=50, top_p=0.9, *, seed=None, quiet=False):
     # The window is the model's own (its max_seq_len) and so is the pad it masks.
@@ -135,6 +187,11 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
     # Initialize tensor ONCE
     input_ids = jnp.array([padded_array], dtype=jnp.int32)
 
+    # temperature=0 means greedy argmax below; pass 1.0 so the jitted
+    # truncation step is a no-op scale rather than a division by zero.
+    effective_temperature = temperature if temperature > 0.0 else 1.0
+    rows = _Rows(model, input_ids, top_k=top_k, top_p=top_p, temperature=effective_temperature)
+
     if not quiet:
         print("🤖 Assistant: ", end="", flush=True)
 
@@ -142,13 +199,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         if valid_len >= window:
             break
 
-        # temperature=0 means greedy argmax below; pass 1.0 so the jitted
-        # truncation step is a no-op scale rather than a division by zero.
-        effective_temperature = temperature if temperature > 0.0 else 1.0
-        logits = get_logits_for_token(
-            model, input_ids, valid_len - 1,
-            top_k=top_k, top_p=top_p, temperature=effective_temperature,
-        )
+        logits = rows.next(tokens_list, valid_len)
         # Before sampling, not after: both samplers below turn an unsampleable
         # row into an ordinary-looking token id (#229).
         reject_unsampleable(logits, where=f"token {i}, position {valid_len - 1}")
@@ -169,7 +220,7 @@ def generate_text(model, enc, prompt, max_new_tokens=256, temperature=DEFAULT_TE
         if not quiet:
             print(enc.decode([next_token]), end="", flush=True)
 
-        input_ids = input_ids.at[0, valid_len].set(next_token)
+        rows.append(next_token, valid_len)
         valid_len += 1
 
     if not quiet:

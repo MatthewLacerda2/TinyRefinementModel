@@ -31,6 +31,22 @@ class LMOutput:
     diag: Dict[str, Any] = struct.field(default_factory=dict)
 
 
+@struct.dataclass
+class DecodeCache:
+    """What generation carries from one token to the next (#153).
+
+    `tokens` is the window as the uncached path would see it ([b, window], pads past
+    the end), so a step masks the same keys; `keys` and `values` hold every block's
+    rotated K and V for the whole window, [b, window, heads, head_dim] each, in the
+    compute dtype. ~16 MB at the shipping config in f16. A pytree, so it passes
+    through jit; never stored on the model, so the checkpoint's state tree is untouched.
+    """
+
+    tokens: jnp.ndarray
+    keys: tuple
+    values: tuple
+
+
 class CausalAttention(nnx.Module):
     """Multi-head self-attention, RoPE, causal mask folded into an additive bias."""
 
@@ -79,6 +95,29 @@ class CausalAttention(nnx.Module):
         out = jax.nn.dot_product_attention(q, k, v, bias=bias)
         return self.o(out.reshape(b, s, d))
 
+    # --- the decode path (#153) ---------------------------------------------------
+    # Beside __call__, not through it: the training forward stays the program it was
+    # (tests/core/test_training_forward_pin.py). These repeat its arithmetic op for op,
+    # and tests/core/test_kv_cache.py holds them to the same bits.
+
+    def project(self, x, start):
+        """q, k, v for the rows of `x`, which sit at absolute positions start, start+1,
+        ...: normed, rotated and cast exactly as __call__ makes them. `start` may be traced."""
+        b, s, d = x.shape
+        q = self.q_norm(self.q(x).reshape(b, s, self.num_heads, self.head_dim))
+        k = self.k_norm(self.k(x).reshape(b, s, self.num_heads, self.head_dim))
+        v = self.v(x).reshape(b, s, self.num_heads, self.head_dim)
+        cos = jax.lax.dynamic_slice_in_dim(self.cos, start, s)[:, None, :]
+        sin = jax.lax.dynamic_slice_in_dim(self.sin, start, s)[:, None, :]
+        return apply_rope(q, cos, sin).astype(v.dtype), apply_rope(k, cos, sin).astype(v.dtype), v
+
+    def attend(self, q, keys, values, bias):
+        """Queries `q` [b, s, heads, head_dim] against the cached `keys`/`values` under
+        an f32 additive `bias` (see __call__ for why it stays f32)."""
+        b, s = q.shape[:2]
+        out = jax.nn.dot_product_attention(q, keys, values, bias=bias)
+        return self.o(out.reshape(b, s, self.num_heads * self.head_dim))
+
 
 class Block(nnx.Module):
     """Pre-norm transformer block: causal attention + SwiGLU MLP, zero-init residual."""
@@ -118,6 +157,22 @@ class Block(nnx.Module):
         if probe:
             return x, jnp.stack([jnp.max(jnp.abs(attn_out)), jnp.max(jnp.abs(mlp_out))]).astype(jnp.float32)
         return x
+
+    def decode(self, x, keys, values, pos, bias):
+        """One token `x` [b, 1, dim] at position `pos` through the block (#153): its K
+        and V written into this block's cache at `pos`, its query attending the whole
+        cached window under `bias`. __call__'s arithmetic for that one row; returns
+        (x, keys, values)."""
+        h = self.norm1(x)
+        q, k, v = self.attn.project(h, pos)
+        keys = jax.lax.dynamic_update_slice_in_dim(keys, k, pos, axis=1)
+        values = jax.lax.dynamic_update_slice_in_dim(values, v, pos, axis=1)
+        attn_out = self.attn.attend(q, keys, values, bias)
+        x = x + (self.attn_out_norm(attn_out) if self.post_norm else attn_out)
+        h = self.norm2(x)
+        mlp_out = self.down_proj(jax.nn.silu(self.gate_proj(h)) * self.up_proj(h))
+        x = x + (self.mlp_out_norm(mlp_out) if self.post_norm else mlp_out)
+        return x, keys, values
 
 
 class PlainTransformer(nnx.Module):
@@ -242,10 +297,12 @@ class PlainTransformer(nnx.Module):
             # keeps ~a fifth of per-token compute from being spent on rows nobody
             # reads, which XLA cannot remove because the index is traced.
             z = jax.lax.dynamic_slice_in_dim(z, logits_at, 1, axis=1)
+        return LMOutput(logits=self._head(z), diag=diag)
+
+    def _head(self, z):
+        """The tied LM head: out-normed states [b, s, dim] to f32 logits [b, s, vocab]."""
         embed_t = self.embed.embedding[...].astype(self.dtype).T
-        logits = jnp.matmul(z.astype(self.dtype), embed_t,
-                            preferred_element_type=jnp.float32)
-        return LMOutput(logits=logits, diag=diag)
+        return jnp.matmul(z.astype(self.dtype), embed_t, preferred_element_type=jnp.float32)
 
     def capture_trajectory(self, tokens):
         """The residual stream after every block, for instruments (#391).
@@ -258,3 +315,52 @@ class PlainTransformer(nnx.Module):
         *_, states = self._stream(tokens, keep_states=True)
         assert states is not None
         return jnp.stack([state.astype(jnp.float32) for state in states])
+
+    # --- generation with a KV cache (#153) ----------------------------------------
+    # Generation used to run the whole padded window through every block for every
+    # token: O(N * S^2) where O(N * S) is the honest cost. `prefill` runs the window
+    # once and keeps every block's K and V; `decode_step` feeds one token and attends
+    # it to them. Neither is reachable from __call__, so training cannot see them.
+
+    def _pad_bias(self, tokens):
+        """`_stream`'s attention bias for pad keys: 0 for a token, -1e9 for a pad."""
+        return ((tokens != self.pad_token_id).astype(jnp.float32) - 1.0) * 1e9
+
+    def prefill(self, tokens, position):
+        """Start a generation from the padded window `tokens` [b, window]: the logits
+        at `position` ([b, vocab]) and the DecodeCache.
+
+        The stream is __call__'s own, block by block, so these logits are the uncached
+        path's bit for bit; each block's K and V are projected once more beside it for
+        the cache (two extra matmuls per block, once per prompt)."""
+        tokens = jnp.clip(tokens, 0, self.embed.embedding.shape[0] - 1)
+        pad_bias = self._pad_bias(tokens)[:, None, None, :]
+        z = self.embed(tokens)
+        keys, values = [], []
+        for blk in self.blocks:
+            _, k, v = blk.attn.project(blk.norm1(z), 0)
+            keys.append(k)
+            values.append(v)
+            z = blk(z, pad_bias)
+        z = jax.lax.dynamic_slice_in_dim(self.out_norm(z), position, 1, axis=1)
+        return self._head(z)[:, 0], DecodeCache(tokens, tuple(keys), tuple(values))
+
+    def decode_step(self, token, cache, pos):
+        """Feed `token` [b, 1] at position `pos` (traced, < window): the logits for the
+        token after it ([b, vocab]) and the cache with `pos` written.
+
+        Its query attends the whole cached window under the bias the uncached path
+        gives that row (causal, plus the pads), so the softmax runs over the same keys
+        with the same masked tail."""
+        token = jnp.clip(token, 0, self.embed.embedding.shape[0] - 1)
+        tokens = jax.lax.dynamic_update_slice_in_dim(cache.tokens, token, pos, axis=1)
+        causal = jnp.where(jnp.arange(tokens.shape[1]) <= pos, 0.0, -1e9)[None, None, None, :]
+        bias = causal + self._pad_bias(tokens)[:, None, None, :]
+        z = self.embed(token)
+        keys, values = [], []
+        for blk, k, v in zip(self.blocks, cache.keys, cache.values, strict=True):
+            z, k, v = blk.decode(z, k, v, pos, bias)
+            keys.append(k)
+            values.append(v)
+        logits = self._head(self.out_norm(z))[:, 0]
+        return logits, DecodeCache(tokens, tuple(keys), tuple(values))
