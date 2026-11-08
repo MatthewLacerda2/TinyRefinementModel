@@ -59,9 +59,17 @@ ATOL = 1e-5
 
 
 def _toy(post_norm=False):
-    return PlainTransformer(
+    """A toy whose MLPs are live: `down_proj` starts at zero (Block), which at init
+    would leave the MLP half of `Block.decode` outside everything this file checks."""
+    model = PlainTransformer(
         TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
         num_layers=TOY_LAYERS, max_seq_len=WINDOW, pad_token_id=TOY_PAD, post_norm=post_norm)
+    for i, blk in enumerate(model.blocks):
+        kernel = blk.down_proj.kernel
+        fan_in = kernel.value.shape[0]
+        kernel.value = jax.random.normal(jax.random.PRNGKey(i), kernel.value.shape,
+                                         kernel.value.dtype) * fan_in ** -0.5
+    return model
 
 
 @pytest.fixture(scope="module")
@@ -120,8 +128,11 @@ def test_cached_decoding_gives_the_uncached_logits(post_norm):
     """The acceptance gate: the first token bit for bit, every later one within noise
     and with the same winner."""
     rows = _walk(_toy(post_norm))
-    assert jnp.array_equal(*rows[0]), (
-        f"prefill runs the window's own computation, yet differs by {_gap(*rows[0]):.3g}")
+    # Two programs at the same shapes: shown bit-equal on XLA's CPU backend. On the
+    # card a GEMM algorithm may be chosen per program, so there the bound applies.
+    if jax.default_backend() == "cpu":
+        assert jnp.array_equal(*rows[0]), (
+            f"prefill runs the window's own computation, yet differs by {_gap(*rows[0]):.3g}")
     for step, (cached, uncached) in enumerate(rows):
         _assert_agree(step, cached, uncached)
 
@@ -131,6 +142,18 @@ def test_the_bound_sees_a_token_fed_one_position_late(toy):
     key read at the wrong RoPE distance) must miss by far more than the noise."""
     worst = max(_gap(*row) for row in _walk(toy, feed_at=lambda pos: pos + 1)[1:])
     assert worst > 100 * ATOL, f"an off-by-one cache moved the logits by only {worst:.3g}"
+
+
+def test_the_causal_mask_hides_stale_keys_past_the_position(toy):
+    """In generation every key past `pos` is a pad, so the pad bias alone would mask
+    it and an off-by-one causal term would go unseen. Here they are real tokens: a
+    longer prefix prefilled, then a token decoded over its middle. Only the causal
+    term keeps the stale keys out, and the row must be the shorter window's."""
+    ids = list(PROMPT)
+    _, cache = infer.prefill_for_token(toy, _window(ids + [11, 12, 13, 14]), len(ids) - 1, **RAW)
+    newest = jnp.asarray([[17]], dtype=jnp.int32)
+    logits, _ = infer.decode_for_token(toy, newest, cache, len(ids), **RAW)
+    _assert_agree(0, logits, _uncached(toy, ids + [17], RAW))
 
 
 def test_generate_text_samples_from_the_uncached_logits(toy, in_vocab_encoder, monkeypatch):

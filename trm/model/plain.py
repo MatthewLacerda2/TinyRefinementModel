@@ -97,8 +97,10 @@ class CausalAttention(nnx.Module):
 
     # --- the decode path (#153) ---------------------------------------------------
     # Beside __call__, not through it: the training forward stays the program it was
-    # (tests/core/test_training_forward_pin.py). These repeat its arithmetic op for op,
-    # and tests/core/test_kv_cache.py holds them to the same bits.
+    # (tests/core/test_training_forward_pin.py). These repeat its arithmetic op for op;
+    # tests/core/test_kv_cache.py holds the result to the window's logits (the first
+    # token bit for bit, later ones within kernel noise: a one-row matmul is not the
+    # same row of a 512-row one on XLA's CPU backend).
 
     def project(self, x, start):
         """q, k, v for the rows of `x`, which sit at absolute positions start, start+1,
@@ -332,7 +334,8 @@ class PlainTransformer(nnx.Module):
 
         The stream is __call__'s own, block by block, so these logits are the uncached
         path's bit for bit; each block's K and V are projected once more beside it for
-        the cache (two extra matmuls per block, once per prompt)."""
+        the cache (at most two matmuls per block, once per prompt: XLA may merge them
+        with the block's own)."""
         tokens = jnp.clip(tokens, 0, self.embed.embedding.shape[0] - 1)
         pad_bias = self._pad_bias(tokens)[:, None, None, :]
         z = self.embed(tokens)
