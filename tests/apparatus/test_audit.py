@@ -230,7 +230,7 @@ def test_a_staged_spec_that_settled_at_look_1_counts_look_1s_seeds(repo):
 
 
 def test_a_staged_spec_that_did_not_settle_at_look_1_owes_look_2s_seeds(repo):
-    a = load(repo, staged_spec_text(margin=0.02))
+    a = load(repo, staged_spec_text(margin=0.016))
     assert (a.verdict.look.index, a.verdict.settled) == (1, False)
     s = audit.seeds_complete(a)
     assert s.state == RED and "control at p: 3 of 6" in s.reason

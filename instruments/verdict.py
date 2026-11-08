@@ -26,7 +26,7 @@ inside the margin (a TOST), which is what a parity claim means.
 
 **Two looks, when a spec registers them** (`[stages]`, #604). A parity pair may
 judge at its first few seeds and stop if that settles it. Each look then has its
-own bar, from a Lan-DeMets alpha-spending function (O'Brien-Fleming by default), so
+own bar, from a Lan-DeMets alpha-spending function (Pocock by default), so
 looking twice keeps the overall error at ALPHA. Without `[stages]`, a spec is
 judged once, exactly as before (tests/apparatus/test_verdict_pinned.py).
 

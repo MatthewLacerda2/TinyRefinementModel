@@ -260,7 +260,7 @@ settles:
 ```toml
 [stages]
 seeds = [4, 8]                # seeds per arm at look 1 and look 2, cumulative
-spending = "obrien-fleming"   # or "pocock": the Lan–DeMets spending function
+spending = "pocock"           # or "obrien-fleming": the Lan–DeMets spending function
 futility = true               # stop at look 1 when parity is already ruled out
 
 [criteria.no_harm]
@@ -274,9 +274,9 @@ margin = 0.01                 # absolute, in the metric's units, fixed before th
 **Why each look has its own bar.** Judging at both looks with the fixed bar
 inflates the false-positive rate. Lan & DeMets (1983) spend the overall one-sided
 α (0.05) across the looks as a function of the information fraction, look 1's
-seeds over look 2's. O'Brien–Fleming-type (the default) spends almost nothing
+seeds over look 2's. O'Brien–Fleming-type spends almost nothing
 early, so look 2's bar stays near α: at 4 then 8 seeds, one-sided p ≤ 0.0056 at
-look 1 and ≤ 0.048 at look 2. Pocock-type spends evenly: 0.031 then 0.030. The
+look 1 and ≤ 0.048 at look 2. Pocock-type (the default) spends evenly: 0.031 then 0.030. The
 referee turns each look's z bar into the nominal one-sided p the TOST must reach;
 `tests/apparatus/test_group_sequential.py` checks the bars against the published
 two-look tables and that a synthetic null keeps the error at α.
@@ -301,7 +301,9 @@ The verdict prints the look, its seeds and its bar. Measured on a synthetic null
 | Pocock | 0.049 | 0.945 | 46% | 6.2 |
 
 O'Brien–Fleming keeps the fixed design's power and saves little; Pocock saves
-about a quarter of the seeds for some power. Choose before the run.
+about a quarter of the seeds for some power. The default is Pocock (the owner's call,
+2026-11-08): seeds are GPU-hours on a serial card, and the power given up is 2.3 points.
+A spec that needs O'Brien–Fleming's power names it. Choose before the run.
 
 **Scope, as the owner decided on #604.** Only `equivalent` spends α: `beats` and
 `loses` are σ bars, not α-calibrated, judged as written at every look, and a
