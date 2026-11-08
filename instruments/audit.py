@@ -191,6 +191,12 @@ class Audited:
         seeds = self.file.protocol.seeds
         return len(seeds) if isinstance(seeds, tuple) else None
 
+    def seeds_owed(self, point: str) -> int | None:
+        """The registered seeds, or a [stages] spec's look-1 seeds when it settled there (#604)."""
+        registered = self.registered_seeds(point)
+        look = self.verdict.look if self.verdict is not None and self.verdict.settled else None
+        return registered if registered is None or look is None else min(registered, look.seeds)
+
     def history(self) -> list[Commit] | None:
         """Every committed version of the spec, oldest first. [] if never committed,
         None if git cannot answer at all."""
@@ -359,14 +365,15 @@ def target_reached_late(a: Audited) -> Status:
 
 def seeds_complete(a: Audited) -> Status:
     """Every arm a criterion compares has every registered seed, or the missing ones
-    are marked void (`[void.<point>.<arm>] seeds = [...], reason = "..."`)."""
+    are marked void (`[void.<point>.<arm>] seeds = [...], reason = "..."`). A spec
+    with [stages] that settled at look 1 counts against look 1's seeds (#604)."""
     rule = "seeds-complete"
     if blocked := _unjudgeable(a, rule):
         return blocked
     short, unregistered = [], False
     for c in a.spec.criteria.values():
         for point in a.points_of(c):
-            registered = a.registered_seeds(point)
+            registered = a.seeds_owed(point)
             if registered is None:
                 unregistered = True
                 continue

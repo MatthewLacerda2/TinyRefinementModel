@@ -548,6 +548,8 @@ sigmas = 2.0
 # +/- sigmas * sigma_pooled (a TOST). It costs seeds: at a 2-sigma margin, three
 # a side show parity only for a gap under ~0.26 sigma, eight for one under ~1.1.
 # "within" passes whenever no difference was seen, which three seeds rarely can (#599).
+# Prefer an absolute margin in the metric's units (sigmas = 0.0, margin = 0.01), and
+# a [stages] table can stop a parity pair at its first look (#604; the spec doc).
 
 [verdict]
 keep_if = ["treatment_wins"]

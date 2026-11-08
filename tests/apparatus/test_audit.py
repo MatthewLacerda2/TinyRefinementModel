@@ -214,6 +214,28 @@ def test_a_missing_seed_is_red_until_marked_void(repo):
     assert audit.seeds_complete(voided).state == GREEN
 
 
+def staged_spec_text(margin):
+    """The toy spec as a two-look parity pair (#604): three seeds, then six."""
+    return (spec_text(extra="[stages]\nseeds = [3, 6]\n")
+            .replace("seeds = [0, 1, 2]", "seeds = [0, 1, 2, 3, 4, 5]")
+            .replace('rule = "within"\ntreatment = "treated"\ncontrol = "control"\nsigmas = 2.0',
+                     f'rule = "equivalent"\ntreatment = "treated"\ncontrol = "control"\nsigmas = 0.0\n'
+                     f'margin = {margin}'))
+
+
+def test_a_staged_spec_that_settled_at_look_1_counts_look_1s_seeds(repo):
+    a = load(repo, staged_spec_text(margin=0.05))
+    assert (a.verdict.look.index, a.verdict.settled) == (1, True)
+    assert audit.seeds_complete(a).state == GREEN
+
+
+def test_a_staged_spec_that_did_not_settle_at_look_1_owes_look_2s_seeds(repo):
+    a = load(repo, staged_spec_text(margin=0.02))
+    assert (a.verdict.look.index, a.verdict.settled) == (1, False)
+    s = audit.seeds_complete(a)
+    assert s.state == RED and "control at p: 3 of 6" in s.reason
+
+
 def test_a_void_without_a_reason_does_not_count(repo):
     a = load(repo, spec_text(control=(0.90, 0.91), extra="[void.p.control]\nseeds = [2]\nreason = \"\"\n"))
     assert audit.seeds_complete(a).state == RED

@@ -1,0 +1,2053 @@
+{
+ "experiments/base/specs/001-plain-base.toml": {
+  "base_grid": {
+   "0.0": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.3256,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.3256,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.3256))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.3256))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2036": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.122,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.122,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.122))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.122))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.26": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.06559999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.06559999999999999,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0656))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.0656))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2755": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.05009999999999998,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.05009999999999998,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0501))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.0501))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2756": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.04999999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.04999999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.05))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.05))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.2757": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.0499,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.0499,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0499))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0499))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.02560000000000001,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.02560000000000001,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0256))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0256))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3255": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0001))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0001))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3256": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 0.0,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": 0.0
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 0.0,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": 0.0
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +0.00\u03c3 (\u0394 +0))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +0.00\u03c3 (\u0394 +0))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   },
+   "0.3257": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 9.999999999998899e-05,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +inf\u03c3 (\u0394 +0.0001))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +0.0001))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   },
+   "0.4289": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 0.1033,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 0.1033,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +inf\u03c3 (\u0394 +0.1033))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +0.1033))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   }
+  },
+  "recorded": {
+   "criteria": {
+    "meets_the_bar": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.122,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        1,
+        1
+       ],
+       "sigmas": -Infinity
+      }
+     ]
+    },
+    "misses_by_a_margin": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.122,
+       "holds": true,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        1,
+        1
+       ],
+       "sigmas": -Infinity
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.122))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.122))",
+   "outcome": "KILL",
+   "reason": "kill criteria fired: misses_by_a_margin"
+  },
+  "sha256": "39353029067832a88e635e5b55b2d4f5aa797f3023611bb875e9cb1f2f702697"
+ },
+ "experiments/base/specs/002-smol-mix-base.toml": {
+  "base_grid": {
+   "0.0": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.3256,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.3256,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.3256))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.3256))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2036": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.122,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.122,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.122))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.122))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.26": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.06559999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.06559999999999999,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0656))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.0656))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2755": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.05009999999999998,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": true,
+      "points": [
+       {
+        "delta": -0.05009999999999998,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KILL \u2014 kill criteria fired: misses_by_a_margin\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0501))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (run: -inf\u03c3 (\u0394 -0.0501))",
+    "outcome": "KILL",
+    "reason": "kill criteria fired: misses_by_a_margin"
+   },
+   "0.2756": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.04999999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.04999999999999999,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.05))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.05))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.2757": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.0499,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.0499,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0499))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0499))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.02560000000000001,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -0.02560000000000001,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0256))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0256))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3255": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": -9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": -Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0001))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -0.0001))",
+    "outcome": "INCONCLUSIVE",
+    "reason": "keep criteria not met: meets_the_bar"
+   },
+   "0.3256": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 0.0,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": 0.0
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 0.0,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": 0.0
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +0.00\u03c3 (\u0394 +0))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +0.00\u03c3 (\u0394 +0))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   },
+   "0.3257": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 9.999999999998899e-05,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 9.999999999998899e-05,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +inf\u03c3 (\u0394 +0.0001))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +0.0001))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   },
+   "0.4289": {
+    "criteria": {
+     "meets_the_bar": {
+      "holds": true,
+      "points": [
+       {
+        "delta": 0.1033,
+        "holds": true,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     },
+     "misses_by_a_margin": {
+      "holds": false,
+      "points": [
+       {
+        "delta": 0.1033,
+        "holds": false,
+        "p": null,
+        "point": "run",
+        "seeds": [
+         1,
+         1
+        ],
+        "sigmas": Infinity
+       }
+      ]
+     }
+    },
+    "describe": "verdict: KEEP \u2014 all keep criteria met: meets_the_bar\n  meets_the_bar [beats 0.0\u03c3, all] \u2192 met (run: +inf\u03c3 (\u0394 +0.1033))\n  misses_by_a_margin [loses 0.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +0.1033))",
+    "outcome": "KEEP",
+    "reason": "all keep criteria met: meets_the_bar"
+   }
+  },
+  "recorded": {
+   "error": "KeyError: \"meets_the_bar: point 'run' has no arm 'plain'\""
+  },
+  "sha256": "95df9c88887546d5125c8117e338660f0aa353db29dcd121ab5a990cdfd6c4d5"
+ },
+ "experiments/depth/specs/077-per-pass-supervision.toml": {
+  "recorded": {
+   "criteria": {
+    "islands_hold_parity": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.33166666666666667,
+       "holds": false,
+       "p": 0.9267958340033204,
+       "point": "statetrack_3seed",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -3.468878872492774
+      }
+     ]
+    },
+    "supervised_beats_control": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.1153333333333334,
+       "holds": false,
+       "p": 0.14627605058378612,
+       "point": "statetrack_6seed",
+       "seeds": [
+        6,
+        6
+       ],
+       "sigmas": 0.6414565092789837
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: islands_hold_parity, supervised_beats_control\n  islands_hold_parity [within 2.0\u03c3, all] \u2192 NOT met (statetrack_3seed: -3.47\u03c3 (\u0394 -0.3317, p 0.927))\n  supervised_beats_control [beats 2.0\u03c3, all] \u2192 NOT met (statetrack_6seed: +0.64\u03c3 (\u0394 +0.1153, p 0.146))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: islands_hold_parity, supervised_beats_control"
+  },
+  "sha256": "2b74bb92a4d36eb03099de171f33919e3fcd68cae205cb8dc15bfcb4cf057657"
+ },
+ "experiments/depth/specs/086-sinusoidal-time-signal.toml": {
+  "recorded": {
+   "criteria": {
+    "extends_past_the_cap": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 0.44343333333333335,
+       "holds": true,
+       "p": 0.0104661195771018,
+       "point": "d12",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 3.0167144191871027
+      },
+      {
+       "delta": 0.4475,
+       "holds": true,
+       "p": 0.008674678207347354,
+       "point": "d16",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 3.1949777126317604
+      }
+     ]
+    },
+    "loses_at_a_trained_depth": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.023399999999999976,
+       "holds": false,
+       "p": 0.1827222861627199,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.8327402135231309
+      },
+      {
+       "delta": -0.01089999999999991,
+       "holds": false,
+       "p": 0.3999773940704906,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.22109533468559656
+      },
+      {
+       "delta": 0.0028000000000000247,
+       "holds": false,
+       "p": 0.6037085225800806,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.22950819672131348
+      },
+      {
+       "delta": -0.043300000000000005,
+       "holds": false,
+       "p": 0.1781485387559671,
+       "point": "d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.8506876227897839
+      }
+     ]
+    },
+    "parity_at_trained_depths": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.023399999999999976,
+       "holds": true,
+       "p": 0.11302549335067659,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.8327402135231309
+      },
+      {
+       "delta": -0.01089999999999991,
+       "holds": true,
+       "p": 0.04744091141547311,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.22109533468559656
+      },
+      {
+       "delta": 0.0028000000000000247,
+       "holds": true,
+       "p": 0.047990887002882225,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.22950819672131348
+      },
+      {
+       "delta": -0.043300000000000005,
+       "holds": true,
+       "p": 0.11600134668450884,
+       "point": "d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.8506876227897839
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: parity_at_trained_depths, extends_past_the_cap\n  parity_at_trained_depths [within 2.0\u03c3, all] \u2192 met (d1: -0.83\u03c3 (\u0394 -0.0234, p 0.113), d2: -0.22\u03c3 (\u0394 -0.0109, p 0.047), d4: +0.23\u03c3 (\u0394 +0.0028, p 0.048), d8: -0.85\u03c3 (\u0394 -0.0433, p 0.116))\n  extends_past_the_cap [beats 2.0\u03c3, all] \u2192 met (d12: +3.02\u03c3 (\u0394 +0.4434, p 0.010), d16: +3.19\u03c3 (\u0394 +0.4475, p 0.009))\n  loses_at_a_trained_depth [loses 2.0\u03c3, any] \u2192 NOT met (d1: -0.83\u03c3 (\u0394 -0.0234, p 0.183), d2: -0.22\u03c3 (\u0394 -0.0109, p 0.400), d4: +0.23\u03c3 (\u0394 +0.0028, p 0.604), d8: -0.85\u03c3 (\u0394 -0.0433, p 0.178))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: parity_at_trained_depths, extends_past_the_cap"
+  },
+  "sha256": "439094f067f6e90c3f6e6b391311a9e271c09256a36260831e619aac2739a50f"
+ },
+ "experiments/depth/specs/235-post-norm.toml": {
+  "recorded": {
+   "criteria": {
+    "loses_at_a_depth": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.0381999999999999,
+       "holds": false,
+       "p": 0.10632563087011523,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.2094644958162428
+      },
+      {
+       "delta": -0.05070000000000008,
+       "holds": false,
+       "p": 0.0387345453007203,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.928802638703526
+      },
+      {
+       "delta": 0.03356666666666652,
+       "holds": false,
+       "p": 0.7456112001472419,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.5916848577751286
+      },
+      {
+       "delta": 0.06493333333333329,
+       "holds": false,
+       "p": 0.818968828981066,
+       "point": "d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.8393294777131349
+      }
+     ]
+    },
+    "parity_at_every_depth": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.0381999999999999,
+       "holds": true,
+       "p": 0.19388478010487875,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.2094644958162428
+      },
+      {
+       "delta": -0.05070000000000008,
+       "holds": true,
+       "p": 0.4673522193292775,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.928802638703526
+      },
+      {
+       "delta": 0.03356666666666652,
+       "holds": true,
+       "p": 0.07982288683604949,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.5916848577751286
+      },
+      {
+       "delta": 0.06493333333333329,
+       "holds": true,
+       "p": 0.11410910028261043,
+       "point": "d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.8393294777131349
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: parity_at_every_depth\n  parity_at_every_depth [within 2.0\u03c3, all] \u2192 met (d1: -1.21\u03c3 (\u0394 -0.0382, p 0.194), d2: -1.93\u03c3 (\u0394 -0.0507, p 0.467), d4: +0.59\u03c3 (\u0394 +0.03357, p 0.080), d8: +0.84\u03c3 (\u0394 +0.06493, p 0.114))\n  loses_at_a_depth [loses 2.0\u03c3, any] \u2192 NOT met (d1: -1.21\u03c3 (\u0394 -0.0382, p 0.106), d2: -1.93\u03c3 (\u0394 -0.0507, p 0.039), d4: +0.59\u03c3 (\u0394 +0.03357, p 0.746), d8: +0.84\u03c3 (\u0394 +0.06493, p 0.819))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: parity_at_every_depth"
+  },
+  "sha256": "1e08587f1fa87ce4a2614314a432d9e0fb176e92dbc62880d80034371db9ff8e"
+ },
+ "experiments/depth/specs/238-post-norm-depth-collapse.toml": {
+  "recorded": {
+   "criteria": {
+    "benefit_is_depth_specific": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.03203750000000005,
+       "holds": true,
+       "p": 0.021220747252834994,
+       "point": "d1",
+       "seeds": [
+        8,
+        8
+       ],
+       "sigmas": -0.883823400478894
+      }
+     ]
+    },
+    "collapse_removed": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.024162500000000087,
+       "holds": false,
+       "p": 0.7503004055097551,
+       "point": "min_deep",
+       "seeds": [
+        8,
+        8
+       ],
+       "sigmas": -0.3467021046582863
+      }
+     ]
+    },
+    "collapse_survives": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.024162500000000087,
+       "holds": true,
+       "p": 0.002596837856304469,
+       "point": "min_deep",
+       "seeds": [
+        8,
+        8
+       ],
+       "sigmas": -0.3467021046582863
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KILL \u2014 kill criteria fired: collapse_survives\n  collapse_removed [beats 2.0\u03c3, all] \u2192 NOT met (min_deep: -0.35\u03c3 (\u0394 -0.02416, p 0.750))\n  benefit_is_depth_specific [within 2.0\u03c3, all] \u2192 met (d1: -0.88\u03c3 (\u0394 -0.03204, p 0.021))\n  collapse_survives [within 2.0\u03c3, all] \u2192 met (min_deep: -0.35\u03c3 (\u0394 -0.02416, p 0.003))",
+   "outcome": "KILL",
+   "reason": "kill criteria fired: collapse_survives"
+  },
+  "sha256": "ac72fd979b1e3152bf11e54a6dcf2ea1fa5f4f3e6e9122ececdf7e8b460cecb9"
+ },
+ "experiments/depth/specs/242-depth-gain-over-training.toml": {
+  "recorded": {
+   "criteria": {
+    "gain_grows_on_code": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 6.171200000000001,
+       "holds": true,
+       "p": 1.1158692044981824e-12,
+       "point": "pretrain/codeparrot",
+       "seeds": [
+        4,
+        4
+       ],
+       "sigmas": 124.80303797137125
+      }
+     ]
+    },
+    "gain_was_there_from_the_start": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 6.171200000000001,
+       "holds": false,
+       "p": 0.9999999999987705,
+       "point": "pretrain/codeparrot",
+       "seeds": [
+        4,
+        4
+       ],
+       "sigmas": 124.80303797137125
+      }
+     ]
+    },
+    "prose_stays_neutral": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 5.280950000000001,
+       "holds": false,
+       "p": 0.9999999999999916,
+       "point": "pretrain/fineweb-edu",
+       "seeds": [
+        4,
+        4
+       ],
+       "sigmas": 283.6631996853202
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: prose_stays_neutral\n  gain_grows_on_code [beats 2.0\u03c3, all] \u2192 met (pretrain/codeparrot: +124.80\u03c3 (\u0394 +6.171, p 0.000))\n  prose_stays_neutral [within 2.0\u03c3, all] \u2192 NOT met (pretrain/fineweb-edu: +283.66\u03c3 (\u0394 +5.281, p 1.000))\n  gain_was_there_from_the_start [within 2.0\u03c3, all] \u2192 NOT met (pretrain/codeparrot: +124.80\u03c3 (\u0394 +6.171, p 1.000))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: prose_stays_neutral"
+  },
+  "sha256": "f61b0c44da74997d02f0daefd1262fc560b3d7a1364d145f44c25dffda017f1e"
+ },
+ "experiments/depth/specs/246-nested-arith-depth.toml": {
+  "recorded": {
+   "criteria": {
+    "beats_chance_at_deep_nesting": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.010300000000000004,
+       "holds": false,
+       "p": 0.9999880301130791,
+       "point": "nest4/d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -18.207999615553685
+      }
+     ]
+    },
+    "recurrence_holds_at_deep_nesting": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 0.0021999999999999797,
+       "holds": true,
+       "p": 0.07039771965952513,
+       "point": "nest4/d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.5036554011451891
+      }
+     ]
+    },
+    "recurrence_loses_where_it_should_win": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.0021999999999999797,
+       "holds": false,
+       "p": 0.714643658410992,
+       "point": "nest4/d8",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 0.5036554011451891
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: beats_chance_at_deep_nesting\n  recurrence_holds_at_deep_nesting [within 2.0\u03c3, all] \u2192 met (nest4/d8: +0.50\u03c3 (\u0394 +0.0022, p 0.070))\n  beats_chance_at_deep_nesting [beats 2.0\u03c3, all] \u2192 NOT met (nest4/d8: -18.21\u03c3 (\u0394 -0.0103, p 1.000))\n  recurrence_loses_where_it_should_win [loses 2.0\u03c3, all] \u2192 NOT met (nest4/d8: +0.50\u03c3 (\u0394 +0.0022, p 0.715))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: beats_chance_at_deep_nesting"
+  },
+  "sha256": "1caed1cb303e399a8c8538875bc86f3074d9385a48fd19c672f4d7b8b27449dc"
+ },
+ "experiments/mix/specs/489-general-web-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "general_web_lifts_lambada": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 0.03576666666666664,
+       "holds": true,
+       "p": 0.0006160480937898218,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.656447940031999
+      }
+     ]
+    },
+    "general_web_lowers_lambada": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.03576666666666664,
+       "holds": false,
+       "p": 0.9993839519062102,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.656447940031999
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: general_web_lifts_lambada\n  general_web_lifts_lambada [beats 2.0\u03c3 and |\u0394| \u2265 0.02, all] \u2192 met (run: +6.66\u03c3 (\u0394 +0.03577, p 0.001))\n  general_web_lowers_lambada [loses 2.0\u03c3 and |\u0394| \u2265 0.02, all] \u2192 NOT met (run: +6.66\u03c3 (\u0394 +0.03577, p 0.999))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: general_web_lifts_lambada"
+  },
+  "sha256": "715050397fc5e0acd8e3c6623f3926b7a5926f9ba3fb9871b57e4485ed120658"
+ },
+ "experiments/recipe/specs/026-muon-stage1-safety.toml": {
+  "recorded": {
+   "criteria": {
+    "loses_at_a_depth": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.03303333333333325,
+       "holds": false,
+       "p": 0.987378851184211,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 2.845305695400794
+      },
+      {
+       "delta": -0.01770000000000005,
+       "holds": false,
+       "p": 0.22059048037168316,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.6973730392289961
+      },
+      {
+       "delta": -0.03609999999999991,
+       "holds": false,
+       "p": 0.06050591594375632,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.6035208712326667
+      }
+     ]
+    },
+    "parity_at_every_depth": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.03303333333333325,
+       "holds": false,
+       "p": 0.8204906593325989,
+       "point": "d1",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 2.845305695400794
+      },
+      {
+       "delta": -0.01770000000000005,
+       "holds": true,
+       "p": 0.09292836398092871,
+       "point": "d2",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -0.6973730392289961
+      },
+      {
+       "delta": -0.03609999999999991,
+       "holds": true,
+       "p": 0.3263297155157251,
+       "point": "d4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -1.6035208712326667
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: parity_at_every_depth\n  parity_at_every_depth [within 2.0\u03c3, all] \u2192 NOT met (d1: +2.85\u03c3 (\u0394 +0.03303, p 0.820), d2: -0.70\u03c3 (\u0394 -0.0177, p 0.093), d4: -1.60\u03c3 (\u0394 -0.0361, p 0.326))\n  loses_at_a_depth [loses 2.0\u03c3, any] \u2192 NOT met (d1: +2.85\u03c3 (\u0394 +0.03303, p 0.987), d2: -0.70\u03c3 (\u0394 -0.0177, p 0.221), d4: -1.60\u03c3 (\u0394 -0.0361, p 0.061))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: parity_at_every_depth"
+  },
+  "sha256": "de570c94abf31b7a82c6b2d01509624d2b9422d1d600764f3789d00a720a11a5"
+ },
+ "experiments/recipe/specs/026-muon-stage2-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "muon_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 23.593000000000004,
+       "holds": true,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    },
+    "muon_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 23.593000000000004,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: muon_needs_fewer_tokens\n  muon_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 6.7, all] \u2192 met (run: +inf\u03c3 (\u0394 +23.59))\n  muon_needs_more_tokens [loses 2.0\u03c3, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +23.59))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: muon_needs_fewer_tokens"
+  },
+  "sha256": "b2e2b49a97c33da2b5260d09ca1324546c9f200e407264c9f1cba2fb1b566ca6"
+ },
+ "experiments/recipe/specs/026-muon-stage3-tuned-control.toml": {
+  "recorded": {
+   "criteria": {
+    "muon_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 8.301233333333332,
+       "holds": true,
+       "p": 3.514906360828332e-05,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 13.876072724579883
+      }
+     ]
+    },
+    "muon_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 8.301233333333332,
+       "holds": false,
+       "p": 0.9999648509363918,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 13.876072724579883
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: muon_needs_fewer_tokens\n  muon_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 4, all] \u2192 met (run: +13.88\u03c3 (\u0394 +8.301, p 0.000))\n  muon_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 4, all] \u2192 NOT met (run: +13.88\u03c3 (\u0394 +8.301, p 1.000))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: muon_needs_fewer_tokens"
+  },
+  "sha256": "938a8104f754e5b655ac2586455a18dbd6505ca3155b203cdfc6e85a8fa28402"
+ },
+ "experiments/recipe/specs/287-peak-lr-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "higher_lr_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 33.42336666666667,
+       "holds": true,
+       "p": 1.3667120781173412e-07,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 55.86771198295559
+      }
+     ]
+    },
+    "higher_lr_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 33.42336666666667,
+       "holds": false,
+       "p": 0.9999998633287922,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 55.86771198295559
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: higher_lr_needs_fewer_tokens\n  higher_lr_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 6.7, all] \u2192 met (run: +55.87\u03c3 (\u0394 +33.42, p 0.000))\n  higher_lr_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 6.7, all] \u2192 NOT met (run: +55.87\u03c3 (\u0394 +33.42, p 1.000))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: higher_lr_needs_fewer_tokens"
+  },
+  "sha256": "bcbd61f8930f16d2c971b145f525ba3c117c1ebd983dc6d380bb80155970ee87"
+ },
+ "experiments/recipe/specs/287-stage2-6e4-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "higher_lr_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 5.242900000000002,
+       "holds": true,
+       "p": 0.0005287437396058098,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.928335377281512
+      }
+     ]
+    },
+    "higher_lr_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 5.242900000000002,
+       "holds": false,
+       "p": 0.9994712562603942,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.928335377281512
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: higher_lr_needs_fewer_tokens\n  higher_lr_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 4, all] \u2192 met (run: +6.93\u03c3 (\u0394 +5.243, p 0.001))\n  higher_lr_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 4, all] \u2192 NOT met (run: +6.93\u03c3 (\u0394 +5.243, p 0.999))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: higher_lr_needs_fewer_tokens"
+  },
+  "sha256": "eb4e7f9a45f18e151144da35bd883a91af0ea499a115caeb9f7a5ad207f2c443"
+ },
+ "experiments/recipe/specs/361-zero-init-o-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "zero_o_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 5.242900000000001,
+       "holds": true,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    },
+    "zero_o_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 5.242900000000001,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: zero_o_needs_fewer_tokens\n  zero_o_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 0.85, all] \u2192 met (run: +inf\u03c3 (\u0394 +5.243))\n  zero_o_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 0.85, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +5.243))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: zero_o_needs_fewer_tokens"
+  },
+  "sha256": "26f6b452f49edf3caa0e3e586a27cb060b2472f4e719ea1d3666934b30b56762"
+ },
+ "experiments/recipe/specs/373-eot-pair.toml": {
+  "recorded": {
+   "error": "KeyError: \"eot_as_token_needs_fewer_tokens: no results recorded for point 'run'\""
+  },
+  "sha256": "dfb81f2fe2834967fca7cff9ff2abbef731bde662fd0264468f5aa53595561bb"
+ },
+ "experiments/recipe/specs/375-polar-express-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "polar_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 1.0486000000000004,
+       "holds": true,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    },
+    "polar_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 1.0486000000000004,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": Infinity
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: polar_needs_fewer_tokens\n  polar_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 0.85, all] \u2192 met (run: +inf\u03c3 (\u0394 +1.049))\n  polar_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 0.85, all] \u2192 NOT met (run: +inf\u03c3 (\u0394 +1.049))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: polar_needs_fewer_tokens"
+  },
+  "sha256": "7f0cbdff455fc375b6e9cea4caf47e01a43af2b7c7a7856c4398cc991c19ca5d"
+ },
+ "experiments/recipe/specs/382-muon-on-6e4-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "muon_needs_fewer_tokens": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 5.24283333333333,
+       "holds": true,
+       "p": 0.0005288465951942624,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.927982988626459
+      }
+     ]
+    },
+    "muon_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 5.24283333333333,
+       "holds": false,
+       "p": 0.9994711534048057,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 6.927982988626459
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: muon_needs_fewer_tokens\n  muon_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 3.3, all] \u2192 met (run: +6.93\u03c3 (\u0394 +5.243, p 0.001))\n  muon_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 3.3, all] \u2192 NOT met (run: +6.93\u03c3 (\u0394 +5.243, p 0.999))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: muon_needs_fewer_tokens"
+  },
+  "sha256": "91c9e273d79bdd0858bcdb0dc184c4c20e4bd828af36e47e868b4c3a744b1087"
+ },
+ "experiments/recipe/specs/385-shape-pair.toml": {
+  "recorded": {
+   "error": "KeyError: \"shallow_batch2_reaches_ce4_sooner: no results recorded for point 'run'\""
+  },
+  "sha256": "68cc0004f0eba0eb31828c181fd87f3cf67cb1875799e59266115ca22e3a1865"
+ },
+ "experiments/recipe/specs/386-wsd-pair.toml": {
+  "recorded": {
+   "error": "KeyError: \"wsd_ends_worse: no results recorded for point 'run'\""
+  },
+  "sha256": "58df3cee3d0993cf89a7ef5d3a9073ebf3260605c54413b112c4e06be6667b6d"
+ },
+ "experiments/recipe/specs/447-clip-off-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "clip_off_needs_fewer_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -2.0970999999999975,
+       "holds": false,
+       "p": 0.9933811307612102,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -3.463936437681372
+      }
+     ]
+    },
+    "clip_off_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -2.0970999999999975,
+       "holds": false,
+       "p": 0.006618869238789831,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -3.463936437681372
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: clip_off_needs_fewer_tokens\n  clip_off_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 2.9, all] \u2192 NOT met (run: -3.46\u03c3 (\u0394 -2.097, p 0.993))\n  clip_off_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 2.9, all] \u2192 NOT met (run: -3.46\u03c3 (\u0394 -2.097, p 0.007))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: clip_off_needs_fewer_tokens"
+  },
+  "sha256": "d49d9c7132496076dce9eb5bf00aecee480d6030b5d7a4f9753826f7ef7751c5"
+ },
+ "experiments/recipe/specs/447-clip-under-muon.toml": {
+  "recorded": {
+   "criteria": {
+    "adam_is_back_to_parity": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 0.6140000000000001,
+       "holds": false,
+       "p": 0.9999999989813874,
+       "point": "adam_ratio@1000-1300",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 192.2037543715343
+      }
+     ]
+    },
+    "clip_enlarges_the_adam_step_after_it_stops": {
+     "holds": true,
+     "points": [
+      {
+       "delta": 0.6140000000000001,
+       "holds": true,
+       "p": 9.76875062042101e-10,
+       "point": "adam_ratio@1000-1300",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 192.2037543715343
+      }
+     ]
+    },
+    "clip_turns_the_matrix_update": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.11773333333333336,
+       "holds": true,
+       "p": 5.64916562042717e-05,
+       "point": "muon_cos@0-100",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -12.304902372246758
+      }
+     ]
+    },
+    "matrices_do_not_notice": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.11773333333333336,
+       "holds": false,
+       "p": 0.9998865507205914,
+       "point": "muon_cos@0-100",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -12.304902372246758
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KEEP \u2014 all keep criteria met: clip_turns_the_matrix_update, clip_enlarges_the_adam_step_after_it_stops\n  clip_turns_the_matrix_update [loses 2.0\u03c3 and |\u0394| \u2265 0.05, all] \u2192 met (muon_cos@0-100: -12.30\u03c3 (\u0394 -0.1177, p 0.000))\n  clip_enlarges_the_adam_step_after_it_stops [beats 2.0\u03c3 and |\u0394| \u2265 0.2, all] \u2192 met (adam_ratio@1000-1300: +192.20\u03c3 (\u0394 +0.614, p 0.000))\n  matrices_do_not_notice [within 2.0\u03c3, all] \u2192 NOT met (muon_cos@0-100: -12.30\u03c3 (\u0394 -0.1177, p 1.000))\n  adam_is_back_to_parity [within 2.0\u03c3, all] \u2192 NOT met (adam_ratio@1000-1300: +192.20\u03c3 (\u0394 +0.614, p 1.000))",
+   "outcome": "KEEP",
+   "reason": "all keep criteria met: clip_turns_the_matrix_update, clip_enlarges_the_adam_step_after_it_stops"
+  },
+  "sha256": "3bd184fcfb75d5ac01cf9bac55d304a70f92c8c905cf91c732590e9fe5085de8"
+ },
+ "experiments/recipe/specs/494-postnorm-long-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "post_norm_needs_fewer_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 4.543833333333339,
+       "holds": false,
+       "p": 0.00010102869609054196,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 10.614221955861513
+      }
+     ]
+    },
+    "post_norm_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": 4.543833333333339,
+       "holds": false,
+       "p": 0.9998989713039095,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": 10.614221955861513
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: post_norm_needs_fewer_tokens\n  post_norm_needs_fewer_tokens [beats 2.0\u03c3 and |\u0394| \u2265 11, all] \u2192 NOT met (run: +10.61\u03c3 (\u0394 +4.544, p 0.000))\n  post_norm_needs_more_tokens [loses 2.0\u03c3 and |\u0394| \u2265 11, all] \u2192 NOT met (run: +10.61\u03c3 (\u0394 +4.544, p 1.000))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: post_norm_needs_fewer_tokens"
+  },
+  "sha256": "d7517664615ffa194708dcc1371735a3efa6217bcf018ed9b9e5896b1c86dc20"
+ },
+ "experiments/recipe/specs/494-postnorm-pair.toml": {
+  "recorded": {
+   "criteria": {
+    "post_norm_costs_nothing": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -4.1943,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -Infinity
+      }
+     ]
+    },
+    "post_norm_needs_more_tokens": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -4.1943,
+       "holds": false,
+       "p": null,
+       "point": "run",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -Infinity
+      }
+     ]
+    }
+   },
+   "describe": "verdict: INCONCLUSIVE \u2014 keep criteria not met: post_norm_costs_nothing\n  post_norm_needs_more_tokens [beats 2.0\u03c3 and |\u0394| \u2265 0.85, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -4.194))\n  post_norm_costs_nothing [within 2.0\u03c3, all] \u2192 NOT met (run: -inf\u03c3 (\u0394 -4.194))",
+   "outcome": "INCONCLUSIVE",
+   "reason": "keep criteria not met: post_norm_costs_nothing"
+  },
+  "sha256": "c0df03fe50cbe5e90422575ff334f709aba1cdbcf45550e71bf739b441240cd7"
+ },
+ "experiments/scratchpad/specs/079-dense-supervision-without-slots.toml": {
+  "recorded": {
+   "criteria": {
+    "grade_alone_suffices": {
+     "holds": false,
+     "points": [
+      {
+       "delta": -0.8028333333333333,
+       "holds": false,
+       "p": 0.9999615871640434,
+       "point": "affine_chain_k4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -15.567889964446149
+      }
+     ]
+    },
+    "offload_is_real": {
+     "holds": true,
+     "points": [
+      {
+       "delta": -0.8028333333333333,
+       "holds": true,
+       "p": 2.228934008196948e-05,
+       "point": "affine_chain_k4",
+       "seeds": [
+        3,
+        3
+       ],
+       "sigmas": -15.567889964446149
+      }
+     ]
+    }
+   },
+   "describe": "verdict: KILL \u2014 kill criteria fired: offload_is_real\n  grade_alone_suffices [within 2.0\u03c3, all] \u2192 NOT met (affine_chain_k4: -15.57\u03c3 (\u0394 -0.8028, p 1.000))\n  offload_is_real [loses 2.0\u03c3, all] \u2192 met (affine_chain_k4: -15.57\u03c3 (\u0394 -0.8028, p 0.000))",
+   "outcome": "KILL",
+   "reason": "kill criteria fired: offload_is_real"
+  },
+  "sha256": "276fbaed8dc3f37ec961655f9c0faecc511df9eb93da2b7b37e7fbe312135f4c"
+ }
+}
