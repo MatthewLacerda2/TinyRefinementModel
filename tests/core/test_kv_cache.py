@@ -20,6 +20,10 @@ So the gate has three parts:
 - **the bound can see a cache bug**: a token fed one position late, the classic one,
   misses it by orders of magnitude.
 
+Measured on CI for #628 over this file's 32-step walk: the first token exact, the
+worst later gap 1.4e-6 at dim 32 and 3.3e-6 at dim 960 (both arms of POST_NORM), every
+argmax the same; one position late, 1.16 at dim 32 and 0.42 at dim 960.
+
 What the training forward computes is pinned in test_training_forward_pin.py; the
 last test here holds that generating leaves the model itself alone.
 """
@@ -206,7 +210,7 @@ def test_generating_leaves_the_model_and_its_training_forward_alone(in_vocab_enc
     tree_before, values_before = snapshot()
     forward_before = training_forward()
     infer.generate_text(model, in_vocab_encoder(TOY_VOCAB), "abc", max_new_tokens=8,
-                        seed=0, quiet=True)
+                        seed=0, quiet=True, **SAMPLED)
     tree_after, values_after = snapshot()
 
     assert tree_after == tree_before, "generating added or reshaped model state"
