@@ -470,12 +470,17 @@ def evaluate(spec: Spec, results: dict[str, dict[str, Arm]], look: int | None = 
     branches through, and the safe reading of "this fired the kill condition" is
     that the idea is dead.
 
-    A spec with [stages] is judged at `look` (1 or 2), or by default at the last look
-    its seeds reach; see _judge_at_look. Without [stages] there is one look, and
+    A spec with [stages] is judged at `look` (1 or 2), or by default as the design
+    runs: look 1, then look 2 only if look 1 did not settle and the seeds reach it;
+    see _judge_at_look. Without [stages] there is one look, and
     `look` must be left out.
     """
     if spec.stages is not None:
-        return _judge_at_look(spec, results, look)
+        if look is not None:
+            return _judge_at_look(spec, results, look)
+        verdict = _judge_at_look(spec, results, 1)
+        reaches_look_2 = _seeds_a_side(spec, results) >= spec.stages.seeds[-1]
+        return verdict if verdict.settled or not reaches_look_2 else _judge_at_look(spec, results, 2)
     if look is not None:
         raise ValueError(f"{spec.id}: registers no [stages], so it has one look and none to choose")
     return _judge(spec, results, ALPHA)
@@ -531,7 +536,7 @@ def _futile(spec: Spec, results: dict[str, dict[str, Arm]], alpha: float) -> lis
     return futile
 
 
-def _judge_at_look(spec: Spec, results: dict[str, dict[str, Arm]], index: int | None) -> Verdict:
+def _judge_at_look(spec: Spec, results: dict[str, dict[str, Arm]], index: int) -> Verdict:
     """Judge a staged spec at one look, on each arm's first seeds.
 
     Look 1 stops the pair when it settles: KEEP or KILL at look 1's bar, or the
@@ -544,16 +549,12 @@ def _judge_at_look(spec: Spec, results: dict[str, dict[str, Arm]], index: int | 
     assert spec.stages is not None
     planned = looks(spec.stages)
     have = _seeds_a_side(spec, results)
-    if index is None:
-        reached = [at.index for at in planned if at.seeds <= have]
-        if not reached:
-            raise ValueError(f"{spec.id}: {have} seeds a side, short of look 1's {planned[0].seeds}")
-        index = reached[-1]
     if index not in range(1, len(planned) + 1):
         raise ValueError(f"{spec.id}: registers looks 1 to {len(planned)}, not look {index}")
     at = planned[index - 1]
     if have < at.seeds:
-        raise ValueError(f"{spec.id}: look {index} judges {at.seeds} seeds a side, and an arm has {have}")
+        raise ValueError(f"{spec.id}: look {index} judges {at.seeds} seeds a side, and an arm has {have}, "
+                         f"short of it")
     results = _first_seeds(results, at.seeds)
     verdict = replace(_judge(spec, results, at.alpha), look=at)
     if at.index == at.of or verdict.outcome in (KEEP, KILL):

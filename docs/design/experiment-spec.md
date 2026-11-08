@@ -272,8 +272,9 @@ referee turns each look's z bar into the nominal one-sided p the TOST must reach
 two-look tables and that a synthetic null keeps the error at α.
 
 **What a look decides.** The referee judges a look on each arm's first `seeds[k]`
-values (a declared constant arm is used as is), and by default at the last look the
-results reach. At look 1:
+values (a declared constant arm is used as is). By default it replays the design:
+look 1 first, and look 2 only when look 1 did not settle, so a look-1 stop stands
+even when look 2's seeds were run anyway. At look 1:
 - KEEP or KILL at look 1's bar: settled, stop.
 - futile: an `equivalent` keep criterion shows the gap *beyond* its margin at
   look 1's bar. Settled as INCONCLUSIVE: parity can no longer be shown, and a kill

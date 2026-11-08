@@ -186,10 +186,16 @@ def test_a_kill_branch_still_fires_at_look_1():
     assert (verdict.outcome, verdict.settled) == (KILL, True)
 
 
-def test_the_default_look_is_the_last_the_seeds_reach():
+def test_the_default_replays_the_design_look_1_first():
+    """A look-1 stop stands even when look 2's seeds were run anyway."""
     assert evaluate(staged(), arms(TIGHT[:5], TIGHT[:5])).look.index == 1
-    assert evaluate(staged(), arms(TIGHT, TIGHT)).look.index == 2
-    with pytest.raises(ValueError, match="short of look 1's 4"):
+    assert evaluate(staged(), arms(TIGHT, TIGHT)).look.index == 1          # settled at look 1
+    loose = [0.0, 0.3, -0.3, 0.1, 0.0, 0.3, -0.3, 0.1]
+    unsettled = arms([v + 0.5 for v in loose], loose)
+    assert evaluate(staged(), {"run": {k: v[:5] if isinstance(v, list) else v
+                                       for k, v in unsettled["run"].items()}}).settled is False
+    assert evaluate(staged(), unsettled).look.index == 2
+    with pytest.raises(ValueError, match="look 1 judges 4 seeds a side, and an arm has 3"):
         evaluate(staged(), arms(TIGHT[:3], TIGHT[:3]))
     with pytest.raises(ValueError, match="look 2 judges 8 seeds a side"):
         evaluate(staged(), arms(TIGHT[:5], TIGHT[:5]), look=2)
@@ -208,22 +214,20 @@ def test_a_single_look_spec_has_no_look_to_choose():
 PAIRS = 8000
 
 
-def test_two_looks_keep_the_error_at_alpha_on_a_synthetic_null():
+@pytest.mark.parametrize("spending", sorted(SPENDING))
+def test_two_looks_keep_the_error_at_alpha_on_a_synthetic_null(spending):
     """Arms one margin apart (the edge of the null: parity is false) and sigma 1,
     at a margin of 2 sigma. Declaring parity at either look must stay at ALPHA
-    within simulation error. Judging both looks at an unspent 0.05 reads ~0.062
-    here (the #604 thread), which this bound refuses."""
+    within simulation error. Judging both looks at an unspent 0.05 reads ~0.079
+    here (measured in review of #631), which this bound refuses."""
     spec = Spec(id="null", title="t", hypothesis="h",
                 criteria={"same": Criterion("same", "equivalent", "t", "c", 0.0, margin=2.0)},
-                keep_if=("same",), kill_if=(), stages=StagesTable(seeds=(4, 8)))
+                keep_if=("same",), kill_if=(), stages=StagesTable(seeds=(4, 8), spending=spending))
     rng = random.Random(604)
     kept = 0
     for _ in range(PAIRS):
         results = {"p": {"t": [rng.gauss(2.0, 1.0) for _ in range(8)], "c": [rng.gauss(0.0, 1.0) for _ in range(8)]}}
-        verdict = evaluate(spec, results, look=1)
-        if not verdict.settled:
-            verdict = evaluate(spec, results, look=2)
-        kept += verdict.outcome == KEEP
+        kept += evaluate(spec, results).outcome == KEEP
     error = kept / PAIRS
     se = (ALPHA * (1 - ALPHA) / PAIRS) ** 0.5
     assert error <= ALPHA + 3 * se, f"declared parity on {error:.4f} of null pairs"
