@@ -11,7 +11,7 @@ into a fresh run dir. It resumes the real trainer there with DATA_BRANCH=1 on th
 mixture (only from that copy: a relaunch resumes the arm's own stream), and re-runs a WSD decay from --decay-start to --stop-step. Then it scores the
 endpoint weights on the yardstick. Every arm starts from the same weights and optimizer
 state, so the mixture is the only thing that differs; each seed reads its own rows (see
-DATA_BRANCH in trm/config.py).
+DATA_BRANCH in trm/settings.py).
 
 The readout is the endpoint, not tokens-to-target. The schedule completes in-run, and
 the question is what the weights score once annealed on this mix, which is the question
