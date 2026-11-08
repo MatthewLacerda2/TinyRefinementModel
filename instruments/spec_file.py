@@ -110,8 +110,10 @@ class StagesTable(_Table):
     `seeds[1]` and judge at the final bar. instruments/verdict.py holds the
     arithmetic; docs/design/experiment-spec.md the format."""
     seeds: tuple[int, int]  # seeds per arm at look 1 and at look 2, cumulative
-    # The Lan-DeMets spending function that splits alpha across the two looks.
-    spending: Literal["obrien-fleming", "pocock"] = "obrien-fleming"
+    # The Lan-DeMets spending function that splits alpha across the two looks. Pocock by
+    # the owner's call (2026-11-08): ~a quarter fewer seeds for 0.945 power vs 0.968, the
+    # table in docs/design/experiment-spec.md.
+    spending: Literal["obrien-fleming", "pocock"] = "pocock"
     # Stop at look 1 when the gap is shown beyond the margin (the owner's option (b)).
     futility: bool = True
 

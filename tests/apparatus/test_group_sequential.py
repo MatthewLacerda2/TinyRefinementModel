@@ -89,7 +89,7 @@ def test_a_staged_spec_reads_with_its_defaults(tmp_path):
     path = tmp_path / "s.toml"
     path.write_text(STAGED)
     spec = load_spec(path)
-    assert spec.stages == StagesTable(seeds=(4, 8), spending="obrien-fleming", futility=True)
+    assert spec.stages == StagesTable(seeds=(4, 8), spending="pocock", futility=True)
     assert spec.criteria["same"].margin == 0.01
 
 
