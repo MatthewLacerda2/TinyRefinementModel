@@ -206,7 +206,7 @@ the tied embedding is the biggest VRAM line.
 | `experiment` | pre-register → `make pair` → verdict → finding or tombstone |
 | `instruments` | which instrument answers which question; the contract for a new one |
 | `training-runs` | launching, watching, resuming and storing a GPU run; the base-gate checklist; OOMs |
-| `work-tracking` | labels, the queue, claiming, parked drafts, CI, closing, merging |
+| `work-tracking` | labels, the queue, claiming, cloud vs local sessions, parked drafts, CI, closing, merging |
 
 ## How to dig into our past
 
