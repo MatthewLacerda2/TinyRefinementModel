@@ -71,7 +71,7 @@ from instruments.runlog import NOT_LOGGED, load, recorded_params, recorded_token
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
 from trm.settings import CONFIG
-from trm.train.schedules import DEFAULT_DECAY_STEPS
+from trm.train.schedules import DEFAULT_DECAY_STEPS, wsd_decay_start
 
 # Smoothing: a centred window one SMOOTHING_POINTS_PER_WINDOW-th of the series long,
 # clamped to [SMALLEST_SMOOTHING_WINDOW, MAX_SMOOTHING_WINDOW]; a series shorter than
@@ -360,6 +360,20 @@ class RunConfig:
             return max(1, round(self.budget / self.tokens_per_opt_step))
         return DEFAULT_DECAY_STEPS
 
+    @property
+    def lr_schedule(self):
+        """The schedule's shape, wsd or cosine (#386). A run that did not record it
+        predates WSD, so it was a cosine: this process's default (wsd) would be the
+        wrong guess (#619)."""
+        return self.value("LR_SCHEDULE", "cosine", str)
+
+    @property
+    def wsd_decay_start(self):
+        """The opt step WSD's final decay starts at, resolved as the trainer does:
+        the run's explicit WSD_DECAY_START, else its WSD_DECAY_FRACTION of the horizon."""
+        fraction = self.value("WSD_DECAY_FRACTION", CONFIG.WSD_DECAY_FRACTION, float)
+        return wsd_decay_start(self.decay_steps, fraction, self.value("WSD_DECAY_START", None, int))
+
 
 def describe(cfg):
     """The one line that says which model this run trained — the identifying
@@ -394,8 +408,15 @@ def describe(cfg):
 def schedule_line(cfg):
     """The LR schedule in one line: it is planned before step 1, so it does not
     earn a panel, only a sentence."""
-    return (f"LR: {cfg.warmup_steps:,}-step warmup to {cfg.peak_lr:g}, cosine to "
-            f"{cfg.decay_steps:,} optimizer steps.")
+    warmup = f"LR: {cfg.warmup_steps:,}-step warmup to {cfg.peak_lr:g}"
+    if cfg.lr_schedule == "wsd":
+        # The share is read off the resolved start, so a branch's explicit
+        # WSD_DECAY_START is described as the decay it actually ran (#619).
+        start = cfg.wsd_decay_start
+        share = (cfg.decay_steps - start) / cfg.decay_steps
+        return (f"{warmup}, constant, then linear decay over the last {share:.0%} "
+                f"(from step {start:,} to {cfg.decay_steps:,} optimizer steps).")
+    return f"{warmup}, cosine to {cfg.decay_steps:,} optimizer steps."
 
 
 def val_cadence(runlog, cfg):

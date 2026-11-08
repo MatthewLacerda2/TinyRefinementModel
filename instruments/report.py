@@ -161,7 +161,7 @@ def _learning_rate(log, step):
              "peak_lr": float(params.get("PEAK_LR") or CONFIG.PEAK_LR)}
     kind = params.get("LR_SCHEDULE") or "cosine"
     if kind == "wsd":
-        shape["decay_fraction"] = float(params.get("WSD_DECAY_FRACTION") or 0.2)
+        shape["decay_fraction"] = float(params.get("WSD_DECAY_FRACTION") or CONFIG.WSD_DECAY_FRACTION)
         shape["decay_start"] = params.get("WSD_DECAY_START")
     try:
         return float(build_schedule(int(decay_steps), kind, **shape)(step)), int(decay_steps)
@@ -226,7 +226,9 @@ def print_run(log):
 
     lr, decay_steps = _learning_rate(log, step)
     if lr is not None:
-        print(f"  LR now: {lr:.2e}  (cosine to step {decay_steps:,})   [estimated — the run's recorded schedule]")
+        # The shape named is the one _learning_rate built, not always "cosine" (#619).
+        kind = log.params.get("LR_SCHEDULE") or "cosine"
+        print(f"  LR now: {lr:.2e}  ({kind} to step {decay_steps:,})   [estimated — the run's recorded schedule]")
 
     suspect = suspect_rows(log)
     _print_suspect(suspect)
