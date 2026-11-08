@@ -20,9 +20,9 @@ So the gate has three parts:
 - **the bound can see a cache bug**: a token fed one position late, the classic one,
   misses it by orders of magnitude.
 
-Measured on CI for #628 over this file's 32-step walk: the first token exact, the
-worst later gap 1.4e-6 at dim 32 and 3.3e-6 at dim 960 (both arms of POST_NORM), every
-argmax the same; one position late, 1.16 at dim 32 and 0.42 at dim 960.
+Measured on CI for #628 over this file's 32-step walk, MLPs live: the first token
+exact, the worst later gap 2.4e-6 at dim 32 and 5.3e-6 at dim 960 (both arms of
+POST_NORM), every argmax the same; one position late, 1.4 at dim 32 and 0.59 at dim 960.
 
 What the training forward computes is pinned in test_training_forward_pin.py; the
 last test here holds that generating leaves the model itself alone.
