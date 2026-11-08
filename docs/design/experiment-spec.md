@@ -72,7 +72,7 @@ together; the field comments in `trm/settings.py` give the detail.
 | knob | varies with the seed | does not vary |
 |---|---|---|
 | `MODEL_SEED` | the initial weights | anything on a resume or a branch, where the weights come from the checkpoint |
-| `DATA_SEED` | where each chunk file starts being read (an offset under 1,025 tokens, drawn per file); which bucket each row of a micro-step comes from | the order of documents, since every bucket's files are read in sorted order, front to back; the held-out probe rows |
+| `DATA_SEED` | where each chunk file starts being read (an offset under 1,025 tokens, drawn per file); which bucket each row of a micro-step comes from | the order of documents, since every bucket's files are read in string-sorted order (chunk_10 before chunk_2), each front to back; the held-out probe rows (in a bucket larger than the probe's tail) |
 
 So two seeds read nearly the same documents in the same order, and σ on a fresh
 `tokens_to_ce` pair is **init variance**, not data variance (#378): a lower bound on

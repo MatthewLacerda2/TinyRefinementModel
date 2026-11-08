@@ -311,12 +311,15 @@ class Config(BaseSettings):
     #                1,025, drawn again for every file), and the mixer's draws (which
     #                bucket each row of a micro-step comes from).
     #                It does NOT change the document order. Every bucket's files are read
-    #                in sorted order, front to back, so two seeds read nearly the same
-    #                documents in the same order. A pair's seed spread is therefore init
-    #                variance, not data variance (#378). The held-out probe reads the
-    #                corpus tail by a skip, which draws no offset, so every seed scores
-    #                the same rows (while the tail fits in the last chunk file, as it
-    #                does on today's corpus).
+    #                in string-sorted order (chunk_10 before chunk_2), each front to back,
+    #                so two seeds read nearly the same documents in the same order. A
+    #                pair's seed spread is therefore init variance, not data variance
+    #                (#378). The held-out probe reaches the corpus tail (its last
+    #                VAL_TAIL_ROWS rows, in that same order) by a skip, which draws no
+    #                offset, so every seed scores the same rows. That holds while the
+    #                bucket has more rows than the tail and the tail sits in the last file
+    #                read, as on today's corpus. In a smaller bucket the skip is 0 and the
+    #                first file's offset is drawn, so the probe rows vary with the seed.
     #                One exception: under DATA_BRANCH each seed skips its own
     #                DATA_SEED x DATA_BRANCH_SEED_STRIDE rows, and there the seed does
     #                choose different documents (#489).
