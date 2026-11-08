@@ -290,6 +290,23 @@ def test_a_short_run_renders_and_names_its_own_schedule(tmp_path):
     assert plots.schedule_line(cfg) == "LR: 100-step warmup to 0.0006, cosine to 512 optimizer steps."
 
 
+@pytest.mark.parametrize("decay, caption", [
+    ({"WSD_DECAY_FRACTION": 0.2}, "the last 20% (from step 410 to 512 optimizer steps)."),
+    # A branch resumed from a checkpoint names its own start; the share follows it.
+    ({"WSD_DECAY_FRACTION": 0.2, "WSD_DECAY_START": 384}, "the last 25% (from step 384 to 512 optimizer steps)."),
+])
+def test_a_wsd_run_is_never_captioned_cosine(tmp_path, decay, caption):
+    """Base run 002 is WSD and its caption said "cosine to 57,220" (#619): the
+    schedule's shape comes from the run's metadata, like every other fact (#305)."""
+    from instruments import plots
+    from instruments.runlog import load
+
+    cfg = plots.RunConfig.of(load(str(a_short_arm(tmp_path, LR_SCHEDULE="wsd", **decay))))
+    line = plots.schedule_line(cfg)
+    assert "cosine" not in line
+    assert line == "LR: 100-step warmup to 0.0006, constant, then linear decay over " + caption
+
+
 def test_the_subtitle_identifies_a_run_by_width_layers_and_optimizer(tmp_path):
     """What separates two runs of this stack is the layer count and the optimizer —
     the #26 pair differs in nothing else."""
