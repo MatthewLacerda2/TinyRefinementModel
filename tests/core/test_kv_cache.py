@@ -55,7 +55,11 @@ SAMPLED = dict(top_k=8, top_p=0.9, temperature=0.7)
 # test_infer_head_slice.py's bound for the same kernel-selection noise: f32's is
 # measured above; f16 compute (the GPU suite) moves up to one f16 ulp (#452).
 RTOL = max(1e-4, 2 * float(jnp.finfo(COMPUTE_DTYPE).eps))
-ATOL = 1e-5
+# In f16 the whole decode path rounds differently, not one matmul: measured on the 2060
+# over the 32-step walk (2026-11-08, #628), the worst gap was 0.0054 / 0.0064 (POST_NORM
+# off / on), the median 0.0026 / 0.0030, every argmax equal, while one position late
+# moved the logits by 2.3. So f16's bound is twice the worst gap; f32's stays 1e-5.
+ATOL = 1e-5 if COMPUTE_DTYPE == jnp.float32 else 0.0125
 
 
 def _toy(post_norm=False):

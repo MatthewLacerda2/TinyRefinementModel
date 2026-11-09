@@ -117,7 +117,13 @@ class CausalAttention(nnx.Module):
         """Queries `q` [b, s, heads, head_dim] against the cached `keys`/`values` under
         an f32 additive `bias` (see __call__ for why it stays f32)."""
         b, s = q.shape[:2]
-        out = jax.nn.dot_product_attention(q, keys, values, bias=bias)
+        if s == 1:
+            # On the 2060 (jax 0.9.1), jitted dot_product_attention with a single query
+            # row fails to compile: "Unsupported dot precision algorithm: 4"; two rows
+            # compile. So a decode step attends twice the same row and keeps the first.
+            # CPU never shows it; only the GPU suite does (#628).
+            q, bias = jnp.repeat(q, 2, axis=1), jnp.repeat(bias, 2, axis=-2)
+        out = jax.nn.dot_product_attention(q, keys, values, bias=bias)[:, :s]
         return self.o(out.reshape(b, s, self.num_heads * self.head_dim))
 
 
