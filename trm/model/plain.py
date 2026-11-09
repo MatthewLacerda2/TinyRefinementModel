@@ -98,9 +98,10 @@ class CausalAttention(nnx.Module):
     # --- the decode path (#153) ---------------------------------------------------
     # Beside __call__, not through it: the training forward stays the program it was
     # (tests/core/test_training_forward_pin.py). These repeat its arithmetic op for op;
-    # tests/core/test_kv_cache.py holds the result to the window's logits (the first
-    # token bit for bit, later ones within kernel noise: a one-row matmul is not the
-    # same row of a 512-row one on XLA's CPU backend).
+    # tests/core/test_kv_cache.py holds the result to the window's logits: on the CPU
+    # the first token bit for bit, later ones within kernel noise (a one-row matmul is
+    # not the same row of a 512-row one on XLA's CPU backend); on the card, in f16,
+    # every token within the measured f16 bound.
 
     def project(self, x, start):
         """q, k, v for the rows of `x`, which sit at absolute positions start, start+1,

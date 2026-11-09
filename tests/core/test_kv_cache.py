@@ -20,6 +20,13 @@ So the gate has three parts:
 - **the bound can see a cache bug**: a token fed one position late, the classic one,
   misses it by orders of magnitude.
 
+That is the CPU/f32 picture, the one CI runs. In f16 on the card (the GPU suite) the
+whole decode path rounds differently and the bound is f16's own, measured below at
+ATOL: worst-case 0.0125 a logit, no longer far under the val-CE noise floor. The
+first token is bounded there, not exact, and the argmax still exact. At the shipping
+size, #628's benchmark saw a worst gap of 0.019 with all 256 greedy tokens equal; no
+test bounds that scale.
+
 Measured on CI for #628 over this file's 32-step walk, MLPs live: the first token
 exact, the worst later gap 2.4e-6 at dim 32 and 5.3e-6 at dim 960 (both arms of
 POST_NORM), every argmax the same; one position late, 1.4 at dim 32 and 0.59 at dim 960.
@@ -52,13 +59,13 @@ STEPS = 32
 # temperature 1, no top-k, no top-p: truncation is the identity, so these are raw logits.
 RAW = dict(top_k=0, top_p=1.0, temperature=1.0)
 SAMPLED = dict(top_k=8, top_p=0.9, temperature=0.7)
-# test_infer_head_slice.py's bound for the same kernel-selection noise: f32's is
-# measured above; f16 compute (the GPU suite) moves up to one f16 ulp (#452).
+# test_infer_head_slice.py's relative bound for the same kernel-selection noise: f32's
+# is measured above; f16's is one f16 ulp (#452), which covers one matmul, not the path.
 RTOL = max(1e-4, 2 * float(jnp.finfo(COMPUTE_DTYPE).eps))
 # In f16 the whole decode path rounds differently, not one matmul: measured on the 2060
 # over the 32-step walk (2026-11-08, #628), the worst gap was 0.0054 / 0.0064 (POST_NORM
 # off / on), the median 0.0026 / 0.0030, every argmax equal, while one position late
-# moved the logits by 2.3. So f16's bound is twice the worst gap; f32's stays 1e-5.
+# moved the logits by 2.3. So f16's bound is about twice the worst gap; f32's stays 1e-5.
 ATOL = 1e-5 if COMPUTE_DTYPE == jnp.float32 else 0.0125
 
 
