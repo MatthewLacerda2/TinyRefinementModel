@@ -35,11 +35,27 @@ from dataclasses import dataclass, field
 
 from instruments._common import REPO_ROOT
 from instruments.changed import changed_paths
+from instruments.spec_file import SpecFile
 from instruments.verdict import (
-    KEEP, KILL, Spec, Summary, Verdict, evaluate, load_recorded_results, load_spec,
-    mean_sigma, pooled_sigma,
+    ALPHA,
+    KEEP,
+    KILL,
+    PARITY_RULES,
+    Spec,
+    Summary,
+    Verdict,
+    evaluate,
+    load_recorded_results,
+    load_spec,
+    mean_sigma,
+    pooled_sigma,
 )
 from trm.runtime.supervisor import BUDGET_COMPLETE, KILLED_DIVERGENCE, WALLCLOCK_COMPLETE
+
+# Path shapes the diff scope recognizes: experiments/<line>/specs/<id>.toml, and a
+# research line's own code, experiments/<line>/<file>.py or deeper.
+SPEC_PATH_PARTS = 4
+LINE_FILE_PARTS = 3
 
 # What each headline number is, and how it was obtained (#175): none — the audit
 # prints rule states and reasons; every number in a reason is the referee's own
@@ -60,6 +76,17 @@ DOCTRINE_CUTOFF = datetime.date(2026, 9, 12)
 # This audit. From here on, git must show the criteria commit preceding the
 # results commit; every earlier spec was squash-merged and the order is gone.
 AUDIT_CUTOFF = datetime.date(2026, 9, 15)
+
+# The target-reached-late rule (#547): specs whose criteria were committed before it
+# are grandfathered, so the three 512-step pairs that set it off stay on record as run.
+TARGET_RULE_CUTOFF = datetime.date(2026, 10, 8)
+# A tokens-to-target bar judges the run only when the control needs at least this
+# fraction of the cap to reach the target; earlier, it judges the start (#361).
+TARGET_EARLIEST_FRACTION = 0.5
+
+# The holds-at-seed-count rule (#599): specs whose criteria were committed before it
+# are grandfathered, with the p each carrying point reaches printed beside the date.
+T_TEST_RULE_CUTOFF = datetime.date(2026, 10, 21)
 
 GREEN, RED, NA, GRANDFATHERED = "green", "red", "n/a", "grandfathered"
 
@@ -93,7 +120,7 @@ class Audited:
     path: pathlib.Path
     rel: str                    # how the spec is named in output and in citations
     repo: pathlib.Path
-    raw: dict
+    file: SpecFile
     spec: Spec
     results: dict
     verdict: Verdict | None
@@ -103,7 +130,7 @@ class Audited:
 
     @property
     def constants(self) -> set[str]:
-        return {n for n, b in self.raw.get("arms", {}).items() if b.get("constant")}
+        return self.file.constant_arms()
 
     @property
     def measured(self) -> bool:
@@ -134,7 +161,7 @@ class Audited:
         return []
 
     def role(self, arm: str) -> str:
-        return self.raw.get("arms", {}).get(arm, {}).get("role", "")
+        return self.file.arms[arm].role if arm in self.file.arms else ""
 
     def floors(self) -> dict[str, Summary]:
         """{point: floor} from constant floor arms declared in [results]."""
@@ -144,26 +171,31 @@ class Audited:
 
     @property
     def cap(self) -> float | None:
-        cap = self.raw.get("protocol", {}).get("cap")
-        return float(cap) if cap is not None else None
+        return self.file.protocol.cap
 
     def voided(self, point: str, arm: str) -> list[int]:
         """Seeds declared void at a point, with a reason: [void.<point>.<arm>]."""
-        entry = self.raw.get("void", {}).get(point, {}).get(arm, {})
-        return list(entry.get("seeds", ())) if str(entry.get("reason", "")).strip() else []
+        entry = self.file.void.get(point, {}).get(arm)
+        return list(entry.seeds) if entry is not None and entry.reason.strip() else []
 
     def registered_seeds(self, point: str) -> int | None:
         """How many seeds the spec registered for a point, or None if it never said."""
-        execution = self.raw.get("execution")
+        execution = self.file.execution
         if execution:
-            default = execution.get("seeds", ())
+            default = execution.seeds
             leg = point.split("/", 1)[0] if "/" in point else ""
-            legs = execution.get("legs", {})
-            if leg in legs:
-                return len(legs[leg].get("seeds", default))
+            if leg in execution.legs:
+                seeds = execution.legs[leg].seeds
+                return len(seeds if seeds is not None else default)
             return len(default) if default else None
-        seeds = self.raw.get("protocol", {}).get("seeds")
-        return len(seeds) if isinstance(seeds, list) else None
+        seeds = self.file.protocol.seeds
+        return len(seeds) if isinstance(seeds, tuple) else None
+
+    def seeds_owed(self, point: str) -> int | None:
+        """The registered seeds, or a [stages] spec's look-1 seeds when it settled there (#604)."""
+        registered = self.registered_seeds(point)
+        look = self.verdict.look if self.verdict is not None and self.verdict.settled else None
+        return registered if registered is None or look is None else min(registered, look.seeds)
 
     def history(self) -> list[Commit] | None:
         """Every committed version of the spec, oldest first. [] if never committed,
@@ -181,9 +213,8 @@ class Audited:
 
 def load(path: pathlib.Path, repo: pathlib.Path = REPO) -> Audited:
     path, repo = path.resolve(), repo.resolve()
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
     spec = load_spec(path)
+    assert spec.file is not None, "load_spec always reads the file"
     results = load_recorded_results(path)
     verdict, error = None, None
     try:
@@ -191,7 +222,7 @@ def load(path: pathlib.Path, repo: pathlib.Path = REPO) -> Audited:
     except (KeyError, ValueError) as exc:
         error = str(exc)
     rel = path.relative_to(repo).as_posix() if path.is_relative_to(repo) else str(path)
-    return Audited(path, rel, repo, raw, spec, results, verdict, error)
+    return Audited(path, rel, repo, spec.file, spec, results, verdict, error)
 
 
 def spec_history(repo: pathlib.Path, rel: str) -> list[Commit] | None:
@@ -261,6 +292,11 @@ def floor_both_arms(a: Audited) -> Status:
     if not carrying:
         return Status(rule, GREEN, f"verdict {a.outcome} rests on no criterion")
     for c in carrying:
+        if "floor" in (a.role(c.treatment), a.role(c.control)):
+            # Measured AGAINST the floor arm (the base spec's gate is a constant
+            # reference, 001-plain-base.toml): falling below it is the result the
+            # criterion asks about, not two arms sharing a failure.
+            continue
         for point in a.points_of(c):
             arms = a.results[point]
             pair = (arms[c.treatment], arms[c.control])
@@ -278,13 +314,13 @@ def control_reached_target(a: Audited) -> Status:
     rule = "control-reached-target"
     if blocked := _unjudgeable(a, rule):
         return blocked
-    metric_key = str(a.raw.get("protocol", {}).get("metric_key", ""))
+    metric_key = a.file.protocol.metric_key or ""
     if "tokens_to" not in metric_key and a.cap is None:
         return Status(rule, NA, "not a tokens-to-target metric")
     if a.cap is None:
         return Status(rule, RED, f"{metric_key} is a tokens-to-target metric with no [protocol] cap — "
                                  f"declare the cap so a control seed that never reached the target is visible")
-    controls = {n for n in a.raw.get("arms", {}) if a.role(n) == "control"}
+    controls = {n for n in a.file.arms if a.role(n) == "control"}
     for c in a.spec.criteria.values():
         for point in a.points_of(c):
             for arm in (c.treatment, c.control):
@@ -298,16 +334,46 @@ def control_reached_target(a: Audited) -> Status:
     return Status(rule, GREEN)
 
 
+def target_reached_late(a: Audited) -> Status:
+    """For a tokens-to-target metric, the control reaches the target in the second half
+    of the run. #361's target fell at opt step ~145 of 512: the bar judged the first
+    quarter, KEEP, and the arm ended 0.086 val CE worse. Set the target from the
+    control's own curve, near its endpoint, before any treatment result."""
+    rule = "target-reached-late"
+    if blocked := _unjudgeable(a, rule):
+        return blocked
+    if a.cap is None:
+        return Status(rule, NA, "no [protocol] cap: not a tokens-to-target metric")
+    controls = {n for n in a.file.arms if a.role(n) == "control"}
+    early = []
+    for point, arms in a.results.items():
+        for arm in controls & set(arms):
+            mean, _ = mean_sigma(arms[arm])
+            if mean < TARGET_EARLIEST_FRACTION * a.cap:
+                early.append(f"control {arm} at {point} reaches it at {mean:g} of {a.cap:g}")
+    if not early:
+        return Status(rule, GREEN)
+    history = a.history()
+    criteria = next((c for c in history or () if _has_criteria(c.text)), None)
+    if criteria is not None and criteria.date < TARGET_RULE_CUTOFF:
+        return Status(rule, GRANDFATHERED, f"criteria committed {criteria.date}, before this rule "
+                                           f"({TARGET_RULE_CUTOFF}): {'; '.join(early)}")
+    return Status(rule, RED, f"{'; '.join(early)}: the target judges the start of the run, not the run "
+                             f"(under {TARGET_EARLIEST_FRACTION:.0%} of the cap). Read it off the control's curve "
+                             f"near its endpoint (#547)")
+
+
 def seeds_complete(a: Audited) -> Status:
     """Every arm a criterion compares has every registered seed, or the missing ones
-    are marked void (`[void.<point>.<arm>] seeds = [...], reason = "..."`)."""
+    are marked void (`[void.<point>.<arm>] seeds = [...], reason = "..."`). A spec
+    with [stages] that settled at look 1 counts against look 1's seeds (#604)."""
     rule = "seeds-complete"
     if blocked := _unjudgeable(a, rule):
         return blocked
     short, unregistered = [], False
     for c in a.spec.criteria.values():
         for point in a.points_of(c):
-            registered = a.registered_seeds(point)
+            registered = a.seeds_owed(point)
             if registered is None:
                 unregistered = True
                 continue
@@ -376,6 +442,37 @@ def sigma_plausible(a: Audited) -> Status:
     return Status(rule, GREEN, "; ".join(notes))
 
 
+def holds_at_seed_count(a: Audited) -> Status:
+    """The criteria that carried the verdict hold as a one-sided t-test at ALPHA, given
+    each arm's seeds (#599). The sigma bar does not see the seed count: 2 sigma is
+    p 0.035 with three seeds a side, 0.09 with two. And a `within` that held says only
+    that no difference was seen; with three seeds and a 2-sigma margin, parity is
+    shown only for a gap under ~0.26 sigma (`equivalent`, a TOST). A point at
+    sigma 0 has no p and is sigma-plausible's to report."""
+    rule = "holds-at-seed-count"
+    if blocked := _unjudgeable(a, rule):
+        return blocked
+    carrying = {c.name for c in a.carrying_criteria()}
+    weak = []
+    for result in a.verdict.criteria if a.verdict else ():
+        c = result.criterion
+        held = [p for p in result.points if p.holds]
+        short = [p for p in held if p.p is not None and p.p > ALPHA]
+        if c.name not in carrying or not short or (c.require == "any" and len(short) < len(held)):
+            continue
+        shown = "parity not shown, only no difference seen" if c.rule in PARITY_RULES else "short of the bar"
+        weak += [f"{c.name} at {p.point}: {c.rule} {c.sigmas:g}σ holds at {p.sigmas:+.2f}σ, but with "
+                 f"{p.seeds[0]}+{p.seeds[1]} seeds that is p {p.p:.3f} > {ALPHA:g} ({shown})" for p in short]
+    if not weak:
+        return Status(rule, GREEN)
+    history = a.history()
+    criteria = next((c for c in history or () if _has_criteria(c.text)), None)
+    if criteria is not None and criteria.date < T_TEST_RULE_CUTOFF:
+        return Status(rule, GRANDFATHERED, f"criteria committed {criteria.date}, before this rule "
+                                           f"({T_TEST_RULE_CUTOFF}): {'; '.join(weak)}")
+    return Status(rule, RED, f"{'; '.join(weak)} — add seeds, or register parity as `equivalent`")
+
+
 def prediction_registered(a: Audited) -> Status:
     """The hypothesis carries a registered prediction (rule 3): the criterion tests
     the idea, the prediction tests the person holding it."""
@@ -408,7 +505,7 @@ def criteria_predate_results(a: Audited) -> Status:
         return Status(rule, GREEN, f"criteria committed in {criteria.sha} ({criteria.date}); "
                                    f"results not yet committed")
     if criteria.sha == results.sha:
-        if a.raw.get("experiment", {}).get("status") == "retrofit":
+        if a.file.experiment.status == "retrofit":
             return Status(rule, GRANDFATHERED, f"retrofit: both halves transcribed from the finding in "
                                                f"{criteria.sha} ({criteria.date})")
         if criteria.date < AUDIT_CUTOFF:
@@ -446,10 +543,10 @@ def finding_cites_spec(a: Audited, citations: dict[str, list[str]], graveyard: s
         return Status(rule, NA, f"verdict {a.outcome or 'undecidable'} — nothing claimed, nothing to cite")
     if a.rel in citations:
         return Status(rule, GREEN, f"cited by {', '.join(citations[a.rel])}")
-    finding = a.raw.get("experiment", {}).get("finding")
+    finding = a.file.experiment.finding
     if finding and (a.repo / finding).exists():
         return Status(rule, GREEN, f"links its own finding, {finding}")
-    issue = a.raw.get("experiment", {}).get("issue")
+    issue = a.file.experiment.issue
     if a.rel in graveyard or (issue and re.search(rf"(?<![\d#])#{int(issue)}(?!\d)", graveyard)):
         return Status(rule, GREEN, "named in the ROADMAP graveyard")
     return Status(rule, RED, f"{a.outcome} with no findings entry citing this spec (a `Spec:` line) and no "
@@ -461,13 +558,13 @@ def run_ended_by_budget(a: Audited) -> Status:
     kill. Applies only when the spec names its logs: `[runs.<arm>] logs = [...]` or
     `dirs = [...]` (a run dir contributes its train.log and supervisor log)."""
     rule = "run-ended-by-budget"
-    runs = a.raw.get("runs")
+    runs = a.file.runs
     if not runs:
         return Status(rule, NA, "the spec records no run log or run dir")
     logs, missing, bad = [], [], []
     for arm, body in runs.items():
-        paths = [a.repo / p for p in body.get("logs", ())]
-        for d in body.get("dirs", ()):
+        paths = [a.repo / p for p in body.logs]
+        for d in body.dirs:
             run_dir = a.repo / d
             paths += [run_dir / "train.log", run_dir.parent / f"{run_dir.name}.supervisor.log"]
         for path in paths:
@@ -492,8 +589,10 @@ def audit_spec(a: Audited, citations: dict[str, list[str]], graveyard: str) -> l
     return [
         floor_both_arms(a),
         control_reached_target(a),
+        target_reached_late(a),
         seeds_complete(a),
         sigma_plausible(a),
+        holds_at_seed_count(a),
         prediction_registered(a),
         criteria_predate_results(a),
         verdict_current(a),
@@ -596,11 +695,11 @@ def affected(changed: list[str], repo: pathlib.Path = REPO) -> Scope:
         if rel in REFEREE_FILES:
             scope.everything = True
             scope.why.append(f"{rel} -> every spec and finding")
-        elif parts[:1] == ("experiments",) and len(parts) == 4 and parts[2] == "specs" and p.suffix == ".toml":
+        elif parts[:1] == ("experiments",) and len(parts) == SPEC_PATH_PARTS and parts[2] == "specs" and p.suffix == ".toml":
             if (repo / rel).exists():
                 scope.specs.add(rel)
                 scope.why.append(f"{rel} -> itself")
-        elif parts[:1] == ("experiments",) and len(parts) >= 3 and p.suffix == ".py":
+        elif parts[:1] == ("experiments",) and len(parts) >= LINE_FILE_PARTS and p.suffix == ".py":
             line = sorted(q.relative_to(repo).as_posix()
                           for q in (repo / "experiments" / parts[1] / "specs").glob("*.toml"))
             scope.specs.update(line)
@@ -625,7 +724,7 @@ def render_spec(a: Audited, statuses: list[Status]) -> str:
 
 
 def render_pending(a: Audited) -> str:
-    status = a.raw.get("experiment", {}).get("status", "?")
+    status = a.file.experiment.status or "?"
     return f"{a.rel}  [pending]  no measured results yet (status = {status}); nothing to audit"
 
 

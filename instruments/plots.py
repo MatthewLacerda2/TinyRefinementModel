@@ -7,10 +7,10 @@ glance does not need.
                       perplexity on the right.
   grad_norm.png       the gradient norm against the clip.
   logits.png          logit health: entropy, log Z, max |logit|.
+  act_max.png         peak |activation| against the f16 ceiling it must not reach.
   throughput.png      tokens/sec from metrics.csv's wall_clock (#186) — or, for
                       runs older than that column, sampled from the supervisor's
                       heartbeats.
-  depth.png           sampled depth, only for the architectures that have one.
 
 What is deliberately NOT drawn: arena-peak VRAM (a high-water mark, flat by
 construction), the f16 zero-gradient fraction (1e-4 on a healthy run against a
@@ -21,23 +21,19 @@ and flags the one that crosses its line.
 
 Three rules this instrument exists to enforce:
 
-1. **A panel whose data is absent is omitted, not drawn flat.** The previous
-   version drew three panels of reasoner-only quantities (temporal drift,
-   forget cost, diversity loss) on refiner runs, where those terms do not
-   exist (#105) — a flat zero line reads as "we measured zero" when the truth
-   is "there is nothing here to measure". The log decides what gets drawn;
+1. **A panel whose data is absent is omitted, not drawn flat** (#105) — a flat
+   zero line reads as "we measured zero" when the truth is "there is nothing
+   here to measure". The log decides what gets drawn;
    nothing is hardcoded on. See `available()` for the two ways data can be
    missing, and note that what was left out is always reported.
 2. **The model is never instantiated.** Counting parameters by building a
-   whole network — on the wrong architecture, while the card is busy — is the
-   defect this rewrite removes. Parameter counts come analytically from
+   whole network while the card is busy is the defect this rewrite removes. Parameter counts come analytically from
    `instruments.model_stats`.
 3. **Everything the figure says about the run comes from the run** (#305).
    `trm.config` describes the interpreter drawing the picture — its
    environment, its defaults — not the run on disk, and reading the two as one
    is a whole class of bug: a 512-step arm crashed because this process's
-   1000-step warmup left the cosine a negative horizon; a `plain` run was
-   labelled `depth ≤8` and given the refiner's depth panel; every val CE line
+   1000-step warmup left the cosine a negative horizon; every val CE line
    was annotated "every 64 optimizer steps" whatever the run used. `RunConfig`
    is the one place that resolves this, from the run's own metadata, and it
    says which values it had to fall back on.
@@ -54,6 +50,7 @@ os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import argparse
 import datetime
+import itertools
 import math
 import pathlib
 import re
@@ -66,13 +63,28 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker
 import numpy as np
 
-from instruments._common import REPO_ROOT
-from instruments.runlog import absence_reason, load, recorded_tokens_per_opt_step
+from instruments._common import F16_MAX, REPO_ROOT
 from instruments.invariants import clean_column, suspect_rows
+from instruments.runlog import NOT_LOGGED, load, recorded_params, recorded_tokens_per_opt_step
+
 # Imported as a module, and used ONLY as RunConfig's fallback for runs that did
 # not record a value: every constant in here describes this process (#305).
 from trm import config as this_process
-from trm.train.schedules import PEAK_LR, WARMUP_STEPS, resolve_decay_steps
+from trm.settings import CONFIG
+from trm.train.schedules import DEFAULT_DECAY_STEPS, wsd_decay_start
+
+# Smoothing: a centred window one SMOOTHING_POINTS_PER_WINDOW-th of the series long,
+# clamped to [SMALLEST_SMOOTHING_WINDOW, MAX_SMOOTHING_WINDOW]; a series shorter than
+# SMOOTHING_POINTS_PER_WINDOW stays raw, and smooth() leaves a window under
+# MIN_SMOOTHING_WINDOW alone.
+MIN_SMOOTHING_WINDOW = 3
+SMALLEST_SMOOTHING_WINDOW = 5
+MAX_SMOOTHING_WINDOW = 101
+SMOOTHING_POINTS_PER_WINDOW = 20
+# Minor tick labels on a log axis only when it spans at most this ratio; wider, they crowd.
+MINOR_LABELS_MAX_SPAN = 20
+# Heartbeats that witnessed less of the run than this read as stale (#223).
+STALE_HEARTBEAT_COVERAGE = 0.98
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {
@@ -129,7 +141,7 @@ def _clean(steps, values):
     step. A torn last CSV row and a resumed run that rewinds its step counter
     are both normal here, and neither should put a spike in the hero image."""
     out_s, out_v, last = [], [], -1
-    for s, v in zip(steps, values):
+    for s, v in zip(steps, values, strict=True):
         if s is None or v is None or s <= last:
             continue
         try:
@@ -147,10 +159,10 @@ def _clean(steps, values):
 def available(runlog, name):
     """Is this column worth an axis?
 
-    Two ways it is not. It can be *absent* — the architecture never measured it,
+    Two ways it is not. It can be *absent* — the run never measured it,
     which since #105 is a blank cell. Or it can be present and constant at zero,
     which is what runs written before that convention put in the columns their
-    architecture did not measure: `has()` is honestly True and the data is still
+    model did not measure: `has()` is honestly True and the data is still
     not a measurement. Both cases must be omitted rather than drawn, because a
     flat zero line reads as "we measured zero" instead of "there is nothing
     here" — and the reader is told which of the two it was (see `why_omitted`).
@@ -160,18 +172,14 @@ def available(runlog, name):
 
 def why_omitted(runlog, columns, absent=None):
     """None when at least one of these columns is worth drawing, else the reason
-    the panel is being dropped — in the reader's words, not the code's. By default the
-    reason comes from the run's recorded arch (`runlog.absence_reason`, shared with
-    report.py): a plain run missing a column plain logs was not "not measured by this
-    architecture". A column missing for a known other reason passes its own `absent`."""
+    the panel is being dropped — in the reader's words, not the code's: by default
+    `runlog.NOT_LOGGED`, shared with report.py. A column missing for a known other
+    reason passes its own `absent`."""
     if any(available(runlog, column) for column in columns):
         return None
     if any(runlog.has(column) for column in columns):
         return "constant 0 throughout — logged, but not a measurement"
-    if absent is not None:
-        return absent
-    cfg = RunConfig(getattr(runlog, "metadata", {}))
-    return absence_reason(cfg.arch if cfg.recorded("MODEL_ARCH") else None, columns)
+    return NOT_LOGGED if absent is None else absent
 
 
 def series(runlog, name, cfg=None, suspect=None):
@@ -194,7 +202,7 @@ def series(runlog, name, cfg=None, suspect=None):
 
 def smooth(y, window):
     """Centred moving average, edge-padded so it spans the same x as the raw."""
-    if window < 3 or len(y) < window:
+    if window < MIN_SMOOTHING_WINDOW or len(y) < window:
         return np.asarray(y)
     kernel = np.ones(window) / window
     core = np.convolve(y, kernel, mode="valid")
@@ -203,7 +211,8 @@ def smooth(y, window):
 
 
 def smoothing_window(n):
-    return 0 if n < 20 else int(min(101, max(5, n // 20)))
+    return (0 if n < SMOOTHING_POINTS_PER_WINDOW
+            else int(min(MAX_SMOOTHING_WINDOW, max(SMALLEST_SMOOTHING_WINDOW, n // SMOOTHING_POINTS_PER_WINDOW))))
 
 
 def fmt_tokens(n):
@@ -233,7 +242,7 @@ def _log_y(ax):
 
     def minor(value, _):
         low, high = ax.get_ylim()
-        return f"{value:g}" if low > 0 and high / low <= 20 else ""
+        return f"{value:g}" if low > 0 and high / low <= MINOR_LABELS_MAX_SPAN else ""
 
     ax.yaxis.set_minor_formatter(matplotlib.ticker.FuncFormatter(minor))
     ax.tick_params(axis="y", which="minor", labelsize=8)
@@ -267,13 +276,12 @@ class RunConfig:
     """
 
     def __init__(self, metadata):
-        params = (metadata or {}).get("parameters")
-        self.params = params if isinstance(params, dict) else {}
+        self.params = recorded_params(metadata)
         self.suspect = None  # rows failing an invariant; set by `of`, which has the rows
 
     @classmethod
     def of(cls, runlog):
-        cfg = cls(getattr(runlog, "metadata", {}))
+        cfg = cls(getattr(runlog, "metadata", None))
         cfg.suspect = suspect_rows(runlog)
         return cfg
 
@@ -292,20 +300,12 @@ class RunConfig:
 
     # ── what model this was ──
     @property
-    def arch(self):
-        return self.value("MODEL_ARCH", this_process.MODEL_ARCH, str)
-
-    @property
     def latent_dim(self):
-        return self.value("LATENT_DIM", this_process.LATENT_DIM, int)
+        return self.value("LATENT_DIM", CONFIG.LATENT_DIM, int)
 
     @property
     def layers(self):
-        return self.value("PLAIN_LAYERS", this_process.PLAIN_LAYERS, int)
-
-    @property
-    def max_depth(self):
-        return self.value("MAX_STEPS_LIMIT", this_process.MAX_STEPS_LIMIT, int)
+        return self.value("PLAIN_LAYERS", CONFIG.PLAIN_LAYERS, int)
 
     @property
     def vocab_size(self):
@@ -313,29 +313,29 @@ class RunConfig:
 
     @property
     def max_seq_len(self):
-        return self.value("MAX_SEQ_LEN", this_process.MAX_SEQ_LEN, int)
+        return self.value("MAX_SEQ_LEN", CONFIG.MAX_SEQ_LEN, int)
 
     # ── how it was trained ──
     @property
     def optimizer(self):
-        return self.value("TRM_OPTIMIZER", this_process.TRM_OPTIMIZER, str)
+        return self.value("TRM_OPTIMIZER", CONFIG.TRM_OPTIMIZER, str)
 
     @property
     def muon_lr_mult(self):
-        return self.value("MUON_LR_MULT", this_process.MUON_LR_MULT, float)
+        return self.value("MUON_LR_MULT", CONFIG.MUON_LR_MULT, float)
 
     @property
     def warmup_steps(self):
-        return self.value("WARMUP_STEPS", WARMUP_STEPS, int)
+        return self.value("WARMUP_STEPS", CONFIG.WARMUP_STEPS, int)
 
     @property
     def peak_lr(self):
-        return self.value("PEAK_LR", PEAK_LR, float)
+        return self.value("PEAK_LR", CONFIG.PEAK_LR, float)
 
     @property
     def budget(self):
         """Planned token budget, or None when the run was launched without one."""
-        return self.value("TRAIN_TOKEN_BUDGET", this_process.TRAIN_TOKEN_BUDGET)
+        return self.value("TRAIN_TOKEN_BUDGET", CONFIG.TRAIN_TOKEN_BUDGET)
 
     @property
     def tokens_per_opt_step(self):
@@ -344,7 +344,7 @@ class RunConfig:
         all three, because a run at a different batch recipe is mis-scaled by
         this process's constant."""
         recorded = recorded_tokens_per_opt_step(self.params)
-        return this_process.TOKENS_PER_OPT_STEP if recorded is None else recorded
+        return CONFIG.TOKENS_PER_OPT_STEP if recorded is None else recorded
 
     @property
     def micro_steps(self):
@@ -358,24 +358,34 @@ class RunConfig:
             return self.value("DECAY_STEPS", None, int)
         if self.budget:
             return max(1, round(self.budget / self.tokens_per_opt_step))
-        return resolve_decay_steps(None)
+        return DEFAULT_DECAY_STEPS
+
+    @property
+    def lr_schedule(self):
+        """The schedule's shape, wsd or cosine (#386). A run that did not record it
+        predates WSD, so it was a cosine: this process's default (wsd) would be the
+        wrong guess (#619)."""
+        return self.value("LR_SCHEDULE", "cosine", str)
+
+    @property
+    def wsd_decay_start(self):
+        """The opt step WSD's final decay starts at, resolved as the trainer does:
+        the run's explicit WSD_DECAY_START, else its WSD_DECAY_FRACTION of the horizon."""
+        fraction = self.value("WSD_DECAY_FRACTION", CONFIG.WSD_DECAY_FRACTION, float)
+        return wsd_decay_start(self.decay_steps, fraction, self.value("WSD_DECAY_START", None, int))
 
 
 def describe(cfg):
     """The one line that says which model this run trained — the identifying
-    facts, per architecture. `depth ≤N` is one of them for the two looping
-    arches and meaningless for the plain stack, which has N distinct blocks and
-    no loop; the optimizer is one of them for every run (#26 trains matched arms
-    that differ in nothing else).
+    facts: width, layer count, and the optimizer (#26 trains matched arms that
+    differ in nothing else).
 
     A fact the run did not record is named as missing rather than filled in from
     this process: PLAIN_LAYERS was 8 before 2026-09-13 and is 9 now, and printing
     an adamw run's label on a muon run is precisely the failure this whole issue
     is about."""
-    parts = [cfg.arch, f"dim {cfg.latent_dim}"]
-    if cfg.arch != "plain":
-        parts.append(f"depth ≤{cfg.max_depth}")
-    elif cfg.recorded("PLAIN_LAYERS"):
+    parts = [f"dim {cfg.latent_dim}"]
+    if cfg.recorded("PLAIN_LAYERS"):
         parts.append(f"{cfg.layers} layers")
     else:
         parts.append("layer count not recorded")
@@ -390,7 +400,7 @@ def describe(cfg):
     # The peak the schedule warms up to. Named only when the run recorded it and
     # it is not the historical 1e-4, so every existing label is unchanged and the
     # #287 arms — which differ in nothing else — cannot be confused for each other.
-    if cfg.recorded("PEAK_LR") and cfg.peak_lr != PEAK_LR:
+    if cfg.recorded("PEAK_LR") and cfg.peak_lr != CONFIG.PEAK_LR:
         parts.append(f"peak LR {cfg.peak_lr:g}")
     return " · ".join(parts)
 
@@ -398,8 +408,15 @@ def describe(cfg):
 def schedule_line(cfg):
     """The LR schedule in one line: it is planned before step 1, so it does not
     earn a panel, only a sentence."""
-    return (f"LR: {cfg.warmup_steps:,}-step warmup to {cfg.peak_lr:g}, cosine to "
-            f"{cfg.decay_steps:,} optimizer steps.")
+    warmup = f"LR: {cfg.warmup_steps:,}-step warmup to {cfg.peak_lr:g}"
+    if cfg.lr_schedule == "wsd":
+        # The share is read off the resolved start, so a branch's explicit
+        # WSD_DECAY_START is described as the decay it actually ran (#619).
+        start = cfg.wsd_decay_start
+        share = (cfg.decay_steps - start) / cfg.decay_steps
+        return (f"{warmup}, constant, then linear decay over the last {share:.0%} "
+                f"(from step {start:,} to {cfg.decay_steps:,} optimizer steps).")
+    return f"{warmup}, cosine to {cfg.decay_steps:,} optimizer steps."
 
 
 def val_cadence(runlog, cfg):
@@ -417,7 +434,7 @@ def val_cadence(runlog, cfg):
     if cfg.recorded("VAL_EVERY_OPT_STEPS"):
         return cfg.value("VAL_EVERY_OPT_STEPS", None, int), "recorded"
     steps, _ = runlog.val_readings()
-    if len(steps) < 2:
+    if len(steps) <= 1:
         return None, None
     return int(round((steps[-1] - steps[0]) / (len(steps) - 1))), "observed"
 
@@ -487,13 +504,8 @@ def _param_count(cfg):
     try:
         from instruments.model_stats import total_params
 
-        shape = {"dim": cfg.latent_dim, "vocab_size": cfg.vocab_size,
-                 "max_seq_len": cfg.max_seq_len}
-        if cfg.arch == "plain":
-            shape["num_layers"] = cfg.layers
-        else:
-            shape["max_depth"] = cfg.max_depth
-        return int(total_params(cfg.arch, **shape))
+        return int(total_params(dim=cfg.latent_dim, vocab_size=cfg.vocab_size,
+                                max_seq_len=cfg.max_seq_len, num_layers=cfg.layers))
     except Exception:
         return None
 
@@ -540,8 +552,9 @@ def training_curve(runlog, outdir):
         ax.plot(val_tokens, val_ce, color=ORANGE, linewidth=1.8, marker="o",
                 markersize=3, label="held-out val CE")
     # The other corpora's held-out CE (#363), thinner: the cost side of the mixture.
+    # Cycled, so a run probing more or fewer corpora than today's two still plots each.
     for (source, (steps, values)), colour in zip(sorted(runlog.val_by_source().items()),
-                                                 (AQUA, INK_DIM)):
+                                                 itertools.cycle((AQUA, INK_DIM))):
         src_tokens, src_ce = _clean(steps, values)
         ax.plot(src_tokens * tokens_per_step, src_ce, color=colour, linewidth=1.2,
                 linestyle="--", marker="o", markersize=2.5, label=f"held-out {source}")
@@ -636,14 +649,14 @@ def clock_samples(runlog, min_spacing_s=THROUGHPUT_SPACING_S):
     older than the column fall back to supervisor heartbeats, which are sampled.
     """
     stamped = [(row["wall_clock"], row["step"]) for row in runlog.metrics if row.get("wall_clock")]
-    if len(stamped) >= 2:
+    if len(stamped) > 1:
         thinned = [stamped[0]]
         for stamp, step in stamped[1:]:
             if (stamp - thinned[-1][0]).total_seconds() >= min_spacing_s:
                 thinned.append((stamp, step))
         if thinned[-1] != stamped[-1]:
             thinned.append(stamped[-1])
-        if len(thinned) >= 2:
+        if len(thinned) > 1:
             return thinned, "metrics"
     return read_heartbeats(runlog), "heartbeats"
 
@@ -654,7 +667,7 @@ def throughput(runlog, outdir):
     measured = source == "metrics"
     tokens_per_step = cfg.tokens_per_opt_step
 
-    if len(beats) < 2:
+    if len(beats) <= 1:
         print("throughput: no wall_clock in metrics.csv and fewer than two supervisor "
               "heartbeats — skipped (throughput needs a clock).")
         return None
@@ -669,7 +682,7 @@ def throughput(runlog, outdir):
     # authority on how far the run got. The incident: tests/apparatus/test_plots_throughput.py (#223).
     last_beat_step = int(steps[-1])
     coverage = last_beat_step / runlog.last_step if runlog.last_step else 0.0
-    stale = coverage < 0.98
+    stale = coverage < STALE_HEARTBEAT_COVERAGE
 
     rate, rate_hours, dropped, cadence = usable_intervals(hours, tokens)
     if rate.size == 0:
@@ -752,24 +765,6 @@ def _panel_grad_norm(ax, runlog, cfg):
               "these two numbers are not comparable, so do not read this against the 1.0 clip (#180).")
 
 
-def _panel_depth(ax, runlog, cfg):
-    """Only for an architecture that HAS a depth (see `not_applicable`): the
-    refiner loops its shared block, the reasoner scans, and the realised mean of
-    the draw is worth a check. The plain stack takes the same argument and drops
-    it, so there the panel is the sampler's dice roll and nothing else."""
-    tokens, values = series(runlog, "depth_avg", cfg)
-    expected = (1 + cfg.max_depth) / 2
-    ax.plot(tokens, values, color=AQUA, alpha=0.25, linewidth=1.0)
-    ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=AQUA, linewidth=1.8)
-    ax.axhline(expected, color=INK_DIM, linewidth=0.9, alpha=0.6)
-    ax.text(tokens[-1] if len(tokens) else 0, expected, f"uniform mean {expected:.1f} ",
-            fontsize=8, color=INK_DIM, va="bottom", ha="right")
-    ax.set_ylabel("mean sampled depth")
-    ax.set_title(f"Sampled reasoning depth (of ≤{cfg.max_depth})", loc="left")
-    _note(ax, "depth is drawn uniformly per micro-step; this is the sampler's realised mean, "
-              "a check that the draw is unbiased — not something the model learns.")
-
-
 def arena_limit_mib(runlog):
     """(limit, recorded): the run's own logged `arena_limit_mib` when it has one, else
     the RTX 2060 measurement, flagged as assumed so the panel can say so."""
@@ -796,39 +791,54 @@ def _panel_logits(ax, runlog, cfg):
               "falling toward 0 with |logit| climbing is the confident-collapse shape to watch for.")
 
 
+def _panel_act_max(ax, runlog, cfg):
+    """Peak |activation| in the residual stream, against the two lines it can cross.
+
+    A margin like `margin_report`'s two, and drawn rather than stated for the one
+    reason they are not: it is not flat. It climbs through training, so the slope is
+    the reading and the final number alone is the post-mortem — the 4B champion
+    finished at 65,120 of 65,504 and nobody knew until two weeks after the run ended
+    (#235). #368 watches this live; this is the same number after the fact.
+
+    Three series, which is the palette's limit: the trace, the supervisor's alarm,
+    and the dtype's ceiling.
+    """
+    tokens, values = series(runlog, "act_max", cfg)
+    ax.plot(tokens, values, color=BLUE, alpha=0.22, linewidth=1.0)
+    ax.plot(tokens, smooth(values, smoothing_window(len(values))), color=BLUE,
+            linewidth=1.8, label="max |z|")
+    ax.axhline(CONFIG.ACT_MAX_ALARM, color=ORANGE, linewidth=1.2, linestyle="--",
+               label=f"alarm at {CONFIG.ACT_MAX_ALARM:,.0f}")
+    ax.axhline(F16_MAX, color=AQUA, linewidth=1.2, linestyle="--",
+               label=f"f16 ceiling {F16_MAX:,.0f}")
+    _log_y(ax)
+    ax.set_ylabel("max |activation|")
+    peak = float(np.max(values)) if len(values) else 0.0
+    # The headroom goes in the TITLE because a healthy run is a flat trace decades
+    # below both lines: without a number the panel reads as "nothing here" whether
+    # the peak is 55 or 55,000.
+    ax.set_title(f"Activation headroom — peak {peak:,.0f}, {peak / F16_MAX:.2%} of the f16 ceiling",
+                 loc="left")
+    _legend(ax, loc="best", fontsize=8)
+    _note(ax, "the ceiling is fixed by the dtype, so a healthy run sits decades under it and this "
+              "panel is meant to look empty. What is worth reading is the slope, not the level.")
+
+
 HEALTH_CHARTS = (
     ("grad_norm", ("grad_norm_avg", "applied_grad_norm"), _panel_grad_norm, "grad_norm.png"),
-    ("depth", ("depth_avg",), _panel_depth, "depth.png"),
+    ("act_max", ("act_max",), _panel_act_max, "act_max.png"),
     ("logits", ("out_entropy", "logz_mean", "max_abs_logit"), _panel_logits, "logits.png"),
 )
 
 
-def not_applicable(key, cfg):
-    """Why this run's ARCHITECTURE makes a panel meaningless, whatever the CSV
-    holds — the second way a panel can be wrong to draw, beside missing data.
-
-    `depth_avg` measures something only for the depth-dialled arches (refiner,
-    reasoner). Plain runs before #316 logged a sampled depth_avg that `PlainTransformer`
-    took and ignored (trm/model/plain.py), so on such a run the panel plots the dice,
-    not the model (#305); from #316 on, plain leaves it blank. Either way the panel is
-    refused for plain. Only a run that *recorded* its arch is judged here — for one that
-    did not, drawing is the lesser error.
-    """
-    if key == "depth" and cfg.recorded("MODEL_ARCH") and cfg.arch == "plain":
-        return ("PlainTransformer ignores the depth argument — this column is the "
-                "sampler's own draw, not a property of the model")
-    return None
-
-
 def health_charts(runlog, outdir):
-    """One image per chart, each conditional on its data. A run of an
-    architecture that does not produce one of these quantities simply gets fewer
-    images — never an axis of zeros standing in for a measurement that never
+    """One image per chart, each conditional on its data. A run that did not
+    log one of these quantities simply gets fewer images — never an axis of zeros standing in for a measurement that never
     happened. What was left out, and why, is said out loud."""
     cfg = RunConfig.of(runlog)
     written = []
     for key, columns, draw, name in HEALTH_CHARTS:
-        reason = not_applicable(key, cfg) or why_omitted(runlog, columns)
+        reason = why_omitted(runlog, columns)
         if reason:
             print(f"{name[:-4]}: omitted — {reason}.")
             continue
@@ -847,8 +857,7 @@ def block_heatmaps(runlog, outdir):
     when the run wrote no blocks.csv."""
     readings = runlog.blocks()
     if readings is None:
-        print("blocks: omitted — this run wrote no blocks.csv (before #392, or an arch "
-              "that does not report per-block readings).")
+        print("blocks: omitted — this run wrote no blocks.csv (a run before #392).")
         return []
     from matplotlib.colors import LogNorm
 
@@ -941,7 +950,7 @@ def main():
     try:
         build(log=args.log, outdir=args.out)
     except FileNotFoundError as missing:
-        raise SystemExit(str(missing))
+        raise SystemExit(str(missing)) from None
 
 
 if __name__ == "__main__":

@@ -4,7 +4,17 @@ Every failure these warn of was visible in real time on the champion and nobody 
 watching: activations at 65,120 of f16's 65,504 (#235), a loss scale pinned at 1
 while the backward overflowed anyway (#199)."""
 
-from trm.runtime.supervisor import margin_alarms, margin_changes
+from trm.runtime.supervisor import margin_alarms as margin_alarms_against
+from trm.runtime.supervisor import margin_changes
+from trm.settings import Config
+
+DEFAULTS = Config.from_env({})
+
+
+def margin_alarms(row):
+    """The alarms at today's bars."""
+    return margin_alarms_against(DEFAULTS, row)
+
 
 HEALTHY = {"act_max": "45.2", "loss_scale": "131072", "applied_zero_frac_dense_max": "0.000030",
            "arena_peak_mib": "4058", "arena_limit_mib": "4883"}
@@ -41,3 +51,13 @@ def test_an_alarm_is_announced_once_when_it_appears_and_once_when_it_clears():
 
     cleared = margin_changes(raised, margin_alarms(HEALTHY))
     assert len(cleared) == 1 and cleared[0].startswith("margin cleared: act_max")
+
+
+def test_with_a_branch_column_the_alarm_reads_the_branches_and_not_an_f32_stream():
+    """#536: once the stream is f32 (#357) it cannot overflow at 65,504; each branch's
+    f16 output can. An older run with no branch column is still read on its stream."""
+    assert kinds({**HEALTHY, "branch_max": "20000"}) == ["branch_max"]
+    assert kinds({**HEALTHY, "branch_max": "300", "act_max": "20000"}) == [], "an f32 stream is not an f16 margin"
+    f16_stream = Config.from_env({"RESIDUAL_DTYPE": "float16"})
+    assert [k for k, _ in margin_alarms_against(f16_stream, {**HEALTHY, "branch_max": "300", "act_max": "20000"})] \
+        == ["act_max"], "an f16 stream is still watched"

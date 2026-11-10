@@ -5,7 +5,7 @@ referee. This is the other half — the thing that actually executes the sweep t
 spec describes, so the numbers the referee judges are the numbers the spec asked
 for, and nobody hand-copies a table into a criterion.
 
-    python -m instruments.experiment experiments/depth/specs/077-per-pass-supervision.toml
+    python -m instruments.experiment experiments/recipe/specs/287-peak-lr-pair.toml
 
 What it does, in order:
 
@@ -32,21 +32,32 @@ whichever `experiments/` folder gets tombstoned next.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
+import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 
+from instruments import pair_report
 from instruments import results as result_lines
 from instruments._common import REPO_ROOT, module_env
+from instruments.spec_file import LegTable, SpecFile
 from instruments.verdict import (
-    Spec, evaluate, load_recorded_results, load_spec, mean_sigma,
+    Spec,
+    evaluate,
+    load_recorded_results,
+    load_spec,
+    mean_sigma,
 )
+from trm.runtime.gpu_lock import GpuLock, Preflight, exit_on_sigterm
+from trm.runtime.oom import rerun_protected
 
 # What each headline number is, and how it was obtained (#175): measured | sampled | estimated | cumulative.
 REPORTS = {}  # runs harnesses and records their RESULT lines; the numbers belong to the harness and verdict.py
@@ -59,10 +70,10 @@ GATE_COMMAND = (sys.executable, "-m", "pytest", "tests/core", "-q", "-x")
 class Leg:
     """One pass of the sweep: a set of flags, the arms it runs, the seeds it uses.
 
-    Legs exist because real experiments here have more than one. #86 trained at
-    depths 1–8 and then ran a *second* command — depth 8, a longer eval sequence,
-    extra eval depths — to measure extrapolation past the cap. #77 ran three
-    seeds, then pre-registered an extension to six for one arm only. A runner
+    Legs exist because real experiments here have more than one. #86 ran its
+    sweep and then a *second* command, with different flags, to measure
+    extrapolation past the cap it trained at. #77 ran three seeds, then
+    pre-registered an extension to six for one arm only. A runner
     that could express neither would have been a runner for experiments we do not
     do, so the same retrofit that falsified the spec format falsified this too.
 
@@ -109,24 +120,18 @@ class Execution:
 
 
 def load_execution(spec: Spec) -> Execution:
-    """Read the `[execution]`, `[arms.*]` and `[protocol]` keys the runner needs.
+    """The `[execution]`, `[arms.*]` and `[protocol]` keys the runner needs, typed by
+    instruments/spec_file.py and checked against each other here.
 
     Validated up front and loudly: a spec whose command is missing must fail
     before the gate runs, not two hours into a sweep.
     """
-    ex = spec.meta.get("execution")
-    if not ex:
+    file = spec.file
+    ex = file.execution if file is not None else None
+    if file is None or ex is None:
         raise ValueError(
             f"spec {spec.id} has no [execution] section — it can be judged but not run")
-    if "command" not in ex:
-        raise ValueError(f"spec {spec.id}: [execution] is missing 'command'")
-
-    if isinstance(ex["command"], str):
-        raise ValueError(
-            f"spec {spec.id}: [execution] command must be a LIST of arguments, not a "
-            f'string. Write ["python", "-m", "pkg.mod", "--flag", "value"], because a '
-            f"string here would be iterated character by character.")
-    command = tuple(str(part) for part in ex["command"])
+    command = ex.command
     if not command:
         raise ValueError(f"spec {spec.id}: [execution] command is empty")
     if command[0] in ("python", "python3"):
@@ -137,7 +142,6 @@ def load_execution(spec: Spec) -> Execution:
         # venv path into a committed spec, which is worse.
         command = (sys.executable, *command[1:])
 
-    all_arms = spec.meta.get("arms", {})
     # An arm marked `constant = true` is NOT run: its values are supplied in the
     # spec's [results] as a Summary. This exists because the referee can otherwise
     # only express RELATIVE comparisons, and some questions need an absolute floor --
@@ -145,47 +149,37 @@ def load_execution(spec: Spec) -> Execution:
     # and without a floor that reads as parity rather than as a null result. Declaring
     # it explicitly (rather than inferring "no flags means constant") keeps the
     # typo check below honest: a misspelled arm name still fails loudly.
-    arm_flags = {name: tuple(str(f) for f in body.get("flags", ()))
-                 for name, body in all_arms.items() if not body.get("constant")}
+    arm_flags = {name: arm.flags for name, arm in file.runnable_arms().items()}
     if not arm_flags:
         raise ValueError(f"spec {spec.id}: no runnable [arms.*] — every arm is constant")
 
     named = {c.treatment for c in spec.criteria.values()} | {c.control for c in spec.criteria.values()}
-    missing = sorted(named - set(all_arms))
+    missing = sorted(named - set(file.arms))
     if missing:
         raise ValueError(
             f"spec {spec.id}: criteria compare arms that no [arms.*] section defines: {missing}")
 
-    metric = spec.meta.get("protocol", {}).get("metric_key")
+    metric = file.protocol.metric_key
     if not metric:
         raise ValueError(
             f"spec {spec.id}: [protocol] needs metric_key — which number in the "
             f"harness's RESULT line the criteria are about")
 
-    default_seeds = tuple(int(s) for s in ex.get("seeds", ()))
-    raw_legs = ex.get("legs") or {"": {}}
     legs = []
-    for name, body in raw_legs.items():
-        seeds = tuple(int(s) for s in body.get("seeds", default_seeds))
+    for name, body in (ex.legs or {"": LegTable()}).items():
+        seeds = body.seeds if body.seeds is not None else ex.seeds
         if not seeds:
             raise ValueError(
                 f"spec {spec.id}: leg {name or '(unnamed)'!r} has no seeds, and "
                 f"[execution] declares no default 'seeds'")
-        arms = tuple(body.get("arms", tuple(arm_flags)))
+        arms = body.arms if body.arms is not None else tuple(arm_flags)
         unknown = sorted(set(arms) - set(arm_flags))
         if unknown:
             raise ValueError(f"spec {spec.id}: leg {name!r} names undefined arms: {unknown}")
-        legs.append(Leg(name=str(name), flags=tuple(str(f) for f in body.get("flags", ())),
-                        seeds=seeds, arms=arms))
+        legs.append(Leg(name=name, flags=body.flags, seeds=seeds, arms=arms))
 
-    return Execution(
-        command=command,
-        seed_flag=str(ex.get("seed_flag", "--seed")),
-        env={str(k): str(v) for k, v in ex.get("env", {}).items()},
-        arm_flags=arm_flags,
-        legs=tuple(legs),
-        metric=str(metric),
-    )
+    return Execution(command=command, seed_flag=ex.seed_flag, env=dict(ex.env), arm_flags=arm_flags,
+                     legs=tuple(legs), metric=metric)
 
 
 # --- the journal --------------------------------------------------------------
@@ -222,13 +216,42 @@ def run_gate(cwd: pathlib.Path) -> None:
             f"gate failed (exit {proc.returncode}) — fix the tree before spending a sweep on it")
 
 
+# How long an arm gets to exit after SIGTERM, then after SIGKILL, when the runner
+# is going down under it (#519).
+STOP_GRACE_SECONDS = 60.0
+KILL_WAIT_SECONDS = 30.0
+
+
+def stop_arm(proc: subprocess.Popen) -> bool:
+    """TERM, then KILL; whether the arm is gone. The grace is the trainer's, to
+    finish a checkpoint write (`exit_cleanly_on_sigterm`)."""
+    if proc.poll() is not None:
+        return True
+    proc.terminate()
+    try:
+        proc.wait(timeout=STOP_GRACE_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    try:
+        proc.wait(timeout=KILL_WAIT_SECONDS)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
-            cwd: pathlib.Path) -> list[dict]:
+            cwd: pathlib.Path, card: GpuLock | None = None) -> list[dict]:
     """Launch one (leg, arm, seed) and return its measurements as journal rows.
 
     Harness stdout is streamed through to the terminal as well as captured: a
     sweep is long, and a runner that swallows its output leaves you watching a
     blank screen for an hour wondering whether it hung.
+
+    The arm is named in `card`, the lock this runner holds, so a runner killed
+    outright leaves a lock its orphaned arm still holds; and whatever ends the
+    runner under a live arm (SIGTERM, Ctrl-C, a bug) stops the arm first, or
+    leaves it the lock if it will not stop (#519, as the supervisor does since #516).
     """
     argv = execution.argv(leg, arm, seed)
     env = module_env(cwd, **execution.env)
@@ -236,12 +259,22 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
     started = time.time()
     captured: list[str] = []
-    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in proc.stdout:
-        captured.append(line)
-        sys.stdout.write(line)
-    proc.wait()
+    proc = None
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        if card is not None:
+            card.name_child(proc.pid)
+        for line in proc.stdout:
+            captured.append(line)
+            sys.stdout.write(line)
+        proc.wait()
+    except BaseException:
+        if proc is not None and not stop_arm(proc) and card is not None:
+            print(f"⚠ pid {proc.pid} is still alive after SIGKILL; the GPU lock is left to it",
+                  file=sys.stderr, flush=True)
+            card.leave_to(proc.pid)
+        raise
     elapsed = time.time() - started
 
     if proc.returncode != 0:
@@ -261,7 +294,7 @@ def run_one(execution: Execution, leg: Leg, arm: str, seed: int,
 
 
 def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
-          resume: bool = True) -> list[dict]:
+          resume: bool = True, card: GpuLock | None = None) -> list[dict]:
     """Run everything the spec asks for, skipping what the journal already has."""
     path = journal_path(spec.id)
     done = read_journal(path) if resume else []
@@ -273,7 +306,7 @@ def sweep(spec: Spec, execution: Execution, *, cwd: pathlib.Path = REPO_ROOT,
         if key in already:
             print(f"skip: {leg.name or 'run'} {arm} seed {seed} (already in journal)", flush=True)
             continue
-        fresh = run_one(execution, leg, arm, seed, cwd)
+        fresh = run_one(execution, leg, arm, seed, cwd, card)
         append_journal(path, fresh)
         rows.extend(fresh)
     return rows
@@ -290,7 +323,7 @@ def collect(rows: list[dict], metric: str) -> dict[str, dict[str, list[float]]]:
         if metric not in row:
             raise KeyError(
                 f"{row['arm']} seed {row['seed']} at point {row['point']}: no {metric!r} "
-                f"in its RESULT line (has {sorted(k for k in row if k not in ('arm', 'seed', 'fingerprint', 'elapsed_s', 'point'))})")
+                f"in its RESULT line (has {sorted(k for k in row if k not in ('arm', 'seed', 'fingerprint', 'elapsed_s', 'point', 'run_dir'))})")
         grouped.setdefault(row["point"], {}).setdefault(row["arm"], {})[row["seed"]] = float(row[metric])
     return {point: {arm: [v for _, v in sorted(by_seed.items())] for arm, by_seed in sorted(arms.items())}
             for point, arms in sorted(grouped.items())}
@@ -336,8 +369,7 @@ def merge_constants(spec, results, spec_path):
     handed results with no floor arm at all, failing with "point has no arm
     'chance'" only after every run had completed.
     """
-    constants = {name for name, body in (spec.meta.get("arms") or {}).items()
-                 if body.get("constant")}
+    constants = spec.file.constant_arms() if spec.file is not None else set()
     if not constants:
         return results
     # Parsed, not raw: verdict.py needs a Summary object, and the raw TOML table
@@ -365,8 +397,7 @@ def record_results(spec_path: pathlib.Path, results, metric: str, *, force: bool
     18 runs completed and were then dropped on the floor.
     """
     text = spec_path.read_text()
-    constants = {name for name, body in (load_spec(spec_path).meta.get("arms") or {}).items()
-                 if body.get("constant")}
+    constants = SpecFile.load(spec_path).constant_arms()
     measured = re.findall(r"^\s*([A-Za-z_][\w-]*)\s*=", text[text.index("[results."):], re.M) \
         if "[results." in text else []
     if measured and set(measured) - constants and not force:
@@ -407,7 +438,7 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
         "## Protocol",
         "",
         f"- command: `{' '.join(execution.command)}`",
-        f"- metric: {spec.meta.get('protocol', {}).get('metric', execution.metric)}",
+        f"- metric: {spec.file.protocol.metric if spec.file is not None else execution.metric}",
         "",
         "| leg | flags | arms | seeds |",
         "|---|---|---|---|",
@@ -435,7 +466,7 @@ def draft_finding(spec: Spec, execution: Execution, results, verdict, today: str
     lines += ["## Criteria", "", "| criterion | rule | comparison | separation | met |", "|---|---|---|---|---|"]
     for c in verdict.criteria:
         crit = c.criterion
-        detail = ", ".join(f"{p.point} {p.sigmas:+.2f}σ" for p in c.points)
+        detail = ", ".join(p.describe() for p in c.points)
         lines.append(f"| {crit.name} | {crit.rule} {crit.sigmas}σ ({crit.require}) | "
                      f"{crit.treatment} vs {crit.control} | {detail} | {'yes' if c.holds else 'NO'} |")
 
@@ -513,6 +544,13 @@ treatment = "treatment"
 control = "control"
 sigmas = 2.0
 
+# A parity / no-harm claim is rule = "equivalent": the gap's 90% interval inside
+# +/- sigmas * sigma_pooled (a TOST). It costs seeds: at a 2-sigma margin, three
+# a side show parity only for a gap under ~0.26 sigma, eight for one under ~1.1.
+# "within" passes whenever no difference was seen, which three seeds rarely can (#599).
+# Prefer an absolute margin in the metric's units (sigmas = 0.0, margin = 0.01), and
+# a [stages] table can stop a parity pair at its first look (#604; the spec doc).
+
 [verdict]
 keep_if = ["treatment_wins"]
 kill_if = ["treatment_loses"]
@@ -548,6 +586,9 @@ def main(argv=None) -> int:
                     help="ignore the journal and re-run every (arm, seed)")
     ap.add_argument("--force", action="store_true",
                     help="overwrite results already recorded in the spec file")
+    ap.add_argument("--no-gpu-lock", action="store_true",
+                    help="run the sweep without taking the card's lock — for a spec whose "
+                         "arms never touch the GPU. Anything that trains must take it")
     ap.add_argument("--new", action="store_true",
                     help="write a pre-registration skeleton at SPEC and stop, with the "
                          "runner's two blocking traps already avoided (command as a "
@@ -567,18 +608,40 @@ def main(argv=None) -> int:
     if args.dry_run:
         for leg, arm, seed in planned:
             print(f"$ {' '.join(execution.argv(leg, arm, seed))}")
+        holder = GpuLock().live_holder()
+        if holder:
+            print(f"\n(the card is currently claimed by pid {holder[0]} "
+                  f"{holder[1] or 'unlabelled'})")
         return 0
 
     if not args.no_gate:
         run_gate(REPO_ROOT)
 
-    rows = sweep(spec, execution, resume=not args.no_resume)
+    # The card is a serial queue and this runner is most of what goes on it, so it
+    # has to queue like everything else (#445). Taken after the gate, not before:
+    # a gate that fails never wanted the card, and holding it through a few minutes
+    # of CPU tests would idle the card for a run that is not going to happen.
+    card = None if args.no_gpu_lock else GpuLock(label=spec.id)
+    previous_sigterm = exit_on_sigterm()  # so a TERM unwinds through run_one and the `with` (#519)
+    try:
+        with card or contextlib.nullcontext():
+            rows = sweep(spec, execution, resume=not args.no_resume, card=card)
+    except Preflight as exc:
+        print(f"❌ {exc}")
+        print("   wait for it, or pass --no-gpu-lock if this spec never touches the card")
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm or signal.SIG_DFL)  # None: one installed from C
     results = merge_constants(spec, collect(rows, execution.metric), args.spec)
     record_results(args.spec, results, execution.metric, force=args.force)
 
     verdict = evaluate(spec, results)
     print()
     print(verdict.describe())
+    # The rest of the story beside the bar's one number (#564): the curve, the seeds, the margins.
+    if report := pair_report.render(spec, rows, RUNS_DIR.parent):
+        print()
+        print(report)
 
     today = datetime.date.today().isoformat()
     draft = RUNS_DIR / spec.id / "finding-draft.md"
@@ -590,5 +653,19 @@ def main(argv=None) -> int:
     return 0
 
 
+def cli() -> int:
+    """The command line. Arms started from a Claude shell inherit oom_score_adj 200 and
+    are the kernel's first OOM victim (#524), so a sweep first reruns itself under the
+    user manager at 100. Here and not in main(), which tests call in-process: a rerun
+    there would escape their fixtures onto the real card lock and runs/."""
+    argv = sys.argv[1:]
+    if not {"--dry-run", "--new", "-h", "--help"} & set(argv):
+        rerun = rerun_protected([sys.executable, "-m", "instruments.experiment", *argv],
+                                dict(os.environ), pathlib.Path.cwd(), label="experiment")
+        if rerun is not None:
+            return rerun
+    return main(argv)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

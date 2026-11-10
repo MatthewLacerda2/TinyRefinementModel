@@ -1,0 +1,289 @@
+"""The prefill's near-dedup pass (#486), end to end on a fake stream: copies never reach
+a chunk, the manifest says what was removed, a resume keeps the index, and a folder is
+only continued the way it was started, so `--dedup` cannot write into runs/data/.
+No network and no tokenizer download: the stream, the tokenizer and the pool are fakes."""
+
+import glob
+import json
+import os
+import pathlib
+import queue
+import threading
+
+import numpy as np
+import pytest
+
+import trm.data.prefill as prefill
+from trm.data.dedup import DedupParams
+from trm.settings import Config
+
+PARAMS = DedupParams.of(Config())
+STRIDE = 9
+EOT = 50256
+
+
+class FakeStream:
+    def __init__(self, items, start=0):
+        self.items, self.start = items, start
+
+    def __iter__(self):
+        return iter(self.items[self.start:])
+
+    def skip(self, n):
+        return FakeStream(self.items, self.start + n)
+
+
+class InlinePool:
+    map = staticmethod(lambda fn, xs: list(map(fn, xs)))
+
+
+def fake_tokens(text):
+    """One id per word (its index in the vocabulary below), then the separator."""
+    return [int(word[1:]) for word in text.split()] + [EOT]
+
+
+@pytest.fixture
+def prefill_into(tmp_path, monkeypatch):
+    monkeypatch.setattr(prefill, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(prefill, "TOKENIZE_BATCH_ITEMS", 16)
+    monkeypatch.setattr(prefill, "TOKENS_PER_FILE", 3000)
+    monkeypatch.setattr(prefill, "tokenize_batch_parallel", fake_tokens)
+
+    def run(items, params=PARAMS, target=10**9, path="fake/code"):
+        monkeypatch.setattr(prefill, "load_dataset", lambda *a, **k: FakeStream(items))
+        cfg = {"path": path, "target_tokens": target, "folder": "pretrain", "alias": "code"}
+        prefill.process_dataset(InlinePool(), cfg, STRIDE, params)
+        folder = tmp_path / "pretrain" / "code"
+        with open(folder / "status.json") as f:
+            return folder, json.load(f)
+    return run
+
+
+def documents(seed, n, words=120):
+    rng = np.random.default_rng(seed)
+    return [" ".join(f"w{i}" for i in rng.integers(0, 5000, size=words)) for _ in range(n)]
+
+
+def near_copy(text):
+    words = text.split()
+    words[len(words) // 2] = "w4999"
+    return " ".join(words)
+
+
+def test_copies_never_reach_a_chunk_and_the_manifest_says_so(prefill_into):
+    originals = documents(0, 80)
+    copies = originals[:20] + [near_copy(t) for t in originals[20:40]]
+    # Empty records are read from the stream but are not documents: the resume offset
+    # must count them, or a resume re-reads what it already wrote.
+    items = [{"content": t} for t in originals] + [{"content": ""}] * 5 + [{"content": t} for t in copies]
+    folder, status = prefill_into(items)
+
+    chunks = [np.load(f) for f in sorted(glob.glob(str(folder / "chunk_*.npy")))]
+    assert {c.dtype for c in chunks} == {np.dtype(np.uint16)}, "r50k ids fit in half of int32's disk"
+    written = np.concatenate(chunks)
+    assert written.max() == EOT, "the cast kept the largest id intact"
+    kept_tokens = sum(len(fake_tokens(t)) for t in originals)
+    assert kept_tokens - STRIDE < written.size <= kept_tokens, "only the originals were tokenized"
+    assert status["items_processed"] == 80 and status["stream_offset"] == len(items)
+    dedup = status["dedup"]
+    assert {k: dedup[k] for k in PARAMS.record()} == PARAMS.record()
+    assert (dedup["docs_seen"], dedup["docs_dropped"]) == (120, 40)
+    assert dedup["doc_removal_rate"] == pytest.approx(1 / 3)
+    assert sorted(os.listdir(folder)) == sorted(
+        [os.path.basename(f) for f in glob.glob(str(folder / "chunk_*.npy"))] + ["dedup_index.npz", "status.json"]), \
+        "the loaders read every .npy in a bucket as tokens: the index must not be one"
+
+
+def test_a_resume_remembers_what_it_kept(prefill_into):
+    first, later = documents(1, 60), documents(2, 30)
+    items = [{"content": t} for t in first + [near_copy(t) for t in first[:15]] + later]
+    _, stopped = prefill_into(items, target=3000)
+    assert stopped["stream_offset"] < 60, "the first run stopped at its target, mid-stream"
+
+    _, finished = prefill_into(items)
+    assert finished["stream_offset"] == len(items)
+    assert finished["dedup"]["docs_dropped"] == 15, "copies of documents kept before the stop still go"
+    assert finished["items_processed"] == 90
+
+
+def test_a_folder_is_only_continued_the_way_it_was_started(prefill_into):
+    items = [{"content": t} for t in documents(3, 40)]
+    prefill_into(items, params=None, target=1000)
+    with pytest.raises(SystemExit, match="point DATA_ROOT at a new folder"):
+        prefill_into(items)
+
+
+def test_a_deduped_folder_is_not_continued_without_dedup(prefill_into):
+    items = [{"content": t} for t in documents(4, 40)]
+    prefill_into(items, target=1000)
+    with pytest.raises(SystemExit, match="point DATA_ROOT at a new folder"):
+        prefill_into(items, params=None)
+    other = DedupParams.of(Config(DEDUP_SEED=7))
+    with pytest.raises(SystemExit, match="point DATA_ROOT at a new folder"):
+        prefill_into(items, params=other)
+
+
+def test_a_legacy_status_is_a_corpus_written_without_dedup(prefill_into, tmp_path):
+    """runs/data/'s folders carry a status.json from before #486: no dedup key, no
+    stream_offset. `--dedup` must refuse them."""
+    folder = tmp_path / "pretrain" / "code"
+    folder.mkdir(parents=True)
+    (folder / "status.json").write_text(json.dumps({"file_idx": 32, "total_tokens": 4_000_000_000,
+                                                    "items_processed": 1_234_567}))
+    with pytest.raises(SystemExit, match="dedup=None"):
+        prefill_into([])
+    assert prefill.load_progress(str(folder), "code") == (32, 4_000_000_000, 1_234_567, 1_234_567)
+
+
+def test_shard_order_is_a_seeded_permutation_whatever_the_listing_order():
+    """A `shard_seed` source reads its files in one fixed permutation (#591): the same for
+    the same seed whatever order the hub lists them in, so a resume's offset lands on the
+    same record, and not the repo's own order, which runs by dump."""
+    files = [f"fineweb-edu-dedup/train-{i:05d}-of-00234.parquet" for i in range(234)]
+    order = prefill.shard_order(files, seed=0)
+    assert sorted(order) == files
+    assert order == prefill.shard_order(list(reversed(files)), seed=0)
+    assert order != files
+    assert order != prefill.shard_order(files, seed=1)
+
+
+def test_parquet_shards_skip_lands_where_reading_through_would(tmp_path, monkeypatch):
+    """ParquetShards (#591) skips by the footers' row counts, across files and row
+    groups, and must land on the record a plain read-through reaches."""
+    pa, pq = pytest.importorskip("pyarrow"), pytest.importorskip("pyarrow.parquet")
+    from fsspec.implementations.local import LocalFileSystem
+    monkeypatch.setattr(prefill, "HfFileSystem", LocalFileSystem)
+    texts = [f"doc{i}" for i in range(23)]
+    paths = []
+    for k, part in enumerate((texts[:10], texts[10:11], texts[11:])):
+        paths.append(str(tmp_path / f"shard{k}.parquet"))
+        pq.write_table(pa.table({"text": part, "id": list(range(len(part)))}), paths[-1], row_group_size=3)
+    shards = prefill.ParquetShards(paths)
+    assert [r["text"] for r in shards] == texts
+    for offset in (0, 2, 3, 9, 10, 11, 12, 22, 23):
+        assert [r["text"] for r in shards.skip(offset)] == texts[offset:]
+    assert [r["text"] for r in shards.skip(4).skip(5)] == texts[9:]
+
+
+def test_a_failed_reconnect_retries_from_the_offset_and_rereads_nothing(monkeypatch):
+    """The stream drops after two records, the next open fails, the one after works:
+    every record arrives once, under its own offset."""
+    records = [{"text": f"record {i}"} for i in range(4)]
+
+    class Stream:
+        def __init__(self, offset=0, drop_after=None):
+            self.offset, self.drop_after = offset, drop_after
+
+        def skip(self, n):
+            return Stream(self.offset + n, self.drop_after)
+
+        def __iter__(self):
+            for i, record in enumerate(records[self.offset:]):
+                if i == self.drop_after:
+                    raise ConnectionError("dropped")
+                yield record
+
+    opens = iter([Stream(drop_after=2), ConnectionError("no route"), Stream()])
+
+    def open_source(_cfg, _paths):
+        opened = next(opens)
+        if isinstance(opened, Exception):
+            raise opened
+        return opened
+
+    monkeypatch.setattr(prefill, "open_source", open_source)
+    monkeypatch.setattr(prefill.time, "sleep", lambda _s: None)
+    out = queue.Queue()
+    prefill.stream_with_retries({}, None, "web", 0, out, threading.Event())
+    received = list(iter(out.get, None))
+    assert received == [(i + 1, f"record {i}") for i in range(4)]
+
+
+def test_a_folder_is_only_continued_from_the_source_that_started_it(prefill_into):
+    """#606: an old finemath-4plus folder met a 3plus target and was skipped as completed."""
+    items = [{"content": t} for t in documents(5, 40)]
+    _, status = prefill_into(items, target=1000)
+    assert status["source"] == {"path": "fake/code", "config": None, "split": "train", "shard_seed": None,
+                                "swh_blobs": None}
+    with pytest.raises(SystemExit, match="only continued from the source that started it"):
+        prefill_into(items, path="fake/other-code")
+
+
+def test_a_status_without_a_source_record_still_resumes(prefill_into, capsys):
+    items = [{"content": t} for t in documents(6, 60)]
+    folder, _ = prefill_into(items, target=1000)
+    status = json.loads((folder / "status.json").read_text())
+    del status["source"]
+    (folder / "status.json").write_text(json.dumps(status))
+    _, resumed = prefill_into(items)
+    assert "predates the source record" in capsys.readouterr().out
+    assert resumed["source"]["path"] == "fake/code", "and records it from then on"
+
+
+def test_a_resume_that_reads_its_stream_again_is_stopped(prefill_into, monkeypatch):
+    """#521's failure, under dedup: a resume offset that lands short re-reads what the
+    folder holds. Nothing re-read is written; the prefill stops and says why."""
+    monkeypatch.setattr(prefill, "REREAD_MIN_DOCS", 20)
+    items = [{"content": t} for t in documents(7, 90)]
+    folder, stopped = prefill_into(items, target=3000)
+    assert stopped["stream_offset"] >= 32
+    status = json.loads((folder / "status.json").read_text())
+    status["stream_offset"] = 0
+    (folder / "status.json").write_text(json.dumps(status))
+    with pytest.raises(SystemExit, match="being read again"):
+        prefill_into(items)
+
+
+def test_the_status_is_written_before_the_index(prefill_into, monkeypatch):
+    """A crash between the two then leaves the index behind the status, never ahead."""
+    from trm.data.dedup import NearDedup
+    save = NearDedup.save
+    seen = []
+
+    def checked_save(self, path):
+        status = json.loads((pathlib.Path(path).parent / "status.json").read_text())
+        seen.append(status["dedup"]["docs_seen"] == self.counts["docs_seen"])
+        save(self, path)
+
+    monkeypatch.setattr(NearDedup, "save", checked_save)
+    prefill_into([{"content": t} for t in documents(8, 40)])
+    assert seen and all(seen)
+
+
+def test_a_listing_with_no_parquet_files_is_refused(monkeypatch):
+    class Api:
+        def list_repo_files(self, path, **_):
+            return ["README.md", "other-config/train-0.parquet"]
+
+    monkeypatch.setattr(prefill, "HfApi", Api)
+    with pytest.raises(SystemExit, match="no parquet files"):
+        prefill.source_files({"path": "org/set", "config": "mistyped", "shard_seed": 0})
+
+
+def test_a_listing_is_retried_through_a_dropped_request(monkeypatch):
+    calls = []
+
+    class Api:
+        def list_repo_files(self, path, **_):
+            calls.append(path)
+            if len(calls) < 3:
+                raise ConnectionError("dropped")
+            return ["cfg/train-1.parquet", "cfg/train-0.parquet"]
+
+    monkeypatch.setattr(prefill, "HfApi", Api)
+    monkeypatch.setattr(prefill, "LIST_RETRY_S", 0)
+    paths = prefill.list_with_retries({"path": "org/set", "config": "cfg", "shard_seed": 0})
+    assert len(calls) == 3 and sorted(paths) == ["datasets/org/set/cfg/train-0.parquet",
+                                                 "datasets/org/set/cfg/train-1.parquet"]
+
+
+def test_an_index_behind_its_status_is_reported(prefill_into, capsys):
+    """The state a stop between the status and the index leaves (save_progress)."""
+    items = [{"content": t} for t in documents(9, 60)]
+    folder, _ = prefill_into(items, target=1000)
+    status = json.loads((folder / "status.json").read_text())
+    status["dedup"]["docs_seen"] += 500
+    (folder / "status.json").write_text(json.dumps(status))
+    prefill_into(items)
+    assert "500 documents behind its status.json" in capsys.readouterr().out
+

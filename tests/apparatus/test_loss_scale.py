@@ -15,18 +15,19 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
+from trm.config import COMPUTE_DTYPE
+from trm.settings import CONFIG
 from trm.train.grad_step import compute_grad_step
 from trm.train.loss_scale import DynamicLossScale
 
 
 def _tiny_model_and_batch():
-    from trm.model.refiner_lm import RefinerForTraining
+    from trm.model.plain import PlainTransformer
 
-    model = RefinerForTraining(64, nnx.Rngs(0), vocab_size=5000, num_heads=4,
-                               encoder_layers=2, max_depth=8, max_seq_len=MAX_SEQ_LEN)
+    model = PlainTransformer(64, nnx.Rngs(0), CONFIG, vocab_size=5000, num_heads=4,
+                             num_layers=2, max_seq_len=CONFIG.MAX_SEQ_LEN)
     rng = np.random.default_rng(3)
-    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * MAX_SEQ_LEN + 1)).astype(np.int32))
+    batch = jnp.asarray(rng.integers(1, 60, size=(1, 2 * CONFIG.MAX_SEQ_LEN + 1)).astype(np.int32))
     return model, batch
 
 
@@ -76,20 +77,30 @@ def test_the_default_scale_is_a_power_of_two():
 # ── the promise ──────────────────────────────────────────────────────────────
 
 def test_scaling_does_not_change_the_gradients():
-    """The whole justification for turning this on mid-run. Same model, same batch,
-    same depth: the gradients the optimizer receives must be identical whether the
-    loss was scaled by 32,768 or not at all."""
+    """The whole justification for turning this on mid-run. Same model, same batch:
+    the gradients the optimizer receives must be identical whether the
+    loss was scaled by 32,768 or not at all.
+
+    Exact only in f32. Under f16 compute the unscaled backward rounds its smallest
+    values to subnormals and zeros, which is the loss the scale exists to rescue,
+    so the two paths agree only to within one f16 ulp of the largest gradient.
+    Measured on the RTX 2060 (#452): max |Δ| 4.9e-4 at max |g| 0.90, i.e. 0.55 ulp,
+    and the global norm to 3.6e-5."""
     model, batch = _tiny_model_and_batch()
-    _, _, plain, plain_norm = compute_grad_step(model, batch, jnp.array(1), 2)
-    _, _, scaled, scaled_norm = compute_grad_step(model, batch, jnp.array(1), 2,
-                                                  loss_scale=jnp.float32(2.0 ** 15))
+    _, _, plain, plain_norm = compute_grad_step(model, batch)
+    _, _, scaled, scaled_norm = compute_grad_step(model, batch, loss_scale=jnp.float32(2.0 ** 15))
 
     flat_plain = jax.tree_util.tree_leaves(plain)
     flat_scaled = jax.tree_util.tree_leaves(scaled)
     assert len(flat_plain) == len(flat_scaled) and flat_plain
-    for a, b in zip(flat_plain, flat_scaled):
-        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-6, atol=1e-8)
-    assert float(scaled_norm) == pytest.approx(float(plain_norm), rel=1e-6)
+    if COMPUTE_DTYPE == jnp.float16:
+        largest = max(float(jnp.max(jnp.abs(b))) for b in flat_scaled)
+        rtol, atol, norm_rel = 0.0, float(jnp.finfo(jnp.float16).eps) * largest, 1e-4
+    else:
+        rtol, atol, norm_rel = 1e-6, 1e-8, 1e-6
+    for a, b in zip(flat_plain, flat_scaled, strict=True):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=rtol, atol=atol)
+    assert float(scaled_norm) == pytest.approx(float(plain_norm), rel=norm_rel)
 
 
 def test_the_reported_loss_is_unscaled():
@@ -97,9 +108,8 @@ def test_the_reported_loss_is_unscaled():
     already recorded — a 32,768x jump in the logged loss would be indistinguishable
     from a divergence to anything reading the file."""
     model, batch = _tiny_model_and_batch()
-    plain, _, _, _ = compute_grad_step(model, batch, jnp.array(1), 2)
-    scaled, _, _, _ = compute_grad_step(model, batch, jnp.array(1), 2,
-                                        loss_scale=jnp.float32(2.0 ** 15))
+    plain, _, _, _ = compute_grad_step(model, batch)
+    scaled, _, _, _ = compute_grad_step(model, batch, loss_scale=jnp.float32(2.0 ** 15))
     assert float(scaled) == pytest.approx(float(plain), rel=1e-6)
 
 
@@ -127,7 +137,7 @@ def test_the_scaler_can_reach_its_floor_before_the_streak_abort_fires():
     launch would abort as 'diverged' when nothing had diverged at all."""
     import math
 
-    from trm.train.trainer import MAX_NONFINITE_STREAK
+    from trm.train.loop import MAX_NONFINITE_STREAK
 
     scale = DynamicLossScale()
     halvings = math.ceil(math.log(scale.value / scale.min_scale, scale.factor))

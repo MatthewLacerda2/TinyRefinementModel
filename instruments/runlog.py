@@ -1,7 +1,6 @@
 """Read one training run's recorded metrics — once, and properly.
 
-A blank cell means this architecture does not measure that quantity (#105), never
-`0.0`; reading it as zero invents a measurement (the cases are pinned in
+A blank cell means the run did not measure that quantity (#105), never `0.0`; reading it as zero invents a measurement (the cases are pinned in
 tests/apparatus/test_runlog.py). So here: a blank is `None`, `has(name)` says whether a column holds anything at
 all (the test a caller uses to *omit* a panel instead of drawing zeros), and
 `column(name)` hands back only the rows that actually carry a value.
@@ -24,8 +23,8 @@ The loader is also the one place that knows the shape of the artifact:
 
 It is also the one reader of the rest of a run's recorded facts (#319): the
 metadata (`read_metadata`), the recipe's tokens per optimizer step
-(`recorded_tokens_per_opt_step`), which columns an architecture can fill
-(`measured_by`), and which checkpoint steps are on disk (`checkpoint_steps`).
+(`recorded_tokens_per_opt_step`), and which checkpoint steps are on disk
+(`checkpoint_steps`).
 Each states its failure policy once, here, instead of once per caller.
 
     from instruments.runlog import load
@@ -39,25 +38,17 @@ from __future__ import annotations
 import csv
 import datetime
 import glob
-import json
 import os
 import pathlib
 from dataclasses import dataclass, field
 
-METRICS_FILENAME = "metrics.csv"
-METADATA_FILENAME = "run_metadata.json"
+from trm.runtime.run_metadata import RunMetadata
 
-# Columns only the reasoner can fill. metrics.csv keeps them for every arch (old runs
-# and every reader depend on the schema), so for a run recorded as another arch their
-# absence is not news (#317).
-REASONER_ONLY_COLUMNS = frozenset({"temporal_drift", "avg_forget_cost", "diversity_loss", "tau"})
-# Every column only some architectures can fill, with the arches that can. `depth_avg`
-# is the sampled depth: a measurement only for an arch with a depth dial. Plain runs
-# before #316 logged a sampled value the model ignored; from #316 on it is blank.
-COLUMN_ARCHES = {
-    **{column: frozenset({"reasoner"}) for column in REASONER_ONLY_COLUMNS},
-    "depth_avg": frozenset({"refiner", "reasoner"}),
-}
+METRICS_FILENAME = "metrics.csv"
+
+# Why a run left a column blank, in the reader's words — shared by report.py and
+# plots.py so the two cannot disagree (#319).
+NOT_LOGGED = "not logged by this run"
 
 # DictReader parks fields beyond the header under this key; naming it keeps a
 # widened row from inventing a column called `None`.
@@ -126,7 +117,7 @@ class RunLog:
 
     run_id: str
     metrics: list[dict]      # rows; every CSV column, value float or None
-    metadata: dict           # run_metadata.json contents, {} if absent
+    metadata: RunMetadata | None  # run_metadata.json, None if absent
 
     # Provenance and what the parse had to throw away. Everything below has a
     # default so `RunLog(run_id, metrics, metadata)` stays constructible.
@@ -140,7 +131,7 @@ class RunLog:
         """(steps, values) for one column, blank cells dropped.
 
         An unknown or entirely-blank column is two empty lists, not an error:
-        the arch-optional columns are the normal case, not a mistake.
+        a column newer than the run is the normal case, not a mistake.
         """
         steps, values = [], []
         for row in self.metrics:
@@ -190,8 +181,7 @@ class RunLog:
     def blocks(self):
         """(steps, act_max, act_rms) from the run's blocks.csv (#392): per-state
         readings as [T] steps and two [T, S] arrays, S = embedding + one per block.
-        None when the run wrote none (an older run, or an arch that does not report
-        them). A torn last step with fewer states than the rest is dropped."""
+        None when the run wrote none (a run before #392). A torn last step with fewer states than the rest is dropped."""
         import numpy as np
 
         path = os.path.join(self.run_dir, "blocks.csv")
@@ -252,8 +242,8 @@ class RunLog:
         mis-scaled by this; `run_metadata.json` records what the run actually
         used, and report.py cross-checks it.
         """
-        from trm.config import TOKENS_PER_OPT_STEP  # jax-heavy; only this property needs it
-        return self.last_step * TOKENS_PER_OPT_STEP
+        from trm.settings import CONFIG  # this process's recipe, for runs that recorded none
+        return self.last_step * CONFIG.TOKENS_PER_OPT_STEP
 
     @property
     def params(self):
@@ -268,8 +258,8 @@ class RunLog:
         the run proceeds; a session still in flight before its first update has
         `duration_seconds: null` and is skipped.
         """
-        durations = [s.get("duration_seconds") for s in self.metadata.get("sections", [])]
-        known = [float(d) for d in durations if isinstance(d, (int, float))]
+        sections = self.metadata.sections if self.metadata is not None else []
+        known = [s.duration_seconds for s in sections if s.duration_seconds is not None]
         return sum(known) if known else None
 
 
@@ -286,26 +276,19 @@ def _discover_latest_csv(runs_root="runs"):
 
 
 def read_metadata(run_dir):
-    """A run's `run_metadata.json` as a dict.
+    """A run's metadata (trm/runtime/run_metadata.py), or None.
 
-    Failure policy: `{}` for a missing, unreadable, or half-written file, never an
+    Failure policy: None for a missing, unreadable, or half-written file, never an
     exception. A run assembled by hand or from before the tracker is still readable
     without it, and RunTracker rewrites the file in place at session start and end,
     so a reader running beside training (the milestone scorer) can catch it torn.
-    A caller for which metadata is required checks for `{}` and says so itself."""
-    path = os.path.join(run_dir, METADATA_FILENAME)
-    try:
-        with open(path) as f:
-            metadata = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return metadata if isinstance(metadata, dict) else {}
+    A caller for which metadata is required checks for None and says so itself."""
+    return RunMetadata.read(run_dir)
 
 
 def recorded_params(metadata):
-    """The metadata's `parameters` block, {} if absent or malformed."""
-    params = (metadata or {}).get("parameters")
-    return params if isinstance(params, dict) else {}
+    """The metadata's `parameters` block, {} without metadata."""
+    return metadata.parameters if metadata is not None else {}
 
 
 def recorded_tokens_per_opt_step(params):
@@ -318,28 +301,6 @@ def recorded_tokens_per_opt_step(params):
                 * 2 * int(params["MAX_SEQ_LEN"]))
     except (KeyError, TypeError, ValueError):
         return None
-
-
-def measured_by(arch, column):
-    """Can a run of `arch` fill this column with a measurement? An unrecorded arch (None)
-    is given the benefit of the doubt: an old run's missing column may be the reasoner's."""
-    return arch is None or column not in COLUMN_ARCHES or arch in COLUMN_ARCHES[column]
-
-
-NOT_MEASURED = "not measured by this architecture"
-NOT_LOGGED = "not logged by this run"
-
-
-def absence_reason(arch, columns):
-    """Why a run left these columns blank, in the reader's words — shared by report.py
-    and plots.py so the two cannot disagree (#319).
-
-    If the run's recorded arch can fill any of them, the arch is not the reason: the run
-    just did not log them (telemetry off, a column newer than the run). Only when it can
-    fill none, or the run recorded no arch to judge by, is it the architecture."""
-    if arch is not None and any(measured_by(arch, column) for column in columns):
-        return NOT_LOGGED
-    return NOT_MEASURED
 
 
 def checkpoint_steps(checkpoint_dir):

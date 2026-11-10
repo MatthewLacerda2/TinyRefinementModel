@@ -2,8 +2,11 @@ import csv
 import datetime
 import math
 import posixpath
-from typing import NamedTuple
+from contextlib import AbstractContextManager
+from typing import NamedTuple, TextIO, cast
+
 import fsspec
+
 # jax at module level: the module already needs jax.numpy, so a lazy import in
 # _arena_peak_mib bought nothing.
 import jax
@@ -17,10 +20,12 @@ class Column(NamedTuple):
 
 
 # The CSV schema, declared once: every column in order, what it holds, and how it is
-# written. Old runs and every reader in instruments/ depend on the column set, the
-# order and the formatting. An absent value — an optional argument not passed, a
-# diagnostic this architecture does not measure (#105) — is an empty cell, never a
-# zero that looks like a measurement.
+# written. Every reader in instruments/ reads columns by name, never by position. An
+# absent value (an optional argument not passed) is an empty cell, never a zero that
+# looks like a measurement. A file that already has a header is appended to under
+# that header, and a resume first widens it with any current column it lacks
+# (`_truncate_replayed_rows`), so a run resumed across a schema change stays aligned
+# and keeps its retired columns (#292).
 COLUMNS = (
     Column("step", None),
     Column("ce", 4),
@@ -40,11 +45,6 @@ COLUMNS = (
     # launch (#368): the scaler's state as a column instead of a grep of train.log.
     Column("loss_scale", None),
     Column("skipped_micro_steps", None),
-    Column("avg_forget_cost", 4, diag="forget_cost"),
-    Column("diversity_loss", 6, diag="diversity_loss"),
-    Column("temporal_drift", 6, diag="temporal_drift"),
-    Column("forget_density", 6, diag="forget_density"),
-    Column("tau", 6, diag="tau"),
     Column("out_entropy", 4, diag="out_entropy"),
     Column("logz_mean", 4, diag="logz_mean"),
     Column("max_abs_logit", 2, diag="max_abs_logit"),
@@ -54,7 +54,9 @@ COLUMNS = (
     # weeks later, by hand (#235). It then sat in the header from #252 on and was
     # never written, because the header and the row were two separate lists.
     Column("act_max", 1, diag="act_max"),
-    Column("depth_avg", 4),
+    # Peak |output| of any branch (attention or MLP) in the compute dtype, before the
+    # add (#536). With the stream f32 (#357), this is the f16 margin the alarm reads.
+    Column("branch_max", 1, diag="branch_max"),
     Column("val_ce", 4),
     # The opt step the probe measured val_ce at (#351). The value is written on the
     # next logged row, up to LOG_REAL_STEPS - 1 steps later, so the row's own `step`
@@ -83,11 +85,8 @@ COLUMNS = (
 )
 
 
-# The diagnostics the console line shows when the model reports them:
-# (diagnostic, label, decimals).
+# The diagnostics the console line shows: (diagnostic, label, decimals).
 CONSOLE_DIAGNOSTICS = (
-    ("tau", "Tau", 4),
-    ("temporal_drift", "Drift", 6),
     ("out_entropy", "H", 3),
     ("logz_mean", "logZ", 2),
     ("max_abs_logit", "max|logit|", 1),
@@ -123,7 +122,15 @@ def _arena_limit_mib():
 # per (step, state), because the number of states follows PLAIN_LAYERS and a fixed
 # metrics schema cannot. State 0 is the embedding, state k the stream after block k.
 BLOCKS_FILENAME = "blocks.csv"
-BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms")
+# attn_out_max / mlp_out_max (#536): block k's two branch outputs before the add;
+# empty on row 0, the embedding, which has no branches.
+BLOCKS_FIELDS = ("step", "block", "act_max", "act_rms", "attn_out_max", "mlp_out_max")
+
+
+# fsspec is unannotated, and pyright reads its `open` as maybe handing back a list
+# of files; every csv here is one text file.
+def _open_csv(url, mode) -> AbstractContextManager[TextIO]:
+    return cast(AbstractContextManager[TextIO], fsspec.open(url, mode, newline=""))
 
 
 def blocks_file_for(history_file):
@@ -134,10 +141,8 @@ def blocks_file_for(history_file):
 class MetricsLogger:
     def __init__(self, history_file, start_opt_step=None):
         self.history_file = history_file
-        # Telemetry this logger knows how to write. A model reports the subset it
-        # actually measures (#105) — an architecture without a forget gate simply
-        # omits those keys, and their columns stay empty instead of being filled
-        # with zeros that look like measurements.
+        # Telemetry this logger knows how to write; a key the model did not report
+        # leaves its column empty rather than a zero that looks like a measurement.
         self.diag_keys = [c.diag for c in COLUMNS if c.diag]
         self.blocks_file = blocks_file_for(history_file)
         self.fields = [c.name for c in COLUMNS]
@@ -156,18 +161,21 @@ class MetricsLogger:
             fs, path = fsspec.core.url_to_fs(self.history_file)
             if not fs.exists(path) or fs.size(path) == 0:
                 return
-            with fsspec.open(self.history_file, "r", newline="") as f:
+            with _open_csv(self.history_file, "r") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
                 old_fields = reader.fieldnames
             kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
-            # Rewrite also when the schema gained columns, otherwise appended
-            # rows would be wider than the existing header.
-            if len(kept) == len(rows) and list(old_fields or []) == self.fields:
+            # The file keeps every column it has (a retired one included: its old rows
+            # are history) and gains the current ones it lacks, at the end; `log`
+            # then appends under this header.
+            old_fields = list(old_fields or [])
+            fields = old_fields + [c for c in self.fields if c not in old_fields]
+            if len(kept) == len(rows) and fields == old_fields:
                 return
             print(f"✂️ Trimming {len(rows) - len(kept)} replayed metric rows (step >= {start_opt_step}) from {self.history_file}")
-            with fsspec.open(self.history_file, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')
+            with _open_csv(self.history_file, "w") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore', restval="")
                 writer.writeheader()
                 writer.writerows(kept)
         except (OSError, ValueError, KeyError) as e:
@@ -179,34 +187,43 @@ class MetricsLogger:
             fs, path = fsspec.core.url_to_fs(self.blocks_file)
             if not fs.exists(path) or fs.size(path) == 0:
                 return
-            with fsspec.open(self.blocks_file, "r", newline="") as f:
-                rows = list(csv.DictReader(f))
+            with _open_csv(self.blocks_file, "r") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                old_fields = list(reader.fieldnames or [])
             kept = [r for r in rows if r.get("step") and int(r["step"]) < start_opt_step]
-            if len(kept) == len(rows):
+            # Widened like metrics.csv: a file from before a column existed gains it.
+            fields = old_fields + [c for c in BLOCKS_FIELDS if c not in old_fields]
+            if len(kept) == len(rows) and fields == old_fields:
                 return
-            with fsspec.open(self.blocks_file, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=BLOCKS_FIELDS, extrasaction="ignore")
+            with _open_csv(self.blocks_file, "w") as f:
+                writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore", restval="")
                 writer.writeheader()
                 writer.writerows(kept)
         except (OSError, ValueError, KeyError) as e:
             print(f"⚠️ Could not trim replayed rows from {self.blocks_file}: {e}")
 
     def _log_blocks(self, step, diag):
-        """One blocks.csv row per state, when the model reports per-block readings.
-        An architecture that does not (the refiner, the reasoner) writes nothing:
-        absent, never zero (#105)."""
+        """One blocks.csv row per state, when the model reports per-block readings
+        (a stub output in a test may not): absent, never zero."""
         if "act_max_blocks" not in diag:
             return
         maxes = [float(v) for v in jnp.ravel(diag["act_max_blocks"])]
         rmses = [float(v) for v in jnp.ravel(diag["act_rms_blocks"])]
+        # Row k > 0 is the stream after block k, so it carries block k's two branches;
+        # row 0 (the embedding) has none.
+        branches = [("", "")] * len(maxes)
+        if "branch_max_blocks" in diag:
+            branches[1:] = [(f"{attn:.2f}", f"{mlp:.2f}")
+                            for attn, mlp in jnp.reshape(diag["branch_max_blocks"], (-1, 2)).tolist()]
         fs, path = fsspec.core.url_to_fs(self.blocks_file)
         fresh = not fs.exists(path) or fs.size(path) == 0
-        with fsspec.open(self.blocks_file, "a", newline="") as f:
+        with _open_csv(self.blocks_file, "a") as f:
             writer = csv.writer(f)
             if fresh:
                 writer.writerow(BLOCKS_FIELDS)
-            for block, (peak, rms) in enumerate(zip(maxes, rmses)):
-                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}"])
+            for block, (peak, rms, (attn, mlp)) in enumerate(zip(maxes, rmses, branches, strict=True)):
+                writer.writerow([int(step), block, f"{peak:.2f}", f"{rms:.4f}", attn, mlp])
 
     def extract_diags(self, diag, jnp_mean_fn):
         """Reduces the diagnostics this model reported to plain floats. Keys the
@@ -214,7 +231,7 @@ class MetricsLogger:
         return {k: float(jnp_mean_fn(diag[k])) for k in self.diag_keys if k in diag}
 
     def log(self, step, ce, loss, out, compute_time,
-            grad_norm_avg=None, seg1_ce=None, depth_avg=None, val_ce=None,
+            grad_norm_avg=None, seg1_ce=None, val_ce=None,
             zero_frac_dense_max=None, applied_zero_frac_dense_max=None, applied_grad_norm=None,
             clip_active=None, val_step=None, val_by_source=None, mix=None, grad_by_source=None,
             loss_scale=None, skipped_micro_steps=None):
@@ -226,28 +243,29 @@ class MetricsLogger:
                 self._warned_nonfinite.add(name)
                 print(f"⚠️ Non-finite metric '{name}' ({value}) at step {step} — check the diagnostics pipeline.")
 
-        # Console: only the diagnostics this model reported. A 0 for one it has none
-        # of (Tau, Drift on the plain stack) reads as a measurement (#317).
+        # Console: only the diagnostics the model reported.
         reported = "".join(f" | {label}: {diag_dict[key]:.{places}f}"
                            for key, label, places in CONSOLE_DIAGNOSTICS if key in diag_dict)
-        depth = "" if depth_avg is None else f" | Depth: {depth_avg:.2f}"  # None: no depth dial (#316)
         print(
-            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f}){depth}\n"
+            f"Step {step:04d} | CE: {ce:.4f} (seg1: {seg1_ce:.4f})\n"
             f"      Loss: {loss:.4f}{reported} | Compute: {compute_time:.3f}s"
         )
 
-        # Check if file exists and has content to avoid duplicate headers
-        file_is_empty = True
+        # A file with content keeps its own header: rows go under the columns it
+        # already has, and a column it lacks is dropped rather than shifting the rest.
+        header = None
         try:
             fs, path = fsspec.core.url_to_fs(self.history_file)
             if fs.exists(path) and fs.size(path) > 0:
-                file_is_empty = False
+                with _open_csv(self.history_file, "r") as f:
+                    header = next(csv.reader(f), None)
         except OSError as e:
-            print(f"⚠️ Could not stat {self.history_file} ({e}); assuming empty.")
+            print(f"⚠️ Could not read {self.history_file} ({e}); assuming empty.")
 
-        with fsspec.open(self.history_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self.fields, extrasaction='ignore')
-            if file_is_empty:
+        with _open_csv(self.history_file, "a") as f:
+            writer = csv.DictWriter(f, fieldnames=header or self.fields,
+                                    extrasaction='ignore', restval="")
+            if header is None:
                 writer.writeheader()
 
             args = {
@@ -256,7 +274,7 @@ class MetricsLogger:
                 "applied_zero_frac_dense_max": applied_zero_frac_dense_max,
                 "applied_grad_norm": applied_grad_norm, "clip_active": clip_active,
                 "loss_scale": loss_scale, "skipped_micro_steps": skipped_micro_steps,
-                "depth_avg": depth_avg, "val_ce": val_ce, "val_step": val_step,
+                "val_ce": val_ce, "val_step": val_step,
                 "wall_clock": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "mix": mix or "",
                 "grad_by_source": grad_by_source or "",

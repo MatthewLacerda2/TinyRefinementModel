@@ -6,13 +6,8 @@ gradient below that does not become small — it becomes exactly zero. Silently:
 NaN, no exception, no plateau the loss monitor can see, just a parameter group that
 has stopped learning.
 
-That is not a hypothesis. On 2026-08-18 the #157 base run died of it at opt step
-11,140. The `gate` — the retention/refine gate that IS the depth recurrence — went
-from a 0.002 zero-gradient fraction to **1.000** at step 11,075, `refine_block`
-starved alongside it at 26-71%, and 65 steps later the model's output distribution
-was uniform (val CE 10.82 against ln(50304) = 10.83). Nothing in the run was ever
-non-finite. #82 built the instrument that recorded all of this and nothing was wired
-to act on it.
+That is not a hypothesis: the #157 base run died of it at opt step 11,140 without
+one non-finite value (the readings are on #199).
 
 The remedy is the standard one and predates us by years: multiply the loss by S
 before the backward pass, divide the gradients by S afterwards. Every intermediate

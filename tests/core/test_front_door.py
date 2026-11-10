@@ -6,22 +6,26 @@ import sys
 import pytest
 
 from trm.runtime import launch
+from trm.settings import Config
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+DEFAULTS = Config.from_env({})
 TOKENS = 131_072  # TOKENS_PER_OPT_STEP at batch 1, accumulation 128, two 512 windows
+EVERY = DEFAULTS.CHECKPOINT_EVERY_OPT_STEPS
 
 
 def test_the_stop_step_is_a_checkpoint_boundary_that_covers_the_budget():
     """The 4B run stopped at 30,518 and its last checkpoint landed at 30,464 — 56
     trained steps thrown away. The stop must be a boundary at or past the budget."""
-    stop = launch.stop_step_for(4_000_000_000, TOKENS)
+    stop = launch.stop_step_for(4_000_000_000, TOKENS, EVERY)
     assert stop == 30_528
-    assert stop % launch.CHECKPOINT_EVERY_OPT_STEPS == 0
-    assert stop * TOKENS >= 4_000_000_000 > (stop - launch.CHECKPOINT_EVERY_OPT_STEPS) * TOKENS
+    assert stop % EVERY == 0
+    assert stop * TOKENS >= 4_000_000_000 > (stop - EVERY) * TOKENS
 
 
 def test_the_plan_pins_the_checkpoint_path_and_never_passes_new_run(tmp_path):
-    p = launch.plan(4_000_000_000, TOKENS, run_id="run_x", issue=157, runs_dir=tmp_path, python="py")
+    assert DEFAULTS.TOKENS_PER_OPT_STEP == TOKENS
+    p = launch.plan(4_000_000_000, DEFAULTS, run_id="run_x", issue=157, runs_dir=tmp_path, python="py")
     assert "--new-run" not in p.argv, "every crash relaunch would replay it and restart from scratch"
     trainer_args = p.argv[p.argv.index("--") + 1:]
     assert trainer_args == ["--checkpoint-path", str(tmp_path / "run_x" / "checkpoints")]
@@ -34,9 +38,9 @@ def test_it_refuses_rather_than_guesses(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="no BUDGET"):
         launch.main([])
     with pytest.raises(SystemExit, match="positive"):
-        launch.stop_step_for(0, TOKENS)
+        launch.stop_step_for(0, TOKENS, EVERY)
     (tmp_path / "run_x").mkdir()
-    p = launch.plan(10**9, TOKENS, run_id="run_x", runs_dir=tmp_path)
+    p = launch.plan(10**9, DEFAULTS, run_id="run_x", runs_dir=tmp_path)
     assert "already exists" in launch.refusal(p)
 
 

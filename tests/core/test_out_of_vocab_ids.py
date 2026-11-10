@@ -27,8 +27,8 @@ import numpy as np
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
 from trm.model.plain import PlainTransformer
+from trm.settings import CONFIG
 
 TOY_DIM, TOY_VOCAB, TOY_HEADS, TOY_LAYERS = 32, 37, 4, 3
 TOY_PAD = TOY_VOCAB - 1
@@ -37,21 +37,21 @@ TOY_PAD = TOY_VOCAB - 1
 @pytest.fixture(scope="module")
 def toy():
     return PlainTransformer(
-        TOY_DIM, nnx.Rngs(0), vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
-        num_layers=TOY_LAYERS, max_seq_len=MAX_SEQ_LEN, pad_token_id=TOY_PAD)
+        TOY_DIM, nnx.Rngs(0), CONFIG, vocab_size=TOY_VOCAB, num_heads=TOY_HEADS,
+        num_layers=TOY_LAYERS, max_seq_len=CONFIG.MAX_SEQ_LEN, pad_token_id=TOY_PAD)
 
 
 @pytest.fixture(scope="module")
 def clean():
     return jax.random.randint(
-        jax.random.PRNGKey(0), (1, MAX_SEQ_LEN), 0, TOY_PAD, dtype=jnp.int32)
+        jax.random.PRNGKey(0), (1, CONFIG.MAX_SEQ_LEN), 0, TOY_PAD, dtype=jnp.int32)
 
 
 @pytest.mark.parametrize("bad_id", [TOY_VOCAB, 50256, 2**30])
 def test_an_out_of_range_id_does_not_produce_a_single_nan(toy, clean, bad_id):
     """The defect, stated directly. Before the clamp this was 18,944 of 18,944."""
     poisoned = clean.at[0, 7].set(bad_id)
-    logits = toy(poisoned, depth=1, training=False).logits
+    logits = toy(poisoned, training=False).logits
     assert int(jnp.sum(~jnp.isfinite(logits))) == 0
 
 
@@ -60,8 +60,8 @@ def test_earlier_positions_are_untouched_by_a_later_bad_id(toy, clean):
     spread the NaN backwards through the softmax, so a bad id at position 7 changed
     position 0. Causality must hold even for garbage input."""
     poisoned = clean.at[0, 7].set(50256)
-    a = toy(clean, depth=1, training=False).logits
-    b = toy(poisoned, depth=1, training=False).logits
+    a = toy(clean, training=False).logits
+    b = toy(poisoned, training=False).logits
     assert jnp.array_equal(a[0, :7], b[0, :7])
 
 
@@ -69,17 +69,17 @@ def test_a_negative_id_is_handled_too(toy, clean):
     """`jnp.take` treats negatives as wrap-around indices, so they do not NaN — but
     they silently read the wrong row, and the clamp should make that explicit rather
     than leaving two different out-of-range behaviours."""
-    logits = toy(clean.at[0, 3].set(-5), depth=1, training=False).logits
+    logits = toy(clean.at[0, 3].set(-5), training=False).logits
     assert int(jnp.sum(~jnp.isfinite(logits))) == 0
 
 
 def test_in_range_ids_are_completely_unaffected(toy, clean):
     """The counter-test. A clamp that altered ordinary input would be a silent
     behaviour change on every token the model has ever seen."""
-    before = toy(clean, depth=1, training=False).logits
+    before = toy(clean, training=False).logits
     assert int(jnp.sum(~jnp.isfinite(before))) == 0
     assert jnp.array_equal(
-        before, toy(clean, depth=1, training=False).logits)
+        before, toy(clean, training=False).logits)
 
 
 def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):
@@ -88,11 +88,13 @@ def test_the_loader_refuses_a_shard_with_an_impossible_id(tmp_path):
     from trm.config import VOCAB_SIZE
     from trm.data.loaders import TextDataGenerator
 
-    shard = np.full(4 * MAX_SEQ_LEN + 8, 5, dtype=np.int32)
-    shard[100] = VOCAB_SIZE + 1
+    shard = np.full(4 * CONFIG.MAX_SEQ_LEN + 8, 5, dtype=np.int32)
+    # One impossible id per MAX_SEQ_LEN * 2 tokens, so the first row holds one wherever
+    # the reader's random start offset (under one row) lands.
+    shard[100::2 * CONFIG.MAX_SEQ_LEN] = VOCAB_SIZE + 1
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    gen = TextDataGenerator(str(tmp_path))
+    gen = TextDataGenerator(str(tmp_path), max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="exceeds VOCAB_SIZE"):
         gen.get_batch(1)
 
@@ -102,8 +104,9 @@ def test_the_loader_accepts_an_ordinary_shard(tmp_path):
     from trm.config import VOCAB_SIZE
     from trm.data.loaders import TextDataGenerator
 
-    shard = np.full(4 * MAX_SEQ_LEN + 8, VOCAB_SIZE - 1, dtype=np.int32)
+    shard = np.full(4 * CONFIG.MAX_SEQ_LEN + 8, VOCAB_SIZE - 1, dtype=np.int32)
     np.save(tmp_path / "chunk_0.npy", shard)
 
-    rows, _ = TextDataGenerator(str(tmp_path)).get_batch(1)
+    rows = TextDataGenerator(str(tmp_path), max_seq_len=CONFIG.MAX_SEQ_LEN,
+                            rng=np.random.default_rng(0)).get_batch(1)
     assert rows is not None and rows.shape[0] == 1

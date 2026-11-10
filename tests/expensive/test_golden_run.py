@@ -1,9 +1,8 @@
 """Golden-run regression: the shipped training path must reproduce a stored loss
 trajectory, within the measured cross-machine noise.
 
-Ten real grad steps of `plain`, the arch that ships (#322; until then this pinned the
-reasoner, the control arch), at a small config, on a fixed synthetic batch with a fixed
-optimizer. The losses are compared against tests/expensive/golden/train_step_losses.json.
+Ten real grad steps of the model at a small config, on a fixed synthetic batch with a
+fixed optimizer. The losses are compared against tests/expensive/golden/train_step_losses.json.
 
 WHAT IT CAN AND CANNOT SEE. The file is compared across machines, and float kernels
 differ by CPU: the same commit gives numbers one or two ULPs apart. Measured on #330 for
@@ -43,11 +42,12 @@ import optax
 import pytest
 from flax import nnx
 
-from trm.config import MAX_SEQ_LEN
+from trm import settings
 from trm.model.plain import PlainTransformer
 from trm.train.grad_step import apply_grads, compute_grad_step
 
 GOLDEN_PATH = os.path.join(os.path.dirname(__file__), "golden", "train_step_losses.json")
+# "arch" is part of the config the golden file was recorded under, so it stays.
 CONFIG = {"arch": "plain", "dim": 60, "num_layers": 2, "seed": 9, "steps": 10}
 NOISE_FLOOR = 1.8e-7  # max relative loss difference, this box vs CI runs (#330)
 # The CPU models that floor was sampled on. Outside them, the floor is an assumption.
@@ -56,20 +56,19 @@ RTOL = 10 * NOISE_FLOOR
 
 
 def _losses():
-    model = PlainTransformer(CONFIG["dim"], nnx.Rngs(CONFIG["seed"]), num_layers=CONFIG["num_layers"])
+    model = PlainTransformer(CONFIG["dim"], nnx.Rngs(CONFIG["seed"]), settings.CONFIG,
+                             num_layers=CONFIG["num_layers"])
     optimizer = nnx.Optimizer(
         model,
         optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(1e-3)),
         wrt=nnx.Param,
     )
     rng = np.random.default_rng(21)
-    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * MAX_SEQ_LEN + 1)), dtype=jnp.int32)
+    batch = jnp.asarray(rng.integers(1, 5000, size=(1, 2 * settings.CONFIG.MAX_SEQ_LEN + 1)), dtype=jnp.int32)
 
     losses = []
-    for step in range(CONFIG["steps"]):
-        # depth is a contract argument the plain arch ignores; held fixed so the
-        # static argument compiles once.
-        loss, _, grads, _ = compute_grad_step(model, batch, step, depth=1)
+    for _ in range(CONFIG["steps"]):
+        loss, _, grads, _ = compute_grad_step(model, batch)
         apply_grads(optimizer, grads, model)
         losses.append(float(loss))
     return losses

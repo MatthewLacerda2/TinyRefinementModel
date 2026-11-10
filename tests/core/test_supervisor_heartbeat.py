@@ -5,13 +5,12 @@ test_supervisor.py (#325)."""
 import sys
 import textwrap
 
-
 from trm.runtime.supervisor import (
     BUDGET_COMPLETE,
     GAVE_UP,
     Limits,
 )
-
+from trm.settings import Config
 
 # --- the loop, against a real child process -----------------------------------
 
@@ -26,6 +25,7 @@ def _supervisor_over(tmp_path, script: str, limits: Limits, **kw):
         limits=limits,
         log_path=tmp_path / "train.log",
         metrics_csv=tmp_path / "metrics.csv",
+        config=Config.from_env({}),
         poll_seconds=0.2,
         heartbeat_every=1,
         report=reported.append,
@@ -82,10 +82,11 @@ def test_routine_reports_are_daily_not_hourly():
     tracking issue — #157 had 57 in two days — burying the launch decision, the
     findings and the diagnoses the issue exists to record. A status feed nobody
     can read is not a status feed."""
-    from trm.runtime.supervisor import Supervisor
     import pathlib
+
+    from trm.runtime.supervisor import Supervisor
     sup = Supervisor(command=(), limits=Limits(stop_step=1),
-                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"))
+                     log_path=pathlib.Path("x"), metrics_csv=pathlib.Path("y"), config=Config.from_env({}))
     assert sup.heartbeat_every * sup.poll_seconds / 3600 == 24.0
 
 
@@ -97,6 +98,8 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 
@@ -106,8 +109,8 @@ def test_the_heartbeat_cadence_is_settable_in_hours(tmp_path):
     original = sup_mod.Supervisor
     sup_mod.Supervisor = Stub
     try:
-        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+        sup_mod.main(["--stop-step", "10", "--run-dir", str(tmp_path / "run_x"),
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate", "--min-free-gb", "0",
                       "--heartbeat-hours", "6", "--poll-seconds", "300"])
     finally:
         sup_mod.Supervisor = original
@@ -120,6 +123,7 @@ def test_a_decision_always_reports_regardless_of_cadence():
     non-CONTINUE decision posts immediately — that is what makes a daily heartbeat
     safe rather than negligent."""
     from pathlib import Path
+
     from trm.runtime import supervisor as sup_mod
     source = Path(sup_mod.__file__).read_text()
     assert "decision.action != CONTINUE" in source, (
@@ -158,6 +162,7 @@ def test_routine_beats_reach_the_file_hourly_without_flooding_the_issue(tmp_path
     the throughput plot samples, so it gets the finer cadence — in the exact
     format the plot's reader parses."""
     import re
+
     from instruments.plots import _HEARTBEAT
 
     beats = tmp_path / "run_x.supervisor.log"
@@ -186,6 +191,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     captured = {}
 
     class Stub:
+        survivor = None
+
         def __init__(self, **kw):
             captured.update(kw)
 
@@ -197,7 +204,8 @@ def test_main_defaults_the_heartbeat_file_to_where_the_plot_reads_it(tmp_path):
     sup_mod.Supervisor = Stub
     try:
         sup_mod.main(["--stop-step", "10", "--run-dir", str(run_dir),
-                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate"])
+                      "--log", str(tmp_path / "t.log"), "--no-gpu-lock", "--skip-fit-gate",
+                      "--min-free-gb", "0"])
     finally:
         sup_mod.Supervisor = original
 

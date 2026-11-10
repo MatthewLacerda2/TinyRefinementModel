@@ -1,0 +1,54 @@
+"""Muon's Newton-Schulz coefficients are a knob (#375), and the default is unchanged.
+
+Newton-Schulz acts on each singular value on its own, so the whole question fits in
+scalars: run the 5 steps on x in (0, 1] and see how close to 1 each lands.
+"""
+
+import numpy as np
+import pytest
+
+from trm.settings import CONFIG
+from trm.train.optimizers import KELLER_NS_COEFFS, ns_coefficients
+
+
+def _run(coeffs, x):
+    for a, b, c in coeffs:
+        x = a * x + b * x ** 3 + c * x ** 5
+    return x
+
+
+def test_the_2024_quintic_still_resolves_and_polar_express_is_the_default():
+    assert ns_coefficients("keller", 5) == KELLER_NS_COEFFS == (3.4445, -4.775, 2.0315)
+    assert CONFIG.MUON_NS_COEFFS == "polar_express"
+
+
+def test_polar_express_lands_closer_to_orthogonal_in_the_same_five_steps():
+    x = np.geomspace(1e-2, 1.0, 2000)
+    keller = _run([KELLER_NS_COEFFS] * 5, x)
+    polar = _run(ns_coefficients("polar_express", 5), x)
+    assert len(ns_coefficients("polar_express", 5)) == 5
+    assert np.max(np.abs(polar - 1)) < np.max(np.abs(keller - 1))
+    assert np.mean(np.abs(polar - 1)) < 0.5 * np.mean(np.abs(keller - 1))
+
+
+def test_an_unknown_table_is_refused():
+    with pytest.raises(ValueError, match="MUON_NS_COEFFS"):
+        ns_coefficients("kellr", 5)
+
+
+def test_the_knob_reaches_optax(monkeypatch):
+    """MUON_NS_COEFFS=polar_express hands scale_by_muon one tuple per step; keller one tuple.
+    Both named explicitly, so the check does not depend on which one is the default."""
+    import optax
+
+    from trm.settings import Config
+    from trm.train.optimizers import _muon
+
+    calls = []
+    original = optax.contrib.scale_by_muon
+    monkeypatch.setattr(optax.contrib, "scale_by_muon", lambda **kw: calls.append(kw) or original(**kw))
+    _muon(Config(MUON_NS_COEFFS="polar_express"), lambda step: 1e-4)
+    _muon(Config(MUON_NS_COEFFS="keller"), lambda step: 1e-4)
+    polar, keller = (kw["ns_coeffs"] for kw in calls)
+    assert polar == ns_coefficients("polar_express", 5) and len(polar) == 5
+    assert keller == KELLER_NS_COEFFS

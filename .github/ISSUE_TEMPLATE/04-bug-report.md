@@ -23,7 +23,7 @@ labels: ["bug"]
 - Relevant pinned versions (jax / flax / optax):
 
 ## Logs / traceback
-<!-- Paste the error. Trim with rtk if long. -->
+<!-- Paste the error. Trim it if long. -->
 ```
 ```
 

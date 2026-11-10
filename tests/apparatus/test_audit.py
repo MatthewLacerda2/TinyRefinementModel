@@ -71,7 +71,7 @@ treated = {treated}
 """
 
 
-def spec_text(*, control=(0.90, 0.91, 0.92), treated=(0.92, 0.93, 0.91), recorded=None,
+def spec_text(*, control=(0.90, 0.91, 0.92), treated=(0.906, 0.916, 0.911), recorded=None,
               hypothesis="Prediction registered: parity.", status="open", metric_key="acc",
               protocol_extra="", arms_extra="", results_extra="", extra="", results=True, id="001-toy"):
     text = SPEC.format(id=id, status=status, hypothesis=hypothesis, metric_key=metric_key,
@@ -151,6 +151,54 @@ def test_no_floor_declared_is_not_applicable(repo):
     assert audit.floor_both_arms(load(repo, spec_text())).state == NA
 
 
+AGAINST_THE_FLOOR = """\
+[experiment]
+id = "001-toy"
+status = "open"
+title = "a single run against a published reference, the base spec's shape"
+hypothesis = "Prediction registered: 0.29."
+issue = 999
+
+[protocol]
+metric_key = "acc"
+
+[execution]
+command = ["python", "-m", "x"]
+seeds = [0]
+
+[arms.run]
+role = "treatment"
+flags = []
+
+[arms.reference]
+role = "floor"
+constant = true
+
+[results.p]
+reference = { mean = 0.3256, sigma = 0.0, n = 1 }
+run = [0.2036]
+
+[criteria.misses]
+rule = "loses"
+treatment = "run"
+control = "reference"
+sigmas = 0.0
+min_delta = 0.05
+points = ["p"]
+
+[verdict]
+kill_if = ["misses"]
+"""
+
+
+def test_a_kill_measured_against_the_floor_arm_is_not_a_shared_failure(repo):
+    """The base run's gate compares one run with a constant reference declared as its
+    floor. Missing it by 0.12 is the verdict, not both arms failing together."""
+    a = load(repo, AGAINST_THE_FLOOR)
+    assert a.verdict.outcome == "KILL"
+    assert audit.floor_both_arms(a).state == GREEN
+
+
 # --- seeds-complete -------------------------------------------------------------------
 
 def test_a_missing_seed_is_red_until_marked_void(repo):
@@ -164,6 +212,28 @@ def test_a_missing_seed_is_red_until_marked_void(repo):
         reason = "seed 2 OOMed at step 40; re-registered as 002"
     """)))
     assert audit.seeds_complete(voided).state == GREEN
+
+
+def staged_spec_text(margin):
+    """The toy spec as a two-look parity pair (#604): three seeds, then six."""
+    return (spec_text(extra="[stages]\nseeds = [3, 6]\n")
+            .replace("seeds = [0, 1, 2]", "seeds = [0, 1, 2, 3, 4, 5]")
+            .replace('rule = "within"\ntreatment = "treated"\ncontrol = "control"\nsigmas = 2.0',
+                     f'rule = "equivalent"\ntreatment = "treated"\ncontrol = "control"\nsigmas = 0.0\n'
+                     f'margin = {margin}'))
+
+
+def test_a_staged_spec_that_settled_at_look_1_counts_look_1s_seeds(repo):
+    a = load(repo, staged_spec_text(margin=0.05))
+    assert (a.verdict.look.index, a.verdict.settled) == (1, True)
+    assert audit.seeds_complete(a).state == GREEN
+
+
+def test_a_staged_spec_that_did_not_settle_at_look_1_owes_look_2s_seeds(repo):
+    a = load(repo, staged_spec_text(margin=0.016))
+    assert (a.verdict.look.index, a.verdict.settled) == (1, False)
+    s = audit.seeds_complete(a)
+    assert s.state == RED and "control at p: 3 of 6" in s.reason
 
 
 def test_a_void_without_a_reason_does_not_count(repo):
@@ -186,7 +256,8 @@ def test_noise_ten_times_the_gap_on_a_carrying_criterion_is_noted_not_red(repo):
     assert a.verdict.outcome == "KEEP"
     s = audit.sigma_plausible(a)
     assert s.state == GREEN and "no difference the measurement could see" in s.reason
-    assert audit.sigma_plausible(load(repo, spec_text())).reason == ""  # a resolved gap gets no note
+    resolved = spec_text(treated=(0.92, 0.93, 0.91))  # a 1σ gap
+    assert audit.sigma_plausible(load(repo, resolved)).reason == ""
 
 
 MARGIN_SPEC = """\
@@ -289,6 +360,107 @@ def test_a_control_seed_at_the_cap_is_red_until_voided(repo):
 
 def test_an_accuracy_metric_has_no_target_to_reach(repo):
     assert audit.control_reached_target(load(repo, spec_text())).state == NA
+
+
+# --- target-reached-late (#547) --------------------------------------------------------
+
+EARLY = dict(metric_key="tokens_to_target_M", protocol_extra="cap = 67.1",
+             control=(18.8, 18.9, 18.9), treated=(13.6, 13.6, 13.7))
+
+
+def test_a_target_the_control_reaches_in_the_first_half_is_red(repo):
+    """#361: the control reached 5.85 at 18.9M of 67.1M tokens; the bar judged the start."""
+    s = audit.target_reached_late(load(repo, spec_text(**EARLY)))
+    assert s.state == RED and "judges the start" in s.reason
+
+
+def test_a_target_near_the_controls_endpoint_is_green(repo):
+    late = {**EARLY, "control": (58.0, 59.0, 60.0), "treated": (55.0, 56.0, 57.0)}
+    assert audit.target_reached_late(load(repo, spec_text(**late))).state == GREEN
+
+
+def test_a_spec_registered_before_the_rule_is_grandfathered(git_repo):
+    path = write_spec(git_repo, spec_text(**EARLY))
+    git(git_repo, "add", "."), git(git_repo, "commit", "-qm", "the 512-step pairs", date="2026-10-03T12:00:00")
+    s = audit.target_reached_late(audit.load(path, git_repo))
+    assert s.state == GRANDFATHERED and "2026-10-03" in s.reason
+
+
+def test_a_metric_with_no_cap_has_no_target_to_place(repo):
+    assert audit.target_reached_late(load(repo, spec_text())).state == NA
+
+
+# --- holds-at-seed-count ------------------------------------------------------------------
+
+def test_a_parity_keep_on_a_gap_three_seeds_cannot_resolve_is_red(repo):
+    """One sigma apart with three seeds a side: `within 2σ` holds, but the gap's 90%
+    interval reaches past the margin, so parity was never shown (#599)."""
+    a = load(repo, spec_text(treated=(0.92, 0.93, 0.91)))
+    assert a.verdict.outcome == "KEEP"
+    s = audit.holds_at_seed_count(a)
+    assert s.state == RED and "parity not shown" in s.reason and "3+3 seeds" in s.reason
+
+
+def test_a_parity_keep_inside_the_margin_at_its_seed_count_is_green(repo):
+    assert audit.holds_at_seed_count(load(repo, spec_text())).state == GREEN
+
+
+def test_a_two_seed_kill_at_two_sigma_is_short_of_the_bar(repo):
+    """2σ is p 0.09 with two seeds a side: the sigma bar holds, the t-test does not."""
+    a = load(repo, spec_text(control=(0.90, 0.92), treated=(0.871, 0.891)))
+    assert a.verdict.outcome == "KILL"
+    s = audit.holds_at_seed_count(a)
+    assert s.state == RED and "short of the bar" in s.reason and "2+2 seeds" in s.reason
+
+
+ANY_SPEC = """\
+[experiment]
+id = "002-any"
+title = "two points, either will do"
+hypothesis = "Prediction registered: a win at one point."
+
+[arms.control]
+role = "control"
+[arms.treated]
+role = "treatment"
+
+[criteria.wins]
+rule = "beats"
+treatment = "treated"
+control = "control"
+sigmas = 2.0
+min_delta = 1.0
+points = ["quantized", "noisy"]
+require = "any"
+
+[verdict]
+keep_if = ["wins"]
+
+[results.quantized]
+control = [10.0, 10.0, 10.0]
+treated = [12.0, 12.0, 12.0]
+
+[results.noisy]
+control = [0.0, 1.4142]
+treated = [2.2, 3.6142]
+"""
+
+
+def test_a_sigma_zero_point_that_carried_a_require_any_is_not_overruled(repo):
+    """The quantized point holds on its registered margin and has no p; the noisy
+    one holds weakly. Either was enough, so the weak one is not the verdict's basis."""
+    a = load(repo, ANY_SPEC, name="002-any.toml")
+    assert a.verdict.outcome == "KEEP"
+    noisy = next(p for p in a.verdict.criteria[0].points if p.point == "noisy")
+    assert noisy.holds and noisy.p > 0.05  # 2.2σ on two seeds a side
+    assert audit.holds_at_seed_count(a).state == GREEN
+
+
+def test_a_spec_registered_before_the_t_test_rule_is_grandfathered(git_repo):
+    path = write_spec(git_repo, spec_text(treated=(0.92, 0.93, 0.91)))
+    git(git_repo, "add", "."), git(git_repo, "commit", "-qm", "a parity pair", date="2026-10-03T12:00:00")
+    s = audit.holds_at_seed_count(audit.load(path, git_repo))
+    assert s.state == GRANDFATHERED and "2026-10-03" in s.reason and "p " in s.reason
 
 
 # --- prediction-registered / verdict-current ---------------------------------------------
@@ -481,8 +653,8 @@ def test_the_scope_map(repo):
 
 def test_the_rule_names_are_the_ones_the_issue_registers(repo):
     result = states(repo, load(repo, spec_text()))
-    assert list(result) == ["floor-both-arms", "control-reached-target", "seeds-complete", "sigma-plausible",
-                            "prediction-registered", "criteria-predate-results", "verdict-current",
+    assert list(result) == ["floor-both-arms", "control-reached-target", "target-reached-late", "seeds-complete", "sigma-plausible",
+                            "holds-at-seed-count", "prediction-registered", "criteria-predate-results", "verdict-current",
                             "finding-cites-spec", "run-ended-by-budget"]
 
 

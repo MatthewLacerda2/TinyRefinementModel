@@ -22,7 +22,7 @@ ambiguity), then the tools (to code, research, investigate, and log), then the m
 ## Stage 1 — before the base run (the `base-gate` label)
 
 Everything that can be judged now **and only pays if the run has it** lands first
-(`CLAUDE.md`, "Before a base run launches"). `gh issue list --label base-gate` is the
+(`.claude/skills/training-runs`, "Before a base run"). `gh issue list --label base-gate` is the
 checklist; it has to be empty, or its leftovers waived by the owner by name. Grouped:
 
 - **Correctness of what the model learns.** Model and trainer bugs whose fix changes the
@@ -34,16 +34,20 @@ checklist; it has to be empty, or its leftovers waived by the owner by name. Gro
   shape (a layer, batch 2, a longer window), speed decides how many tokens the run's
   days buy.
 - **The recipe.** Adopt the measured recipe as the default; decide the shape (8 layers +
-  batch 2, 9 layers, a 1024 window); decide how the run anneals and stops (WSD, to the
-  owner's rule: val CE < 3.6 or 10 days, whichever first); and check that the winning
+  batch 2, 9 layers — a 1024 window does not fit, #385); decide how the run anneals and
+  stops (WSD, to the owner's rule: a val-CE target or 10 days, whichever first — the
+  "< 3.6" first named came from the champion's 4-row probe, which the 64-row probe does
+  not reproduce (#184), so the number is re-stated on the new probe before launch, or
+  the stop is #386's rule: two consecutive decay branches within the noise); and check that the winning
   recipe still wins on the mixture the long run actually ends on (65% code and math),
   since every recipe pair so far trained on the start of the ramp.
 - **Surviving the week.** The run comes back by itself after a power cut; milestones
   do not fill the disk.
 
 Measured on the card as matched pairs, each run under 24h and as many as a question
-needs (the standing permission). The reference model is **SmolLM2-135M** on LAMBADA;
-GPT-2-small's published number only calibrates the yardstick.
+needs (the standing permission). On LAMBADA, **GPT-2-small** is the gate the base spec
+judges against (what our size reaches on our budget) and **SmolLM2-135M** is the neighbour
+(what it reaches with ~200× the data) — `CLAUDE.md`, "The base-model bar".
 
 ## Stage 2 — the base run
 
@@ -60,9 +64,13 @@ selectable only until then); extend the context (train short, then a brief phase
 longer window); then the work that needs a capable base — inference speed, SFT, RL.
 
 ## Far future
-- **RL post-training** — #29: preference / reasoning elicitation. On the AGI path but
-  out of sequence — you RL on a base that already has capability to elicit; revisit
-  only after pretraining + scaling produce a base worth aligning.
+- **RL post-training** — #29: the model learns to code by coding, against tests, with
+  no model judging the answer. The *loop* waits for a base with something to elicit;
+  the *world* does not — the task generator, sandbox verifier and pass@k readout (#440)
+  are CPU-lane tools, and the first question the loop needs, at what share of code
+  pretraining the initial pass rate leaves the floor (#441), is a pair against the
+  champion. Rollouts dominate RL compute, so the KV cache (#153 / PR #302) sits on
+  this line's critical path.
 
 ## Explicitly NOT planned
 - bf16 *compute*: no tensor-core bf16 on Turing — f16 compute policy stands.
@@ -74,12 +82,45 @@ longer window); then the work that needs a capable base — inference speed, SFT
   (#38) uses. Bonus = dead; grade = allowed.
 - Chasing Chinchilla token counts as a target: it's a compute-allocation result,
   not a quality threshold; for a fixed model size it prescribes nothing.
+- **Long-context / serving attention work — MLA, Kimi Delta Attention (gated linear
+  attention), LatentMoE**: not killed, *scale-conditional*. Each pays only where
+  sequence length dominates compute or KV-cache bytes are the constraint. At
+  MAX_SEQ_LEN 512 attention is ~8% of block FLOPs (#291, which killed chunked
+  attention for exactly this reason), generation has no KV cache to shrink yet
+  (#153), and MoE at 138M dense params on 6 GB is not a trade that exists. Revisit
+  if the context widens (#435) or the champion is ever served. **NoPE**, from the
+  same Kimi K3 list, is scale-free and is filed as an idea (#444) rather than
+  ruled out here.
 
 ## Graveyard
 Killed ideas and closed post-mortems, with reasons, so they stay dead. New
 tombstones land here — rule 5 of the working agreement sends every non-novel
 result that killed or gates something to this section, one line each, linking
 its PR.
+
+- **A deep-narrow shape for the next base run (#433)** — not adopted 2026-10-09 by the
+  owner; the base run stays 8 × 960. MobileLLM and SmolLM2 favour depth at equal
+  *tokens*; on the 2060 we pay in *wall-clock*. Real loop, batch 2, `profile_step --pace`:
+  8 × 960 13.08 s per opt step (arena peak 3757 MiB), 10 × 960 15.82 (4402),
+  21 × 640 17.17 (4515), 27 × 576 19.88 (4821, ~60 MiB from the limit), 30 × 576 does
+  not fit. 27 × 576 has 8 × 960's parameters at 1.52× the time per token, so a
+  fixed-length run reads about a third fewer tokens and has no room left for telemetry.
+  **Not killed:** whether depth beats those tokens on our card is an `architecture`
+  pair, never measured.
+
+- **Moving the micro-step's decisions onto the device (#411, stage 2)** — not built
+  2026-10-09, closed at stage 1 (PR #418, ~1%, merged as a cleanup). The idea: run the
+  finiteness check, the loss-scale update, the grad-guard ceiling and the non-finite
+  skip on the GPU, so the host reads one small state per opt step instead of loss and
+  grad norm every micro-step. Its ceiling, measured before building by replacing every
+  per-micro-step readback with a constant (`profile_step --pace`, 8 × 960, batch 2):
+  13.91/14.08 → 12.83/12.81 s per opt step, **8.4%**, against a pre-registered 8% bar.
+  A real version adds device work back and would land at ~7%; it would also move the
+  guard EMA from f64 on the host to f32 on the device (a rare clip can flip) and put
+  the scaler and the skip inside the jitted hot path, where #533 already cost us once.
+  **Worth reopening if** the readback's share grows: a smaller model, a faster card, or
+  more host work per micro-step. Re-measure the ceiling first, the same way (#411's
+  last comment has the two-line probe).
 
 - **SFT-on-plateau flip** — removed 2026-09-16 (#323), non-novel. The one time it
   fired, at opt step 5,055 of #157's 30,518, it killed that launch (CE 3.31 → 8.57,
@@ -97,11 +138,28 @@ its PR.
   the tree task the mechanism was designed for, depth 1 already solves every nesting
   level the setup can learn (#246). Full record:
   `docs/findings/2026-09-12-depth-recurrence-is-suppressed-not-exploited.md`.
-  **Not killed:** the mechanism on tasks that need cumulative computation, and
-  `MODEL_ARCH=refiner` itself, which is kept selectable the way `reasoner` is.
+  **Not killed:** the mechanism on tasks that need cumulative computation.
   `experiments/depth/eval_refiner_finetune.py`, the Stage-2 transfer probe this
   answered, removed 2026-09-16 (#321); `experiments/depth/playground.py`, the
   by-eye depth-sweep generator nothing ran any more, removed 2026-09-16 (#314).
+
+- **Zero-initialising the attention output projection (#361)** — not adopted 2026-10-04
+  by the owner, knob `ZERO_INIT_ATTN_OUT` removed with #292's merge. The 512-step pair
+  (PR #538) leads by 1.5 nats at step 8, crosses at ~270 and ends 0.086 val CE worse
+  (3 seeds); its tokens-to-5.85 bar said KEEP only because 5.85 falls in the first
+  quarter of the run (#547). Full record:
+  `docs/findings/2026-10-04-zero-init-attention-output-starts-fast-and-ends-worse.md`.
+
+- **The refiner and the reasoner as code** — removed 2026-10-04 (#292), once a plain
+  base run (`run_20260920_191351`) replaced the 4B refiner champion. Both had stayed
+  only as checkpoint loaders. The reasoner's cross-window hunch was inert from the start
+  (`docs/findings/2026-06-13-cross-window-hunch-inert.md`). Gone with them: the
+  `MODEL_ARCH` selector and every refiner/reasoner knob, the model contract's depth,
+  carried-state and auxiliary-loss hooks (and the data loader's document-boundary flag
+  that fed them), `experiments/depth/` and `experiments/scratchpad/` code (their
+  `specs/` stay as the record their findings cite), the depth-only instruments and
+  their guards, and the six metrics columns only those arches filled. A retired card's
+  weights still load from its SHA-pinned commit.
 
 - **Chunked (blockwise) attention on the live block** — KILLED 2026-08-03, apparatus
   removed 2026-09-15 (#291). Measured on the card against stock

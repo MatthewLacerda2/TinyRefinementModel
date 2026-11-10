@@ -81,47 +81,78 @@ def named_by_path(path: pathlib.PurePosixPath, repo: pathlib.Path) -> set[str]:
     return hits
 
 
+def kind_of(path: pathlib.PurePosixPath) -> str:
+    """What a changed path is to the selection: "doc" (reaches no test by import),
+    "test" (a test file: selects itself), "module" (follow what imports it), or
+    "suite" (nothing to reason with: run everything)."""
+    if path.suffix in DOC_SUFFIXES or (path.parts and path.parts[0] == "docs"):
+        return "doc"
+    if path.suffix != ".py":
+        return "suite"
+    if path.parts[0] == "tests":
+        if path.name == "conftest.py" or len(path.parts) < 3:
+            return "suite"
+        is_test = path.parts[1] in ("core", "apparatus") and path.name.startswith("test_")
+        return "test" if is_test else "suite"
+    return "module" if path.parts[0] in TREES else "suite"
+
+
+def import_graph(repo: pathlib.Path) -> dict[str, set[str]] | None:
+    """Every Python file a test can reach → the modules it imports; None when one does not parse."""
+    graph = {}
+    for tree in TREES + ("tests",):
+        for file in (repo / tree).rglob("*.py"):
+            if "__pycache__" in file.parts:
+                continue
+            found = imports_of(file)
+            if found is None:
+                return None
+            graph[file.relative_to(repo).as_posix()] = found
+    return graph
+
+
+def reached_from(modules: set[str], graph: dict[str, set[str]]) -> set[str]:
+    """The modules, and every repo module that imports one of them through any chain."""
+    reached, frontier = set(modules), set(modules)
+    while frontier:
+        frontier = {module_name(pathlib.Path(f)) for f, imps in graph.items()
+                    if not f.startswith("tests/") and imps & frontier} - reached
+        reached |= frontier
+    return reached
+
+
+def tests_importing(modules: set[str], repo: pathlib.Path) -> set[str]:
+    """Test files that import any of the modules, directly or through a chain. Empty
+    when a file does not parse, which breaks the graph, as much as when nothing does."""
+    graph = import_graph(repo)
+    if graph is None:
+        return set()
+    reached = reached_from(modules, graph)
+    return {f for f, imps in graph.items()
+            if f.startswith(("tests/core/", "tests/apparatus/")) and pathlib.Path(f).name.startswith("test_")
+            and imps & reached}
+
+
 def select(changed: list[str], repo: pathlib.Path = REPO) -> list[str]:
     """pytest arguments covering every test the changed paths can reach."""
     tests, modules = set(), set()
     for rel in changed:
         path = pathlib.PurePosixPath(rel)
         tests |= named_by_path(path, repo)
-        if path.suffix in DOC_SUFFIXES or (path.parts and path.parts[0] == "docs"):
-            continue
-        if path.suffix != ".py":
+        kind = kind_of(path)
+        if kind == "suite":
             return SUITE
-        if path.parts[0] == "tests":
-            if path.name == "conftest.py" or len(path.parts) < 3:
-                return SUITE
-            if path.parts[1] in ("core", "apparatus") and path.name.startswith("test_"):
-                tests.add(rel)
-                continue
-            return SUITE
-        if path.parts[0] not in TREES:
-            return SUITE
-        modules.add(module_name(pathlib.Path(rel)))
+        if kind == "test":
+            tests.add(rel)
+        elif kind == "module":
+            modules.add(module_name(pathlib.Path(rel)))
 
     if modules:
-        graph = {}
-        for tree in TREES + ("tests",):
-            for file in (repo / tree).rglob("*.py"):
-                if "__pycache__" in file.parts:
-                    continue
-                found = imports_of(file)
-                if found is None:
-                    return SUITE
-                graph[file.relative_to(repo).as_posix()] = found
-        reached, frontier = set(modules), set(modules)
-        while frontier:
-            frontier = {module_name(pathlib.Path(f)) for f, imps in graph.items()
-                        if not f.startswith("tests/") and imps & frontier} - reached
-            reached |= frontier
-        hits = {f for f, imps in graph.items()
-                if f.startswith(("tests/core/", "tests/apparatus/")) and pathlib.Path(f).name.startswith("test_")
-                and imps & reached}
+        hits = tests_importing(modules, repo)
         if not hits:
-            return SUITE  # nothing imports it by name: it may be run as a module, so assume everything
+            # A file that does not parse, or nothing imports it by name: it may be run
+            # as a module, so assume everything.
+            return SUITE
         tests |= hits
     return sorted(tests)
 

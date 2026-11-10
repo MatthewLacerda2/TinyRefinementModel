@@ -4,14 +4,17 @@ import ast
 import datetime
 import json
 import pathlib
-import re
 
 import pytest
 
 from trm.runtime import rewind as rw
 from trm.runtime.layout import BEST_SUBDIR
+from trm.settings import CONFIG, Config
 
 ACCUM = 128
+# A config whose opt step is ACCUM micro-steps, as the step numbers below assume.
+CFG = Config.from_env({"BATCH_SIZE": "1"})
+assert CFG.ACCUMULATION_STEPS == ACCUM
 
 
 def _ckpt(directory, opt_step, finalized=True):
@@ -32,27 +35,6 @@ def test_listing_reads_opt_steps_from_disk(tmp_path):
     assert [(c.step, c.opt_step) for c in found] == [(630783, 4928), (638975, 4992), (647167, 5056)]
 
 
-# --- a checkpoint from the retired SFT phase is refused, not resumed (#323) ----
-
-def test_a_pretraining_monitor_state_resumes_with_or_without_the_legacy_phase_fields():
-    """Checkpoints written before #323 carry sft_active/sft_start_step; new ones
-    carry neither. Both read as pretraining."""
-    rw.refuse_sft_phase_resume({"samples_seen": 5}, 638975, "ckpts", ACCUM)
-    rw.refuse_sft_phase_resume({"sft_active": False, "sft_start_step": None}, 638975, "ckpts", ACCUM)
-
-
-def test_an_sft_phase_monitor_state_is_refused_and_names_the_rewind():
-    """A flip at micro-step 647,167 (opt step 5,056). Resuming a checkpoint past
-    it as pretraining would silently change the mixture and the LR, so the loader
-    stops and points at the last clean opt step."""
-    with pytest.raises(SystemExit) as refused:
-        rw.refuse_sft_phase_resume({"sft_active": True, "sft_start_step": 647167},
-                                   655359, "runs/run_X/checkpoints", ACCUM)
-    message = str(refused.value)
-    assert "655359" in message and "647167" in message
-    assert "python -m trm.runtime.rewind runs/run_X/checkpoints --to-opt-step 5056" in message
-
-
 def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     """The on-disk check fires on the newest finalized checkpoint and writes
     nothing: run_metadata.json is byte-for-byte what it was."""
@@ -65,18 +47,39 @@ def test_a_refused_resume_leaves_the_run_untouched(tmp_path):
     _ckpt(checkpoints, 4992)
     newest = _ckpt(checkpoints, 5120)
     (newest / "monitor_state").mkdir()
-    (newest / "monitor_state" / "metadata").write_text(json.dumps({"sft_start_step": 5056 * ACCUM - 1}))
+    (newest / "monitor_state" / "metadata").write_text(json.dumps({**PRETRAINING, "sampels_seen": 5}))
     _ckpt(checkpoints, 5184, finalized=False)   # a torn write is not what a resume loads
 
-    with pytest.raises(SystemExit, match="--to-opt-step 5056"):
-        rw.refuse_sft_phase_checkpoint_dir(checkpoints, ACCUM)
+    assert "sampels_seen" in rw.unresumable(checkpoints, CFG, "runs/data")
     assert metadata.read_bytes() == before
+
+
+# The smallest resume state ResumeState accepts: its fields without a default.
+PRETRAINING = {"run_id": "run_X", "ce_history": [3.4], "best_ce": 3.1, "best_loss": 3.2,
+               "best_avg_ce": 3.4, "last_improvement_step": 100}
+
+
+def _with_state(directory, opt_step, state):
+    path = _ckpt(directory, opt_step)
+    (path / "monitor_state").mkdir()
+    (path / "monitor_state" / "metadata").write_text(json.dumps(state))
+    return path
+
+
+def test_a_resume_state_resumestate_refuses_is_refused_from_disk_naming_the_field(tmp_path):
+    """#505: the misspelled key is named before a launch, not after a session."""
+    _with_state(tmp_path, 4992, PRETRAINING)
+    _with_state(tmp_path, 5056, {**PRETRAINING, "sampels_seen": 5})
+    why = rw.unresumable(tmp_path, CFG, "runs/data")
+    assert "sampels_seen" in why and f"checkpoint step {5056 * ACCUM - 1}" in why
 
 
 def test_a_pretraining_checkpoint_dir_passes_the_launch_check(tmp_path):
     _ckpt(tmp_path, 4992)
-    rw.refuse_sft_phase_checkpoint_dir(tmp_path, ACCUM)            # no monitor state: left to restore
-    rw.refuse_sft_phase_checkpoint_dir(tmp_path / "absent", ACCUM)  # a fresh run
+    assert rw.unresumable(tmp_path, CFG, "runs/data") is None             # no monitor state: left to restore
+    assert rw.unresumable(tmp_path / "absent", CFG, "runs/data") is None  # a fresh run
+    _with_state(tmp_path, 5056, PRETRAINING)
+    assert rw.unresumable(tmp_path, CFG, "runs/data") is None
 
 
 def test_the_trainer_refuses_before_it_starts_a_session():
@@ -88,20 +91,7 @@ def test_the_trainer_refuses_before_it_starts_a_session():
         if isinstance(node, ast.Call):
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             lines[name] = min(lines.get(name, node.lineno), node.lineno)
-    assert lines["refuse_sft_phase_checkpoint_dir"] < lines["start_session"]
-
-
-def test_the_suggested_rewind_lands_on_the_last_pretraining_checkpoint(tmp_path):
-    """The checkpoint saved on the flip's own boundary was written before the flip,
-    so it is clean; the suggested opt step must select it and nothing later."""
-    for opt in (4992, 5056, 5120):
-        _ckpt(tmp_path, opt)
-    flip_micro_step = 5056 * ACCUM - 1
-    with pytest.raises(SystemExit) as refused:
-        rw.refuse_sft_phase_resume({"sft_start_step": flip_micro_step}, 5120 * ACCUM - 1, tmp_path, ACCUM)
-    to_opt_step = int(re.search(r"--to-opt-step (\d+)", str(refused.value)).group(1))
-    chosen = rw.resolve(rw.checkpoints_in(tmp_path, ACCUM), to_opt_step)
-    assert chosen.step == flip_micro_step
+    assert lines["unresumable"] < lines["start_session"]
 
 
 def test_rewind_sets_aside_newer_checkpoints_in_both_dirs_and_deletes_nothing(tmp_path):
@@ -140,6 +130,7 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     import optax
     import orbax.checkpoint as ocp
     from flax import nnx
+
     from trm.runtime.checkpoints import save_checkpoint
     from trm.runtime.layout import CHECKPOINT_ITEMS, ROLLING_KEEP
     from trm.runtime.monitor import LossMonitor
@@ -147,6 +138,16 @@ def test_orbax_refusing_a_save_is_an_error_not_silence(tmp_path, tiny_model):
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     mngr = ocp.CheckpointManager(str(tmp_path), item_names=CHECKPOINT_ITEMS,
                                  options=ocp.CheckpointManagerOptions(max_to_keep=ROLLING_KEEP, create=True))
-    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor(), "run_x")
+    save_checkpoint(mngr, 300, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
     with pytest.raises(RuntimeError, match="trm.runtime.rewind"):
-        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor(), "run_x")
+        save_checkpoint(mngr, 200, tiny_model, optimizer, LossMonitor.of(CONFIG), "run_x")
+
+
+def test_a_data_position_from_another_corpus_is_refused_from_disk(tmp_path):
+    """#607: refused before a launch, so the supervisor stops instead of relaunching
+    into the trainer's same refusal twice, then GAVE_UP."""
+    _with_state(tmp_path, 5056, {**PRETRAINING, "data_state": {"sources": []}})
+    assert "DATA_MIXTURE" in rw.unresumable(tmp_path, CFG, "runs/data"), "a nameless state is the legacy mix's"
+    why = rw.unresumable(tmp_path, CFG, "runs/data-dedup")
+    assert "corpus 'data'" in why and "'data-dedup'" in why
+

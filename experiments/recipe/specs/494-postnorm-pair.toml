@@ -1,0 +1,99 @@
+# PRE-REGISTERED. Criteria committed before any run of this spec; git records the order.
+
+[experiment]
+id = "494-postnorm"
+status = "open"
+title = "POST_NORM (sandwich norm on each branch's output) vs none, on the shipped plain recipe"
+hypothesis = """
+POST_NORM normalizes each residual branch's OUTPUT before it is added back (Gemma 2's
+sandwich norm). It bounds the quantity that reached 64,896 of f16's 65,504 on the
+champion (#235). It was judged once, on the refiner toy, and killed only as a rescue
+for depth recurrence (#238); it has never run on the architecture we ship.
+
+Prediction registered: parity or a small loss at 512 steps (two more norms per block,
+about +2% wall-clock), no KILL. Its reason to exist is the act_max trajectory on a long
+run, and #357's f32 stream may make it redundant.
+"""
+issue = 494
+
+[protocol]
+floor_note = """
+Tokens to a target, capped at the run (67.1M): an arm that never reaches 5.85 reports
+the cap. The floor is the seeds' own spread (#382's Muon arms reached 5.85 within one
+probe interval of each other, 8 opt steps = 1.05M tokens).
+"""
+cap = 67.108864
+metric_key = "tokens_to_target_M"
+metric = "millions of tokens to the first validation probe at or below held-out CE 5.85 (lower is better)"
+matched = "same seed => same init and same data order (MODEL_SEED = DATA_SEED = seed), same commit, same recipe; only POST_NORM differs; the control arm is shared with the other two pairs (#361 #375 #494), all run from one commit on main after PR A's smoke passed and it merged"
+notes = """
+Recipe: today's base-run shape and recipe, from main after the settled adoptions merged
+(PR A: #357 f32 residual stream, #359 Adam b2 0.95, #369 z-loss 1e-4): plain, 8 x 960
+at batch 2 (#385), Muon x16.667 on a 6e-4 schedule, warmup 100, the mixture ramp
+budget-relative (#362), val every 8 on 64 rows, val_step-aligned (#351), pad 50257
+(#373, adopted). All of that in both arms. Both arms are new runs.
+Ported from PR #432 (2026-09-19), whose recipe was 9 x 960 at batch 1, pad 50256: only
+the shared recipe moved to today's; the hypothesis, prediction, criteria and bars are
+unchanged, and no run of the old version exists.
+min_delta = 0.85M tokens, 5% of the ~17M the recipe needs: the same bar as #373/#359.
+"""
+
+[execution]
+command = ["python", "-m", "experiments.recipe.tokens_to_ce",
+           "--target-ce", "5.85", "--opt-steps", "512", "--val-every", "8",
+           "--optimizer", "muon", "--lr-mult", "16.666667", "--peak-lr", "6e-4",
+           "--tag", "k3"]
+seeds = [0, 1, 2]
+seed_flag = "--seed"
+env = { EVAL_ROWS = "64" }
+
+[arms.control]
+role = "control"
+# Shared by the three pairs of #361/#375/#494: main's model and recipe, no
+# knob set, same tag, so each spec after the first reads the recorded runs.
+flags = []
+
+[arms.post_norm]
+role = "treatment"
+flags = ["--set", "POST_NORM=1"]
+
+# Tokens: LOWER is better, so the treatment losing is its number being larger.
+[criteria.post_norm_needs_more_tokens]
+rule = "beats"
+treatment = "post_norm"
+control = "control"
+sigmas = 2.0
+min_delta = 0.85
+points = ["run"]
+require = "all"
+
+[criteria.post_norm_costs_nothing]
+rule = "within"
+treatment = "post_norm"
+control = "control"
+sigmas = 2.0
+points = ["run"]
+require = "all"
+
+[verdict]
+recorded = "INCONCLUSIVE"
+keep_if = ["post_norm_costs_nothing"]
+kill_if = ["post_norm_needs_more_tokens"]
+
+[readouts]
+notes = """
+What each verdict means, written before the numbers: POST_NORM is NOT adopted on this
+pair alone. Anything but KILL records it as safe on the shipped recipe. #357's f32
+stream is adopted (both arms carry it), so the stream itself can no longer reach f16's
+ceiling; what POST_NORM still bounds is each branch's own f16 output, before the add.
+Whether that is worth a default is #494's call after this pair, read beside the next
+base run's act_max (#494: if #357/#360 flattened it, close wont-fix).
+KILL adds a graveyard line: POST_NORM costs tokens on plain.
+Readouts, no weight: act_max / act_rms per block (#392), where the mechanism shows;
+tok/s; final_val_ce at the cap.
+"""
+
+# --- Results (per seed, written by instruments/experiment.py; metric = tokens_to_target_M) ---
+[results.run]
+control = [18.8744, 18.8744, 18.8744]
+post_norm = [14.6801, 14.6801, 14.6801]

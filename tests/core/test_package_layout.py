@@ -8,7 +8,8 @@ The folders are a declaration of *kind*, and kind implies a direction:
 
 `trm/` must not import from either leaf tree, or the library acquires a
 dependency on something CLAUDE.md rule 6 will one day delete in a single diff.
-And one research line must not import another, or "kill the folder, kill the
+`instruments/` must not import `experiments/` for the same reason: permanent gear
+cannot lean on a line that dies. And one research line must not import another, or "kill the folder, kill the
 line" stops being a local operation.
 
 Prose conventions rot. This is the same species as the tier guard in
@@ -61,6 +62,16 @@ def test_library_never_imports_from_the_leaf_trees(path):
     assert not leaked, (
         f"{path.relative_to(REPO_ROOT)} imports {leaked}. trm/ must not depend on a "
         f"tree that gets deleted with its research line — move the shared piece into trm/."
+    )
+
+
+@pytest.mark.parametrize(
+    "path", _module_files("instruments"), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_instruments_never_import_a_research_line(path):
+    leaked = sorted(name for name in _imported_roots(path) if name.split(".")[0] == "experiments")
+    assert not leaked, (
+        f"{path.relative_to(REPO_ROOT)} imports {leaked}. instruments/ is permanent and a "
+        f"research line dies with its tombstone — move the shared piece into trm/ or instruments/."
     )
 
 

@@ -19,6 +19,7 @@ from flax import nnx
 
 from trm.runtime import checkpoints as ck
 from trm.runtime.monitor import LossMonitor
+from trm.settings import CONFIG
 
 
 def _leaves(tree):
@@ -26,11 +27,11 @@ def _leaves(tree):
 
 
 def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_it(tmp_path):
-    from instruments.arch import build
+    from trm.model import build_model
 
-    model = build("plain", dim=60, num_layers=2)
+    model = build_model(CONFIG, nnx.Rngs(0), dim=60, num_layers=2)
     optimizer = nnx.Optimizer(model, optax.adam(1e-2), wrt=nnx.Param)
-    monitor = LossMonitor()
+    monitor = LossMonitor.of(CONFIG)
     monitor.ce_history = [3.0, 2.9]
     snapshot = _leaves(nnx.state(model))
 
@@ -42,12 +43,12 @@ def test_an_async_write_restores_the_state_at_save_time_while_training_mutates_i
     monitor.ce_history.append(2.8)
     ck.wait_for_pending_saves()
 
-    fresh = build("plain", dim=60, num_layers=2, seed=5)
+    fresh = build_model(CONFIG, nnx.Rngs(5), dim=60, num_layers=2)
     restored = mngr.restore(10, args=ocp.args.Composite(
         model=ocp.args.StandardRestore(nnx.state(fresh)),
         optimizer=ocp.args.StandardRestore(nnx.state(nnx.Optimizer(fresh, optax.adam(1e-2), wrt=nnx.Param))),
         monitor_state=ocp.args.JsonRestore(), step=ocp.args.JsonRestore()))
-    assert all(np.array_equal(a, b) for a, b in zip(snapshot, _leaves(restored["model"])))
+    assert all(np.array_equal(a, b) for a, b in zip(snapshot, _leaves(restored["model"]), strict=True))
     assert restored["monitor_state"]["ce_history"] == [3.0, 2.9], "history as of the save, not after"
 
 
@@ -72,8 +73,8 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
     optimizer = nnx.Optimizer(tiny_model, optax.sgd(0.0), wrt=nnx.Param)
     log = []
     rolling, best = _Manager(log, "rolling"), _Manager(log, "best")
-    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
-    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor(), "r", wait=False)
+    ck.save_checkpoint(rolling, 1, tiny_model, optimizer, LossMonitor.of(CONFIG), "r", wait=False)
+    ck.save_checkpoint(best, 1, tiny_model, optimizer, LossMonitor.of(CONFIG), "r", wait=False)
     ck.wait_for_pending_saves()
     assert log == ["rolling.save", "rolling.wait", "best.save", "best.wait"]
 
@@ -81,9 +82,10 @@ def test_only_one_write_is_in_flight_so_host_ram_holds_one_copy(tmp_path, monkey
 def test_the_trainer_saves_asynchronously_and_waits_on_the_way_out():
     import ast
     import inspect
-    from trm.train import trainer
 
-    tree = ast.parse(inspect.getsource(trainer.train_loop))
+    from trm.train import loop
+
+    tree = ast.parse(inspect.getsource(loop.TrainLoop))
     saves = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "save_checkpoint"]
     assert saves and all(any(k.arg == "wait" and k.value.value is False for k in c.keywords) for c in saves)
     finals = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
@@ -103,6 +105,10 @@ def test_sigterm_unwinds_so_a_pending_write_can_finish(tmp_path):
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(30)
         finally:
+            # A second TERM (a session-wide one, then the supervisor's stop, #516)
+            # must not abort the unwinding the first one started.
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(0.2)
             open({str(marker)!r}, "w").write("yes")
     """))
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

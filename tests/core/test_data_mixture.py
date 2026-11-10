@@ -1,0 +1,296 @@
+"""The training mixture is a named knob, and today's default is exactly today (#439).
+
+Every run used to read the same three sources through one hard-coded ramp, so a
+pair asking a question about prose still trained on 65% code and math by its end
+(#362), and nothing let a spec say otherwise. The mixture is now `DATA_MIXTURE`:
+buckets and weights, chosen in the spec, recorded in the run's metadata.
+
+Three things have to hold for that to be safe to adopt mid-project:
+
+- an unset environment resolves to the ramp every run so far trained with, down to
+  the last bit, or the change silently alters every future run;
+- two arms that differ only in their mixture differ in nothing else, or a mixture
+  pair is not a matched pair;
+- a resume refuses a data state written for a different mixture, and still accepts
+  one written before mixtures had names — the live base run's checkpoints are those.
+"""
+
+import json
+
+import numpy as np
+import pytest
+
+from trm.settings import CONFIG, LEGACY_DATA_MIXTURE, Config
+from trm.train import schedules
+from trm.train.schedules import Schedules
+
+# The ramp every run before #597 trained with, which the knob must still reproduce exactly.
+TODAY = Schedules.of(Config.from_env({"DATA_MIXTURE": LEGACY_DATA_MIXTURE}))
+
+STRIDE = 2 * CONFIG.MAX_SEQ_LEN + 1
+
+
+# ── today, exactly ───────────────────────────────────────────────────────────
+
+def _todays_curriculum(step, ramp_steps):
+    """The ramp as it was written before #439, with its literals, frozen here."""
+    start, end = [0.85, 0.10, 0.05], [0.35, 0.40, 0.25]
+    if step >= ramp_steps:
+        return list(end)
+    fraction = float(step) / ramp_steps
+    return [s + (e - s) * fraction for s, e in zip(start, end, strict=True)]
+
+
+def test_the_default_mixture_is_the_smol_playbook_mix_held_constant():
+    default = Schedules.of(Config.from_env({}))
+    assert default.sources == ("pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath")
+    assert default.start_weights == default.end_weights == [0.70, 0.20, 0.10]
+    assert all(default.curriculum_weights(s) == [0.70, 0.20, 0.10] for s in (0, 1, 10**6))
+
+
+def test_the_legacy_mixture_is_the_one_every_run_before_597_trained_with():
+    assert TODAY.sources == (
+        "pretrain/fineweb-edu", "pretrain/codeparrot", "pretrain/finemath")
+    assert TODAY.start_weights == [0.85, 0.10, 0.05]
+    assert TODAY.end_weights == [0.35, 0.40, 0.25]
+    assert Config.from_env({}).MIXTURE_RAMP_FRACTION == 10000 / 30518
+
+
+def test_the_default_ramp_reproduces_bit_for_bit():
+    """Not approximately: `==` on every weight at every step checked. A float that
+    moved in its last bit would change which corpus a multinomial draw picks."""
+    ramp = TODAY.curriculum_steps
+    for step in [0, 1, 7, ramp // 3, ramp // 2, ramp - 1, ramp, ramp + 1, 10 * ramp]:
+        assert TODAY.curriculum_weights(step) == _todays_curriculum(step, ramp), step
+
+
+# ── the knob ─────────────────────────────────────────────────────────────────
+
+def test_a_mixture_parses_into_buckets_and_both_ends_of_its_ramp():
+    buckets, start, end = schedules.parse_mixture("a/web=0.7:0.2, b/code=0.3:0.8")
+    assert buckets == ("a/web", "b/code")
+    assert start == [0.7, 0.3] and end == [0.2, 0.8]
+
+
+def test_a_single_weight_holds_for_the_whole_run():
+    buckets, start, end = schedules.parse_mixture("pretrain/fineweb-edu=1")
+    assert buckets == ("pretrain/fineweb-edu",) and start == end == [1.0]
+
+
+@pytest.mark.parametrize("text, why", [
+    ("a=0.5:0.5,b=0.4:0.5", "sum to"),        # a start column that does not sum to 1
+    ("a=0.5:0.6,b=0.5:0.5", "sum to"),        # nor an end one
+    ("a=-0.5,b=1.5", "negative"),
+    ("a=0.5,a=0.5", "twice"),
+    ("a=lots", "not a weight"),
+    ("just-a-name", "bucket=start:end"),
+    ("", "no bucket"),
+])
+def test_a_mixture_that_does_not_say_what_it_means_is_refused(text, why):
+    """At import, before a model is built. A renormalization nobody wrote down would
+    be a hidden default on the hot path, so a column that misses 1 is an error."""
+    with pytest.raises(SystemExit, match=why):
+        schedules.parse_mixture(text)
+
+
+def test_two_arms_that_differ_only_in_their_mixture_differ_in_nothing_else():
+    """The matched-pair property. Every other schedule the run reads must resolve the
+    same, so the mixture is the only variable a mixture pair moves."""
+    prose = Schedules.of(Config.from_env({"DATA_MIXTURE": "pretrain/fineweb-edu=1"}))
+    names = ["sources", "start_weights", "end_weights", "curriculum_steps", "decay_steps", "horizons"]
+    moved = {name for name in names if getattr(TODAY, name) != getattr(prose, name)}
+    assert moved == {"sources", "start_weights", "end_weights"}
+    assert [float(TODAY.learning_rate(s)) for s in (0, 500, 1000, 12_000, 15_000)] == \
+        [float(prose.learning_rate(s)) for s in (0, 500, 1000, 12_000, 15_000)], "the same LR"
+
+
+def test_the_run_records_the_mixture_it_read():
+    from trm.runtime.run_tracker import RunTracker
+    config = Config.from_env({"DATA_MIXTURE": "pretrain/fineweb-edu=1", "MIXTURE_RAMP_FRACTION": "0.5"})
+    recorded = RunTracker.get_hyperparameters(config)
+    assert recorded["DATA_MIXTURE"] == "pretrain/fineweb-edu=1"
+    assert recorded["MIXTURE_RAMP_FRACTION"] == 0.5
+
+
+
+# ── resuming ─────────────────────────────────────────────────────────────────
+
+def _corpus(root, name, base):
+    d = root / name
+    d.mkdir(exist_ok=True)
+    np.save(d / "chunk_0.npy", (np.arange(base, base + 6 * STRIDE) % 50000).astype(np.int32))
+    return str(d)
+
+
+def _mixer(tmp_path, names=("web", "code")):
+    from trm.data.loaders import DataMixer, TextDataGenerator
+    dirs = [_corpus(tmp_path, "web", 0), _corpus(tmp_path, "code", 20000)]
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
+                     [0.6, 0.4], rng=np.random.default_rng(11), names=names)
+
+
+def test_a_state_carries_the_names_of_its_buckets(tmp_path):
+    mixer = _mixer(tmp_path)
+    mixer.get_batch(1)
+    state = json.loads(json.dumps(mixer.state()))
+    assert state["names"] == ["web", "code"]
+    _mixer(tmp_path).load_state(state, legacy_names=())  # and the same mixture takes it back
+
+
+def test_a_state_written_for_another_mixture_is_refused(tmp_path):
+    """Same count, different buckets: a positional restore would put the code
+    reader's position onto a web shard and train on a stream nobody chose."""
+    state = _mixer(tmp_path, names=("web", "code")).state()
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
+        _mixer(tmp_path, names=("web", "math")).load_state(state, legacy_names=())
+
+
+def test_the_same_buckets_in_another_order_are_another_mixture(tmp_path):
+    state = _mixer(tmp_path, names=("web", "code")).state()
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
+        _mixer(tmp_path, names=("code", "web")).load_state(state, legacy_names=())
+
+
+def test_a_state_from_before_buckets_had_names_still_resumes(tmp_path):
+    """Checkpoints from before #439 carry no names. A run that kept their mixture still
+    picks up exactly where it stopped."""
+    reference = _mixer(tmp_path)
+    expected = [reference.get_batch(1) for _ in range(6)]
+
+    first = _mixer(tmp_path)
+    for _ in range(3):
+        first.get_batch(1)
+    legacy = json.loads(json.dumps(first.state()))
+    del legacy["names"]
+
+    resumed = _mixer(tmp_path)
+    resumed.load_state(legacy, legacy_names=("web", "code"))
+    for want in expected[3:]:
+        np.testing.assert_array_equal(np.asarray(resumed.get_batch(1)), np.asarray(want))
+
+
+# ── branching onto another mixture (#489) ────────────────────────────────────
+
+def _branch_mixer(tmp_path, names):
+    from trm.data.loaders import DataMixer, TextDataGenerator
+    bases = {"web": 0, "code": 20000, "math": 40000}
+    dirs = [_corpus(tmp_path, name, bases[name]) for name in names]
+    return DataMixer([TextDataGenerator(d, max_seq_len=CONFIG.MAX_SEQ_LEN, rng=np.random.default_rng(7)) for d in dirs],
+                     [1.0 / len(names)] * len(names), rng=np.random.default_rng(11), names=list(names))
+
+
+def _first_row(source):
+    return np.asarray(source.get_batch(1))[0]
+
+
+def test_a_branch_continues_each_bucket_it_read_and_starts_a_new_one_fresh(tmp_path):
+    """The point of a branch: the buckets the checkpoint read resume where they
+    stopped, so nothing is trained on twice, and a bucket it never read starts at
+    its first row."""
+    parent = _branch_mixer(tmp_path, ("web", "code"))
+    for _ in range(4):
+        parent.get_batch(1)
+    state = json.loads(json.dumps(parent.state()))
+    expected = {name: _first_row(source) for name, source in zip(parent.names, parent._all, strict=True)}
+
+    child = _branch_mixer(tmp_path, ("web", "math", "code"))
+    child.branch_state(state, legacy_names=())
+    web, math, code = child._all
+    np.testing.assert_array_equal(_first_row(web), expected["web"])
+    np.testing.assert_array_equal(_first_row(code), expected["code"])
+    # A fresh file opens at a random offset under one stride (the loader's boundary
+    # augmentation), so "its beginning" is its first stride.
+    assert 40000 <= _first_row(math)[0] < 40000 + STRIDE, "a bucket never read starts at its beginning"
+
+
+def test_a_state_without_names_is_read_by_the_legacy_mixture(tmp_path):
+    """The base run's checkpoints predate bucket names (#439); the default mixture's
+    order names their readers."""
+    parent = _branch_mixer(tmp_path, ("web", "code"))
+    for _ in range(3):
+        parent.get_batch(1)
+    state = json.loads(json.dumps(parent.state()))
+    del state["names"]
+    expected = _first_row(parent._all[1])
+
+    child = _branch_mixer(tmp_path, ("code",))
+    child.branch_state(state, legacy_names=("web", "code"))
+    np.testing.assert_array_equal(_first_row(child._all[0]), expected)
+
+
+def test_seeds_skip_to_disjoint_rows(tmp_path):
+    """Every seed branches from the same weights, so the data is the only thing that
+    can make two seeds differ; each reader skips `skip` rows first."""
+    state = json.loads(json.dumps(_branch_mixer(tmp_path, ("web",)).state()))
+    rows = []
+    for skip in (1, 3):
+        child = _branch_mixer(tmp_path, ("web",))
+        child.branch_state(state, legacy_names=(), skip=skip)
+        rows.append(_first_row(child._all[0]))
+    assert rows[1][0] - rows[0][0] == 2 * STRIDE
+
+
+def test_a_state_that_cannot_name_its_readers_is_refused(tmp_path):
+    state = json.loads(json.dumps(_branch_mixer(tmp_path, ("web", "code")).state()))
+    del state["names"]
+    with pytest.raises(ValueError, match="which reader"):
+        _branch_mixer(tmp_path, ("web",)).branch_state(state, legacy_names=("web",))
+
+
+def test_the_run_records_whether_it_branched():
+    from trm.runtime.run_tracker import RunTracker
+    recorded = RunTracker.get_hyperparameters(Config.from_env({"DATA_BRANCH": "1"}))
+    assert recorded["DATA_BRANCH"] is True
+    assert recorded["DATA_BRANCH_SEED_STRIDE"] == 80_000
+
+
+def test_a_nameless_state_is_refused_on_a_mixture_it_never_read(tmp_path):
+    """The default mixture moved (#597), so a state with no names is no longer the
+    default's: stack-edu's reader must not take codeparrot's position."""
+    legacy = json.loads(json.dumps(_mixer(tmp_path, names=("web", "code")).state()))
+    del legacy["names"]
+    with pytest.raises(ValueError, match="DATA_MIXTURE"):
+        _mixer(tmp_path, names=("web", "math")).load_state(legacy, legacy_names=("web", "code"))
+
+
+@pytest.mark.parametrize("state, root, refused", [
+    ({}, "runs/data", False),  # before the name was recorded: the old corpus
+    ({}, "/mnt/cold/data/", False),
+    ({}, "runs/data-dedup", True),  # a checkpoint of the old corpus on the rebuilt one
+    ({"corpus": "data-dedup"}, "runs/data-dedup", False),
+    ({"corpus": "data-dedup"}, "runs/data", True),
+])
+def test_a_data_position_is_only_read_on_the_corpus_it_came_from(state, root, refused):
+    from trm.data.stream_state import data_refusal
+    why = data_refusal(state, root, LEGACY_DATA_MIXTURE, branch=True)
+    assert ("corpus" in why) if refused else why is None
+
+
+def test_an_exact_resume_is_refused_on_a_mixture_it_was_not_written_for():
+    """Asked from disk (rewind.unresumable, #607) the same way DataMixer.load_state asks."""
+    from trm.data.stream_state import data_refusal
+    nameless = {"sources": []}
+    assert data_refusal(nameless, "runs/data", LEGACY_DATA_MIXTURE, branch=False) is None
+    assert "DATA_MIXTURE" in data_refusal(nameless, "runs/data", CONFIG.DATA_MIXTURE, branch=False)
+    named = {"corpus": "data-dedup", "names": ["pretrain/fineweb-edu", "pretrain/stack-edu", "pretrain/finemath"]}
+    assert data_refusal(named, "runs/data-dedup", CONFIG.DATA_MIXTURE, branch=False) is None
+    assert data_refusal(named, "", LEGACY_DATA_MIXTURE, branch=True) is None, \
+        "no DATA_ROOT: no corpus to judge, and the readers fail on the missing path first"
+
+
+@pytest.mark.parametrize("mixture", [CONFIG.DATA_MIXTURE, LEGACY_DATA_MIXTURE, "pretrain/a = 0.5, pretrain/b=0.5:0.5"])
+def test_the_jax_free_bucket_list_is_the_parsers(mixture):
+    from trm.data.stream_state import mixture_buckets
+    assert mixture_buckets(mixture) == list(schedules.parse_mixture(mixture)[0])
+
+
+def test_a_resume_on_another_corpus_stops_before_it_touches_a_reader(monkeypatch):
+    """Through resume_stream itself: this guard is what keeps an old checkpoint off the
+    rebuilt corpus, whose fineweb-edu and finemath keep their names (#597)."""
+    from trm.train import trainer
+    monkeypatch.setattr(trainer, "DATA_ROOT", "runs/data-dedup")
+    for branch in (0, 1):
+        config = Config.from_env({"DATA_BRANCH": str(branch)})
+        with pytest.raises(SystemExit, match="corpus"):
+            trainer.resume_stream(config, None, None, None, 1, 0, {"sources": []})
+

@@ -1,9 +1,10 @@
 """The underflow watch reads the gradient that updates the weights (#191).
 
 It read one micro-step's grads. On #157 that column hit exactly 0.500 on 13% of
-steps: a depth-1 draw zeroes half of one norm's gradient, in that micro-step only,
-while the 128-step mean that the optimizer applies had no such zeros. Anyone
-reading the column against #82's 0.05 bar would think underflow was blowing it.
+steps: a per-micro-step artifact zeroed half of one norm's gradient, in that
+micro-step only, while the 128-step mean that the optimizer applies had no such
+zeros. Anyone reading the column against #82's 0.05 bar would think underflow was
+blowing it.
 """
 
 import jax
@@ -12,7 +13,18 @@ import numpy as np
 import optax
 from flax import nnx
 
-from trm.train.grad_step import applied_gradient, dense_zero_frac_max, grad_zero_fractions
+from trm.train.grad_step import dense_zero_frac_max, grad_zero_fractions
+
+
+def applied_gradient(opt, grads):
+    """The reference: the gradient the optimizer applies at this micro-step, built
+    whole. optax.MultiSteps with use_grad_mean keeps a running mean of the window's
+    first k-1 micro-steps in `acc_grads`; the apply folds this micro-step's grads into
+    it. trm's `applied_gradient_stats` computes its two numbers without building this."""
+    state = opt.opt_state
+    seen = jax.tree_util.tree_leaves(state.mini_step)[0]
+    return jax.tree_util.tree_map(lambda acc, g: acc + (g - acc) / (seen + 1),
+                                  nnx.to_pure_dict(state.acc_grads), nnx.to_pure_dict(grads))
 
 
 class Toy(nnx.Module):
@@ -57,12 +69,13 @@ def test_a_micro_step_artifact_does_not_reach_the_applied_reading():
 
 def test_the_trainer_logs_both_and_names_them_apart():
     import inspect
-    from trm.runtime.metrics import MetricsLogger
-    from trm.train import trainer
 
-    source = inspect.getsource(trainer.train_loop)
-    assert "applied_gradient_stats(optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
-    assert "applied_gradient(optimizer, grads)" not in source
+    from trm.runtime.metrics import MetricsLogger
+    from trm.train import loop
+
+    source = inspect.getsource(loop.TrainLoop)
+    assert "applied_gradient_stats(self.hot.optimizer, grads)" in source, "jitted stats, never the materialized tree (#26)"
+    assert "applied_gradient(" not in source.replace("applied_gradient_stats(", "")
     # That both are LOGGED is observed, not read off the source: a real run's row
     # carries them (tests/apparatus/test_trainer_end_to_end.py).
     fields = MetricsLogger("/dev/null").fields
@@ -75,11 +88,12 @@ def test_the_logged_norm_is_the_applied_gradients_the_one_the_clip_acts_on():
     """grad_norm_avg (~11 on the 4B run, per micro-step) was never comparable to the
     1.0 clip, which acts on the 128-step mean. The trainer now logs that mean's norm."""
     import inspect
+
     from trm.train import optimizers
 
     # The logged column is observed in a real run (tests/apparatus/test_trainer_end_to_end.py);
     # the clip it is read against is the optimizer's.
-    assert "clip_by_global_norm(CLIP_NORM)" in inspect.getsource(optimizers)
+    assert "clip_by_global_norm(config.CLIP_NORM)" in inspect.getsource(optimizers)
 
 
 def test_a_window_of_large_micro_steps_can_have_a_small_applied_norm():
@@ -109,5 +123,6 @@ def test_the_jitted_stats_equal_the_materialized_tree():
     assert {k: float(v) for k, v in fracs.items()} == {k: float(v) for k, v in grad_zero_fractions(applied).items()}
     assert float(norm) == float(optax.global_norm(applied))
     import inspect
+
     from trm.train import grad_step
     assert "@jax.jit" in inspect.getsource(grad_step).split("def _applied_stats")[0][-40:]

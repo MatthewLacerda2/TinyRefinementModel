@@ -1,33 +1,53 @@
 # The front door (#169): the incantations live here, not in a session's memory.
 #
 #   make lint                    what CI's lint job runs: ruff, vulture (dead code), then the
-#                                jaxfree tests, without conftest (#325)
+#                                jaxfree tests, without conftest (#325); then pyright over trm/,
+#                                which CI runs in its pytest job, where jax is installed (#478)
 #   make test                    the whole core and apparatus suites, jaxfree tests included
 #                                (CI splits those into its lint job); core, then apparatus,
 #                                separately, since one process for both has been OOM-killed
 #   make test-affected           only the tests a change can reach; fails open to `make test`
+#   make test-gpu                the same suites on the card's real f16 path, plus the GPU
+#                                identity tests; CI has no GPU, so `make launch` runs it (#452)
 #   make audit                   the validity audit over the specs a change can reach (#304);
 #                                `make audit ALL=1` sweeps every spec and finding
 #   make gate                    VRAM headroom of the config a launch would train (#161)
 #   make launch SPEC=… BUDGET=…  a supervised base run; refuses without a committed spec or BUDGET
 #   make report RUN=run_...      the terminal report and plots for a run
+#   make pair SPEC=…             a pre-registered sweep on the card, detached as unit trm-pair at
+#                                oom_score_adj 100, logged to runs/<spec id>.log (#565)
+#   make pair-pause              stop the sweep; make pair-resume continues it from each arm's last
+#                                checkpoint (`make resume` is the base run's)
+#   make pair-status             the unit, the arms recorded, the running arm's step, disk free
+#   make ready PR=N              undraft PR N and wait for the CI run the undraft started (#539)
+#   make ci-wait PR=N            wait for CI on PR N's current head; never reads a stale check set
 #
 # `make launch` is gated: the supervisor first runs the real trainer for ~5 minutes and
 # refuses a config that does not survive an apply, a probe and a checkpoint (#168).
 
-PY ?= venv/bin/python
+# This checkout's venv, or, in a worktree beside it (which has none of its own), the main
+# checkout's, found through git's common dir. Before this, every target failed in a
+# worktree unless PY was passed by hand (2026-11-08). Launch a base run from the main
+# checkout anyway: the boot-resume unit (trm/runtime/launch.py) only looks there.
+PY ?= $(firstword $(wildcard venv/bin/python) $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$$||')/venv/bin/python)
 
-.PHONY: lint test test-affected audit gate launch resume report
+.PHONY: lint test test-affected test-gpu audit gate launch resume report pair pair-pause pair-resume pair-status ready ci-wait
 
 lint:
 	$(PY) -m ruff check .
 	$(PY) -m vulture
 	@files="$$(grep -rlF --include='test_*.py' 'pytest.mark.jaxfree' tests)"; \
 	test -n "$$files" && $(PY) -m pytest --noconftest -p no:cacheprovider -m jaxfree $$files
+	$(PY) -m pyright --pythonpath $(PY)
 
 test:
 	$(PY) -m pytest tests/core -q
 	$(PY) -m pytest tests/apparatus -q
+
+test-gpu:
+	RUN_TESTS_ON_GPU=1 $(PY) -m pytest tests/core -q
+	RUN_TESTS_ON_GPU=1 $(PY) -m pytest tests/apparatus -q
+	RUN_TESTS_ON_GPU=1 $(PY) -m pytest tests/expensive/test_gpu_identity.py -q
 
 test-affected:
 	@sel="$$($(PY) tests/affected.py)"; \
@@ -44,6 +64,7 @@ gate:
 launch:
 	@test -n "$(BUDGET)" || { echo "no BUDGET, no launch: make launch SPEC=experiments/base/specs/<id>.toml BUDGET=4e9 [ISSUE=157]"; exit 2; }
 	@test -n "$(SPEC)" || { echo "no SPEC, no launch: the base run is pre-registered (#294)"; exit 2; }
+	$(MAKE) --no-print-directory test-gpu
 	$(PY) -m trm.runtime.launch --budget $(BUDGET) --spec $(SPEC) $(if $(ISSUE),--issue $(ISSUE),)
 
 resume:
@@ -53,3 +74,24 @@ report:
 	@test -n "$(RUN)" || { echo "which run? make report RUN=run_YYYYMMDD_HHMMSS"; exit 2; }
 	$(PY) -m instruments.report --log runs/$(RUN)/metrics.csv
 	$(PY) -m instruments.plots --log runs/$(RUN)/metrics.csv --out runs/$(RUN)
+
+pair:
+	@test -n "$(SPEC)" || { echo "which spec? make pair SPEC=experiments/<line>/specs/<id>.toml"; exit 2; }
+	$(PY) -m instruments.pair start $(SPEC)
+
+pair-pause:
+	$(PY) -m instruments.pair pause
+
+pair-resume:
+	$(PY) -m instruments.pair resume
+
+pair-status:
+	$(PY) -m instruments.pair status
+
+ready:
+	@test -n "$(PR)" || { echo "which PR? make ready PR=123"; exit 2; }
+	$(PY) -m instruments.ci_wait --ready $(PR)
+
+ci-wait:
+	@test -n "$(PR)" || { echo "which PR? make ci-wait PR=123"; exit 2; }
+	$(PY) -m instruments.ci_wait $(PR)
