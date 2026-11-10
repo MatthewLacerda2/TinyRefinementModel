@@ -259,4 +259,6 @@ its PR.
 - **multi-token prediction**: NOT a dead-end, but **scale-gated** — the literature
   (Gloeckle et al.; DeepSeek-V3 at 671B) shows the benefit emerges at ~3B+ and is
   weak/absent for small models, and its inference-speedup payoff isn't our bottleneck.
-  Out of the roadmap at 79.6M; reconsider only if we ever pass ~1-3B.
+  Out of the roadmap at 79.6M; reconsider only if we ever pass ~1-3B. The scratchpad
+  line's text design (#89, `docs/design/scratchpad-on-text.md`) chose it as its
+  target; it waits on this gate and on the accordion line (#620).
