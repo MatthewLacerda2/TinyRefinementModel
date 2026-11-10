@@ -10,7 +10,7 @@ Reasoning should unroll as a serial latent scratchpad on the critical path: an
 *ordered* set of K sub-slots, each written exactly once, each **supervised to carry
 sub-result k** — a grade the loss cannot dodge, not a bonus it can ignore. The two
 prior slot designs died by bypass (the gradient starved a side memory the model
-could route around; see findings 2026-06-11 and 2026-06-13). This design is
+could route around; see the ROADMAP's slot-future-leak tombstone and finding 2026-06-13). This design is
 non-bypassable twice over: per-slot supervision (a loss term only satisfiable by
 storing the sub-result) and write-order causality (slot k reads only tokens and
 slots < k, so information cannot flow backward).

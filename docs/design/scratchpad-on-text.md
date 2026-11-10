@@ -10,9 +10,12 @@ model; #102 is closed, superseded by #89.
 were removed with the refiner (#292, 2026-10-04). The toy wiring now survives only
 as its findings and `specs/`, so the probe below is built fresh, not reused. The
 model and recipe tier have moved too (8 layers, ~138M at the time of merging), so the
-probe's shape is re-derived when its spec is written, not copied from here. The
-roadmap lists multi-token prediction as scale-gated (a gain from ~1–3B in the
-literature): this doc's own scale caveat, now policy.
+probe's shape is re-derived when its spec is written, not copied from here.
+
+**A gate older than this doc, which it missed.** The ROADMAP graveyard has listed
+multi-token prediction as scale-gated since 2026-06-15 (#27): the benefit emerges at
+~3B+, weak or absent for small models; reconsider only past ~1–3B. That gate stands.
+The owner chose C as the *direction* for this line; nobody has waived the gate.
 
 ## The question
 
@@ -27,7 +30,8 @@ built, we have to choose what a slot is graded against when the input is languag
 1. **Non-bypassable.** The grade must be satisfiable only by storing something in the
    slot. A target the model can meet from the token stream alone brings back the
    failure that killed both earlier slot designs (the gradient routes around the
-   memory; findings 2026-06-11 and 2026-06-13).
+   memory; the ROADMAP's slot-future-leak tombstone, its finding pruned in #107,
+   and finding 2026-06-13).
 2. **Scalable, per the bitter lesson.** The target should come from the data at any
    scale, not from a hand-built generator whose coverage we choose.
 3. **A warm-up budget, not a run-long one.** #73 and #95 already settled that the grade
@@ -78,7 +82,8 @@ the stream and the slots before it (ordered, write-once, as on the toy).
   sub-result grade, and they don't transfer automatically to a different grade, so the
   probe has to re-establish the serial-over-parallel gap. There is also a documented
   scale caveat: Gloeckle et al. report that MTP *hurts* small models (their benefit
-  appears from roughly 1B+ params). At 148M this may cost next-token quality. Only a
+  appears from roughly 1B+ params). At our size (~148M when written, ~138M now) this
+  may cost next-token quality. Only a
   matched pair on our model can say.
 
 ## Recommendation
@@ -113,7 +118,7 @@ about the language model), at the recipe tier: plain 9 × 960, Muon ×16.667 on 
   criterion.
 - **Pre-registered shape** (the numbers go in the spec): serial must beat vanilla by
   ≥ 2σ to keep the line alive on text. Serial vs parallel at ≥ 2σ is the novel claim.
-  Serial ≤ vanilla − 2σ kills the text version of the line and closes #102 as
+  Serial ≤ vanilla − 2σ kills the text version of the line and closes #89 as
   superseded by that finding.
 - **Prediction registered in advance:** vanilla ≥ serial at this scale and length (the
   MTP scale caveat above), serial > parallel on slot accuracy. My predictions on this
@@ -129,8 +134,10 @@ about the language model), at the recipe tier: plain 9 × 960, Muon ×16.667 on 
 2. **Before or after the base run? After the accordion line** (#620), not merely
    after base run 002. The owner reserved the card after 002 for the accordion arms
    plus tooling, so the comparison against 002 stays fair. This probe adds a training
-   loss, an `architecture` change, so it waits until that line closes. The scale gate
-   above says the same from the literature's side.
+   loss, an `architecture` change, so it waits until that line closes. That is a
+   second gate, not the only one: the ROADMAP's scale gate (header) says not at our
+   size at all. Whether to run the probe at ~138M once #620 closes, or wait for a
+   model past ~1–3B, is the owner's call then.
 3. **K? 2.**
 
 ## Not in this doc
