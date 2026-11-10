@@ -1,8 +1,18 @@
 # Design — what a scratchpad slot is graded against on text (#89)
 
-Status: design, for the owner's review before anything is built. Builds on the toy
-ladder (#38, #62, #67, #73, #79, #95, #116; `docs/design/serial-scratchpad.md`) and
-feeds #102, the rung that wires the scratchpad into the language model.
+Status: **decided by the owner, not built.** C, K = 2, after the accordion line
+(see "Decisions" below). Written 2026-09-19, merged 2026-11-10. Builds on the toy
+ladder (#38, #62, #67, #73, #79, #95, #116; `docs/design/serial-scratchpad.md`).
+It was meant to feed #102, the rung that wires the scratchpad into the language
+model; #102 is closed, superseded by #89.
+
+**What changed between writing and merging.** The scratchpad harness and its tests
+were removed with the refiner (#292, 2026-10-04). The toy wiring now survives only
+as its findings and `specs/`, so the probe below is built fresh, not reused. The
+model and recipe tier have moved too (8 layers, ~138M at the time of merging), so the
+probe's shape is re-derived when its spec is written, not copied from here. The
+roadmap lists multi-token prediction as scale-gated (a gain from ~1–3B in the
+literature): this doc's own scale caveat, now policy.
 
 ## The question
 
@@ -111,19 +121,20 @@ about the language model), at the recipe tier: plain 9 × 960, Muon ×16.667 on 
   timid on the recipe pairs. This one is deliberately pessimistic about the model and
   optimistic about the mechanism.
 
-## Questions for the owner
+## Decisions (the owner, 2026-11-08 to 2026-11-10)
 
-1. **C over A?** C changes what the slots mean. If the scratchpad line is about
-   *reasoning sub-results* specifically, A is the faithful option, and it comes with its
-   hand-built cost.
-2. **Before or after the base run?** The probe is a recipe-tier pair (~21 h per arm set
-   on the card), so it fits under the standing permission. But #102's rule says no
-   architecture bet is interpretable before a base run reaches the SmolLM2 bar. Running
-   the probe now answers "does it work at 512 steps"; the verdict that licenses #102
-   would still wait for the base model.
-3. **K.** 2 is what fits comfortably. 4 matches the toy.
+1. **C over A? C.** A stays only as the probe-only diagnostic recommended above. The
+   owner on reopening the multi-token idea: "ideas can be bad at one point and good
+   later".
+2. **Before or after the base run? After the accordion line** (#620), not merely
+   after base run 002. The owner reserved the card after 002 for the accordion arms
+   plus tooling, so the comparison against 002 stays fair. This probe adds a training
+   loss, an `architecture` change, so it waits until that line closes. The scale gate
+   above says the same from the literature's side.
+3. **K? 2.**
 
 ## Not in this doc
 
-The wiring into the trainer (#102's design doc), the synthetic generator for A's
-diagnostic slice, and the anneal controller. Each follows the owner's answers above.
+The wiring into the trainer (its own design doc, now that #102 is closed), the
+synthetic generator for A's diagnostic slice, and the anneal controller. Each is
+built when the line reopens, after #620.
