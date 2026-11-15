@@ -10,6 +10,10 @@ every poll, and each tick:
   the run ends. The trainer keeps only ROLLING_KEEP full-state checkpoints, and
   milestones hold weights only (#394), so without this copy a decay can branch from
   about "now" and nowhere else; with it, from the start of a flat stretch (#451);
+* copies the last rolling checkpoint written before the run's LR decay starts, as
+  soon as a later one exists. A decay on another mix can then branch from where the
+  registered one began; base run 002's was evicted 45 minutes into its decay, ten
+  hours after the last window copy (#640);
 * while the SSD has less than SSD_KEEP_FREE_GB free, removes from the SSD the oldest
   milestone whose cold copy is byte-identical.
 
@@ -27,7 +31,8 @@ A copy lands whole or not at all: it is written to a dot-named partial dir, chec
 against its source, then renamed into place, so a dir named by a step on the cold tier
 is always a complete copy. A tick does nothing at all unless the cold root is there
 and on another disk than the run: an unmounted HDD leaves its mount point an empty dir
-on the SSD. Stdlib only besides the layout: the supervisor runs it beside a training job.
+on the SSD. No jax: the supervisor runs it beside a training job, so it imports only
+the layout and the run's own record.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from trm.runtime.layout import MILESTONE_SUBDIR
+from trm.runtime.run_budget import last_full_rate_checkpoint
 
 # Orbax writes this into a step dir when the save commits: a step dir that has it is
 # finalized, one that lacks it may still be being written.
@@ -211,11 +217,32 @@ class ColdTier:
                 done.append(f"cold: milestone {step.name} mirrored")
                 if not final:
                     break  # one per poll: the supervisor's guards wait while it copies
+        # One after the other, not both asked up front: the window is counted from the
+        # newest copy, and the copy before the decay is one.
+        due = self.before_decay_due()
+        if due is not None and mirror(due, self.cold_run / FULLSTATE_SUBDIR / due.name):
+            done.append(f"cold: full-state checkpoint {due.name} copied (the last before the LR decay)")
         due = self.fullstate_due(final)
         if due is not None and mirror(due, self.cold_run / FULLSTATE_SUBDIR / due.name):
             done.append(f"cold: full-state checkpoint {due.name} copied"
                         + (" (the run's last)" if final else ""))
         return done + self.prune(keep)
+
+    def _copied(self, step: pathlib.Path) -> bool:
+        return same_checkpoint(self.cold_run / FULLSTATE_SUBDIR / step.name, step)
+
+    def before_decay_due(self) -> pathlib.Path | None:
+        """The rolling checkpoint a decay on another mix would branch from (#640), or
+        None: the last one written before the run's LR decay starts, due once a later
+        one exists. By then no other full-rate checkpoint is coming, and rolling
+        retention evicts this one two saves later. None before the decay, for a
+        schedule without a decay start, and once the copy is there."""
+        limit = last_full_rate_checkpoint(self.run_dir)
+        rolling = finalized_steps(self.run_dir / "checkpoints")
+        if limit is None or not rolling or int(rolling[-1].name) <= limit:
+            return None
+        before = [step for step in rolling if int(step.name) <= limit]
+        return before[-1] if before and not self._copied(before[-1]) else None
 
     def fullstate_due(self, final: bool = False) -> pathlib.Path | None:
         """The rolling checkpoint to copy now, or None: the newest one, once a stall
@@ -226,7 +253,7 @@ class ColdTier:
             return None
         newest = rolling[-1]
         copies = finalized_steps(self.cold_run / FULLSTATE_SUBDIR)
-        if any(c.name == newest.name and same_checkpoint(c, newest) for c in copies):
+        if self._copied(newest):
             return None
         if final:
             return newest

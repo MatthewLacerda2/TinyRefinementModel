@@ -1019,8 +1019,8 @@ def describe_cold(cold: ColdTier | None) -> str:
     """The cold tier in one line, for a launch banner."""
     if cold is None:
         return "none (COLD_ROOT unset): nothing leaves the SSD"
-    every = (f"every {cold.fullstate_every_hours:g}h (the spec's stall window) and at the end"
-             if cold.fullstate_every_hours else "at the end only (no [stall] window in the spec)")
+    every = (f"every {cold.fullstate_every_hours:g}h (the spec's stall window), before a WSD decay and at the end"
+             if cold.fullstate_every_hours else "before a WSD decay and at the end (no [stall] window in the spec)")
     return (f"{cold.cold_run} — milestones mirrored; full state copied {every}; mirrored "
             f"milestones pruned to keep {cold.keep_free_gb:g}GB free on the SSD")
 
