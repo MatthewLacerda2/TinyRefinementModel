@@ -210,12 +210,12 @@ def test_the_last_checkpoint_before_the_decay_is_copied_once_a_later_one_exists(
     for step, hour in ((959, 5), (1023, 6)):
         _step(ckpts, step, hours=hour)
     assert tier.before_decay_due() is None, "1023 is the newest: the run is still at the full rate"
-    _step(ckpts, 1087, hours=7)
+    _step(ckpts, 1087, hours=16)  # 13h after 767's copy, 10h after 1023 was committed
     assert tier.before_decay_due().name == "1023"
     assert "cold: full-state checkpoint 1023 copied (the last before the LR decay)" in tier.tick()
-    assert [p.name for p in finalized_steps(tier.cold_run / FULLSTATE_SUBDIR)] == ["767", "1023"]
+    assert [p.name for p in finalized_steps(tier.cold_run / FULLSTATE_SUBDIR)] == ["767", "1023"], \
+        "1087 waits: the window is counted from the copy just made, not from 767's"
     assert tier.before_decay_due() is None, "copied once"
-    assert tier.fullstate_due() is None, "1087 waits for the window, counted from the copy just made"
 
 
 def test_the_copy_before_the_decay_is_the_last_one_at_or_below_it_whatever_the_grid(ssd):
@@ -233,12 +233,17 @@ def test_the_copy_before_the_decay_is_the_last_one_at_or_below_it_whatever_the_g
 
 def test_no_copy_is_aimed_at_a_decay_the_run_does_not_have_or_has_left_behind(ssd):
     tier = _tier(ssd, free=lambda: 100.0)
+    _step(tier.run_dir / "checkpoints", 1087, hours=4)  # past where a WSD record would start its decay
     assert tier.before_decay_due() is None, "no record yet: the trainer writes it when it starts"
     _records_its_schedule(tier.run_dir, schedule="cosine")
     assert tier.before_decay_due() is None, "the cosine anneals from the warmup on"
+    RunMetadata(parameters={"LR_SCHEDULE": "wsd", "DECAY_STEPS": 20}).write(tier.run_dir)
+    assert tier.before_decay_due() is None, "a record that cannot say where: the other copies still run"
     _records_its_schedule(tier.run_dir, decay_start=5)  # checkpoint 319, evicted long ago
     assert tier.before_decay_due() is None
-    assert [line for line in tier.tick() if "full-state" in line] == ["cold: full-state checkpoint 767 copied"]
+    assert [line for line in tier.tick() if "full-state" in line] == ["cold: full-state checkpoint 1087 copied"]
+    _records_its_schedule(tier.run_dir)
+    assert tier.before_decay_due().name == "767", "the same checkpoints, once the record names a decay they straddle"
 
 
 def test_the_decay_start_is_the_one_the_run_recorded(tmp_path):

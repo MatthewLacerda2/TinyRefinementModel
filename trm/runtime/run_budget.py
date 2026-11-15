@@ -49,17 +49,26 @@ def wsd_decay_start(decay_steps, decay_fraction, decay_start=None):
 def last_full_rate_checkpoint(run_dir):
     """The highest step a checkpoint of this run can be named and still hold a state no
     decay has touched: the one written at the opt step its WSD decay starts, from the
-    run's own record. None for a run with no record yet, and for a schedule with no
-    decay start (the cosine anneals from the warmup on). The cold tier keeps the last
-    rolling checkpoint at or below it (#640)."""
+    run's own record. The cold tier keeps the last rolling checkpoint at or below it
+    (#640).
+
+    None when the record cannot say: no record yet, a schedule with no decay start (the
+    cosine anneals from the warmup on), or a WSD record missing one of the numbers.
+    None, not an error, because the cold tier asks every tick before its window copy
+    and its pruning, and this copy must never cost a run those.
+
+    The record is the launch's: RunTracker writes `parameters` once and a resume leaves
+    them as they were. A resume of the same run that moves the decay start or the
+    batch size is therefore not followed; a branch is, since it is a new run."""
     recorded = recorded_parameters(run_dir)
-    if recorded.get("LR_SCHEDULE") != "wsd":
+    horizon, fraction, accumulation = (recorded.get(key) for key in
+                                       ("DECAY_STEPS", "WSD_DECAY_FRACTION", "ACCUMULATION_STEPS"))
+    if recorded.get("LR_SCHEDULE") != "wsd" or None in (horizon, fraction, accumulation):
         return None
-    start = wsd_decay_start(recorded["DECAY_STEPS"], recorded["WSD_DECAY_FRACTION"],
-                            recorded.get("WSD_DECAY_START"))
+    start = wsd_decay_start(horizon, fraction, recorded.get("WSD_DECAY_START"))
     # Orbax names a checkpoint by the last micro-step it holds, so the one written
     # after opt step k is k * ACCUMULATION_STEPS - 1 (rewind.checkpoints_in reads it back).
-    return start * recorded["ACCUMULATION_STEPS"] - 1
+    return start * accumulation - 1
 
 
 def with_recorded_budget(config, checkpoint_path):
