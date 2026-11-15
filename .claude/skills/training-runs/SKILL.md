@@ -82,7 +82,8 @@ position restored exactly (#424).
 - **The cold tier**: `/mnt/d_drive/TRM_cold/` is blob storage. Copy files there; don't
   train off it. A run launched with `COLD_ROOT` mirrors its milestones and periodic
   full-state copies itself and prunes mirrored milestones from the SSD
-  (`trm/runtime/cold.py`). Claude may archive and delete weights it judges no longer
-  needed without asking.
+  (`trm/runtime/cold.py`). It also copies the last checkpoint before its LR decay
+  starts, the one a decay on another mix branches from (#640). Claude may archive and
+  delete weights it judges no longer needed without asking.
 - **To free disk**, clear regenerable caches (`~/.cache/pip`, `~/.cache/uv`) and
   Claude's own dead runs. Never the owner's run dirs, and never the tokenized corpus.

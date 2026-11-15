@@ -39,6 +39,29 @@ def recorded_parameters(run_dir):
     return metadata.parameters if metadata is not None else {}
 
 
+def wsd_decay_start(decay_steps, decay_fraction, decay_start=None):
+    """The opt step WSD's final decay starts at: the explicit one, else the fraction's.
+    Here, not beside the schedule it shapes (trm/train/schedules.py, which imports it),
+    so the supervisor can ask where a run's decay starts without importing jax."""
+    return decay_start if decay_start is not None else round((1 - decay_fraction) * decay_steps)
+
+
+def last_full_rate_checkpoint(run_dir):
+    """The highest step a checkpoint of this run can be named and still hold a state no
+    decay has touched: the one written at the opt step its WSD decay starts, from the
+    run's own record. None for a run with no record yet, and for a schedule with no
+    decay start (the cosine anneals from the warmup on). The cold tier keeps the last
+    rolling checkpoint at or below it (#640)."""
+    recorded = recorded_parameters(run_dir)
+    if recorded.get("LR_SCHEDULE") != "wsd":
+        return None
+    start = wsd_decay_start(recorded["DECAY_STEPS"], recorded["WSD_DECAY_FRACTION"],
+                            recorded.get("WSD_DECAY_START"))
+    # Orbax names a checkpoint by the last micro-step it holds, so the one written
+    # after opt step k is k * ACCUMULATION_STEPS - 1 (rewind.checkpoints_in reads it back).
+    return start * recorded["ACCUMULATION_STEPS"] - 1
+
+
 def with_recorded_budget(config, checkpoint_path):
     """`config` with the resumed run's own token budget, when it set none itself.
 

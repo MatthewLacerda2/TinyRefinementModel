@@ -26,6 +26,8 @@ from trm.runtime.cold import (
     stall_window_hours,
 )
 from trm.runtime.layout import BEST_SUBDIR, MILESTONE_SUBDIR
+from trm.runtime.run_budget import last_full_rate_checkpoint
+from trm.runtime.run_metadata import RunMetadata
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 HOUR = 3600
@@ -187,6 +189,66 @@ def test_without_a_stall_window_only_the_last_state_is_copied(ssd):
     assert finalized_steps(tier.cold_run / FULLSTATE_SUBDIR) == []
     tier.tick(final=True)
     assert [p.name for p in finalized_steps(tier.cold_run / FULLSTATE_SUBDIR)] == ["767"]
+
+
+def _records_its_schedule(run_dir, schedule="wsd", decay_start=None):
+    """The run's own record of its LR schedule, as RunTracker writes it. A 20-step
+    horizon with the last fifth decaying starts its decay at opt step 16; at 64
+    micro-steps per opt step that is checkpoint 1023, and the fixture's rolling
+    checkpoints 639, 703 and 767 are opt steps 10, 11 and 12."""
+    RunMetadata(parameters={"LR_SCHEDULE": schedule, "DECAY_STEPS": 20, "WSD_DECAY_FRACTION": 0.2,
+                            "WSD_DECAY_START": decay_start, "ACCUMULATION_STEPS": 64}).write(run_dir)
+
+
+def test_the_last_checkpoint_before_the_decay_is_copied_once_a_later_one_exists(ssd):
+    """#640: base run 002's was evicted 45 minutes into its decay, ten hours after the
+    last window copy, so no decay on another mix could branch from where its own began."""
+    tier = _tier(ssd, free=lambda: 100.0)
+    ckpts = tier.run_dir / "checkpoints"
+    _records_its_schedule(tier.run_dir)
+    tier.tick()  # the window's first copy: 767, committed at hour 3
+    for step, hour in ((959, 5), (1023, 6)):
+        _step(ckpts, step, hours=hour)
+    assert tier.before_decay_due() is None, "1023 is the newest: the run is still at the full rate"
+    _step(ckpts, 1087, hours=7)
+    assert tier.before_decay_due().name == "1023"
+    assert "cold: full-state checkpoint 1023 copied (the last before the LR decay)" in tier.tick()
+    assert [p.name for p in finalized_steps(tier.cold_run / FULLSTATE_SUBDIR)] == ["767", "1023"]
+    assert tier.before_decay_due() is None, "copied once"
+    assert tier.fullstate_due() is None, "1087 waits for the window, counted from the copy just made"
+
+
+def test_the_copy_before_the_decay_is_the_last_one_at_or_below_it_whatever_the_grid(ssd):
+    """A paused run writes a checkpoint on its way out, off the cadence (002's at opt
+    step 45,407), and a branch sets its decay start itself (WSD_DECAY_START)."""
+    tier = _tier(ssd, free=lambda: 100.0, hours=None)
+    ckpts = tier.run_dir / "checkpoints"
+    _records_its_schedule(tier.run_dir)
+    for step in (1000, 1087):
+        _step(ckpts, step)
+    assert tier.before_decay_due().name == "1000"
+    _records_its_schedule(tier.run_dir, decay_start=11)  # opt step 11 is checkpoint 703
+    assert tier.before_decay_due().name == "703"
+
+
+def test_no_copy_is_aimed_at_a_decay_the_run_does_not_have_or_has_left_behind(ssd):
+    tier = _tier(ssd, free=lambda: 100.0)
+    assert tier.before_decay_due() is None, "no record yet: the trainer writes it when it starts"
+    _records_its_schedule(tier.run_dir, schedule="cosine")
+    assert tier.before_decay_due() is None, "the cosine anneals from the warmup on"
+    _records_its_schedule(tier.run_dir, decay_start=5)  # checkpoint 319, evicted long ago
+    assert tier.before_decay_due() is None
+    assert [line for line in tier.tick() if "full-state" in line] == ["cold: full-state checkpoint 767 copied"]
+
+
+def test_the_decay_start_is_the_one_the_run_recorded(tmp_path):
+    """Base run 002's numbers: a 57,220-step horizon decays from opt step 45,776, so the
+    checkpoint of opt step 45,760 was its last at the full rate and 45,824's was past it."""
+    RunMetadata(parameters={"LR_SCHEDULE": "wsd", "DECAY_STEPS": 57_220, "WSD_DECAY_FRACTION": 0.2,
+                            "WSD_DECAY_START": None, "ACCUMULATION_STEPS": 64}).write(tmp_path)
+    limit = last_full_rate_checkpoint(tmp_path)
+    assert limit == 45_776 * 64 - 1
+    assert 45_760 * 64 - 1 <= limit < 45_824 * 64 - 1
 
 
 def test_the_window_is_the_base_specs_stall_window(tmp_path):

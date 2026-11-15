@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import optax
 
+from trm.runtime.run_budget import wsd_decay_start
+
 # The LR anneal's horizon must match the run length (#83): it derives from the
 # planned token budget (TRAIN_TOKEN_BUDGET). With no budget set it stays at the
 # historical 15000 opt steps, so existing configs and the golden run resolve unchanged.
@@ -68,12 +70,8 @@ def build_learning_schedule(decay_steps, *, warmup_steps, peak_lr):
 #   WSD_DECAY_FRACTION   the share of the horizon the final decay takes (0.2: SmolLM2's)
 #   WSD_DECAY_START      an explicit opt step to start the decay at, for a branch
 #                        resumed from a checkpoint; unset, the decay starts at
-#                        (1 - WSD_DECAY_FRACTION) x the horizon.
-
-def wsd_decay_start(decay_steps, decay_fraction, decay_start=None):
-    """The opt step WSD's final decay starts at: the explicit one, else the fraction's."""
-    return decay_start if decay_start is not None else round((1 - decay_fraction) * decay_steps)
-
+#                        (1 - WSD_DECAY_FRACTION) x the horizon
+#                        (run_budget.wsd_decay_start, jax-free for the supervisor).
 
 def build_wsd_schedule(decay_steps, *, warmup_steps, peak_lr, decay_fraction, decay_start=None):
     """Warmup from peak/10 to the peak, hold it, then decay linearly to peak/100 by
