@@ -323,6 +323,8 @@ class Config(BaseSettings):
     #                One exception: under DATA_BRANCH each seed skips its own
     #                DATA_SEED x DATA_BRANCH_SEED_STRIDE rows, and there the seed does
     #                choose different documents (#489).
+    #                All of the above is the in-order reader. Under DATA_SHUFFLE (below)
+    #                the seed also chooses the order of the files and of the rows (#378).
     #   MODEL_SEED — parameter initialization only (the nnx.Rngs the trainer builds the
     #                model with; the model has no dropout). On a resume or a branch the
     #                weights come from the checkpoint, so it changes nothing there.
@@ -362,6 +364,17 @@ class Config(BaseSettings):
     # three seeds fit the 254M-token general-web bucket #489 reads. Off: a resume is exact.
     DATA_BRANCH: bool = False
     DATA_BRANCH_SEED_STRIDE: int = 80_000
+
+    # Shuffle when reading (#378): each bucket's chunk files in a seeded order and the
+    # rows inside each file in a seeded order, both from DATA_SEED and neither written to
+    # the corpus (`ShuffledTextDataGenerator`, trm/data/loaders.py). Two seeds then read
+    # different rows in a different order, so a pair's σ holds data variance, and
+    # consecutive rows of a bucket stop being neighbours in the dataset's own order. The
+    # held-out tail is never served. Off: every run and verdict on record read the
+    # in-order stream, and a run already started (002) resumes on the order it was
+    # reading; a checkpoint is refused under the other setting (trm/data/stream_state.py).
+    # Guarded by tests/core/test_data_shuffle.py.
+    DATA_SHUFFLE: bool = False
 
     # ── Prefill near-dedup (trm/data/dedup.py, #486) ─────────────────────────────
     # Read by `python -m trm.data.prefill --dedup`, recorded in each deduped source's

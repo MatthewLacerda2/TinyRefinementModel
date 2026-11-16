@@ -70,7 +70,8 @@ def unresumable(checkpoint_dir, config, data_root) -> str | None:
     None. Read from disk before a launch touches anything: no run session appended,
     no model built, no orbax restore, no jax. The checkpoint is the newest finalized
     one; it is refused when its resume state is not a ResumeState (#477), or when its
-    data position does not belong to `data_root` and `config`'s mixture (#607). The
+    data position does not belong to `data_root`, `config`'s mixture (#607) and its
+    DATA_SHUFFLE (#378). The
     trainer asks before its session starts, and the supervisor before it launches or
     relaunches one (#505). An unreadable state is left for the restore to report."""
     found = checkpoints_in(pathlib.Path(checkpoint_dir), config.ACCUMULATION_STEPS)
@@ -85,7 +86,8 @@ def unresumable(checkpoint_dir, config, data_root) -> str | None:
         resume = ResumeState.load(state, f"checkpoint step {newest.step} in {checkpoint_dir}")
     except SystemExit as refused:
         return str(refused)
-    return data_refusal(resume.data_state, data_root, config.DATA_MIXTURE, config.DATA_BRANCH)
+    return data_refusal(resume.data_state, data_root, config.DATA_MIXTURE, config.DATA_BRANCH,
+                        config.DATA_SHUFFLE)
 
 
 def resolve(checkpoints: list[Checkpoint], to_opt_step: int) -> Checkpoint:

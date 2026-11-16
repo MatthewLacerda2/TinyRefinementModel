@@ -4,6 +4,31 @@ import numpy as np
 from trm.config import VOCAB_SIZE
 
 
+def checked_rows(tokens, batch_size, stride, directory):
+    """`batch_size` rows of `stride` tokens as the int32 batch the trainer takes, after
+    the id check every reader owes."""
+    # The one place a bad id can be caught LOUDLY. The model clamps out-of-range
+    # ids (#233) because it cannot raise from inside jit, and a clamp turns a
+    # destroyed window into a wrong token — but it also hides the cause. Here we
+    # are in numpy, outside any trace, so a corrupted shard or a tokenizer change
+    # fails with its own name instead of surfacing days later as f16 instability.
+    # One max() over ~1k ints per batch; unmeasurable against a forward pass.
+    if tokens.size:
+        worst = int(tokens.max())
+        if worst >= VOCAB_SIZE:
+            raise ValueError(
+                f"token id {worst} in {directory} exceeds VOCAB_SIZE "
+                f"{VOCAB_SIZE}. The model would clamp it to a wrong token rather "
+                f"than crash (#233), so this is the only place it can be caught: "
+                f"the shard is corrupt, or it was written by a different tokenizer.")
+
+    # numpy, not jnp (#411): this runs on the prefetch thread, and a JAX op there
+    # (dispatch, a host-to-device copy) competes with the training thread for the
+    # GIL every micro-step. np.array, not astype: it copies out of the memmap here,
+    # so the shard's page faults are paid on this thread, not the training one.
+    return np.array(tokens.reshape(batch_size, stride), dtype=np.int32)
+
+
 class TextDataGenerator:
     """Reads one corpus's rows (two `max_seq_len` windows and the target after them)
     in file order. `rng` draws each new file's start offset: the run's is seeded with
@@ -73,6 +98,9 @@ class TextDataGenerator:
     def load_state(self, state):
         """Continue from a `state()` snapshot. The open file is mapped again; the
         rng resumes mid-stream, so every later file draws the offset it would have."""
+        if "order_seed" in state:
+            raise ValueError(f"{self.directory}: this position was saved by the shuffled reader, "
+                             f"and DATA_SHUFFLE is off (#378)")
         self.rng.bit_generator.state = state["rng"]
         self.current_file_idx, self.pointer = state["file_idx"], state["pointer"]
         self.exhausted = state["exhausted"]
@@ -114,26 +142,135 @@ class TextDataGenerator:
         batch = self.data[self.pointer : self.pointer + total_tokens]
         self.pointer += total_tokens
 
-        # The one place a bad id can be caught LOUDLY. The model clamps out-of-range
-        # ids (#233) because it cannot raise from inside jit, and a clamp turns a
-        # destroyed window into a wrong token — but it also hides the cause. Here we
-        # are in numpy, outside any trace, so a corrupted shard or a tokenizer change
-        # fails with its own name instead of surfacing days later as f16 instability.
-        # One max() over ~1k ints per batch; unmeasurable against a forward pass.
-        if batch.size:
-            worst = int(batch.max())
-            if worst >= VOCAB_SIZE:
-                raise ValueError(
-                    f"token id {worst} in {self.directory} exceeds VOCAB_SIZE "
-                    f"{VOCAB_SIZE}. The model would clamp it to a wrong token rather "
-                    f"than crash (#233), so this is the only place it can be caught: "
-                    f"the shard is corrupt, or it was written by a different tokenizer.")
+        return checked_rows(batch, batch_size, stride, self.directory)
 
-        # numpy, not jnp (#411): this runs on the prefetch thread, and a JAX op there
-        # (dispatch, a host-to-device copy) competes with the training thread for the
-        # GIL every micro-step. np.array, not astype: it copies out of the memmap here,
-        # so the shard's page faults are paid on this thread, not the training one.
-        return np.array(batch.reshape(batch_size, stride), dtype=np.int32)
+
+def tokens_before_heldout(lengths, stride, heldout_rows):
+    """Per chunk file (in sorted order, `lengths` in tokens), how many of its leading
+    tokens come before the corpus's held-out tail: its last `heldout_rows` samples, found
+    the way the validation probe finds them (trm/train/validation.py `tail_skip`, then
+    `TextDataGenerator`'s skip): whole strides per file, in sorted file order. Every file
+    after the one the tail starts in is held out whole."""
+    skip = max(sum(n // stride for n in lengths) - heldout_rows, 0)
+    in_tail, limits = False, []
+    for n in lengths:
+        if in_tail:
+            limits.append(0)
+        elif skip * stride < n:  # the same test the skip lands a file with
+            limits.append(skip * stride)
+            in_tail = True
+        else:
+            limits.append(n)
+            skip -= n // stride
+    return limits
+
+
+class ShuffledTextDataGenerator:
+    """Reads one corpus's rows once each in a seeded shuffle (DATA_SHUFFLE, #378): its
+    chunk files in a permuted order, and the rows inside each file in a permuted order.
+    A row is `TextDataGenerator`'s: a stride of 2 * `max_seq_len` + 1 tokens, counted
+    from a start offset drawn per file.
+
+    The corpus's last `heldout_rows` samples are never served. The validation probes
+    read them, and the in-order reader keeps off them only by never reaching the end of
+    a corpus; a shuffle would serve them from the first step.
+
+    `rng` (the run's, seeded with DATA_SEED) is drawn once, for `order_seed`. Every
+    order is regenerated from that integer, so the state is three integers."""
+
+    def __init__(self, directory, *, max_seq_len, rng, heldout_rows):
+        self.directory = directory
+        self.stride = 2 * max_seq_len + 1
+        fs, _ = fsspec.core.url_to_fs(directory)
+        self.files = sorted(f for f in fs.ls(directory) if f.endswith('.npy'))  # the order the tail is counted in
+        lengths = [len(np.load(f, mmap_mode='r')) for f in self.files]
+        self.limits = tokens_before_heldout(lengths, self.stride, heldout_rows)
+        self._take_order(int(rng.integers(0, 2**63)))
+        self.file_pos = 0  # how far into the permuted file order this reader is
+        self.row = 0       # how many rows of that file it has served
+        self.exhausted = False
+        if not any(self._plan(pos)[2] for pos in range(len(self.files))):
+            raise ValueError(f"{directory} holds no row before its held-out tail of {heldout_rows:,} "
+                             f"samples: under DATA_SHUFFLE there is nothing in it to train on (#378)")
+
+    def _take_order(self, order_seed):
+        """Everything `order_seed` decides: the file order here, each file's offset and
+        row order in `_plan`."""
+        self.order_seed = order_seed
+        self._file_order = np.random.default_rng(np.random.SeedSequence(order_seed)).permutation(len(self.files))
+        self._open_pos = None  # the file position `_rows` and `_row_order` belong to
+
+    def _plan(self, pos):
+        """The file at `pos` of the file order: its index, its start offset, how many
+        rows it serves, and the rng that goes on to draw its row order. Each file has
+        its own stream, keyed by its index."""
+        file_idx = int(self._file_order[pos])
+        rng = np.random.default_rng(np.random.SeedSequence(self.order_seed, spawn_key=(file_idx,)))
+        offset = int(rng.integers(0, self.stride))
+        rows = max(self.limits[file_idx] - offset, 0) // self.stride
+        return file_idx, offset, rows, rng
+
+    def _open(self):
+        """Maps the file at `file_pos` and regenerates its row order."""
+        file_idx, offset, rows, rng = self._plan(self.file_pos)
+        path = self.files[file_idx]
+        print(f"📖 Memory-mapping {path} (shuffled: {rows:,} rows, lazy host-RAM paging)...")
+        data = np.load(path, mmap_mode='r')
+        self._rows = data[offset:offset + rows * self.stride].reshape(rows, self.stride)
+        self._row_order = rng.permutation(rows)
+        self._open_pos = self.file_pos
+
+    def _next_rows(self, wanted):
+        """Up to `wanted` rows from the file at `file_pos`, moving on when it is spent.
+        None when no file is left."""
+        while self.file_pos < len(self.files):
+            if self._open_pos != self.file_pos:
+                self._open()
+            picked = self._row_order[self.row:self.row + wanted]
+            if len(picked):
+                self.row += len(picked)
+                return self._rows[picked]
+            self.file_pos, self.row = self.file_pos + 1, 0
+        return None
+
+    def state(self):
+        """Where this reader is, exactly: `load_state` continues with the very next row.
+        JSON-safe. `order_seed` is what marks a state as the shuffled reader's."""
+        return {"order_seed": self.order_seed, "file_pos": self.file_pos, "row": self.row}
+
+    def load_state(self, state):
+        """Continue from a `state()` snapshot, on the order it was reading."""
+        if "order_seed" not in state:
+            raise ValueError(f"{self.directory}: this position was saved by the in-order reader, "
+                             f"and DATA_SHUFFLE is on (#378)")
+        self._take_order(state["order_seed"])
+        self.file_pos, self.row = state["file_pos"], state["row"]
+        self.exhausted = self.file_pos >= len(self.files)
+
+    def advance(self, samples):
+        """Skip `samples` rows forward in this reader's order (#489): the seed offset
+        of a branch."""
+        while samples > 0 and self.file_pos < len(self.files):
+            left = self._plan(self.file_pos)[2] - self.row
+            if samples < left:
+                self.row += samples
+                return
+            samples -= left
+            self.file_pos, self.row = self.file_pos + 1, 0
+
+    def get_batch(self, batch_size):
+        """`batch_size` rows, or None once the corpus cannot fill a batch. A batch may
+        span two files, so no row is dropped at a file's end."""
+        picked, missing = [], batch_size
+        while missing:
+            rows = self._next_rows(missing)
+            if rows is None:
+                self.exhausted = True
+                return None
+            picked.append(rows)
+            missing -= len(rows)
+        return checked_rows(np.concatenate(picked), batch_size, self.stride, self.directory)
+
 
 class DataMixer:
     """Draws each batch from one of `sources` by `weights`. `rng` makes the draws: the

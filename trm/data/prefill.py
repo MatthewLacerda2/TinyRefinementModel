@@ -36,7 +36,8 @@ from trm.settings import CONFIG, load_env, location
 # sequentially. Consecutive micro-steps from one source are neighbours in that order.
 # A source with a `shard_seed` reads its parquet files in that seed's permutation
 # instead: FineWeb-Edu-Dedup's files run roughly in CommonCrawl dump order, and a
-# prefix of them would be a few years of the web (#591).
+# prefix of them would be a few years of the web (#591). DATA_SHUFFLE (trm/settings.py,
+# #378) shuffles files and rows when reading, and leaves what is written here in order.
 
 # Load environment variables (such as HF_TOKEN) before datasets loads
 load_env()

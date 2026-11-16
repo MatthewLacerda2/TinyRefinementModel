@@ -14,12 +14,13 @@ import numpy as np
 from flax import nnx
 
 from trm.config import resolve_root
-from trm.data.loaders import DataMixer, TextDataGenerator
+from trm.data.loaders import DataMixer, ShuffledTextDataGenerator, TextDataGenerator
 from trm.data.stream_state import corpus_name, data_refusal
 from trm.model import build_model
 from trm.settings import LEGACY_DATA_MIXTURE, load_env, location
 from trm.train.optimizers import optimizer_chain
 from trm.train.schedules import Schedules, mixture_label, parse_mixture
+from trm.train.validation import VAL_TAIL_ROWS
 
 load_env()
 
@@ -102,7 +103,7 @@ def resume_stream(config, schedules, pretrain_sources, pretrain_mixer, start_ste
     legacy_names = parse_mixture(LEGACY_DATA_MIXTURE)[0]
     # The supervisor and start.py asked this from disk before the launch (#607); asked
     # again here, where the run's own DATA_ROOT and mixture are in hand.
-    why = data_refusal(data_state, DATA_ROOT, config.DATA_MIXTURE, config.DATA_BRANCH)
+    why = data_refusal(data_state, DATA_ROOT, config.DATA_MIXTURE, config.DATA_BRANCH, config.DATA_SHUFFLE)
     if why:
         raise SystemExit(why)
     if config.DATA_BRANCH:
@@ -141,6 +142,16 @@ def estimated_skips(config, schedules, start_step, samples_seen):
             else samples_from_micro_steps(start_step - 1, avg_weights, config.BATCH_SIZE))
 
 
+def bucket_reader(config, directory):
+    """One bucket's reader, seeded from DATA_SEED with a stream of its own: in file
+    order, or shuffled and kept off the held-out tail (DATA_SHUFFLE, #378)."""
+    rng = np.random.default_rng(config.DATA_SEED)
+    if config.DATA_SHUFFLE:
+        return ShuffledTextDataGenerator(directory, max_seq_len=config.MAX_SEQ_LEN, rng=rng,
+                                         heldout_rows=VAL_TAIL_ROWS)
+    return TextDataGenerator(directory, max_seq_len=config.MAX_SEQ_LEN, rng=rng)
+
+
 def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
     # Warned here, where data is first needed, not at import: every importer of this
     # module (instruments that never load data included) used to print it.
@@ -149,9 +160,7 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
     print("🚀 Initializing Dynamic Data Phases...")
     schedules = Schedules.of(config)
     # Every reader and the mixer seeded from DATA_SEED, each its own stream.
-    pretrain_sources = [TextDataGenerator(f"{DATA_ROOT}/{path}", max_seq_len=config.MAX_SEQ_LEN,
-                                          rng=np.random.default_rng(config.DATA_SEED))
-                        for path in schedules.sources]
+    pretrain_sources = [bucket_reader(config, f"{DATA_ROOT}/{path}") for path in schedules.sources]
     pretrain_mixer = DataMixer(pretrain_sources, schedules.start_weights,
                                rng=np.random.default_rng(config.DATA_SEED), names=schedules.sources)
 
@@ -178,7 +187,8 @@ def setup_data_pipeline(config, start_step, samples_seen=None, data_state=None):
 
             # The state AFTER this batch travels with it, so the trainer can save
             # the one for the last batch it actually consumed, not the prefetched ones.
-            data_queue.put((batch, pretrain_mixer.last_source, {**pretrain_mixer.state(), "corpus": corpus}))
+            data_queue.put((batch, pretrain_mixer.last_source,
+                            {**pretrain_mixer.state(), "corpus": corpus, "shuffle": config.DATA_SHUFFLE}))
             loader_step += 1
 
     threading.Thread(target=data_wrapper, daemon=True).start()

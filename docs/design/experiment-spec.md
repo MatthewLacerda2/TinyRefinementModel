@@ -84,8 +84,8 @@ data orders. A gradient event at the same opt step in every seed of every arm (#
 what shared data looks like. The one exception is a branch (`DATA_BRANCH`, #489,
 `experiments/mix/branch_decay.py`): each seed skips its own
 `DATA_SEED × DATA_BRANCH_SEED_STRIDE` rows, so the seeds read different documents from
-shared weights, and there σ is data variance. A knob that varies data order on a fresh
-run is open on #378.
+shared weights, and there σ is data variance. On a fresh run, `DATA_SHUFFLE` (off by
+default, `trm/settings.py`) makes the seed choose the order of files and rows too (#378).
 
 **σ is the sample sigma** (`statistics.stdev`, ddof=1) and
 **σ_pooled = √((σ_t² + σ_c²) / 2)**. Not a new choice — the one every finding

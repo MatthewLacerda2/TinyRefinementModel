@@ -4,7 +4,7 @@ Jax-free, so the trainer and the supervisor ask the same question: the superviso
 before it launches or relaunches a trainer (`rewind.unresumable`, #505), the trainer
 before it touches a reader. A position is refused on a corpus it was not read from,
 and an exact resume on a mixture it was not written for. A branch (#489) rebuilds the
-stream by bucket name, so only the corpus binds it.
+stream by bucket name, so only the corpus binds it. Neither crosses DATA_SHUFFLE (#378).
 """
 
 import os
@@ -26,9 +26,21 @@ def mixture_buckets(mixture):
     return [entry.partition("=")[0].strip() for entry in mixture.split(",") if entry.strip()]
 
 
-def data_refusal(data_state, data_root, mixture, branch):
+def read_shuffled(data_state):
+    """Whether a checkpoint's stream was the shuffled one. A state saved before the knob
+    existed, and a checkpoint with no data state at all (before #424), read in file order."""
+    return bool(data_state and data_state.get("shuffle"))
+
+
+def data_refusal(data_state, data_root, mixture, branch, shuffle):
     """Why this run must not read `data_state`'s position, or None. A state saved before
     #439 names no buckets; every run then read LEGACY_DATA_MIXTURE."""
+    if read_shuffled(data_state) != shuffle:
+        # A branch too: it continues each bucket "where it stopped", and a position in
+        # one order is not a position in the other.
+        was, now = (("shuffled", "in file order") if read_shuffled(data_state) else ("in file order", "shuffled"))
+        return (f"this checkpoint read its data {was}, and DATA_SHUFFLE has this run read it "
+                f"{now}: the rows it already trained on would be served again (#378)")
     if data_state is None:
         return None
     written_on = data_state.get("corpus", LEGACY_CORPUS)
