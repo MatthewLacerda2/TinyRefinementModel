@@ -9,7 +9,7 @@
 
 [experiment]
 id = "002-smol-mix-base"
-status = "open"
+status = "recorded"
 title = "Does the plain recipe on the SmolLM mix, trained for 10 days, reach GPT-2-small on LAMBADA?"
 hypothesis = """
 Today's recipe — 001's PlainTransformer at dim 960, 8 layers at batch 2, f16 compute,
@@ -125,6 +125,8 @@ constant = true
 # The reference: acc 0.3256 / ppl 40.06. Declared as a summary with sigma 0, n 1.
 [results.run]
 gpt2_small = { mean = 0.3256, sigma = 0.0, n = 1 }
+# run_20261107_011942 at completion (opt step 57,291, 7.509B tokens), full 5,153 set, 2026-11-17.
+plain = [0.2668]
 
 # KEEP: at or above the reference.
 [criteria.meets_the_bar]
