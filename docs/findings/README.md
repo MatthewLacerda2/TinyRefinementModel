@@ -47,6 +47,7 @@ things, it doesn't go in this folder.
 - `2026-10-04-post-norm-beats-the-plain-recipe-where-it-was-registered-to-tie.md` — #494: POST_NORM on the plain recipe, −0.056 val CE at 512 steps (3 seeds) and act_max peak ~37 vs ~86, at +1.4% wall-clock; INCONCLUSIVE only because a win was not a registered branch; adoption open on #494
 - `2026-10-07-post-norms-lead-is-mostly-the-start-and-its-act-max-cap-grows-in-value.md` — #494 at 2,000 steps: the 512-step lead shrinks to −0.015 val CE (13σ, 2% fewer tokens to 3.70, bar 5%): INCONCLUSIVE; the control's act_max grows past 600 where POST_NORM's stays ~70
 - `2026-10-07-the-global-clip-matters-under-muon-though-it-barely-moves-muons-step.md` — #447: removing CLIP_NORM 1.0 costs +0.046 val CE at 512 steps (3 seeds, every clipped seed better), though the clip barely changes Muon's step size; INCONCLUSIVE by the 5% tokens bar; 1.0 stays, now chosen
+- `2026-11-17-the-smol-mix-base-reaches-0267-on-lambada-and-still-misses-the-gate.md` — base run 002: the plain recipe on the SmolLM mix (70/20/10) at 7.5B tokens scores LAMBADA 0.267 / ppl 101 (KILL, 0.059 under the gate; predicted 0.26), 0.063 above run 001, and sits 0.09 nats behind GPT-2 on the open web
 
 ## Entry template
 
